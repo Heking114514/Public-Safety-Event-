@@ -1,0 +1,48 @@
+[0.008s] Invoking command in '/home/j/colcon_ws/build/pangolin': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake /home/j/colcon_ws/Pangolin -DCMAKE_INSTALL_PREFIX=/home/j/colcon_ws/install/pangolin
+[0.072s] -- The C compiler identification is GNU 11.4.0
+[0.142s] -- The CXX compiler identification is GNU 11.4.0
+[0.149s] -- Detecting C compiler ABI info
+[0.207s] -- Detecting C compiler ABI info - done
+[0.211s] -- Check for working C compiler: /usr/bin/cc - skipped
+[0.212s] -- Detecting C compile features
+[0.212s] -- Detecting C compile features - done
+[0.214s] -- Detecting CXX compiler ABI info
+[0.268s] -- Detecting CXX compiler ABI info - done
+[0.273s] -- Check for working CXX compiler: /usr/bin/c++ - skipped
+[0.273s] -- Detecting CXX compile features
+[0.273s] -- Detecting CXX compile features - done
+[0.275s] -- Setting build type to 'Release' as none was specified.
+[0.392s] -- Found Eigen: '/usr/include/eigen3'
+[0.414s] -- libpng Found and Enabled
+[0.428s] -- libjpeg Found and Enabled
+[0.431s] -- libtiff Found and Enabled
+[0.431s] -- libopenexr Found and Enabled
+[0.433s] -- liblz4 Found and Enabled
+[0.434s] -- libzstd Found and Enabled
+[0.439s] -- Found Eigen: '/usr/include/eigen3'
+[0.655s] -- Performing Test HAS_FLTO
+[0.768s] -- Performing Test HAS_FLTO - Success
+[0.895s] -- Selected Python: '/usr/bin/python3.10'. cmake --build . -t pypangolin_pip_install to use pypangolin module.
+[0.896s] -- libdc1394 Found and Enabled
+[0.896s] -- V4L Found and Enabled
+[0.899s] -- Performing Test HAVE_FFMPEG_MAX_ANALYZE_DURATION
+[1.079s] -- Performing Test HAVE_FFMPEG_MAX_ANALYZE_DURATION - Success
+[1.079s] -- Performing Test HAVE_FFMPEG_AVFORMAT_ALLOC_OUTPUT_CONTEXT2
+[1.216s] -- Performing Test HAVE_FFMPEG_AVFORMAT_ALLOC_OUTPUT_CONTEXT2 - Success
+[1.216s] -- Performing Test HAVE_FFMPEG_AVPIXELFORMAT
+[1.294s] -- Performing Test HAVE_FFMPEG_AVPIXELFORMAT - Success
+[1.294s] -- ffmpeg Found and Enabled: /usr/include/x86_64-linux-gnu;/usr/include/x86_64-linux-gnu;/usr/include/x86_64-linux-gnu;/usr/include/x86_64-linux-gnu;/usr/include/x86_64-linux-gnu
+[1.298s] -- Found PkgConfig: /usr/bin/pkg-config (found version "0.29.2") 
+[1.304s] -- RealSense2 Found and Enabled
+[1.360s] -- OpenNI Found and Enabled
+[1.373s] -- OpenNI2 Found and Enabled
+[2.043s] -- Checking for module 'wayland-egl'
+[2.060s] --   Found wayland-egl, version 18.1.0
+[2.098s] -- Checking for module 'wayland-cursor'
+[2.114s] --   Found wayland-cursor, version 1.20.0
+[2.150s] -- Checking for module 'xkbcommon'
+[2.166s] --   Found xkbcommon, version 1.4.0
+[2.218s] -- Found Threads: TRUE  
+[2.252s] -- Configuring done
+[2.312s] -- Generating done
+[2.328s] -- Build files have been written to: /home/j/colcon_ws/build/pangolin

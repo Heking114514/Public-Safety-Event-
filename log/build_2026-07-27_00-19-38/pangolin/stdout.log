@@ -1,0 +1,47 @@
+-- The C compiler identification is GNU 11.4.0
+-- The CXX compiler identification is GNU 11.4.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Setting build type to 'Release' as none was specified.
+-- Found Eigen: '/usr/include/eigen3'
+-- libpng Found and Enabled
+-- libjpeg Found and Enabled
+-- libtiff Found and Enabled
+-- libopenexr Found and Enabled
+-- liblz4 Found and Enabled
+-- libzstd Found and Enabled
+-- Found Eigen: '/usr/include/eigen3'
+-- Performing Test HAS_FLTO
+-- Performing Test HAS_FLTO - Success
+-- Selected Python: '/usr/bin/python3.10'. cmake --build . -t pypangolin_pip_install to use pypangolin module.
+-- libdc1394 Found and Enabled
+-- V4L Found and Enabled
+-- Performing Test HAVE_FFMPEG_MAX_ANALYZE_DURATION
+-- Performing Test HAVE_FFMPEG_MAX_ANALYZE_DURATION - Success
+-- Performing Test HAVE_FFMPEG_AVFORMAT_ALLOC_OUTPUT_CONTEXT2
+-- Performing Test HAVE_FFMPEG_AVFORMAT_ALLOC_OUTPUT_CONTEXT2 - Success
+-- Performing Test HAVE_FFMPEG_AVPIXELFORMAT
+-- Performing Test HAVE_FFMPEG_AVPIXELFORMAT - Success
+-- ffmpeg Found and Enabled: /usr/include/x86_64-linux-gnu;/usr/include/x86_64-linux-gnu;/usr/include/x86_64-linux-gnu;/usr/include/x86_64-linux-gnu;/usr/include/x86_64-linux-gnu
+-- Found PkgConfig: /usr/bin/pkg-config (found version "0.29.2") 
+-- RealSense2 Found and Enabled
+-- OpenNI Found and Enabled
+-- OpenNI2 Found and Enabled
+-- Checking for module 'wayland-egl'
+--   Found wayland-egl, version 18.1.0
+-- Checking for module 'wayland-cursor'
+--   Found wayland-cursor, version 1.20.0
+-- Checking for module 'xkbcommon'
+--   Found xkbcommon, version 1.4.0
+-- Found Threads: TRUE  
+-- Configuring done
+-- Generating done
+-- Build files have been written to: /home/j/colcon_ws/build/pangolin

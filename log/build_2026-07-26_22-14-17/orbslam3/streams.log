@@ -1,0 +1,388 @@
+[0.006s] Invoking command in '/home/j/colcon_ws/build/orbslam3': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake --build /home/j/colcon_ws/build/orbslam3 -- -j24 -l24
+[0.033s] -- Found ament_cmake: 1.3.14 (/opt/ros/humble/share/ament_cmake/cmake)
+[0.153s] -- Override CMake install command with custom implementation using symlinks instead of copying resources
+[0.165s] -- Found rclcpp: 16.0.19 (/opt/ros/humble/share/rclcpp/cmake)
+[0.199s] -- Found rosidl_generator_c: 3.1.8 (/opt/ros/humble/share/rosidl_generator_c/cmake)
+[0.201s] -- Found rosidl_adapter: 3.1.8 (/opt/ros/humble/share/rosidl_adapter/cmake)
+[0.205s] -- Found rosidl_generator_cpp: 3.1.8 (/opt/ros/humble/share/rosidl_generator_cpp/cmake)
+[0.211s] -- Using all available rosidl_typesupport_c: rosidl_typesupport_fastrtps_c;rosidl_typesupport_introspection_c
+[0.218s] -- Using all available rosidl_typesupport_cpp: rosidl_typesupport_fastrtps_cpp;rosidl_typesupport_introspection_cpp
+[0.239s] -- Found rmw_implementation_cmake: 6.1.2 (/opt/ros/humble/share/rmw_implementation_cmake/cmake)
+[0.240s] -- Found rmw_fastrtps_cpp: 6.2.10 (/opt/ros/humble/share/rmw_fastrtps_cpp/cmake)
+[0.339s] -- Using RMW implementation 'rmw_fastrtps_cpp' as default
+[0.374s] -- Found sensor_msgs: 4.9.1 (/opt/ros/humble/share/sensor_msgs/cmake)
+[0.395s] -- Found cv_bridge: 3.2.1 (/opt/ros/humble/share/cv_bridge/cmake)
+[0.403s] -- Found message_filters: 4.3.16 (/opt/ros/humble/share/message_filters/cmake)
+[0.468s] -- Configuring done
+[0.492s] -- Generating done
+[0.497s] -- Build files have been written to: /home/j/colcon_ws/build/orbslam3
+[0.524s] Consolidate compiler generated dependencies of target rgbd
+[0.526s] Consolidate compiler generated dependencies of target stereo-inertial
+[0.531s] Consolidate compiler generated dependencies of target mono
+[0.531s] Consolidate compiler generated dependencies of target stereo
+[0.540s] [ 50%] Built target stereo-inertial
+[0.540s] [ 50%] Built target rgbd
+[0.542s] [ 75%] Built target stereo
+[0.544s] [100%] Built target mono
+[0.552s] Invoked command in '/home/j/colcon_ws/build/orbslam3' returned '0': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake --build /home/j/colcon_ws/build/orbslam3 -- -j24 -l24
+[0.558s] Invoking command in '/home/j/colcon_ws/build/orbslam3': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake --install /home/j/colcon_ws/build/orbslam3
+[0.562s] -- Install configuration: "Release"
+[0.562s] -- Execute custom install script
+[0.562s] -- Up-to-date symlink: /home/j/colcon_ws/install/orbslam3/lib/orbslam3/mono
+[0.562s] -- Up-to-date symlink: /home/j/colcon_ws/install/orbslam3/lib/orbslam3/rgbd
+[0.562s] -- Up-to-date symlink: /home/j/colcon_ws/install/orbslam3/lib/orbslam3/stereo
+[0.562s] -- Up-to-date symlink: /home/j/colcon_ws/install/orbslam3/lib/orbslam3/stereo-inertial
+[0.564s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/EuRoC.yaml
+[0.568s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/EuRoC_IMU/MH01.txt
+[0.575s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/EuRoC_IMU/MH02.txt
+[0.581s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/EuRoC_IMU/MH03.txt
+[0.585s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/EuRoC_IMU/MH04.txt
+[0.591s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/EuRoC_IMU/MH05.txt
+[0.598s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/EuRoC_IMU/V101.txt
+[0.604s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/EuRoC_IMU/V102.txt
+[0.610s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/EuRoC_IMU/V103.txt
+[0.616s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/EuRoC_IMU/V201.txt
+[0.622s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/EuRoC_IMU/V202.txt
+[0.628s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/EuRoC_IMU/V203.txt
+[0.633s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/EuRoC_TimeStamps/MH01.txt
+[0.640s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/EuRoC_TimeStamps/MH02.txt
+[0.648s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/EuRoC_TimeStamps/MH03.txt
+[0.654s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/EuRoC_TimeStamps/MH04.txt
+[0.659s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/EuRoC_TimeStamps/MH05.txt
+[0.665s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/EuRoC_TimeStamps/V101.txt
+[0.673s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/EuRoC_TimeStamps/V102.txt
+[0.678s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/EuRoC_TimeStamps/V103.txt
+[0.685s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/EuRoC_TimeStamps/V201.txt
+[0.693s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/EuRoC_TimeStamps/V202.txt
+[0.704s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/EuRoC_TimeStamps/V203.txt
+[0.716s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/MultiSession/EuRoC_MH01.yaml
+[0.729s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/MultiSession/EuRoC_MH02.yaml
+[0.741s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/MultiSession/EuRoC_MH03.yaml
+[0.752s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/MultiSession/EuRoC_MH04.yaml
+[0.761s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/MultiSession/EuRoC_MH05.yaml
+[0.774s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/MultiSession/EuRoC_V101.yaml
+[0.784s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/MultiSession/EuRoC_V102.yaml
+[0.793s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/MultiSession/EuRoC_V103.yaml
+[0.798s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/MultiSession/EuRoC_V201.yaml
+[0.802s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/MultiSession/EuRoC_V202.yaml
+[0.808s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/MultiSession/EuRoC_V203.yaml
+[0.817s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/RealSense_D435i.yaml
+[0.827s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/RealSense_D455.yaml
+[0.838s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/RealSense_T265.yaml
+[0.850s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM-VI.yaml
+[0.861s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM-VI_far.yaml
+[0.873s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_IMU/dataset-corridor1_512.txt
+[0.884s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_IMU/dataset-corridor2_1024.txt
+[0.894s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_IMU/dataset-corridor2_512.txt
+[0.899s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_IMU/dataset-corridor3_512.txt
+[0.904s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_IMU/dataset-corridor4_512.txt
+[0.909s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_IMU/dataset-corridor5_512.txt
+[0.915s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_IMU/dataset-magistrale1_512.txt
+[0.921s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_IMU/dataset-magistrale2_512.txt
+[0.927s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_IMU/dataset-magistrale3_512.txt
+[0.933s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_IMU/dataset-magistrale4_512.txt
+[0.939s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_IMU/dataset-magistrale5_512.txt
+[0.945s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_IMU/dataset-magistrale6_512.txt
+[0.951s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_IMU/dataset-outdoors1_512.txt
+[0.956s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_IMU/dataset-outdoors2_512.txt
+[0.962s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_IMU/dataset-outdoors3_512.txt
+[0.968s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_IMU/dataset-outdoors4_512.txt
+[0.972s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_IMU/dataset-outdoors5_512.txt
+[0.977s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_IMU/dataset-outdoors6_512.txt
+[0.984s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_IMU/dataset-outdoors7_512.txt
+[0.993s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_IMU/dataset-outdoors8_512.txt
+[1.002s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_IMU/dataset-room1_512.txt
+[1.012s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_IMU/dataset-room2_512.txt
+[1.022s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_IMU/dataset-room3_512.txt
+[1.032s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_IMU/dataset-room4_512.txt
+[1.044s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_IMU/dataset-room5_512.txt
+[1.055s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_IMU/dataset-room6_512.txt
+[1.067s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_IMU/dataset-slides1_512.txt
+[1.078s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_IMU/dataset-slides2_512.txt
+[1.089s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_IMU/dataset-slides3_512.txt
+[1.100s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_TimeStamps/dataset-corridor1_512.txt
+[1.111s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_TimeStamps/dataset-corridor2_1024.txt
+[1.118s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_TimeStamps/dataset-corridor2_512.txt
+[1.124s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_TimeStamps/dataset-corridor3_512.txt
+[1.130s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_TimeStamps/dataset-corridor4_512.txt
+[1.140s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_TimeStamps/dataset-corridor5_512.txt
+[1.150s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_TimeStamps/dataset-magistrale1_512.txt
+[1.162s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_TimeStamps/dataset-magistrale2_512.txt
+[1.170s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_TimeStamps/dataset-magistrale3_512.txt
+[1.177s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_TimeStamps/dataset-magistrale4_512.txt
+[1.183s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_TimeStamps/dataset-magistrale5_512.txt
+[1.190s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_TimeStamps/dataset-magistrale6_512.txt
+[1.199s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_TimeStamps/dataset-outdoors1_512.txt
+[1.210s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_TimeStamps/dataset-outdoors2_512.txt
+[1.220s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_TimeStamps/dataset-outdoors3_512.txt
+[1.231s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_TimeStamps/dataset-outdoors4_512.txt
+[1.240s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_TimeStamps/dataset-outdoors5_512.txt
+[1.253s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_TimeStamps/dataset-outdoors6_512.txt
+[1.259s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_TimeStamps/dataset-outdoors7_512.txt
+[1.266s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_TimeStamps/dataset-outdoors8_512.txt
+[1.273s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_TimeStamps/dataset-room1_512.txt
+[1.283s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_TimeStamps/dataset-room2_512.txt
+[1.289s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_TimeStamps/dataset-room3_512.txt
+[1.295s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_TimeStamps/dataset-room4_512.txt
+[1.302s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_TimeStamps/dataset-room5_512.txt
+[1.307s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_TimeStamps/dataset-room6_512.txt
+[1.313s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_TimeStamps/dataset-slides1_512.txt
+[1.319s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_TimeStamps/dataset-slides2_512.txt
+[1.326s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular-inertial/TUM_TimeStamps/dataset-slides3_512.txt
+[1.333s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/EuRoC.yaml
+[1.340s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/EuRoC_TimeStamps/MH01.txt
+[1.350s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/EuRoC_TimeStamps/MH02.txt
+[1.360s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/EuRoC_TimeStamps/MH03.txt
+[1.371s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/EuRoC_TimeStamps/MH04.txt
+[1.378s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/EuRoC_TimeStamps/MH05.txt
+[1.384s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/EuRoC_TimeStamps/V101.txt
+[1.392s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/EuRoC_TimeStamps/V102.txt
+[1.399s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/EuRoC_TimeStamps/V103.txt
+[1.406s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/EuRoC_TimeStamps/V201.txt
+[1.411s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/EuRoC_TimeStamps/V202.txt
+[1.416s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/EuRoC_TimeStamps/V203.txt
+[1.423s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/KITTI00-02.yaml
+[1.428s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/KITTI03.yaml
+[1.436s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/KITTI04-12.yaml
+[1.444s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/MultiSession/EuRoC_MH01.yaml
+[1.455s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/MultiSession/EuRoC_MH02.yaml
+[1.466s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/MultiSession/EuRoC_MH03.yaml
+[1.477s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/MultiSession/EuRoC_MH04.yaml
+[1.489s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/MultiSession/EuRoC_MH05.yaml
+[1.502s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/MultiSession/EuRoC_V101.yaml
+[1.510s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/MultiSession/EuRoC_V102.yaml
+[1.521s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/MultiSession/EuRoC_V103.yaml
+[1.531s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/MultiSession/EuRoC_V201.yaml
+[1.543s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/MultiSession/EuRoC_V202.yaml
+[1.550s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/MultiSession/EuRoC_V203.yaml
+[1.558s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/RealSense_D435i.yaml
+[1.569s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/RealSense_D455.yaml
+[1.581s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/RealSense_D455_424x240_5fps.yaml
+[1.593s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/RealSense_T265.yaml
+[1.605s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/TUM-VI.yaml
+[1.610s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/TUM1.yaml
+[1.620s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/TUM2.yaml
+[1.632s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/TUM3.yaml
+[1.644s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/TUM_TimeStamps/dataset-corridor1_512.txt
+[1.656s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/TUM_TimeStamps/dataset-corridor2_1024.txt
+[1.669s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/TUM_TimeStamps/dataset-corridor2_512.txt
+[1.680s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/TUM_TimeStamps/dataset-corridor3_512.txt
+[1.691s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/TUM_TimeStamps/dataset-corridor4_512.txt
+[1.702s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/TUM_TimeStamps/dataset-corridor5_512.txt
+[1.711s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/TUM_TimeStamps/dataset-magistrale1_512.txt
+[1.722s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/TUM_TimeStamps/dataset-magistrale2_512.txt
+[1.732s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/TUM_TimeStamps/dataset-magistrale3_512.txt
+[1.743s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/TUM_TimeStamps/dataset-magistrale4_512.txt
+[1.753s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/TUM_TimeStamps/dataset-magistrale5_512.txt
+[1.763s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/TUM_TimeStamps/dataset-magistrale6_512.txt
+[1.774s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/TUM_TimeStamps/dataset-outdoors1_512.txt
+[1.785s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/TUM_TimeStamps/dataset-outdoors2_512.txt
+[1.794s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/TUM_TimeStamps/dataset-outdoors3_512.txt
+[1.805s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/TUM_TimeStamps/dataset-outdoors4_512.txt
+[1.815s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/TUM_TimeStamps/dataset-outdoors5_512.txt
+[1.825s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/TUM_TimeStamps/dataset-outdoors6_512.txt
+[1.834s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/TUM_TimeStamps/dataset-outdoors7_512.txt
+[1.845s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/TUM_TimeStamps/dataset-outdoors8_512.txt
+[1.856s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/TUM_TimeStamps/dataset-room1_512.txt
+[1.866s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/TUM_TimeStamps/dataset-room2_512.txt
+[1.875s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/TUM_TimeStamps/dataset-room3_512.txt
+[1.887s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/TUM_TimeStamps/dataset-room4_512.txt
+[1.897s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/TUM_TimeStamps/dataset-room5_512.txt
+[1.907s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/TUM_TimeStamps/dataset-room6_512.txt
+[1.918s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/TUM_TimeStamps/dataset-slides1_512.txt
+[1.929s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/TUM_TimeStamps/dataset-slides2_512.txt
+[1.939s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/monocular/TUM_TimeStamps/dataset-slides3_512.txt
+[1.949s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/rgb-d-inertial/RealSense_D435i.yaml
+[1.959s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/rgb-d-inertial/RealSense_D455.yaml
+[1.968s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/rgb-d/RealSense_D435i.yaml
+[1.977s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/rgb-d/RealSense_D455.yaml
+[1.987s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/rgb-d/TUM1.yaml
+[1.996s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/rgb-d/TUM2.yaml
+[2.005s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/rgb-d/TUM3.yaml
+[2.016s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/rgb-d/associations/fr1_desk.txt
+[2.026s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/rgb-d/associations/fr1_desk2.txt
+[2.037s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/rgb-d/associations/fr1_room.txt
+[2.047s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/rgb-d/associations/fr1_xyz.txt
+[2.057s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/rgb-d/associations/fr2_desk.txt
+[2.066s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/rgb-d/associations/fr2_xyz.txt
+[2.074s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/rgb-d/associations/fr3_nstr_tex_near.txt
+[2.084s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/rgb-d/associations/fr3_office.txt
+[2.095s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/rgb-d/associations/fr3_office_val.txt
+[2.106s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/rgb-d/associations/fr3_str_tex_far.txt
+[2.117s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/rgb-d/associations/fr3_str_tex_near.txt
+[2.128s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/EuRoC.yaml
+[2.139s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/EuRoC_IMU/MH01.txt
+[2.148s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/EuRoC_IMU/MH02.txt
+[2.154s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/EuRoC_IMU/MH03.txt
+[2.160s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/EuRoC_IMU/MH04.txt
+[2.172s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/EuRoC_IMU/MH05.txt
+[2.179s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/EuRoC_IMU/V101.txt
+[2.184s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/EuRoC_IMU/V102.txt
+[2.196s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/EuRoC_IMU/V103.txt
+[2.202s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/EuRoC_IMU/V201.txt
+[2.208s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/EuRoC_IMU/V202.txt
+[2.219s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/EuRoC_IMU/V203.txt
+[2.224s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/EuRoC_TimeStamps/MH01.txt
+[2.230s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/EuRoC_TimeStamps/MH02.txt
+[2.238s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/EuRoC_TimeStamps/MH03.txt
+[2.251s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/EuRoC_TimeStamps/MH04.txt
+[2.258s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/EuRoC_TimeStamps/MH05.txt
+[2.265s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/EuRoC_TimeStamps/V101.txt
+[2.273s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/EuRoC_TimeStamps/V102.txt
+[2.279s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/EuRoC_TimeStamps/V103.txt
+[2.284s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/EuRoC_TimeStamps/V201.txt
+[2.291s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/EuRoC_TimeStamps/V202.txt
+[2.300s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/EuRoC_TimeStamps/V203.txt
+[2.309s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/EuRoC_TimeStamps/V203_2.txt
+[2.318s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/MultiSession/EuRoC_MH01.yaml
+[2.329s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/MultiSession/EuRoC_MH02.yaml
+[2.338s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/MultiSession/EuRoC_MH03.yaml
+[2.347s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/MultiSession/EuRoC_MH04.yaml
+[2.357s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/MultiSession/EuRoC_MH05.yaml
+[2.367s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/MultiSession/EuRoC_V101.yaml
+[2.374s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/MultiSession/EuRoC_V102.yaml
+[2.378s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/MultiSession/EuRoC_V103.yaml
+[2.386s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/MultiSession/EuRoC_V201.yaml
+[2.394s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/MultiSession/EuRoC_V202.yaml
+[2.400s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/MultiSession/EuRoC_V203.yaml
+[2.405s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/RealSense_D435i.yaml
+[2.410s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/RealSense_D455.yaml
+[2.416s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/RealSense_T265.yaml
+[2.421s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM-VI.yaml
+[2.426s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM-VI_far.yaml
+[2.436s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_IMU/dataset-corridor1_512.txt
+[2.446s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_IMU/dataset-corridor2_1024.txt
+[2.456s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_IMU/dataset-corridor2_512.txt
+[2.465s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_IMU/dataset-corridor3_512.txt
+[2.476s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_IMU/dataset-corridor4_512.txt
+[2.487s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_IMU/dataset-corridor5_512.txt
+[2.498s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_IMU/dataset-magistrale1_512.txt
+[2.508s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_IMU/dataset-magistrale2_512.txt
+[2.513s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_IMU/dataset-magistrale3_512.txt
+[2.519s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_IMU/dataset-magistrale4_512.txt
+[2.524s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_IMU/dataset-magistrale5_512.txt
+[2.530s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_IMU/dataset-magistrale6_512.txt
+[2.536s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_IMU/dataset-outdoors1_512.txt
+[2.542s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_IMU/dataset-outdoors2_512.txt
+[2.547s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_IMU/dataset-outdoors3_512.txt
+[2.552s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_IMU/dataset-outdoors4_512.txt
+[2.558s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_IMU/dataset-outdoors5_512.txt
+[2.562s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_IMU/dataset-outdoors6_512.txt
+[2.568s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_IMU/dataset-outdoors7_512.txt
+[2.572s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_IMU/dataset-outdoors8_512.txt
+[2.576s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_IMU/dataset-room1_512.txt
+[2.583s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_IMU/dataset-room2_512.txt
+[2.591s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_IMU/dataset-room3_512.txt
+[2.595s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_IMU/dataset-room4_512.txt
+[2.602s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_IMU/dataset-room5_512.txt
+[2.606s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_IMU/dataset-room6_512.txt
+[2.610s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_IMU/dataset-slides1_512.txt
+[2.616s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_IMU/dataset-slides2_512.txt
+[2.620s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_IMU/dataset-slides3_512.txt
+[2.627s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_TimeStamps/dataset-corridor1_512.txt
+[2.631s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_TimeStamps/dataset-corridor2_1024.txt
+[2.636s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_TimeStamps/dataset-corridor2_512.txt
+[2.641s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_TimeStamps/dataset-corridor3_512.txt
+[2.645s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_TimeStamps/dataset-corridor4_512.txt
+[2.651s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_TimeStamps/dataset-corridor5_512.txt
+[2.656s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_TimeStamps/dataset-magistrale1_512.txt
+[2.664s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_TimeStamps/dataset-magistrale2_512.txt
+[2.671s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_TimeStamps/dataset-magistrale3_512.txt
+[2.679s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_TimeStamps/dataset-magistrale4_512.txt
+[2.687s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_TimeStamps/dataset-magistrale5_512.txt
+[2.694s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_TimeStamps/dataset-magistrale6_512.txt
+[2.705s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_TimeStamps/dataset-outdoors1_512.txt
+[2.715s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_TimeStamps/dataset-outdoors2_512.txt
+[2.722s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_TimeStamps/dataset-outdoors3_512.txt
+[2.728s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_TimeStamps/dataset-outdoors4_512.txt
+[2.735s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_TimeStamps/dataset-outdoors5_512.txt
+[2.744s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_TimeStamps/dataset-outdoors6_512.txt
+[2.753s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_TimeStamps/dataset-outdoors7_512.txt
+[2.762s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_TimeStamps/dataset-outdoors8_512.txt
+[2.770s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_TimeStamps/dataset-room1_512.txt
+[2.780s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_TimeStamps/dataset-room2_512.txt
+[2.790s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_TimeStamps/dataset-room3_512.txt
+[2.799s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_TimeStamps/dataset-room4_512.txt
+[2.809s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_TimeStamps/dataset-room5_512.txt
+[2.814s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_TimeStamps/dataset-room6_512.txt
+[2.822s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_TimeStamps/dataset-slides1_512.txt
+[2.828s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_TimeStamps/dataset-slides2_512.txt
+[2.836s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo-inertial/TUM_TimeStamps/dataset-slides3_512.txt
+[2.844s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/EuRoC.yaml
+[2.852s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/EuRoC_TimeStamps/MH01.txt
+[2.858s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/EuRoC_TimeStamps/MH02.txt
+[2.863s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/EuRoC_TimeStamps/MH03.txt
+[2.869s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/EuRoC_TimeStamps/MH04.txt
+[2.875s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/EuRoC_TimeStamps/MH05.txt
+[2.881s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/EuRoC_TimeStamps/V101.txt
+[2.885s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/EuRoC_TimeStamps/V102.txt
+[2.890s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/EuRoC_TimeStamps/V103.txt
+[2.896s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/EuRoC_TimeStamps/V201.txt
+[2.901s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/EuRoC_TimeStamps/V202.txt
+[2.905s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/EuRoC_TimeStamps/V203.txt
+[2.909s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/KITTI00-02.yaml
+[2.915s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/KITTI03.yaml
+[2.921s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/KITTI04-12.yaml
+[2.925s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/MultiSession/EuRoC_MH01.yaml
+[2.931s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/MultiSession/EuRoC_MH02.yaml
+[2.937s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/MultiSession/EuRoC_MH03.yaml
+[2.944s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/MultiSession/EuRoC_MH04.yaml
+[2.948s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/MultiSession/EuRoC_MH05.yaml
+[2.954s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/MultiSession/EuRoC_V101.yaml
+[2.957s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/MultiSession/EuRoC_V102.yaml
+[2.963s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/MultiSession/EuRoC_V103.yaml
+[2.969s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/MultiSession/EuRoC_V201.yaml
+[2.975s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/MultiSession/EuRoC_V202.yaml
+[2.980s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/MultiSession/EuRoC_V203.yaml
+[2.986s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/RealSense_D435i.yaml
+[2.993s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/RealSense_D455.yaml
+[2.997s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/RealSense_T265.yaml
+[3.003s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/TUM-VI.yaml
+[3.009s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/TUM_TimeStamps/dataset-corridor1_512.txt
+[3.015s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/TUM_TimeStamps/dataset-corridor2_1024.txt
+[3.020s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/TUM_TimeStamps/dataset-corridor2_512.txt
+[3.026s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/TUM_TimeStamps/dataset-corridor3_512.txt
+[3.030s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/TUM_TimeStamps/dataset-corridor4_512.txt
+[3.037s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/TUM_TimeStamps/dataset-corridor5_512.txt
+[3.042s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/TUM_TimeStamps/dataset-magistrale1_512.txt
+[3.049s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/TUM_TimeStamps/dataset-magistrale2_512.txt
+[3.055s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/TUM_TimeStamps/dataset-magistrale3_512.txt
+[3.060s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/TUM_TimeStamps/dataset-magistrale4_512.txt
+[3.066s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/TUM_TimeStamps/dataset-magistrale5_512.txt
+[3.071s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/TUM_TimeStamps/dataset-magistrale6_512.txt
+[3.076s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/TUM_TimeStamps/dataset-outdoors1_512.txt
+[3.081s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/TUM_TimeStamps/dataset-outdoors2_512.txt
+[3.085s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/TUM_TimeStamps/dataset-outdoors3_512.txt
+[3.091s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/TUM_TimeStamps/dataset-outdoors4_512.txt
+[3.098s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/TUM_TimeStamps/dataset-outdoors5_512.txt
+[3.103s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/TUM_TimeStamps/dataset-outdoors6_512.txt
+[3.110s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/TUM_TimeStamps/dataset-outdoors7_512.txt
+[3.116s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/TUM_TimeStamps/dataset-outdoors8_512.txt
+[3.123s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/TUM_TimeStamps/dataset-room1_512.txt
+[3.128s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/TUM_TimeStamps/dataset-room2_512.txt
+[3.136s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/TUM_TimeStamps/dataset-room3_512.txt
+[3.143s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/TUM_TimeStamps/dataset-room4_512.txt
+[3.154s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/TUM_TimeStamps/dataset-room5_512.txt
+[3.165s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/TUM_TimeStamps/dataset-room6_512.txt
+[3.175s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/TUM_TimeStamps/dataset-slides1_512.txt
+[3.187s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/TUM_TimeStamps/dataset-slides2_512.txt
+[3.196s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//config/stereo/TUM_TimeStamps/dataset-slides3_512.txt
+[3.206s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//vocabulary/ORBvoc.txt
+[3.216s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3//vocabulary/ORBvoc.txt.tar.gz
+[3.227s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3/README.md
+[3.237s] -- Up-to-date symlink: /home/j/colcon_ws/install/orbslam3/share/ament_index/resource_index/package_run_dependencies/orbslam3
+[3.238s] -- Up-to-date symlink: /home/j/colcon_ws/install/orbslam3/share/ament_index/resource_index/parent_prefix_path/orbslam3
+[3.238s] -- Up-to-date symlink: /home/j/colcon_ws/install/orbslam3/share/orbslam3/environment/ament_prefix_path.sh
+[3.238s] -- Up-to-date symlink: /home/j/colcon_ws/install/orbslam3/share/orbslam3/environment/ament_prefix_path.dsv
+[3.238s] -- Up-to-date symlink: /home/j/colcon_ws/install/orbslam3/share/orbslam3/environment/path.sh
+[3.238s] -- Up-to-date symlink: /home/j/colcon_ws/install/orbslam3/share/orbslam3/environment/path.dsv
+[3.238s] -- Up-to-date symlink: /home/j/colcon_ws/install/orbslam3/share/orbslam3/local_setup.bash
+[3.238s] -- Up-to-date symlink: /home/j/colcon_ws/install/orbslam3/share/orbslam3/local_setup.sh
+[3.238s] -- Up-to-date symlink: /home/j/colcon_ws/install/orbslam3/share/orbslam3/local_setup.zsh
+[3.238s] -- Up-to-date symlink: /home/j/colcon_ws/install/orbslam3/share/orbslam3/local_setup.dsv
+[3.238s] -- Symlinking: /home/j/colcon_ws/install/orbslam3/share/orbslam3/package.dsv
+[3.247s] -- Up-to-date symlink: /home/j/colcon_ws/install/orbslam3/share/ament_index/resource_index/packages/orbslam3
+[3.247s] -- Up-to-date symlink: /home/j/colcon_ws/install/orbslam3/share/orbslam3/cmake/orbslam3Config.cmake
+[3.247s] -- Up-to-date symlink: /home/j/colcon_ws/install/orbslam3/share/orbslam3/cmake/orbslam3Config-version.cmake
+[3.247s] -- Up-to-date symlink: /home/j/colcon_ws/install/orbslam3/share/orbslam3/package.xml
+[3.249s] Invoked command in '/home/j/colcon_ws/build/orbslam3' returned '0': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake --install /home/j/colcon_ws/build/orbslam3

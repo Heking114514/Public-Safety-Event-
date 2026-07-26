@@ -1,0 +1,2 @@
+Invoking command in '/home/j/colcon_ws/build/diagnostic_updater': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake /home/j/colcon_ws/deps/realsense_runtime/root/opt/ros/humble/share/diagnostic_updater -DCMAKE_INSTALL_PREFIX=/home/j/colcon_ws/install/diagnostic_updater
+Invoked command in '/home/j/colcon_ws/build/diagnostic_updater' returned '1': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake /home/j/colcon_ws/deps/realsense_runtime/root/opt/ros/humble/share/diagnostic_updater -DCMAKE_INSTALL_PREFIX=/home/j/colcon_ws/install/diagnostic_updater

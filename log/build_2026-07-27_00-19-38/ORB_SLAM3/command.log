@@ -1,0 +1,1 @@
+Invoking command in '/home/j/colcon_ws/build/ORB_SLAM3': /usr/bin/cmake /home/j/colcon_ws/ORB_SLAM3 -DCMAKE_INSTALL_PREFIX=/home/j/colcon_ws/install/ORB_SLAM3

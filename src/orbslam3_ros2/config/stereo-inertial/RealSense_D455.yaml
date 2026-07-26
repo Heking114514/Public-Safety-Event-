@@ -1,0 +1,72 @@
+%YAML:1.0
+
+Camera.type: "PinHole"
+
+Camera.fx: 427.893615722656
+Camera.fy: 427.893615722656
+Camera.cx: 421.134613037109
+Camera.cy: 242.897872924805
+Camera.k1: 0.0
+Camera.k2: 0.0
+Camera.p1: 0.0
+Camera.p2: 0.0
+
+Camera2.fx: 427.893615722656
+Camera2.fy: 427.893615722656
+Camera2.cx: 421.134613037109
+Camera2.cy: 242.897872924805
+Camera2.k1: 0.0
+Camera2.k2: 0.0
+Camera2.p1: 0.0
+Camera2.p2: 0.0
+
+Tlr: !!opencv-matrix
+  rows: 3
+  cols: 4
+  dt: f
+  data: [1.0, 0.0, 0.0, 0.095,
+         0.0, 1.0, 0.0, 0.0,
+         0.0, 0.0, 1.0, 0.0]
+
+Camera.width: 848
+Camera.height: 480
+Camera.fps: 30.0
+Camera.RGB: 0
+Camera.imageScale: 1.0
+
+ThDepth: 40.0
+Camera.bf: 40.649893493652
+
+Tbc: !!opencv-matrix
+   rows: 4
+   cols: 4
+   dt: f
+   data: [1.0, 0.0, 0.0, 0.0302200000733137,
+          0.0, 1.0, 0.0, -0.00740000000223517,
+          0.0, 0.0, 1.0, -0.0160199999809265,
+          0.0, 0.0, 0.0, 1.0]
+
+InsertKFsWhenLost: 0
+
+IMU.NoiseGyro: 1e-3
+IMU.NoiseAcc: 1e-2
+IMU.GyroWalk: 1e-6
+IMU.AccWalk: 1e-4
+IMU.Frequency: 200
+
+ORBextractor.nFeatures: 1250
+ORBextractor.scaleFactor: 1.2
+ORBextractor.nLevels: 8
+ORBextractor.iniThFAST: 20
+ORBextractor.minThFAST: 7
+
+Viewer.KeyFrameSize: 0.05
+Viewer.KeyFrameLineWidth: 1
+Viewer.GraphLineWidth: 0.9
+Viewer.PointSize: 2
+Viewer.CameraSize: 0.08
+Viewer.CameraLineWidth: 3
+Viewer.ViewpointX: 0
+Viewer.ViewpointY: -0.7
+Viewer.ViewpointZ: -3.5
+Viewer.ViewpointF: 500

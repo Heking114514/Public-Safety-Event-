@@ -1,0 +1,4 @@
+[0.009s] Invoking command in '/home/j/colcon_ws/build/diagnostic_updater': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake /home/j/colcon_ws/deps/realsense_runtime/root/opt/ros/humble/share/diagnostic_updater -DCMAKE_INSTALL_PREFIX=/home/j/colcon_ws/install/diagnostic_updater
+[0.014s] [0mCMake Error: The source directory "/home/j/colcon_ws/deps/realsense_runtime/root/opt/ros/humble/share/diagnostic_updater" does not appear to contain CMakeLists.txt.
+[0.014s] Specify --help for usage, or press the help button on the CMake GUI.[0m
+[0.015s] Invoked command in '/home/j/colcon_ws/build/diagnostic_updater' returned '1': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake /home/j/colcon_ws/deps/realsense_runtime/root/opt/ros/humble/share/diagnostic_updater -DCMAKE_INSTALL_PREFIX=/home/j/colcon_ws/install/diagnostic_updater

@@ -1,0 +1,1 @@
+Invoking command in '/home/j/colcon_ws/build/pangolin': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake /home/j/colcon_ws/Pangolin -DCMAKE_INSTALL_PREFIX=/home/j/colcon_ws/install/pangolin

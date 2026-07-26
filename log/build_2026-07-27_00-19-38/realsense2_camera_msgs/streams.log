@@ -1,0 +1,3 @@
+[0.009s] Invoking command in '/home/j/colcon_ws/build/realsense2_camera_msgs': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake /home/j/colcon_ws/deps/realsense_runtime/root/opt/ros/humble/share/realsense2_camera_msgs -DCMAKE_INSTALL_PREFIX=/home/j/colcon_ws/install/realsense2_camera_msgs
+[0.012s] [0mCMake Error: The source directory "/home/j/colcon_ws/deps/realsense_runtime/root/opt/ros/humble/share/realsense2_camera_msgs" does not appear to contain CMakeLists.txt.
+[0.012s] Specify --help for usage, or press the help button on the CMake GUI.[0m
