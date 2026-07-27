@@ -97,6 +97,74 @@ fallback. The normal D455 configurations require a USB 3.x connection reported a
 The stereo configurations use the D455 95 mm baseline. The inertial configurations use
 the factory IMU-to-color or IMU-to-left-infrared transforms reported by librealsense.
 
+### D455 stereo-inertial odometry
+
+Build and source the workspace, then start the camera and ORB-SLAM3 together:
+
+```bash
+cd ~/colcon_ws
+colcon build --symlink-install --packages-select orbslam3 \
+  --cmake-args \
+  -DSophus_DIR=$PWD/deps/share/sophus/cmake \
+  -DPangolin_DIR=$PWD/Pangolin/build
+source install/setup.bash
+ros2 launch orbslam3 realsense_d455_stereo_inertial.launch.py
+```
+
+The launch file selects camera serial `038122250473` and infrared streams
+`848x480x30`. It defaults to stereo-inertial metric odometry using both infrared
+cameras and the fused IMU stream. The first two seconds of stereo frames are discarded while
+the D455 auto exposure settles. The infrared emitter is disabled so its projected
+dot pattern does not dominate ORB features, and the required topic remappings are
+applied automatically.
+
+Published outputs:
+
+| Topic | Type | Description |
+| --- | --- | --- |
+| `/odom` | `nav_msgs/msg/Odometry` | Metric body pose and frame-to-frame velocity |
+| `/pose` | `geometry_msgs/msg/PoseStamped` | Body pose in the configured map frame |
+| `/path` | `nav_msgs/msg/Path` | Bounded pose history |
+| `/tracking_state` | `std_msgs/msg/Int32` | ORB-SLAM3 tracking state enum |
+| `/diagnostics` | `diagnostic_msgs/msg/DiagnosticArray` | Tracking, IMU, synchronization and drop status |
+| `/tf` | `tf2_msgs/msg/TFMessage` | `map_frame_id` to `body_frame_id` transform |
+
+Tracking state values are `-1 SYSTEM_NOT_READY`, `0 NO_IMAGES_YET`,
+`1 NOT_INITIALIZED`, `2 OK`, `3 RECENTLY_LOST`, `4 LOST`, and `5 OK_KLT`.
+Odometry is only published in `OK` or `OK_KLT`; stale poses are not published
+while tracking is unavailable.
+
+The default body frame is `camera_link`. For a robot, publish the measured static
+transform from `base_link` to `camera_link`, then run:
+
+```bash
+ros2 launch orbslam3 realsense_d455_stereo_inertial.launch.py \
+  body_frame_id:=base_link
+```
+
+At startup, move the camera with moderate translation and rotation around multiple axes until `/diagnostics`
+reports `Tracking`. Holding the camera completely still does not provide enough
+acceleration variation for inertial initialization.
+
+To run without the IMU, use pure stereo mode and enable the startup reset if needed:
+
+```bash
+ros2 launch orbslam3 realsense_d455_stereo_inertial.launch.py \
+  use_imu:=false initial_reset:=true
+```
+
+Useful launch arguments:
+
+```bash
+visualization:=true       # enable the Pangolin viewer
+equalize:=true            # opt in to CLAHE; disabled by default for D455 infrared images
+initial_reset:=true       # opt in to a startup reset; avoid this while using the IMU
+use_imu:=false            # switch back to pure stereo odometry
+map_frame_id:=map
+body_frame_id:=camera_link
+serial_no:=_038122250473  # leading underscore keeps the ROS parameter a string
+```
+
 ## Run with rosbag
 To play ros1 bag file, you should install `ros1 noetic` & `ros1 bridge`.  
 Here is a [link](https://www.theconstructsim.com/ros2-qa-217-how-to-mix-ros1-and-ros2-packages/) to demonstrate example of `ros1-ros2 bridge` procedure.  

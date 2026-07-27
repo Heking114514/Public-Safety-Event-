@@ -1,218 +1,590 @@
 #include "stereo-inertial-node.hpp"
 
 #include <opencv2/core/core.hpp>
+#include <sensor_msgs/image_encodings.hpp>
+#include <tf2/exceptions.h>
+#include <tf2/time.h>
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <sstream>
 
 using std::placeholders::_1;
+using std::placeholders::_2;
 
-StereoInertialNode::StereoInertialNode(ORB_SLAM3::System *SLAM, const string &strSettingsFile, const string &strDoRectify, const string &strDoEqual) :
-    Node("ORB_SLAM3_ROS2"),
-    SLAM_(SLAM)
+namespace
 {
-    stringstream ss_rec(strDoRectify);
-    ss_rec >> boolalpha >> doRectify_;
+const char *TrackingStateName(int state)
+{
+    switch (state)
+    {
+        case ORB_SLAM3::Tracking::SYSTEM_NOT_READY:
+            return "SYSTEM_NOT_READY";
+        case ORB_SLAM3::Tracking::NO_IMAGES_YET:
+            return "NO_IMAGES_YET";
+        case ORB_SLAM3::Tracking::NOT_INITIALIZED:
+            return "NOT_INITIALIZED";
+        case ORB_SLAM3::Tracking::OK:
+            return "OK";
+        case ORB_SLAM3::Tracking::RECENTLY_LOST:
+            return "RECENTLY_LOST";
+        case ORB_SLAM3::Tracking::LOST:
+            return "LOST";
+        case ORB_SLAM3::Tracking::OK_KLT:
+            return "OK_KLT";
+        default:
+            return "UNKNOWN";
+    }
+}
 
-    stringstream ss_eq(strDoEqual);
-    ss_eq >> boolalpha >> doEqual_;
+geometry_msgs::msg::Pose PoseFromSE3(const Sophus::SE3f &transform)
+{
+    geometry_msgs::msg::Pose pose;
+    const Eigen::Vector3f translation = transform.translation();
+    const Eigen::Quaternionf rotation = transform.unit_quaternion().normalized();
 
-    bClahe_ = doEqual_;
-    std::cout << "Rectify: " << doRectify_ << std::endl;
-    std::cout << "Equal: " << doEqual_ << std::endl;
+    pose.position.x = translation.x();
+    pose.position.y = translation.y();
+    pose.position.z = translation.z();
+    pose.orientation.x = rotation.x();
+    pose.orientation.y = rotation.y();
+    pose.orientation.z = rotation.z();
+    pose.orientation.w = rotation.w();
+    return pose;
+}
+
+geometry_msgs::msg::Transform TransformFromSE3(const Sophus::SE3f &transform)
+{
+    geometry_msgs::msg::Transform message;
+    const Eigen::Vector3f translation = transform.translation();
+    const Eigen::Quaternionf rotation = transform.unit_quaternion().normalized();
+
+    message.translation.x = translation.x();
+    message.translation.y = translation.y();
+    message.translation.z = translation.z();
+    message.rotation.x = rotation.x();
+    message.rotation.y = rotation.y();
+    message.rotation.z = rotation.z();
+    message.rotation.w = rotation.w();
+    return message;
+}
+
+void SetCovarianceDiagonal(std::array<double, 36> &covariance, const std::vector<double> &diagonal)
+{
+    covariance.fill(0.0);
+    for (size_t index = 0; index < std::min<size_t>(6, diagonal.size()); ++index)
+        covariance[index * 6 + index] = diagonal[index];
+}
+
+diagnostic_msgs::msg::KeyValue DiagnosticValue(const std::string &key, const std::string &value)
+{
+    diagnostic_msgs::msg::KeyValue item;
+    item.key = key;
+    item.value = value;
+    return item;
+}
+}
+
+StereoInertialNode::StereoInertialNode(
+    ORB_SLAM3::System *SLAM,
+    const string &strSettingsFile,
+    const string &strDoRectify,
+    const string &strDoEqual,
+    bool useImu)
+    : Node("ORB_SLAM3_ROS2"), SLAM_(SLAM), useImu_(useImu)
+{
+    std::stringstream rectifyStream(strDoRectify);
+    rectifyStream >> std::boolalpha >> doRectify_;
+
+    std::stringstream equalizeStream(strDoEqual);
+    equalizeStream >> std::boolalpha >> doEqual_;
+
+    mapFrameId_ = this->declare_parameter<std::string>("map_frame_id", "map");
+    bodyFrameId_ = this->declare_parameter<std::string>("body_frame_id", "camera_link");
+    publishTf_ = this->declare_parameter<bool>("publish_tf", true);
+    publishPath_ = this->declare_parameter<bool>("publish_path", true);
+    saveTrajectory_ = this->declare_parameter<bool>("save_trajectory", true);
+    resetPathOnTrackingLoss_ = this->declare_parameter<bool>("reset_path_on_tracking_loss", true);
+    trajectoryFile_ = this->declare_parameter<std::string>("trajectory_file", "KeyFrameTrajectory.txt");
+    maxStereoTimeDiff_ = this->declare_parameter<double>("max_stereo_time_diff", 0.01);
+    imuTimeOffset_ = this->declare_parameter<double>("imu_time_offset", 0.0);
+    diagnosticsPeriod_ = std::max(0.0, this->declare_parameter<double>("diagnostics_period", 1.0));
+    cameraWarmupSeconds_ = std::max(0.0, this->declare_parameter<double>("camera_warmup_seconds", 2.0));
+    cameraWarmupComplete_ = cameraWarmupSeconds_ == 0.0;
+    const int maxPendingStereoPairs = this->declare_parameter<int>("max_pending_stereo_pairs", 10);
+    const int maxImuQueueSize = this->declare_parameter<int>("max_imu_queue_size", 4000);
+    const int pathMaxPoses = this->declare_parameter<int>("path_max_poses", 2000);
+    maxPendingStereoPairs_ = static_cast<size_t>(std::max(1, maxPendingStereoPairs));
+    maxImuQueueSize_ = static_cast<size_t>(std::max(200, maxImuQueueSize));
+    pathMaxPoses_ = static_cast<size_t>(std::max(1, pathMaxPoses));
+    poseCovarianceDiagonal_ = this->declare_parameter<std::vector<double>>(
+        "pose_covariance_diagonal", {0.01, 0.01, 0.01, 0.05, 0.05, 0.05});
+    twistCovarianceDiagonal_ = this->declare_parameter<std::vector<double>>(
+        "twist_covariance_diagonal", {0.04, 0.04, 0.04, 0.1, 0.1, 0.1});
+
+    const std::string odomTopic = this->declare_parameter<std::string>("odom_topic", "odom");
+    const std::string poseTopic = this->declare_parameter<std::string>("pose_topic", "pose");
+    const std::string pathTopic = this->declare_parameter<std::string>("path_topic", "path");
+    const std::string stateTopic = this->declare_parameter<std::string>("tracking_state_topic", "tracking_state");
+    const std::string diagnosticsTopic = this->declare_parameter<std::string>("diagnostics_topic", "/diagnostics");
+
+    RCLCPP_INFO(this->get_logger(), "Rectify: %s", doRectify_ ? "true" : "false");
+    RCLCPP_INFO(this->get_logger(), "Equalize: %s", doEqual_ ? "true" : "false");
+    RCLCPP_INFO(this->get_logger(), "Sensor mode: %s", useImu_ ? "stereo-inertial" : "stereo");
+    RCLCPP_INFO(this->get_logger(), "Camera warmup: %.1f seconds", cameraWarmupSeconds_);
+    RCLCPP_INFO(this->get_logger(), "Publishing %s -> %s", mapFrameId_.c_str(), bodyFrameId_.c_str());
 
     if (doRectify_)
     {
-        // Load settings related to stereo calibration
-        cv::FileStorage fsSettings(strSettingsFile, cv::FileStorage::READ);
-        if (!fsSettings.isOpened())
+        cv::FileStorage settings(strSettingsFile, cv::FileStorage::READ);
+        if (!settings.isOpened())
+            throw std::runtime_error("Unable to open ORB-SLAM3 settings file: " + strSettingsFile);
+
+        cv::Mat leftK, rightK, leftP, rightP, leftR, rightR, leftD, rightD;
+        settings["LEFT.K"] >> leftK;
+        settings["RIGHT.K"] >> rightK;
+        settings["LEFT.P"] >> leftP;
+        settings["RIGHT.P"] >> rightP;
+        settings["LEFT.R"] >> leftR;
+        settings["RIGHT.R"] >> rightR;
+        settings["LEFT.D"] >> leftD;
+        settings["RIGHT.D"] >> rightD;
+
+        const int leftRows = settings["LEFT.height"];
+        const int leftColumns = settings["LEFT.width"];
+        const int rightRows = settings["RIGHT.height"];
+        const int rightColumns = settings["RIGHT.width"];
+
+        if (leftK.empty() || rightK.empty() || leftP.empty() || rightP.empty() || leftR.empty() ||
+            rightR.empty() || leftD.empty() || rightD.empty() || leftRows == 0 || rightRows == 0 ||
+            leftColumns == 0 || rightColumns == 0)
         {
-            cerr << "ERROR: Wrong path to settings" << endl;
-            assert(0);
+            throw std::runtime_error("Stereo rectification parameters are missing from the settings file");
         }
 
-        cv::Mat K_l, K_r, P_l, P_r, R_l, R_r, D_l, D_r;
-        fsSettings["LEFT.K"] >> K_l;
-        fsSettings["RIGHT.K"] >> K_r;
-
-        fsSettings["LEFT.P"] >> P_l;
-        fsSettings["RIGHT.P"] >> P_r;
-
-        fsSettings["LEFT.R"] >> R_l;
-        fsSettings["RIGHT.R"] >> R_r;
-
-        fsSettings["LEFT.D"] >> D_l;
-        fsSettings["RIGHT.D"] >> D_r;
-
-        int rows_l = fsSettings["LEFT.height"];
-        int cols_l = fsSettings["LEFT.width"];
-        int rows_r = fsSettings["RIGHT.height"];
-        int cols_r = fsSettings["RIGHT.width"];
-
-        if (K_l.empty() || K_r.empty() || P_l.empty() || P_r.empty() || R_l.empty() || R_r.empty() || D_l.empty() || D_r.empty() ||
-            rows_l == 0 || rows_r == 0 || cols_l == 0 || cols_r == 0)
-        {
-            cerr << "ERROR: Calibration parameters to rectify stereo are missing!" << endl;
-            assert(0);
-        }
-
-        cv::initUndistortRectifyMap(K_l, D_l, R_l, P_l.rowRange(0, 3).colRange(0, 3), cv::Size(cols_l, rows_l), CV_32F, M1l_, M2l_);
-        cv::initUndistortRectifyMap(K_r, D_r, R_r, P_r.rowRange(0, 3).colRange(0, 3), cv::Size(cols_r, rows_r), CV_32F, M1r_, M2r_);
+        cv::initUndistortRectifyMap(
+            leftK, leftD, leftR, leftP.rowRange(0, 3).colRange(0, 3),
+            cv::Size(leftColumns, leftRows), CV_32F, M1l_, M2l_);
+        cv::initUndistortRectifyMap(
+            rightK, rightD, rightR, rightP.rowRange(0, 3).colRange(0, 3),
+            cv::Size(rightColumns, rightRows), CV_32F, M1r_, M2r_);
     }
 
-    const auto sensorQos = rclcpp::SensorDataQoS();
-    subImu_ = this->create_subscription<ImuMsg>("imu", sensorQos, std::bind(&StereoInertialNode::GrabImu, this, _1));
-    subImgLeft_ = this->create_subscription<ImageMsg>("camera/left", sensorQos, std::bind(&StereoInertialNode::GrabImageLeft, this, _1));
-    subImgRight_ = this->create_subscription<ImageMsg>("camera/right", sensorQos, std::bind(&StereoInertialNode::GrabImageRight, this, _1));
+    odomPublisher_ = this->create_publisher<nav_msgs::msg::Odometry>(odomTopic, 10);
+    posePublisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(poseTopic, 10);
+    pathPublisher_ = this->create_publisher<nav_msgs::msg::Path>(pathTopic, 10);
+    trackingStatePublisher_ = this->create_publisher<std_msgs::msg::Int32>(stateTopic, 10);
+    diagnosticsPublisher_ = this->create_publisher<diagnostic_msgs::msg::DiagnosticArray>(diagnosticsTopic, 10);
 
-    syncThread_ = new std::thread(&StereoInertialNode::SyncWithImu, this);
+    tfBuffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
+    tfListener_ = std::make_shared<tf2_ros::TransformListener>(*tfBuffer_, this, true);
+    tfBroadcaster_.reset(new tf2_ros::TransformBroadcaster(this));
+
+    const auto sensorQos = rclcpp::SensorDataQoS();
+    if (useImu_)
+        subImu_ = this->create_subscription<ImuMsg>("imu", sensorQos, std::bind(&StereoInertialNode::GrabImu, this, _1));
+    subImgLeft_ = std::make_shared<message_filters::Subscriber<ImageMsg>>(this, "camera/left", rmw_qos_profile_sensor_data);
+    subImgRight_ = std::make_shared<message_filters::Subscriber<ImageMsg>>(this, "camera/right", rmw_qos_profile_sensor_data);
+    stereoSync_ = std::make_shared<message_filters::Synchronizer<ApproximateSyncPolicy>>(
+        ApproximateSyncPolicy(20), *subImgLeft_, *subImgRight_);
+    stereoSync_->setMaxIntervalDuration(rclcpp::Duration::from_seconds(maxStereoTimeDiff_));
+    stereoSync_->registerCallback(std::bind(&StereoInertialNode::GrabStereo, this, _1, _2));
+
+    path_.header.frame_id = mapFrameId_;
+    syncThread_ = std::thread(&StereoInertialNode::SyncWithImu, this);
 }
 
 StereoInertialNode::~StereoInertialNode()
 {
+    StopProcessing();
+}
+
+void StereoInertialNode::StopProcessing()
+{
+    if (stopped_.exchange(true))
+        return;
+
     syncRunning_ = false;
-    if (syncThread_->joinable())
-        syncThread_->join();
-    delete syncThread_;
+    dataCondition_.notify_all();
+    if (syncThread_.joinable())
+        syncThread_.join();
 
-    // Stop all threads
     SLAM_->Shutdown();
-
-    // Save camera trajectory
-    SLAM_->SaveKeyFrameTrajectoryTUM("KeyFrameTrajectory.txt");
+    if (saveTrajectory_)
+    {
+        RCLCPP_INFO(this->get_logger(), "Saving keyframe trajectory to %s", trajectoryFile_.c_str());
+        SLAM_->SaveKeyFrameTrajectoryTUM(trajectoryFile_);
+    }
 }
 
 void StereoInertialNode::GrabImu(const ImuMsg::SharedPtr msg)
 {
-    bufMutex_.lock();
-    imuBuf_.push(msg);
-    bufMutex_.unlock();
+    const double timestamp = Utility::StampToSec(msg->header.stamp) + imuTimeOffset_;
+    {
+        std::lock_guard<std::mutex> lock(dataMutex_);
+        if (!imuBuf_.empty())
+        {
+            const double lastTimestamp = Utility::StampToSec(imuBuf_.back()->header.stamp) + imuTimeOffset_;
+            if (timestamp <= lastTimestamp)
+            {
+                RCLCPP_WARN_THROTTLE(
+                    this->get_logger(), *this->get_clock(), 2000,
+                    "Discarding non-monotonic IMU sample: %.9f <= %.9f", timestamp, lastTimestamp);
+                return;
+            }
+        }
+
+        imuBuf_.push_back(msg);
+        while (imuBuf_.size() > maxImuQueueSize_)
+            imuBuf_.pop_front();
+    }
+    dataCondition_.notify_one();
 }
 
-void StereoInertialNode::GrabImageLeft(const ImageMsg::SharedPtr msgLeft)
+void StereoInertialNode::GrabStereo(
+    const ImageMsg::ConstSharedPtr &msgLeft,
+    const ImageMsg::ConstSharedPtr &msgRight)
 {
-    bufMutexLeft_.lock();
+    const double leftTimestamp = Utility::StampToSec(msgLeft->header.stamp);
+    const double rightTimestamp = Utility::StampToSec(msgRight->header.stamp);
+    const double timestampDifference = std::abs(leftTimestamp - rightTimestamp);
 
-    if (!imgLeftBuf_.empty())
-        imgLeftBuf_.pop();
-    imgLeftBuf_.push(msgLeft);
+    if (timestampDifference > maxStereoTimeDiff_)
+    {
+        ++rejectedStereoPairs_;
+        RCLCPP_WARN_THROTTLE(
+            this->get_logger(), *this->get_clock(), 2000,
+            "Rejecting stereo pair with %.3f ms timestamp difference",
+            timestampDifference * 1000.0);
+        return;
+    }
 
-    bufMutexLeft_.unlock();
+    {
+        std::lock_guard<std::mutex> lock(dataMutex_);
+        if (stereoBuf_.size() >= maxPendingStereoPairs_)
+        {
+            stereoBuf_.pop_front();
+            ++droppedStereoPairs_;
+        }
+        stereoBuf_.push_back({msgLeft, msgRight});
+    }
+    dataCondition_.notify_one();
 }
 
-void StereoInertialNode::GrabImageRight(const ImageMsg::SharedPtr msgRight)
+cv::Mat StereoInertialNode::GetImage(const ImageMsg::ConstSharedPtr &msg) const
 {
-    bufMutexRight_.lock();
-
-    if (!imgRightBuf_.empty())
-        imgRightBuf_.pop();
-    imgRightBuf_.push(msgRight);
-
-    bufMutexRight_.unlock();
-}
-
-cv::Mat StereoInertialNode::GetImage(const ImageMsg::SharedPtr msg)
-{
-    // Copy the ros image message to cv::Mat.
-    cv_bridge::CvImageConstPtr cv_ptr;
-
     try
     {
-        cv_ptr = cv_bridge::toCvShare(msg, sensor_msgs::image_encodings::MONO8);
+        const cv_bridge::CvImageConstPtr image = cv_bridge::toCvShare(msg, sensor_msgs::image_encodings::MONO8);
+        return image->image.clone();
     }
-    catch (cv_bridge::Exception &e)
+    catch (const cv_bridge::Exception &exception)
     {
-        RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
-    }
-
-    if (cv_ptr->image.type() == 0)
-    {
-        return cv_ptr->image.clone();
-    }
-    else
-    {
-        std::cerr << "Error image type" << std::endl;
-        return cv_ptr->image.clone();
+        RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", exception.what());
+        return cv::Mat();
     }
 }
 
 void StereoInertialNode::SyncWithImu()
 {
-    const double maxTimeDiff = 0.01;
-
     while (syncRunning_)
     {
-        cv::Mat imLeft, imRight;
-        double tImLeft = 0, tImRight = 0;
-        if (!imgLeftBuf_.empty() && !imgRightBuf_.empty() && !imuBuf_.empty())
+        StereoPair stereoPair;
+        std::vector<ORB_SLAM3::IMU::Point> imuMeasurements;
+
         {
-            tImLeft = Utility::StampToSec(imgLeftBuf_.front()->header.stamp);
-            tImRight = Utility::StampToSec(imgRightBuf_.front()->header.stamp);
+            std::unique_lock<std::mutex> lock(dataMutex_);
+            dataCondition_.wait(lock, [this]() {
+                if (!syncRunning_)
+                    return true;
+                if (stereoBuf_.empty())
+                    return false;
+                if (!useImu_)
+                    return true;
+                if (imuBuf_.empty())
+                    return false;
+                const double imageTimestamp = Utility::StampToSec(stereoBuf_.front().left->header.stamp);
+                const double latestImuTimestamp = Utility::StampToSec(imuBuf_.back()->header.stamp) + imuTimeOffset_;
+                return latestImuTimestamp >= imageTimestamp;
+            });
 
-            bufMutexRight_.lock();
-            while ((tImLeft - tImRight) > maxTimeDiff && imgRightBuf_.size() > 1)
+            if (!syncRunning_)
+                break;
+
+            stereoPair = stereoBuf_.front();
+            stereoBuf_.pop_front();
+            const double imageTimestamp = Utility::StampToSec(stereoPair.left->header.stamp);
+
+            while (useImu_ && !imuBuf_.empty())
             {
-                imgRightBuf_.pop();
-                tImRight = Utility::StampToSec(imgRightBuf_.front()->header.stamp);
-            }
-            bufMutexRight_.unlock();
+                const double imuTimestamp = Utility::StampToSec(imuBuf_.front()->header.stamp) + imuTimeOffset_;
+                if (imuTimestamp > imageTimestamp)
+                    break;
 
-            bufMutexLeft_.lock();
-            while ((tImRight - tImLeft) > maxTimeDiff && imgLeftBuf_.size() > 1)
-            {
-                imgLeftBuf_.pop();
-                tImLeft = Utility::StampToSec(imgLeftBuf_.front()->header.stamp);
-            }
-            bufMutexLeft_.unlock();
-
-            if ((tImLeft - tImRight) > maxTimeDiff || (tImRight - tImLeft) > maxTimeDiff)
-            {
-                std::cout << "big time difference" << std::endl;
-                continue;
-            }
-            if (tImLeft > Utility::StampToSec(imuBuf_.back()->header.stamp))
-                continue;
-
-            bufMutexLeft_.lock();
-            imLeft = GetImage(imgLeftBuf_.front());
-            imgLeftBuf_.pop();
-            bufMutexLeft_.unlock();
-
-            bufMutexRight_.lock();
-            imRight = GetImage(imgRightBuf_.front());
-            imgRightBuf_.pop();
-            bufMutexRight_.unlock();
-
-            vector<ORB_SLAM3::IMU::Point> vImuMeas;
-            bufMutex_.lock();
-            if (!imuBuf_.empty())
-            {
-                // Load imu measurements from buffer
-                vImuMeas.clear();
-                while (!imuBuf_.empty() && Utility::StampToSec(imuBuf_.front()->header.stamp) <= tImLeft)
+                const ImuMsg::SharedPtr imu = imuBuf_.front();
+                imuBuf_.pop_front();
+                if (lastImageTimestamp_ < 0.0 || imuTimestamp > lastImageTimestamp_)
                 {
-                    double t = Utility::StampToSec(imuBuf_.front()->header.stamp);
-                    cv::Point3f acc(imuBuf_.front()->linear_acceleration.x, imuBuf_.front()->linear_acceleration.y, imuBuf_.front()->linear_acceleration.z);
-                    cv::Point3f gyr(imuBuf_.front()->angular_velocity.x, imuBuf_.front()->angular_velocity.y, imuBuf_.front()->angular_velocity.z);
-                    vImuMeas.push_back(ORB_SLAM3::IMU::Point(acc, gyr, t));
-                    imuBuf_.pop();
+                    const cv::Point3f acceleration(
+                        imu->linear_acceleration.x,
+                        imu->linear_acceleration.y,
+                        imu->linear_acceleration.z);
+                    const cv::Point3f angularVelocity(
+                        imu->angular_velocity.x,
+                        imu->angular_velocity.y,
+                        imu->angular_velocity.z);
+                    imuMeasurements.emplace_back(acceleration, angularVelocity, imuTimestamp);
                 }
             }
-            bufMutex_.unlock();
-
-            if (bClahe_)
-            {
-                clahe_->apply(imLeft, imLeft);
-                clahe_->apply(imRight, imRight);
-            }
-
-            if (doRectify_)
-            {
-                cv::remap(imLeft, imLeft, M1l_, M2l_, cv::INTER_LINEAR);
-                cv::remap(imRight, imRight, M1r_, M2r_, cv::INTER_LINEAR);
-            }
-
-            SLAM_->TrackStereo(imLeft, imRight, tImLeft, vImuMeas);
-
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        const double leftTimestamp = Utility::StampToSec(stereoPair.left->header.stamp);
+        const double rightTimestamp = Utility::StampToSec(stereoPair.right->header.stamp);
+        const double stereoDifference = std::abs(leftTimestamp - rightTimestamp);
+
+        if (firstStereoTimestamp_ < 0.0)
+        {
+            firstStereoTimestamp_ = leftTimestamp;
+        }
+
+        if (!cameraWarmupComplete_ && leftTimestamp - firstStereoTimestamp_ < cameraWarmupSeconds_)
+        {
+            ++warmupStereoPairs_;
+            lastImageTimestamp_ = leftTimestamp;
+            PublishTrackingStatus(
+                ORB_SLAM3::Tracking::SYSTEM_NOT_READY,
+                stereoPair.left->header.stamp,
+                imuMeasurements.size(),
+                stereoDifference);
+            continue;
+        }
+
+        if (!cameraWarmupComplete_)
+        {
+            cameraWarmupComplete_ = true;
+            RCLCPP_INFO(
+                this->get_logger(),
+                "Camera warmup complete after %zu stereo pairs",
+                warmupStereoPairs_.load());
+        }
+
+        cv::Mat leftImage = GetImage(stereoPair.left);
+        cv::Mat rightImage = GetImage(stereoPair.right);
+        if (leftImage.empty() || rightImage.empty())
+        {
+            PublishTrackingStatus(ORB_SLAM3::Tracking::LOST, stereoPair.left->header.stamp, imuMeasurements.size(), stereoDifference);
+            continue;
+        }
+
+        if (doEqual_)
+        {
+            clahe_->apply(leftImage, leftImage);
+            clahe_->apply(rightImage, rightImage);
+        }
+
+        if (doRectify_)
+        {
+            cv::remap(leftImage, leftImage, M1l_, M2l_, cv::INTER_LINEAR);
+            cv::remap(rightImage, rightImage, M1r_, M2r_, cv::INTER_LINEAR);
+        }
+
+        const Sophus::SE3f Tcw = SLAM_->TrackStereo(leftImage, rightImage, leftTimestamp, imuMeasurements);
+        lastImageTimestamp_ = leftTimestamp;
+
+        const int trackingState = SLAM_->GetTrackingState();
+        PublishTrackingStatus(trackingState, stereoPair.left->header.stamp, imuMeasurements.size(), stereoDifference);
+
+        if (trackingState == ORB_SLAM3::Tracking::OK || trackingState == ORB_SLAM3::Tracking::OK_KLT)
+        {
+            PublishPose(Tcw, stereoPair.left, trackingState);
+        }
+        else if (trackingState == ORB_SLAM3::Tracking::LOST ||
+                 trackingState == ORB_SLAM3::Tracking::NOT_INITIALIZED)
+        {
+            ResetPublishedPose();
+        }
+    }
+}
+
+bool StereoInertialNode::LookupCameraToBody(const std::string &cameraFrame, Sophus::SE3f &Tcb)
+{
+    if (cameraFrame == bodyFrameId_)
+    {
+        Tcb = Sophus::SE3f();
+        return true;
+    }
+
+    try
+    {
+        const geometry_msgs::msg::TransformStamped transform = tfBuffer_->lookupTransform(
+            cameraFrame, bodyFrameId_, tf2::TimePointZero, tf2::durationFromSec(0.2));
+        const auto &translation = transform.transform.translation;
+        const auto &rotation = transform.transform.rotation;
+        Eigen::Quaternionf quaternion(rotation.w, rotation.x, rotation.y, rotation.z);
+        quaternion.normalize();
+        Tcb = Sophus::SE3f(
+            quaternion.toRotationMatrix(),
+            Eigen::Vector3f(translation.x, translation.y, translation.z));
+        return true;
+    }
+    catch (const tf2::TransformException &exception)
+    {
+        RCLCPP_WARN_THROTTLE(
+            this->get_logger(), *this->get_clock(), 3000,
+            "Cannot transform body frame '%s' into camera frame '%s': %s",
+            bodyFrameId_.c_str(), cameraFrame.c_str(), exception.what());
+        return false;
+    }
+}
+
+void StereoInertialNode::PublishPose(
+    const Sophus::SE3f &Tcw,
+    const ImageMsg::ConstSharedPtr &msgLeft,
+    int trackingState)
+{
+    if (trackingState != ORB_SLAM3::Tracking::OK && trackingState != ORB_SLAM3::Tracking::OK_KLT)
+        return;
+
+    Sophus::SE3f TcameraBody;
+    if (!LookupCameraToBody(msgLeft->header.frame_id, TcameraBody))
+        return;
+
+    const Sophus::SE3f TworldCamera = Tcw.inverse();
+    const Sophus::SE3f TworldBody = TworldCamera * TcameraBody;
+    if (!publishedPoseInitialized_)
+    {
+        TmapWorld_ = TworldBody.inverse();
+        publishedPoseInitialized_ = true;
+        lastPublishedPoseValid_ = false;
+        path_.poses.clear();
+    }
+
+    const Sophus::SE3f TmapBody = TmapWorld_ * TworldBody;
+    const double timestamp = Utility::StampToSec(msgLeft->header.stamp);
+
+    geometry_msgs::msg::PoseStamped poseMessage;
+    poseMessage.header.stamp = msgLeft->header.stamp;
+    poseMessage.header.frame_id = mapFrameId_;
+    poseMessage.pose = PoseFromSE3(TmapBody);
+    posePublisher_->publish(poseMessage);
+
+    nav_msgs::msg::Odometry odometry;
+    odometry.header = poseMessage.header;
+    odometry.child_frame_id = bodyFrameId_;
+    odometry.pose.pose = poseMessage.pose;
+    SetCovarianceDiagonal(odometry.pose.covariance, poseCovarianceDiagonal_);
+    SetCovarianceDiagonal(odometry.twist.covariance, twistCovarianceDiagonal_);
+
+    if (lastPublishedPoseValid_ && timestamp > lastPublishedTimestamp_)
+    {
+        const double deltaTime = timestamp - lastPublishedTimestamp_;
+        const Sophus::SE3f previousToCurrent = lastPublishedPose_.inverse() * TmapBody;
+        const Eigen::Vector3f linearVelocity = previousToCurrent.translation() / static_cast<float>(deltaTime);
+        const Eigen::Vector3f angularVelocity = previousToCurrent.so3().log() / static_cast<float>(deltaTime);
+        odometry.twist.twist.linear.x = linearVelocity.x();
+        odometry.twist.twist.linear.y = linearVelocity.y();
+        odometry.twist.twist.linear.z = linearVelocity.z();
+        odometry.twist.twist.angular.x = angularVelocity.x();
+        odometry.twist.twist.angular.y = angularVelocity.y();
+        odometry.twist.twist.angular.z = angularVelocity.z();
+    }
+    odomPublisher_->publish(odometry);
+
+    if (publishTf_)
+    {
+        geometry_msgs::msg::TransformStamped transform;
+        transform.header = poseMessage.header;
+        transform.child_frame_id = bodyFrameId_;
+        transform.transform = TransformFromSE3(TmapBody);
+        tfBroadcaster_->sendTransform(transform);
+    }
+
+    if (publishPath_)
+    {
+        path_.header = poseMessage.header;
+        path_.poses.push_back(poseMessage);
+        while (path_.poses.size() > pathMaxPoses_)
+            path_.poses.erase(path_.poses.begin());
+        pathPublisher_->publish(path_);
+    }
+
+    lastPublishedPose_ = TmapBody;
+    lastPublishedTimestamp_ = timestamp;
+    lastPublishedPoseValid_ = true;
+}
+
+void StereoInertialNode::PublishTrackingStatus(
+    int trackingState,
+    const builtin_interfaces::msg::Time &stamp,
+    size_t imuCount,
+    double stereoDelta)
+{
+    std_msgs::msg::Int32 stateMessage;
+    stateMessage.data = trackingState;
+    trackingStatePublisher_->publish(stateMessage);
+
+    const double diagnosticsTimestamp = Utility::StampToSec(stamp);
+    const bool trackingStateChanged = trackingState != lastDiagnosticsTrackingState_;
+    if (!trackingStateChanged && lastDiagnosticsTimestamp_ >= 0.0 &&
+        diagnosticsTimestamp - lastDiagnosticsTimestamp_ < diagnosticsPeriod_)
+    {
+        return;
+    }
+    lastDiagnosticsTimestamp_ = diagnosticsTimestamp;
+    lastDiagnosticsTrackingState_ = trackingState;
+
+    diagnostic_msgs::msg::DiagnosticArray diagnostics;
+    diagnostics.header.stamp = stamp;
+    diagnostic_msgs::msg::DiagnosticStatus status;
+    status.name = "orbslam3/tracking";
+    status.hardware_id = "Intel RealSense D455";
+
+    if (trackingState == ORB_SLAM3::Tracking::OK || trackingState == ORB_SLAM3::Tracking::OK_KLT)
+    {
+        status.level = diagnostic_msgs::msg::DiagnosticStatus::OK;
+        status.message = "Tracking";
+    }
+    else if (trackingState == ORB_SLAM3::Tracking::LOST)
+    {
+        status.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
+        status.message = "Tracking lost";
+    }
+    else
+    {
+        status.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
+        status.message = TrackingStateName(trackingState);
+    }
+
+    status.values.push_back(DiagnosticValue("tracking_state", TrackingStateName(trackingState)));
+    status.values.push_back(DiagnosticValue(
+        "sensor_mode", useImu_ ? "stereo-inertial" : "stereo"));
+    status.values.push_back(DiagnosticValue(
+        "imu_initialization",
+        useImu_
+            ? (trackingState == ORB_SLAM3::Tracking::OK || trackingState == ORB_SLAM3::Tracking::OK_KLT
+                   ? "managed internally by ORB-SLAM3"
+                   : "pending")
+            : "disabled"));
+    status.values.push_back(DiagnosticValue("imu_samples", std::to_string(imuCount)));
+    status.values.push_back(DiagnosticValue(
+        "camera_warmup", cameraWarmupComplete_ ? "complete" : "active"));
+    status.values.push_back(DiagnosticValue(
+        "warmup_stereo_pairs", std::to_string(warmupStereoPairs_)));
+    status.values.push_back(DiagnosticValue("stereo_delta_ms", std::to_string(stereoDelta * 1000.0)));
+    status.values.push_back(DiagnosticValue("dropped_stereo_pairs", std::to_string(droppedStereoPairs_)));
+    status.values.push_back(DiagnosticValue("rejected_stereo_pairs", std::to_string(rejectedStereoPairs_)));
+    diagnostics.status.push_back(status);
+    diagnosticsPublisher_->publish(diagnostics);
+}
+
+void StereoInertialNode::ResetPublishedPose()
+{
+    publishedPoseInitialized_ = false;
+    lastPublishedPoseValid_ = false;
+    if (resetPathOnTrackingLoss_)
+    {
+        path_.poses.clear();
+        path_.header.frame_id = mapFrameId_;
     }
 }

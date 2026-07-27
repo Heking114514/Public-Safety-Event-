@@ -24,7 +24,7 @@ Tlr: !!opencv-matrix
   rows: 3
   cols: 4
   dt: f
-  data: [1.0, 0.0, 0.0, 0.095,
+  data: [1.0, 0.0, 0.0, 0.0951160863041878,
          0.0, 1.0, 0.0, 0.0,
          0.0, 0.0, 1.0, 0.0]
 
@@ -35,7 +35,7 @@ Camera.RGB: 0
 Camera.imageScale: 1.0
 
 ThDepth: 40.0
-Camera.bf: 40.649893493652
+Camera.bf: 40.699565887451
 
 ORBextractor.nFeatures: 1250
 ORBextractor.scaleFactor: 1.2

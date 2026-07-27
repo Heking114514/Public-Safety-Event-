@@ -45,4 +45,4 @@ config/*/MultiSession/
 
 # --- Custom exclusions ---
 config/isaac
-launch
+/launch_testing/

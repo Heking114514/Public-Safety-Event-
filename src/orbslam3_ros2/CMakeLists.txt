@@ -1,9 +1,6 @@
 cmake_minimum_required(VERSION 3.5)
 project(orbslam3)
 
-# You should set the PYTHONPATH to your own python site-packages path
-set(ENV{PYTHONPATH} "/opt/ros/humble/lib/python3.10/site-packages/")
-
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CMAKE_CURRENT_SOURCE_DIR}/CMakeModules)
 
 # Default to C++14
@@ -20,6 +17,12 @@ find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(message_filters REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(diagnostic_msgs REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(tf2_ros REQUIRED)
 find_package(OpenCV REQUIRED COMPONENTS core imgproc calib3d)
 find_package(Sophus REQUIRED)
 find_package(Pangolin REQUIRED)
@@ -40,12 +43,14 @@ add_executable(mono
   src/monocular/monocular-slam-node.cpp
 )
 ament_target_dependencies(mono rclcpp sensor_msgs cv_bridge ORB_SLAM3 Pangolin)
+target_link_libraries(mono Sophus::Sophus)
 
 add_executable(rgbd
   src/rgbd/rgbd.cpp
   src/rgbd/rgbd-slam-node.cpp
 )
 ament_target_dependencies(rgbd rclcpp sensor_msgs cv_bridge message_filters ORB_SLAM3 Pangolin)
+target_link_libraries(rgbd Sophus::Sophus)
 
 add_executable(stereo
   src/stereo/stereo.cpp
@@ -53,20 +58,24 @@ add_executable(stereo
 )
 ament_target_dependencies(stereo rclcpp sensor_msgs cv_bridge message_filters
 ORB_SLAM3 Pangolin)
-target_link_libraries(stereo ${OpenCV_LIBS})
+target_link_libraries(stereo ${OpenCV_LIBS} Sophus::Sophus)
 
 add_executable(stereo-inertial
   src/stereo-inertial/stereo-inertial.cpp
   src/stereo-inertial/stereo-inertial-node.cpp
 )
-ament_target_dependencies(stereo-inertial rclcpp sensor_msgs cv_bridge ORB_SLAM3 Pangolin)
-target_link_libraries(stereo-inertial ${OpenCV_LIBS})
+ament_target_dependencies(stereo-inertial
+  rclcpp sensor_msgs cv_bridge message_filters nav_msgs geometry_msgs std_msgs
+  diagnostic_msgs tf2 tf2_ros ORB_SLAM3 Pangolin)
+target_link_libraries(stereo-inertial ${OpenCV_LIBS} Sophus::Sophus)
 
 install(TARGETS mono rgbd stereo stereo-inertial
   DESTINATION lib/${PROJECT_NAME})
 
-install(DIRECTORY config vocabulary
-  DESTINATION share/${PROJECT_NAME}/)
+install(DIRECTORY config vocabulary launch
+  DESTINATION share/${PROJECT_NAME}/
+  PATTERN "__pycache__" EXCLUDE
+  PATTERN "*.pyc" EXCLUDE)
 
 install(FILES README.md
   DESTINATION share/${PROJECT_NAME})
