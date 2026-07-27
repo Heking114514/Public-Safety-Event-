@@ -1,6 +1,0 @@
-Invoking command in '/home/j/colcon_ws/build/orbslam3': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake /home/j/colcon_ws/src/orbslam3_ros2 -DAMENT_CMAKE_SYMLINK_INSTALL=1 -DCMAKE_INSTALL_PREFIX=/home/j/colcon_ws/install/orbslam3
-Invoked command in '/home/j/colcon_ws/build/orbslam3' returned '0': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake /home/j/colcon_ws/src/orbslam3_ros2 -DAMENT_CMAKE_SYMLINK_INSTALL=1 -DCMAKE_INSTALL_PREFIX=/home/j/colcon_ws/install/orbslam3
-Invoking command in '/home/j/colcon_ws/build/orbslam3': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake --build /home/j/colcon_ws/build/orbslam3 -- -j24 -l24
-Invoked command in '/home/j/colcon_ws/build/orbslam3' returned '0': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake --build /home/j/colcon_ws/build/orbslam3 -- -j24 -l24
-Invoking command in '/home/j/colcon_ws/build/orbslam3': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake --install /home/j/colcon_ws/build/orbslam3
-Invoked command in '/home/j/colcon_ws/build/orbslam3' returned '0': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake --install /home/j/colcon_ws/build/orbslam3

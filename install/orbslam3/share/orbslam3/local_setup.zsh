@@ -1,1 +1,0 @@
-/home/j/colcon_ws/build/orbslam3/ament_cmake_environment_hooks/local_setup.zsh

@@ -1,0 +1,21 @@
+# --- Colcon workspace artifacts ---
+build/
+install/
+log/
+CMakeFiles/
+
+# --- Runtime output ---
+KeyFrameTrajectory.txt
+*.bag
+*.bag.active
+
+# --- Temp files ---
+*~
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# --- IDE ---
+.vscode/
+.idea/

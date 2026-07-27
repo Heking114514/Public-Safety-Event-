@@ -1,1 +1,0 @@
-Invoking command in '/home/j/colcon_ws/build/orbslam3': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake /home/j/colcon_ws/src/orbslam3_ros2 -DCMAKE_INSTALL_PREFIX=/home/j/colcon_ws/install/orbslam3
