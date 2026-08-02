@@ -1,0 +1,26 @@
+waypoint_navigator:
+  ros__parameters:
+    route_file: ""
+    route_frame: "map"
+
+    odom_topic: "/odom"
+    tracking_state_topic: "/tracking_state"
+    cmd_vel_topic: "/cmd_vel_nav"
+    path_topic: "/waypoint_path"
+    status_topic: "/waypoint_navigation/status"
+    current_waypoint_topic: "/waypoint_navigation/current_waypoint"
+
+    control_frequency: 30.0
+    default_speed: 0.20
+    max_linear_speed: 0.30
+    max_angular_speed: 0.80
+    linear_gain: 0.80
+    angular_gain: 1.80
+    rotate_in_place_threshold: 0.60
+    waypoint_tolerance: 0.15
+    final_yaw_tolerance: 0.12
+    odom_timeout: 0.40
+
+    require_tracking_state: true
+    abort_on_tracking_loss: true
+    autostart: false
