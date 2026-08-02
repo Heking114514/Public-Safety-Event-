@@ -114,6 +114,17 @@ ros2 launch visual_navigation visual_navigation_bringup.launch.py \
   autostart:=false
 ```
 
+需要同时启动串口桥接时使用：
+
+```bash
+ros2 launch visual_navigation visual_navigation_serial_bringup.launch.py \
+  route_file:=/absolute/path/to/route.csv \
+  body_frame_id:=camera_link \
+  serial_device:=/dev/ttyUSB0 \
+  serial_baud_rate:=115200 \
+  autostart:=false
+```
+
 安装到小车后，建议准确发布 `base_link` 与相机的静态 TF，并将 `body_frame_id` 设置为 `base_link`。如果不存在该静态变换，ORB-SLAM3 将无法输出车体中心位姿。
 
 ## 下位机连接
@@ -125,7 +136,7 @@ linear.x  -> 目标线速度，m/s
 angular.z -> 目标角速度，rad/s
 ```
 
-建议另写独立的 `chassis_bridge` 节点，把 `/cmd_vel_nav` 转换为串口或 CAN 协议。下位机必须实现通信看门狗，超过约 100～300 ms 未收到有效命令时自动停车。
+`cup_car_serial` 节点订阅 `/cmd_vel_nav`，并按照 `vx,az\r\n` 格式向串口发送。默认设备为 `/dev/ttyUSB0`，波特率为 115200，发送频率为 20 Hz，命令超时为 0.4 秒。下位机仍必须实现独立通信看门狗。
 
 ## 安全说明
 

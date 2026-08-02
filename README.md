@@ -14,7 +14,7 @@
 角速度：angular.z，单位 rad/s
 ```
 
-> 当前工作空间尚未实现串口或 CAN 下位机桥接。只有下位机桥接节点订阅了 `/cmd_vel_nav`，速度命令才会真正发送给小车。
+工作空间中的 `cup_car_serial` 包会订阅 `/cmd_vel_nav`，并将速度转换为 `vx,az\r\n` 后写入串口。
 
 ## 1. 安全要求
 
@@ -37,7 +37,7 @@ source install/setup.bash
 检查功能包：
 
 ```bash
-ros2 pkg list | grep -E 'orbslam3|visual_navigation|realsense2_camera'
+ros2 pkg list | grep -E 'orbslam3|visual_navigation|cup_car_serial|realsense2_camera'
 ```
 
 ---
@@ -58,18 +58,20 @@ D455 图像和 IMU
 
 ## 3. 启动完整程序
 
-### 3.1 终端 1：启动相机、定位和航点导航
+### 3.1 终端 1：一键启动相机、定位、航点导航和串口
 
 ```bash
 cd /home/j/colcon_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 
-ros2 launch visual_navigation visual_navigation_bringup.launch.py \
+ros2 launch visual_navigation visual_navigation_serial_bringup.launch.py \
   route_file:=/home/j/colcon_ws/src/visual_navigation/routes/example_route.csv \
   route_frame:=map \
   body_frame_id:=camera_link \
   cmd_vel_topic:=/cmd_vel_nav \
+  serial_device:=/dev/ttyUSB0 \
+  serial_baud_rate:=115200 \
   visualization:=true \
   use_imu:=true \
   autostart:=false
@@ -83,6 +85,7 @@ ros2 launch visual_navigation visual_navigation_bringup.launch.py \
 /camera/camera
 /orbslam3_stereo_inertial
 /waypoint_navigator
+/cmd_vel_serial_node
 ```
 
 检查：
@@ -104,6 +107,29 @@ serial_no:=_实际序列号
 ```
 
 序列号前的 `_` 不能省略。
+
+### 3.2 检查串口设备
+
+连接下位机后执行：
+
+```bash
+ls -l /dev/serial/by-id/ 2>/dev/null
+ls -l /dev/ttyUSB* /dev/ttyACM* 2>/dev/null
+```
+
+根据实际设备修改启动参数，例如：
+
+```text
+serial_device:=/dev/ttyACM0
+```
+
+当前用户已经属于 `dialout` 组。启动日志中应出现：
+
+```text
+Forwarding /cmd_vel_nav to /dev/ttyUSB0 at 115200 baud
+```
+
+如果看到 `Cannot open serial port`，检查设备名、USB 连接和设备权限。串口不存在时节点会每秒重试，不会导致其他导航节点退出。
 
 ## 4. 启动前检查
 
@@ -287,9 +313,9 @@ ros2 service call /waypoint_navigator/reset std_srvs/srv/Trigger '{}'
 
 > 仅调用 `stop` 后，导航节点仍会持续发布零速度。要切换到人工控制，必须关闭完整 launch 或把导航输出重映射到其他话题。
 
-## 7. 自动导航连接下位机
+## 7. 检查自动导航到串口的连接
 
-启动下位机串口/CAN桥接节点后执行：
+联合 launch 已经启动 `/cmd_vel_serial_node`。执行：
 
 ```bash
 ros2 topic info /cmd_vel_nav --verbose
@@ -303,13 +329,21 @@ Subscription count: 1
 ```
 
 - 发布者：`/waypoint_navigator`
-- 订阅者：下位机桥接节点
+- 订阅者：`/cmd_vel_serial_node`
 
-如果下位机订阅的是 `/cmd_vel`，将完整 launch 中的参数改为：
+串口发送格式为：
 
 ```text
-cmd_vel_topic:=/cmd_vel
+linear.x,angular.z\r\n
 ```
+
+例如速度 `0.25 m/s`、角速度 `-1.5 rad/s` 会发送：
+
+```text
+0.250,-1.500\r\n
+```
+
+串口节点以 `20 Hz` 发送；超过 `0.4 s` 没收到新的 `/cmd_vel_nav` 后会发送零速度。
 
 ---
 
@@ -372,11 +406,26 @@ ros2 launch orbslam3 realsense_d455_stereo_inertial.launch.py \
 
 它不会发布速度，也不会与人工控制冲突。
 
-如果手动控制时不需要定位，可以不启动相机和 ORB-SLAM3，只启动下位机桥接节点和人工控制节点。
+如果手动控制时不需要定位，可以不启动相机和 ORB-SLAM3，只启动串口节点和人工控制节点。
 
 ## 10. 启动下位机桥接节点
 
-启动实际使用的串口或 CAN 节点，并保证它订阅：
+终端 1 启动串口节点：
+
+```bash
+cd /home/j/colcon_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+
+ros2 launch cup_car_serial cmd_vel_serial.launch.py \
+  device:=/dev/ttyUSB0 \
+  baud_rate:=115200 \
+  topic:=/cmd_vel_nav
+```
+
+根据实际设备将 `/dev/ttyUSB0` 改为 `/dev/ttyACM0` 或 `/dev/serial/by-id/...`。
+
+该节点订阅：
 
 ```text
 /cmd_vel_nav
@@ -395,7 +444,45 @@ ros2 topic info /cmd_vel_nav --verbose
 Subscription count: 0
 ```
 
-说明没有下位机节点接收命令，小车不会运动。
+说明串口节点没有启动或话题名称不一致，小车不会运动。
+
+### 使用 Python 模拟导航节点测试串口
+
+不要启动 `/waypoint_navigator`。终端 1 持续模拟导航速度：
+
+```bash
+cd /home/j/colcon_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+
+python3 scripts/test_cmd_vel_nav.py \
+  --linear 0.03 \
+  --angular 0.10 \
+  --rate 10 \
+  --enable-output
+```
+
+终端 2 启动串口包：
+
+```bash
+cd /home/j/colcon_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+
+ros2 launch cup_car_serial cmd_vel_serial.launch.py \
+  device:=auto \
+  baud_rate:=115200 \
+  topic:=/cmd_vel_nav
+```
+
+检查串口状态和下位机编码器回传：
+
+```bash
+ros2 topic echo /cup_car_serial/connected --once
+ros2 topic echo /cup_car_serial/rx
+```
+
+按 `Ctrl+C` 结束 Python 发布器时，脚本会自动发送零速度。
 
 ## 11. 键盘手动控制
 
@@ -615,11 +702,13 @@ ros2 topic info /cmd_vel_nav --verbose
 ### 航点自动控制
 
 ```bash
-ros2 launch visual_navigation visual_navigation_bringup.launch.py \
+ros2 launch visual_navigation visual_navigation_serial_bringup.launch.py \
   route_file:=/home/j/colcon_ws/src/visual_navigation/routes/example_route.csv \
   route_frame:=map \
   body_frame_id:=camera_link \
   cmd_vel_topic:=/cmd_vel_nav \
+  serial_device:=/dev/ttyUSB0 \
+  serial_baud_rate:=115200 \
   visualization:=true \
   use_imu:=true \
   autostart:=false
