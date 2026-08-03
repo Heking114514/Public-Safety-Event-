@@ -53,6 +53,7 @@ IMU.NoiseAcc: 1e-2
 IMU.GyroWalk: 1e-6
 IMU.AccWalk: 1e-4
 IMU.Frequency: 200
+IMU.fastInit: 1
 
 ORBextractor.nFeatures: 1250
 ORBextractor.scaleFactor: 1.2

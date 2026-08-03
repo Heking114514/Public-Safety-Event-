@@ -1,19 +1,23 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
     visual_navigation_share = FindPackageShare("visual_navigation")
     orbslam3_share = FindPackageShare("orbslam3")
+    imu_rpy_filter_share = FindPackageShare("imu_rpy_filter")
 
     route_file = LaunchConfiguration("route_file")
     route_frame = LaunchConfiguration("route_frame")
     cmd_vel_topic = LaunchConfiguration("cmd_vel_topic")
     autostart = LaunchConfiguration("autostart")
     serial_no = LaunchConfiguration("serial_no")
+    initial_reset = LaunchConfiguration("initial_reset")
     body_frame_id = LaunchConfiguration("body_frame_id")
     visualization = LaunchConfiguration("visualization")
     use_imu = LaunchConfiguration("use_imu")
@@ -34,6 +38,7 @@ def generate_launch_description():
         ),
         launch_arguments={
             "serial_no": serial_no,
+            "initial_reset": initial_reset,
             "body_frame_id": body_frame_id,
             "map_frame_id": route_frame,
             "visualization": visualization,
@@ -59,6 +64,19 @@ def generate_launch_description():
         }.items(),
     )
 
+    imu_rpy_filter = Node(
+        package="imu_rpy_filter",
+        executable="imu_rpy_filter_node",
+        name="imu_rpy_filter",
+        output="screen",
+        condition=IfCondition(use_imu),
+        parameters=[
+            PathJoinSubstitution(
+                [imu_rpy_filter_share, "config", "imu_rpy_filter.yaml"]
+            )
+        ],
+    )
+
     return LaunchDescription(
         [
             DeclareLaunchArgument("route_file", default_value=default_route),
@@ -66,10 +84,12 @@ def generate_launch_description():
             DeclareLaunchArgument("cmd_vel_topic", default_value="/cmd_vel_nav"),
             DeclareLaunchArgument("autostart", default_value="false"),
             DeclareLaunchArgument("serial_no", default_value="_038122250473"),
+            DeclareLaunchArgument("initial_reset", default_value="false"),
             DeclareLaunchArgument("body_frame_id", default_value="camera_link"),
             DeclareLaunchArgument("visualization", default_value="false"),
             DeclareLaunchArgument("use_imu", default_value="true"),
             orbslam3,
+            imu_rpy_filter,
             waypoint_navigation,
         ]
     )

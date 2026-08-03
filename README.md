@@ -40,6 +40,27 @@ source install/setup.bash
 ros2 pkg list | grep -E 'orbslam3|visual_navigation|cup_car_serial|realsense2_camera'
 ```
 
+也可以在工作空间根目录直接一键检查、构建缺失组件并启动完整系统：
+
+```bash
+./scripts/start_visual_navigation.sh
+```
+
+默认不会自动开始行驶。常用选项：
+
+```bash
+./scripts/start_visual_navigation.sh --no-serial
+./scripts/start_visual_navigation.sh --no-imu --visualization
+./scripts/start_visual_navigation.sh --serial-device /dev/ttyACM0
+./scripts/start_visual_navigation.sh --route /absolute/path/to/route.csv
+```
+
+查看全部选项：
+
+```bash
+./scripts/start_visual_navigation.sh --help
+```
+
 ---
 
 # 模式一：航点自动控制

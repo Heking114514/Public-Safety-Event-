@@ -1,0 +1,4 @@
+# Drive from the ORB-SLAM map origin to x=3.6 m, then stop.
+# x[m], y[m], yaw[rad], speed[m/s], tolerance[m], stop_time[s]
+x,y,yaw,speed,tolerance,stop_time
+3.6,0.0,,0.15,0.10,0.0

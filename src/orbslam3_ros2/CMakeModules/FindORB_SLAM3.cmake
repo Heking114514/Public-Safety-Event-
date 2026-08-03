@@ -5,7 +5,7 @@
 #
 # To help the search ORB_SLAM3_ROOT_DIR environment variable as the path to ORB_SLAM3 root folder
 #  e.g. `set( ORB_SLAM3_ROOT_DIR=~/ORB_SLAM3) `
-set(_ORB_SLAM3_DEFAULT_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../../ORB_SLAM3")
+set(_ORB_SLAM3_DEFAULT_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../ORB_SLAM3")
 if(DEFINED ENV{ORB_SLAM3_ROOT_DIR})
   set(_ORB_SLAM3_DEFAULT_ROOT "$ENV{ORB_SLAM3_ROOT_DIR}")
 endif()

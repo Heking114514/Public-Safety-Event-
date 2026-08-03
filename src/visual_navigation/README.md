@@ -77,8 +77,8 @@ source install/setup.bash
 ```bash
 colcon build --symlink-install --packages-select orbslam3 visual_navigation \
   --cmake-args \
-  -DSophus_DIR=$PWD/deps/share/sophus/cmake \
-  -DPangolin_DIR=$PWD/Pangolin/build
+  -DSophus_DIR=$PWD/src/deps/share/sophus/cmake \
+  -DPangolin_DIR=$PWD/src/deps/lib/cmake/Pangolin
 ```
 
 ## 只启动航点导航

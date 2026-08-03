@@ -72,10 +72,13 @@ target_link_libraries(stereo-inertial ${OpenCV_LIBS} Sophus::Sophus)
 install(TARGETS mono rgbd stereo stereo-inertial
   DESTINATION lib/${PROJECT_NAME})
 
-install(DIRECTORY config vocabulary launch
+install(DIRECTORY config launch
   DESTINATION share/${PROJECT_NAME}/
   PATTERN "__pycache__" EXCLUDE
   PATTERN "*.pyc" EXCLUDE)
+
+install(FILES ${ORB_SLAM3_ROOT_DIR}/Vocabulary/ORBvoc.txt
+  DESTINATION share/${PROJECT_NAME}/vocabulary)
 
 install(FILES README.md
   DESTINATION share/${PROJECT_NAME})

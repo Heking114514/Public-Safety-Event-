@@ -104,7 +104,7 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "use_imu",
                 default_value="true",
-                description="Use stereo-inertial mode; requires startup motion for IMU initialization",
+                description="Use stereo-inertial mode with trusted D455 fast initialization",
             ),
             camera,
             orbslam,

@@ -15,8 +15,8 @@
 cd ~/colcon_ws
 colcon build --symlink-install --packages-select orbslam3 \
   --cmake-args \
-  -DSophus_DIR=$PWD/deps/share/sophus/cmake \
-  -DPangolin_DIR=$PWD/Pangolin/build
+  -DSophus_DIR=$PWD/src/deps/share/sophus/cmake \
+  -DPangolin_DIR=$PWD/src/deps/lib/cmake/Pangolin
 source install/setup.bash
 ```
 
