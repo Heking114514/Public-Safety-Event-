@@ -9,8 +9,10 @@ def generate_launch_description():
     device = LaunchConfiguration("device")
     baud_rate = LaunchConfiguration("baud_rate")
     topic = LaunchConfiguration("topic")
+    rpy_topic = LaunchConfiguration("rpy_topic")
     send_rate_hz = LaunchConfiguration("send_rate_hz")
     command_timeout_s = LaunchConfiguration("command_timeout_s")
+    rpy_timeout_s = LaunchConfiguration("rpy_timeout_s")
 
     serial_node = Node(
         package="cup_car_serial",
@@ -22,10 +24,12 @@ def generate_launch_description():
                 "device": ParameterValue(device, value_type=str),
                 "baud_rate": ParameterValue(baud_rate, value_type=int),
                 "topic": ParameterValue(topic, value_type=str),
+                "rpy_topic": ParameterValue(rpy_topic, value_type=str),
                 "send_rate_hz": ParameterValue(send_rate_hz, value_type=float),
                 "command_timeout_s": ParameterValue(
                     command_timeout_s, value_type=float
                 ),
+                "rpy_timeout_s": ParameterValue(rpy_timeout_s, value_type=float),
             }
         ],
     )
@@ -35,8 +39,10 @@ def generate_launch_description():
             DeclareLaunchArgument("device", default_value="auto"),
             DeclareLaunchArgument("baud_rate", default_value="115200"),
             DeclareLaunchArgument("topic", default_value="/cmd_vel_nav"),
+            DeclareLaunchArgument("rpy_topic", default_value="/imu/rpy"),
             DeclareLaunchArgument("send_rate_hz", default_value="20.0"),
             DeclareLaunchArgument("command_timeout_s", default_value="0.4"),
+            DeclareLaunchArgument("rpy_timeout_s", default_value="0.4"),
             serial_node,
         ]
     )

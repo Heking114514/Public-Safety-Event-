@@ -1,11 +1,13 @@
 # cup_car_serial
 
-该 ROS 2 节点订阅 `geometry_msgs/msg/Twist`，并将速度转换成下位机串口协议。
+该 ROS 2 节点将导航速度和 IMU 姿态转发给下位机，并解析下位机回传的轮编码器计数。
 
 默认接口：
 
 ```text
 输入话题：/cmd_vel_nav
+输入话题：/imu/rpy
+输出话题：/cup_car_serial/encoder_ticks
 串口设备：/dev/ttyUSB0
 波特率：115200，8N1
 发送频率：20 Hz
@@ -16,11 +18,17 @@
 
 ```text
 vx,az\r\n
+RPY,roll,pitch,yaw\r\n
+ENC,sample_time_ms,sample_sequence,left_total,right_total\r\n
 ```
 
 - `vx`：`Twist.linear.x`，单位 m/s。
 - `az`：`Twist.angular.z`，单位 rad/s。
 - 数值保留三位小数，例如 `0.250,-1.500\r\n`。
+- `roll`、`pitch`、`yaw` 来自 `/imu/rpy`（`geometry_msgs/msg/Vector3Stamped`），单位 rad。
+- 编码器输出类型为 `std_msgs/msg/Int32MultiArray`，`data` 固定为
+  `[sample_time_ms, sample_sequence, left_total_ticks, right_total_ticks]`。
+  节点兼容旧固件的 `ENC,left_total,right_total`，其前两项补零。
 
 单独启动：
 
@@ -28,7 +36,8 @@ vx,az\r\n
 ros2 launch cup_car_serial cmd_vel_serial.launch.py \
   device:=auto \
   baud_rate:=115200 \
-  topic:=/cmd_vel_nav
+  topic:=/cmd_vel_nav \
+  rpy_topic:=/imu/rpy
 ```
 
 ## 使用 Python 模拟导航速度
@@ -67,8 +76,12 @@ ros2 launch cup_car_serial cmd_vel_serial.launch.py \
 ```bash
 ros2 topic echo /cup_car_serial/connected --once
 ros2 topic echo /cup_car_serial/rx
+ros2 topic echo /cup_car_serial/encoder_ticks
 ```
 
-连接正常时 `connected` 为 `true`，下位机应通过 `rx` 发布 `ENC,left_total,right_total`。
+连接正常时 `connected` 为 `true`。最新下位机固件每 50 ms 回传一次
+`ENC,sample_time_ms,sample_sequence,left_total,right_total`；串口桥会将其同时保留在
+`rx` 中，并解析发布到 `encoder_ticks`。
 
-如果超过 `0.4 s` 没有收到新速度，节点会向串口发送零速度。下位机仍应实现独立通信看门狗，并切换到允许接收导航速度的工作模式。
+如果超过 `0.4 s` 没有收到新速度，节点会向串口发送零速度。`/imu/rpy` 超过
+`rpy_timeout_s`（默认 0.4 s）未更新时，节点暂停发送 RPY 帧。下位机仍应实现独立通信看门狗，并切换到允许接收导航速度的工作模式。

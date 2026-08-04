@@ -2,6 +2,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <functional>
@@ -16,8 +17,10 @@
 #include <unistd.h>
 
 #include "geometry_msgs/msg/twist.hpp"
+#include "geometry_msgs/msg/vector3_stamped.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/bool.hpp"
+#include "std_msgs/msg/int32_multi_array.hpp"
 #include "std_msgs/msg/string.hpp"
 
 namespace
@@ -62,6 +65,73 @@ std::string detect_serial_device()
     }
   }
   return "";
+}
+
+bool parse_int32(const std::string & text, int32_t * value)
+{
+  if (text.empty()) {
+    return false;
+  }
+
+  char * end = nullptr;
+  errno = 0;
+  const long long parsed = std::strtoll(text.c_str(), &end, 10);
+  if (errno != 0 || end == text.c_str() || *end != '\0' ||
+    parsed < INT32_MIN || parsed > INT32_MAX)
+  {
+    return false;
+  }
+  *value = static_cast<int32_t>(parsed);
+  return true;
+}
+
+bool parse_encoder_frame(const std::string & line, std::vector<int32_t> * values)
+{
+  if (line.rfind("ENC,", 0) != 0) {
+    return false;
+  }
+
+  std::vector<std::string> fields;
+  size_t start = 0;
+  while (start <= line.size()) {
+    const size_t comma = line.find(',', start);
+    fields.push_back(line.substr(start, comma - start));
+    if (comma == std::string::npos) {
+      break;
+    }
+    start = comma + 1;
+  }
+
+  // Current firmware sends ENC,time_ms,sequence,left_total,right_total. Accept
+  // the legacy ENC,left_total,right_total form while a controller is being updated.
+  if (fields.size() != 5 && fields.size() != 3) {
+    return false;
+  }
+
+  values->clear();
+  values->reserve(4);
+  if (fields.size() == 3) {
+    int32_t left_total;
+    int32_t right_total;
+    if (!parse_int32(fields[1], &left_total) || !parse_int32(fields[2], &right_total)) {
+      return false;
+    }
+    values->push_back(0);
+    values->push_back(0);
+    values->push_back(left_total);
+    values->push_back(right_total);
+    return true;
+  }
+
+  for (size_t index = 1; index < fields.size(); ++index) {
+    int32_t value;
+    if (!parse_int32(fields[index], &value)) {
+      values->clear();
+      return false;
+    }
+    values->push_back(value);
+  }
+  return true;
 }
 
 class SerialPort
@@ -155,16 +225,21 @@ public:
     configured_device_ = declare_parameter<std::string>("device", "auto");
     baud_rate_ = declare_parameter<int>("baud_rate", 115200);
     topic_ = declare_parameter<std::string>("topic", "/cmd_vel_nav");
+    rpy_topic_ = declare_parameter<std::string>("rpy_topic", "/imu/rpy");
     send_rate_hz_ = declare_parameter<double>("send_rate_hz", 20.0);
     command_timeout_s_ = declare_parameter<double>("command_timeout_s", 0.4);
+    rpy_timeout_s_ = declare_parameter<double>("rpy_timeout_s", 0.4);
 
     connectedPublisher_ = create_publisher<std_msgs::msg::Bool>(
       "/cup_car_serial/connected", rclcpp::QoS(1).transient_local().reliable());
     receivePublisher_ = create_publisher<std_msgs::msg::String>(
       "/cup_car_serial/rx", 10);
+    encoderPublisher_ = create_publisher<std_msgs::msg::Int32MultiArray>(
+      "/cup_car_serial/encoder_ticks", 10);
 
-    if (send_rate_hz_ <= 0.0 || command_timeout_s_ <= 0.0) {
-      throw std::invalid_argument("send_rate_hz and command_timeout_s must be positive");
+    if (send_rate_hz_ <= 0.0 || command_timeout_s_ <= 0.0 || rpy_timeout_s_ <= 0.0) {
+      throw std::invalid_argument(
+              "send_rate_hz, command_timeout_s, and rpy_timeout_s must be positive");
     }
 
     subscription_ = create_subscription<geometry_msgs::msg::Twist>(
@@ -176,6 +251,16 @@ public:
         received_command_ = true;
       });
 
+    rpySubscription_ = create_subscription<geometry_msgs::msg::Vector3Stamped>(
+      rpy_topic_, rclcpp::SensorDataQoS(),
+      [this](const geometry_msgs::msg::Vector3Stamped::SharedPtr message) {
+        roll_rad_ = message->vector.x;
+        pitch_rad_ = message->vector.y;
+        yaw_rad_ = message->vector.z;
+        last_rpy_time_ = now();
+        received_rpy_ = true;
+      });
+
     const auto period = std::chrono::duration<double>(1.0 / send_rate_hz_);
     timer_ = create_wall_timer(
       std::chrono::duration_cast<std::chrono::nanoseconds>(period),
@@ -183,8 +268,8 @@ public:
 
     connect();
     RCLCPP_INFO(
-      get_logger(), "Forwarding %s to serial device '%s' at %d baud", topic_.c_str(),
-      configured_device_.c_str(), baud_rate_);
+      get_logger(), "Forwarding %s and %s to serial device '%s' at %d baud", topic_.c_str(),
+      rpy_topic_.c_str(), configured_device_.c_str(), baud_rate_);
   }
 
 private:
@@ -250,6 +335,7 @@ private:
         std_msgs::msg::String message;
         message.data = line;
         receivePublisher_->publish(message);
+        publish_encoder_frame(line);
       }
     }
 
@@ -257,6 +343,23 @@ private:
       RCLCPP_WARN(get_logger(), "Discarding oversized serial receive buffer");
       receive_buffer_.clear();
     }
+  }
+
+  void publish_encoder_frame(const std::string & line)
+  {
+    std::vector<int32_t> values;
+    if (line.rfind("ENC,", 0) != 0) {
+      return;
+    }
+    if (!parse_encoder_frame(line, &values)) {
+      RCLCPP_WARN(get_logger(), "Ignoring malformed encoder frame: '%s'", line.c_str());
+      return;
+    }
+
+    std_msgs::msg::Int32MultiArray message;
+    // data: [mcu_time_ms, sequence, left_total_ticks, right_total_ticks]
+    message.data = std::move(values);
+    encoderPublisher_->publish(message);
   }
 
   void send_command()
@@ -284,6 +387,24 @@ private:
     frame[payload_length + 1] = '\n';
     const size_t frame_length = static_cast<size_t>(payload_length) + 2;
 
+    char rpy_frame[96];
+    size_t rpy_frame_length = 0;
+    const bool fresh_rpy = received_rpy_ &&
+      (now() - last_rpy_time_).seconds() <= rpy_timeout_s_;
+    if (fresh_rpy) {
+      if (!std::isfinite(roll_rad_) || !std::isfinite(pitch_rad_) || !std::isfinite(yaw_rad_)) {
+        RCLCPP_WARN(get_logger(), "Ignoring non-finite RPY command");
+      } else {
+        const int rpy_length = std::snprintf(
+          rpy_frame, sizeof(rpy_frame), "RPY,%.6f,%.6f,%.6f\r\n", roll_rad_, pitch_rad_, yaw_rad_);
+        if (rpy_length > 0 && static_cast<size_t>(rpy_length) < sizeof(rpy_frame)) {
+          rpy_frame_length = static_cast<size_t>(rpy_length);
+        } else {
+          RCLCPP_ERROR(get_logger(), "RPY command cannot be encoded");
+        }
+      }
+    }
+
     if (!serial_connected_) {
       const auto elapsed = std::chrono::steady_clock::now() - last_connect_attempt_;
       if (elapsed < std::chrono::seconds(1)) {
@@ -297,6 +418,9 @@ private:
 
     try {
       serial_.write_all(std::string(frame, frame_length));
+      if (rpy_frame_length > 0) {
+        serial_.write_all(std::string(rpy_frame, rpy_frame_length));
+      }
       receive_feedback();
     } catch (const std::exception & error) {
       RCLCPP_ERROR(get_logger(), "Serial communication failed: %s", error.what());
@@ -310,22 +434,31 @@ private:
   std::string configured_device_;
   std::string active_device_;
   std::string topic_;
+  std::string rpy_topic_;
   std::string receive_buffer_;
   int baud_rate_{};
   double send_rate_hz_{};
   double command_timeout_s_{};
+  double rpy_timeout_s_{};
   SerialPort serial_;
   bool serial_connected_{false};
   bool connection_state_published_{false};
   bool last_connection_state_{false};
   bool received_command_{false};
+  bool received_rpy_{false};
   double vx_mps_{0.0};
   double az_radps_{0.0};
+  double roll_rad_{0.0};
+  double pitch_rad_{0.0};
+  double yaw_rad_{0.0};
   rclcpp::Time last_command_time_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time last_rpy_time_{0, 0, RCL_ROS_TIME};
   std::chrono::steady_clock::time_point last_connect_attempt_{};
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr subscription_;
+  rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr rpySubscription_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr connectedPublisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr receivePublisher_;
+  rclcpp::Publisher<std_msgs::msg::Int32MultiArray>::SharedPtr encoderPublisher_;
   rclcpp::TimerBase::SharedPtr timer_;
 };
 
