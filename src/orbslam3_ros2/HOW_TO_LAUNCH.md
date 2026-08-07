@@ -54,7 +54,7 @@ ros2 launch orbslam3 realsense_d455_stereo_inertial.launch.py visualization:=tru
 **示例：纯视觉双目模式**
 
 ```bash
-ros2 launch orbslam3 realsense_d455_stereo_inertial.launch.py use_imu:=false
+ros2 launch orbslam3 realsense_d455_stereo_inertial.launch.py use_slam_imu:=false
 ```
 
 **示例：机器人上使用，指定机身坐标系**

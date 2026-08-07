@@ -15,6 +15,8 @@ SERIAL_BAUD_RATE="115200"
 USE_SERIAL="true"
 CAMERA_SERIAL=""
 USE_IMU="true"
+USE_SLAM_IMU="false"
+EQUALIZE="true"
 VISUALIZATION="false"
 AUTOSTART="false"
 BUILD_IF_NEEDED="true"
@@ -42,7 +44,9 @@ Options:
   --serial-device DEVICE    Controller serial device (default: auto)
   --serial-baud RATE        Controller baud rate (default: 115200)
   --no-serial               Run upper-computer algorithms without the controller
-  --no-imu                  Use stereo mode without IMU initialization
+  --no-imu                  Disable the D455 IMU and IMU filter
+  --slam-imu                Fuse raw D455 IMU measurements inside ORB-SLAM3
+  --no-equalize             Disable CLAHE image enhancement before ORB-SLAM3
   --visualization           Enable the Pangolin window
   --autostart               Start waypoint motion immediately (unsafe on a bench)
   --no-build                Fail instead of building missing binaries
@@ -85,6 +89,15 @@ while (($# > 0)); do
       ;;
     --no-imu)
       USE_IMU="false"
+      USE_SLAM_IMU="false"
+      shift
+      ;;
+    --slam-imu)
+      USE_SLAM_IMU="true"
+      shift
+      ;;
+    --no-equalize)
+      EQUALIZE="false"
       shift
       ;;
     --visualization)
@@ -131,6 +144,8 @@ done
 [[ "${BUILD_JOBS}" =~ ^[1-9][0-9]*$ ]] || fail "--jobs must be a positive integer"
 [[ "${SERIAL_BAUD_RATE}" =~ ^[0-9]+$ ]] || fail "--serial-baud must be an integer"
 [[ -f "${ORB_ROOT}/CMakeLists.txt" ]] || fail "ORB_SLAM3 submodule is missing; run: git submodule update --init --recursive"
+[[ "${USE_SLAM_IMU}" == "false" || "${USE_IMU}" == "true" ]] ||
+  fail "--slam-imu requires D455 IMU; remove --no-imu"
 
 # shellcheck disable=SC1090
 set +u
@@ -349,7 +364,7 @@ export LD_LIBRARY_PATH="${ORB_ROOT}/lib:${DEPS_ROOT}/lib:${LD_LIBRARY_PATH:-}"
 
 log "Starting visual navigation"
 log "Route: ${ROUTE_FILE}"
-log "IMU: ${USE_IMU}; visualization: ${VISUALIZATION}; autostart: ${AUTOSTART}"
+log "IMU filter: ${USE_IMU}; SLAM IMU fusion: ${USE_SLAM_IMU}; CLAHE: ${EQUALIZE}; visualization: ${VISUALIZATION}; autostart: ${AUTOSTART}"
 if [[ "${USE_SERIAL}" == "true" ]]; then
   log "Controller serial: ${SERIAL_DEVICE} at ${SERIAL_BAUD_RATE} baud"
   LAUNCH_FILE="visual_navigation_serial_bringup.launch.py"
@@ -367,6 +382,8 @@ LAUNCH_ARGS=(
   "initial_reset:=${CAMERA_INITIAL_RESET}"
   "visualization:=${VISUALIZATION}"
   "use_imu:=${USE_IMU}"
+  "use_slam_imu:=${USE_SLAM_IMU}"
+  "equalize:=${EQUALIZE}"
   "autostart:=${AUTOSTART}"
 )
 

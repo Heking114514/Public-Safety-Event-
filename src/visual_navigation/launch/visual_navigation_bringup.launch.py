@@ -21,6 +21,8 @@ def generate_launch_description():
     body_frame_id = LaunchConfiguration("body_frame_id")
     visualization = LaunchConfiguration("visualization")
     use_imu = LaunchConfiguration("use_imu")
+    use_slam_imu = LaunchConfiguration("use_slam_imu")
+    equalize = LaunchConfiguration("equalize")
 
     default_route = PathJoinSubstitution(
         [visual_navigation_share, "routes", "example_route.csv"]
@@ -42,7 +44,9 @@ def generate_launch_description():
             "body_frame_id": body_frame_id,
             "map_frame_id": route_frame,
             "visualization": visualization,
-            "use_imu": use_imu,
+            "enable_imu": use_imu,
+            "use_slam_imu": use_slam_imu,
+            "equalize": equalize,
         }.items(),
     )
 
@@ -88,6 +92,16 @@ def generate_launch_description():
             DeclareLaunchArgument("body_frame_id", default_value="camera_link"),
             DeclareLaunchArgument("visualization", default_value="false"),
             DeclareLaunchArgument("use_imu", default_value="true"),
+            DeclareLaunchArgument(
+                "use_slam_imu",
+                default_value="false",
+                description="Fuse raw D455 IMU measurements inside ORB-SLAM3",
+            ),
+            DeclareLaunchArgument(
+                "equalize",
+                default_value="true",
+                description="Apply CLAHE to D455 infrared images before ORB-SLAM3",
+            ),
             orbslam3,
             imu_rpy_filter,
             waypoint_navigation,

@@ -19,7 +19,8 @@ def generate_launch_description():
     visualization = LaunchConfiguration("visualization")
     equalize = LaunchConfiguration("equalize")
     initial_reset = LaunchConfiguration("initial_reset")
-    use_imu = LaunchConfiguration("use_imu")
+    use_slam_imu = LaunchConfiguration("use_slam_imu")
+    enable_imu = LaunchConfiguration("enable_imu")
 
     camera = Node(
         package="realsense2_camera",
@@ -39,12 +40,12 @@ def generate_launch_description():
                 "depth_module.infra_profile": "848x480x30",
                 "depth_module.infra1_format": "Y8",
                 "depth_module.infra2_format": "Y8",
-                "enable_gyro": ParameterValue(use_imu, value_type=bool),
-                "enable_accel": ParameterValue(use_imu, value_type=bool),
+                "enable_gyro": ParameterValue(enable_imu, value_type=bool),
+                "enable_accel": ParameterValue(enable_imu, value_type=bool),
                 "gyro_fps": 200,
                 "accel_fps": 63,
                 "unite_imu_method": ParameterValue(
-                    PythonExpression(["2 if '", use_imu, "'.lower() == 'true' else 0"]),
+                    PythonExpression(["2 if '", enable_imu, "'.lower() == 'true' else 0"]),
                     value_type=int,
                 ),
                 "enable_sync": True,
@@ -58,7 +59,7 @@ def generate_launch_description():
         executable="stereo-inertial",
         name="orbslam3_stereo_inertial",
         output="screen",
-        arguments=[vocabulary, settings, "false", equalize, visualization, use_imu],
+        arguments=[vocabulary, settings, "false", equalize, visualization, use_slam_imu],
         parameters=[
             {
                 "map_frame_id": map_frame_id,
@@ -102,9 +103,14 @@ def generate_launch_description():
                 description="Reset this D455 at startup; keep disabled in stereo-inertial mode to preserve the IMU IIO device",
             ),
             DeclareLaunchArgument(
-                "use_imu",
+                "use_slam_imu",
+                default_value="false",
+                description="Fuse raw D455 IMU measurements inside ORB-SLAM3",
+            ),
+            DeclareLaunchArgument(
+                "enable_imu",
                 default_value="true",
-                description="Use stereo-inertial mode with trusted D455 fast initialization",
+                description="Publish D455 IMU streams for external filtering and odometry fusion",
             ),
             camera,
             orbslam,

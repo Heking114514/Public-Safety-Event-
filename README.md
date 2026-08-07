@@ -50,7 +50,7 @@ ros2 pkg list | grep -E 'orbslam3|visual_navigation|cup_car_serial|realsense2_ca
 
 ```bash
 ./scripts/start_visual_navigation.sh --no-serial
-./scripts/start_visual_navigation.sh --no-imu --visualization
+./scripts/start_visual_navigation.sh --visualization
 ./scripts/start_visual_navigation.sh --serial-device /dev/ttyACM0
 ./scripts/start_visual_navigation.sh --route /absolute/path/to/route.csv
 ```
@@ -415,7 +415,7 @@ ros2 launch orbslam3 realsense_d455_stereo_inertial.launch.py \
   body_frame_id:=camera_link \
   map_frame_id:=map \
   visualization:=true \
-  use_imu:=true
+  use_slam_imu:=true
 ```
 
 该 launch 只启动：
@@ -748,7 +748,7 @@ ros2 launch orbslam3 realsense_d455_stereo_inertial.launch.py \
   body_frame_id:=camera_link \
   map_frame_id:=map \
   visualization:=true \
-  use_imu:=true
+  use_slam_imu:=true
 
 # 启动键盘控制
 ros2 run teleop_twist_keyboard teleop_twist_keyboard \

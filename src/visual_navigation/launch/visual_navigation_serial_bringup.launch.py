@@ -19,6 +19,8 @@ def generate_launch_description():
     body_frame_id = LaunchConfiguration("body_frame_id")
     visualization = LaunchConfiguration("visualization")
     use_imu = LaunchConfiguration("use_imu")
+    use_slam_imu = LaunchConfiguration("use_slam_imu")
+    equalize = LaunchConfiguration("equalize")
     serial_device = LaunchConfiguration("serial_device")
     serial_baud_rate = LaunchConfiguration("serial_baud_rate")
     serial_send_rate_hz = LaunchConfiguration("serial_send_rate_hz")
@@ -48,6 +50,8 @@ def generate_launch_description():
             "body_frame_id": body_frame_id,
             "visualization": visualization,
             "use_imu": use_imu,
+            "use_slam_imu": use_slam_imu,
+            "equalize": equalize,
         }.items(),
     )
 
@@ -82,6 +86,8 @@ def generate_launch_description():
             DeclareLaunchArgument("body_frame_id", default_value="camera_link"),
             DeclareLaunchArgument("visualization", default_value="false"),
             DeclareLaunchArgument("use_imu", default_value="true"),
+            DeclareLaunchArgument("use_slam_imu", default_value="false"),
+            DeclareLaunchArgument("equalize", default_value="true"),
             DeclareLaunchArgument("serial_device", default_value="auto"),
             DeclareLaunchArgument("serial_baud_rate", default_value="115200"),
             DeclareLaunchArgument("serial_send_rate_hz", default_value="20.0"),

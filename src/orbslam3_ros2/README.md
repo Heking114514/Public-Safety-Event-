@@ -134,7 +134,7 @@ ros2 launch orbslam3 realsense_d455_stereo_inertial.launch.py \
 
 ```bash
 ros2 launch orbslam3 realsense_d455_stereo_inertial.launch.py \
-  use_imu:=false initial_reset:=true
+  use_slam_imu:=false initial_reset:=true
 ```
 
 常用 Launch 参数：
@@ -143,7 +143,7 @@ ros2 launch orbslam3 realsense_d455_stereo_inertial.launch.py \
 visualization:=true       # 启用 Pangolin 可视化界面
 equalize:=true            # 启用 CLAHE；D455 红外图像默认禁用
 initial_reset:=true       # 启用启动重置；使用 IMU 时请勿启用
-use_imu:=false            # 切换回纯双目里程计
+use_slam_imu:=false       # 切换回纯双目里程计
 map_frame_id:=map
 body_frame_id:=camera_link
 serial_no:=_038122250473  # 前导下划线可使 ROS 将参数识别为字符串
