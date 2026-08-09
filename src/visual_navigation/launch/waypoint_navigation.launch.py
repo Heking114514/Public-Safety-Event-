@@ -19,8 +19,13 @@ def generate_launch_description():
     route_file = LaunchConfiguration("route_file")
     route_frame = LaunchConfiguration("route_frame")
     odom_topic = LaunchConfiguration("odom_topic")
+    fusion_status_topic = LaunchConfiguration("fusion_status_topic")
+    actuator_health_topic = LaunchConfiguration("actuator_health_topic")
+    require_actuator_health = LaunchConfiguration("require_actuator_health")
+    actuator_health_timeout = LaunchConfiguration("actuator_health_timeout")
     tracking_state_topic = LaunchConfiguration("tracking_state_topic")
     cmd_vel_topic = LaunchConfiguration("cmd_vel_topic")
+    route_input_topic = LaunchConfiguration("route_input_topic")
     autostart = LaunchConfiguration("autostart")
 
     navigator = Node(
@@ -34,10 +39,25 @@ def generate_launch_description():
                 "route_file": ParameterValue(route_file, value_type=str),
                 "route_frame": ParameterValue(route_frame, value_type=str),
                 "odom_topic": ParameterValue(odom_topic, value_type=str),
+                "fusion_status_topic": ParameterValue(
+                    fusion_status_topic, value_type=str
+                ),
+                "actuator_health_topic": ParameterValue(
+                    actuator_health_topic, value_type=str
+                ),
+                "require_actuator_health": ParameterValue(
+                    require_actuator_health, value_type=bool
+                ),
+                "actuator_health_timeout": ParameterValue(
+                    actuator_health_timeout, value_type=float
+                ),
                 "tracking_state_topic": ParameterValue(
                     tracking_state_topic, value_type=str
                 ),
                 "cmd_vel_topic": ParameterValue(cmd_vel_topic, value_type=str),
+                "route_input_topic": ParameterValue(
+                    route_input_topic, value_type=str
+                ),
                 "autostart": ParameterValue(autostart, value_type=bool),
             },
         ],
@@ -56,11 +76,23 @@ def generate_launch_description():
                 description="CSV waypoint route file",
             ),
             DeclareLaunchArgument("route_frame", default_value="map"),
-            DeclareLaunchArgument("odom_topic", default_value="/odom"),
+            DeclareLaunchArgument("odom_topic", default_value="/odometry/fused"),
+            DeclareLaunchArgument(
+                "fusion_status_topic", default_value="/odometry/fusion_status"
+            ),
+            DeclareLaunchArgument(
+                "actuator_health_topic", default_value="/cup_car_serial/connected"
+            ),
+            DeclareLaunchArgument("require_actuator_health", default_value="false"),
+            DeclareLaunchArgument("actuator_health_timeout", default_value="0.8"),
             DeclareLaunchArgument(
                 "tracking_state_topic", default_value="/tracking_state"
             ),
             DeclareLaunchArgument("cmd_vel_topic", default_value="/cmd_vel_nav"),
+            DeclareLaunchArgument(
+                "route_input_topic",
+                default_value="/waypoint_navigation/route_input",
+            ),
             DeclareLaunchArgument(
                 "autostart",
                 default_value="false",

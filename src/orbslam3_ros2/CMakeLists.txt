@@ -83,4 +83,15 @@ install(FILES ${ORB_SLAM3_ROOT_DIR}/Vocabulary/ORBvoc.txt
 install(FILES README.md
   DESTINATION share/${PROJECT_NAME})
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(pose_continuity_test test/pose_continuity_test.cpp)
+  target_include_directories(pose_continuity_test PRIVATE include)
+  target_link_libraries(pose_continuity_test Sophus::Sophus)
+
+  ament_add_gtest(pose_velocity_estimator_test test/pose_velocity_estimator_test.cpp)
+  target_include_directories(pose_velocity_estimator_test PRIVATE include)
+  target_link_libraries(pose_velocity_estimator_test Sophus::Sophus)
+endif()
+
 ament_package()

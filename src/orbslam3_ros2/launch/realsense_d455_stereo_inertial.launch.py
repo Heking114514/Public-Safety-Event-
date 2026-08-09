@@ -21,6 +21,8 @@ def generate_launch_description():
     initial_reset = LaunchConfiguration("initial_reset")
     use_slam_imu = LaunchConfiguration("use_slam_imu")
     enable_imu = LaunchConfiguration("enable_imu")
+    publish_tf = LaunchConfiguration("publish_tf")
+    raw_odom_topic = LaunchConfiguration("raw_odom_topic")
 
     camera = Node(
         package="realsense2_camera",
@@ -49,6 +51,8 @@ def generate_launch_description():
                     value_type=int,
                 ),
                 "enable_sync": True,
+                # Keep the D455's internal camera transforms available. The
+                # publish_tf launch argument controls only ORB's live map TF.
                 "publish_tf": True,
             }
         ],
@@ -64,7 +68,8 @@ def generate_launch_description():
             {
                 "map_frame_id": map_frame_id,
                 "body_frame_id": body_frame_id,
-                "publish_tf": True,
+                "publish_tf": ParameterValue(publish_tf, value_type=bool),
+                "raw_odom_topic": ParameterValue(raw_odom_topic, value_type=str),
                 "publish_path": True,
                 "save_trajectory": True,
                 "trajectory_file": "KeyFrameTrajectory.txt",
@@ -91,6 +96,16 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument("body_frame_id", default_value="camera_link"),
             DeclareLaunchArgument("map_frame_id", default_value="map"),
+            DeclareLaunchArgument(
+                "publish_tf",
+                default_value="true",
+                description="Publish the live map-to-body transform",
+            ),
+            DeclareLaunchArgument(
+                "raw_odom_topic",
+                default_value="/odom/orb_raw",
+                description="Raw ORB body odometry before continuity alignment",
+            ),
             DeclareLaunchArgument("visualization", default_value="false"),
             DeclareLaunchArgument(
                 "equalize",

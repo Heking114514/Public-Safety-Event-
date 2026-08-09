@@ -2,8 +2,11 @@ waypoint_navigator:
   ros__parameters:
     route_file: ""
     route_frame: "map"
+    route_input_topic: "/waypoint_navigation/route_input"
 
-    odom_topic: "/odom"
+    odom_topic: "/odometry/fused"
+    fusion_status_topic: "/odometry/fusion_status"
+    actuator_health_topic: "/cup_car_serial/connected"
     tracking_state_topic: "/tracking_state"
     cmd_vel_topic: "/cmd_vel_nav"
     path_topic: "/waypoint_path"
@@ -14,6 +17,9 @@ waypoint_navigator:
     default_speed: 0.20
     max_linear_speed: 0.30
     max_angular_speed: 0.80
+    max_linear_acceleration: 0.40
+    max_linear_deceleration: 0.80
+    max_angular_acceleration: 1.50
     linear_gain: 0.80
     angular_gain: 1.80
     path_pid_kp: 2.20
@@ -25,7 +31,27 @@ waypoint_navigator:
     waypoint_tolerance: 0.15
     final_yaw_tolerance: 0.12
     odom_timeout: 0.40
+    fusion_status_timeout: 0.60
+    actuator_health_timeout: 0.80
+    require_fusion_status: true
+    require_actuator_health: false
+    allowed_fusion_states:
+      - "FULL"
+      - "DEGRADED_NO_VISION"
+      - "DEGRADED_NO_IMU"
+      - "DEGRADED_NO_WHEEL"
+      - "DEGRADED_VISION_ONLY"
+      - "DEGRADED_WHEEL_ONLY"
+      - "DEGRADED_VISUAL_REALIGNED"
+    degraded_speed_scale: 0.50
+    no_vision_speed_scale: 0.50
+    no_imu_speed_scale: 0.65
+    no_wheel_speed_scale: 0.60
+    vision_only_speed_scale: 0.40
+    wheel_only_speed_scale: 0.25
+    visual_realigned_speed_scale: 0.50
 
-    require_tracking_state: true
-    abort_on_tracking_loss: true
+    # Compatibility with direct ORB odometry; fused odometry does not require it.
+    require_tracking_state: false
+    abort_on_tracking_loss: false
     autostart: false

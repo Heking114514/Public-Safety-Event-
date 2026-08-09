@@ -1,27 +1,29 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>visual_navigation</name>
+  <name>fused_odometry</name>
   <version>0.1.0</version>
-  <description>Waypoint navigation using a generic odometry and health interface.</description>
-  <maintainer email="maintainer@example.com">maintainer</maintainer>
-  <license>MIT</license>
+  <description>Health-gated planar fusion of ORB, wheel and D455 IMU odometry.</description>
+  <maintainer email="hjh@example.com">hjh</maintainer>
+  <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
-  <depend>rclcpp</depend>
-  <depend>nav_msgs</depend>
+  <depend>diagnostic_msgs</depend>
   <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
-  <depend>std_srvs</depend>
-
-  <exec_depend>rclpy</exec_depend>
-  <exec_depend>python3-tk</exec_depend>
+  <depend>tf2_ros</depend>
 
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
-  <exec_depend>cup_car_serial</exec_depend>
+  <exec_depend>robot_localization</exec_depend>
+  <exec_depend>orbslam3</exec_depend>
+  <exec_depend>imu_rpy_filter</exec_depend>
+  <exec_depend>wheel_odometry</exec_depend>
 
   <test_depend>ament_cmake_gtest</test_depend>
 

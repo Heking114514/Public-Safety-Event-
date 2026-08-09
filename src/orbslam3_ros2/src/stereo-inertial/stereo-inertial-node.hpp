@@ -27,6 +27,8 @@
 #include "Tracking.h"
 
 #include "utility.hpp"
+#include "pose_continuity.hpp"
+#include "pose_velocity_estimator.hpp"
 
 #include <atomic>
 #include <condition_variable>
@@ -62,9 +64,10 @@ private:
     cv::Mat GetImage(const ImageMsg::ConstSharedPtr &msg) const;
     void SyncWithImu();
     void PublishPose(const Sophus::SE3f &Tcw, const ImageMsg::ConstSharedPtr &msgLeft, int trackingState);
+    void PublishRawOdometry(const Sophus::SE3f &TrawMapBody, const builtin_interfaces::msg::Time &stamp);
     void PublishTrackingStatus(int trackingState, const builtin_interfaces::msg::Time &stamp, size_t imuCount, double stereoDelta);
     bool LookupCameraToBody(const std::string &cameraFrame, Sophus::SE3f &Tcb);
-    void ResetPublishedPose();
+    void HandleTrackingInterruption();
     void StopProcessing();
 
     rclcpp::Subscription<ImuMsg>::SharedPtr subImu_;
@@ -73,6 +76,7 @@ private:
     std::shared_ptr<message_filters::Synchronizer<ApproximateSyncPolicy>> stereoSync_;
 
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odomPublisher_;
+    rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr rawOdomPublisher_;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr posePublisher_;
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pathPublisher_;
     rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr trackingStatePublisher_;
@@ -113,13 +117,16 @@ private:
     size_t pathMaxPoses_;
     std::vector<double> poseCovarianceDiagonal_;
     std::vector<double> twistCovarianceDiagonal_;
+    std::vector<double> unavailableTwistCovarianceDiagonal_;
 
     double lastImageTimestamp_{-1.0};
     double firstStereoTimestamp_{-1.0};
     bool cameraWarmupComplete_{false};
-    bool publishedPoseInitialized_{false};
     bool lastPublishedPoseValid_{false};
-    Sophus::SE3f TmapWorld_;
+    bool trackingInterruptionActive_{false};
+    orbslam3_ros2::FixedPoseOrigin rawPoseOrigin_;
+    orbslam3_ros2::PoseContinuity poseContinuity_;
+    orbslam3_ros2::PoseVelocityEstimator rawVelocityEstimator_;
     Sophus::SE3f lastPublishedPose_;
     double lastPublishedTimestamp_{0.0};
     double lastDiagnosticsTimestamp_{-1.0};

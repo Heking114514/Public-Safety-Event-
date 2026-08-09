@@ -122,8 +122,11 @@ StereoInertialNode::StereoInertialNode(
         "pose_covariance_diagonal", {0.01, 0.01, 0.01, 0.05, 0.05, 0.05});
     twistCovarianceDiagonal_ = this->declare_parameter<std::vector<double>>(
         "twist_covariance_diagonal", {0.04, 0.04, 0.04, 0.1, 0.1, 0.1});
+    unavailableTwistCovarianceDiagonal_ = this->declare_parameter<std::vector<double>>(
+        "unavailable_twist_covariance_diagonal", {1.0e6, 1.0e6, 1.0e6, 1.0e6, 1.0e6, 1.0e6});
 
     const std::string odomTopic = this->declare_parameter<std::string>("odom_topic", "odom");
+    const std::string rawOdomTopic = this->declare_parameter<std::string>("raw_odom_topic", "/odom/orb_raw");
     const std::string poseTopic = this->declare_parameter<std::string>("pose_topic", "pose");
     const std::string pathTopic = this->declare_parameter<std::string>("path_topic", "path");
     const std::string stateTopic = this->declare_parameter<std::string>("tracking_state_topic", "tracking_state");
@@ -172,6 +175,7 @@ StereoInertialNode::StereoInertialNode(
     }
 
     odomPublisher_ = this->create_publisher<nav_msgs::msg::Odometry>(odomTopic, 10);
+    rawOdomPublisher_ = this->create_publisher<nav_msgs::msg::Odometry>(rawOdomTopic, 10);
     posePublisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(poseTopic, 10);
     pathPublisher_ = this->create_publisher<nav_msgs::msg::Path>(pathTopic, 10);
     trackingStatePublisher_ = this->create_publisher<std_msgs::msg::Int32>(stateTopic, 10);
@@ -374,6 +378,7 @@ void StereoInertialNode::SyncWithImu()
         if (leftImage.empty() || rightImage.empty())
         {
             PublishTrackingStatus(ORB_SLAM3::Tracking::LOST, stereoPair.left->header.stamp, imuMeasurements.size(), stereoDifference);
+            HandleTrackingInterruption();
             continue;
         }
 
@@ -399,10 +404,9 @@ void StereoInertialNode::SyncWithImu()
         {
             PublishPose(Tcw, stereoPair.left, trackingState);
         }
-        else if (trackingState == ORB_SLAM3::Tracking::LOST ||
-                 trackingState == ORB_SLAM3::Tracking::NOT_INITIALIZED)
+        else
         {
-            ResetPublishedPose();
+            HandleTrackingInterruption();
         }
     }
 }
@@ -452,15 +456,18 @@ void StereoInertialNode::PublishPose(
 
     const Sophus::SE3f TworldCamera = Tcw.inverse();
     const Sophus::SE3f TworldBody = TworldCamera * TcameraBody;
-    if (!publishedPoseInitialized_)
+    // ORB's world axes follow the optical camera convention. Normalize them
+    // once against the first body pose before labeling the result as ROS map.
+    // The fixed origin intentionally does not move on tracking recovery.
+    const Sophus::SE3f TrawMapBody = rawPoseOrigin_.Align(TworldBody);
+    PublishRawOdometry(TrawMapBody, msgLeft->header.stamp);
+    const bool recoveredFromInterruption = poseContinuity_.RecoveryPending();
+    const Sophus::SE3f TmapBody = poseContinuity_.Align(TworldBody);
+    if (recoveredFromInterruption)
     {
-        TmapWorld_ = TworldBody.inverse();
-        publishedPoseInitialized_ = true;
-        lastPublishedPoseValid_ = false;
-        path_.poses.clear();
+        RCLCPP_INFO(this->get_logger(), "Tracking recovered; preserving the published odometry frame");
     }
-
-    const Sophus::SE3f TmapBody = TmapWorld_ * TworldBody;
+    trackingInterruptionActive_ = false;
     const double timestamp = Utility::StampToSec(msgLeft->header.stamp);
 
     geometry_msgs::msg::PoseStamped poseMessage;
@@ -512,6 +519,36 @@ void StereoInertialNode::PublishPose(
     lastPublishedPose_ = TmapBody;
     lastPublishedTimestamp_ = timestamp;
     lastPublishedPoseValid_ = true;
+}
+
+void StereoInertialNode::PublishRawOdometry(
+    const Sophus::SE3f &TrawMapBody,
+    const builtin_interfaces::msg::Time &stamp)
+{
+    nav_msgs::msg::Odometry odometry;
+    odometry.header.stamp = stamp;
+    odometry.header.frame_id = mapFrameId_;
+    odometry.child_frame_id = bodyFrameId_;
+    odometry.pose.pose = PoseFromSE3(TrawMapBody);
+    SetCovarianceDiagonal(odometry.pose.covariance, poseCovarianceDiagonal_);
+
+    const double timestamp = Utility::StampToSec(stamp);
+    const orbslam3_ros2::PoseVelocity velocity = rawVelocityEstimator_.Observe(TrawMapBody, timestamp);
+    if (velocity.valid)
+    {
+        odometry.twist.twist.linear.x = velocity.linear.x();
+        odometry.twist.twist.linear.y = velocity.linear.y();
+        odometry.twist.twist.linear.z = velocity.linear.z();
+        odometry.twist.twist.angular.x = velocity.angular.x();
+        odometry.twist.twist.angular.y = velocity.angular.y();
+        odometry.twist.twist.angular.z = velocity.angular.z();
+        SetCovarianceDiagonal(odometry.twist.covariance, twistCovarianceDiagonal_);
+    }
+    else
+    {
+        SetCovarianceDiagonal(odometry.twist.covariance, unavailableTwistCovarianceDiagonal_);
+    }
+    rawOdomPublisher_->publish(odometry);
 }
 
 void StereoInertialNode::PublishTrackingStatus(
@@ -578,13 +615,15 @@ void StereoInertialNode::PublishTrackingStatus(
     diagnosticsPublisher_->publish(diagnostics);
 }
 
-void StereoInertialNode::ResetPublishedPose()
+void StereoInertialNode::HandleTrackingInterruption()
 {
-    publishedPoseInitialized_ = false;
+    poseContinuity_.MarkTrackingInterrupted();
+    rawVelocityEstimator_.Invalidate();
     lastPublishedPoseValid_ = false;
-    if (resetPathOnTrackingLoss_)
+    if (!trackingInterruptionActive_ && resetPathOnTrackingLoss_)
     {
         path_.poses.clear();
         path_.header.frame_id = mapFrameId_;
     }
+    trackingInterruptionActive_ = true;
 }

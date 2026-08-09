@@ -1,6 +1,6 @@
 # visual_navigation
 
-该功能包使用现有 ORB-SLAM3 ROS 2 节点发布的 `/odom` 和 `/tracking_state`，按照 CSV 航点文件依次导航，并通过 `/cmd_vel_nav` 输出给后续下位机通信节点。
+该功能包使用通用融合里程计 `/odometry/fused` 和字符串健康状态 `/odometry/fusion_status`，按照航点依次导航，并通过 `/cmd_vel_nav` 输出速度命令。它不依赖具体的视觉、IMU、轮速或融合实现。
 
 详细文档：
 
@@ -15,8 +15,11 @@
 
 | 话题 | 类型 | 用途 |
 | --- | --- | --- |
-| `/odom` | `nav_msgs/msg/Odometry` | 当前位姿 |
-| `/tracking_state` | `std_msgs/msg/Int32` | ORB-SLAM3 跟踪状态 |
+| `/odometry/fused` | `nav_msgs/msg/Odometry` | 融合后的当前位姿 |
+| `/odometry/fusion_status` | `std_msgs/msg/String` | `FULL`、允许的 `DEGRADED_*` 或 `FAULT` |
+| `/cup_car_serial/connected` | `std_msgs/msg/Bool` | 可选的执行器连接心跳，串口 bringup 强制启用 |
+| `/tracking_state` | `std_msgs/msg/Int32` | 可选的旧 ORB 兼容检查，默认关闭 |
+| `/waypoint_navigation/route_input` | `nav_msgs/msg/Path` | 动态替换当前路线 |
 
 发布：
 
@@ -35,7 +38,9 @@
 | `/waypoint_navigator/stop` | `std_srvs/srv/Trigger` | 停车并保持当前索引 |
 | `/waypoint_navigator/reset` | `std_srvs/srv/Trigger` | 停车并回到第 0 个航点 |
 
-只有跟踪状态为 `OK`（2）或 `OK_KLT`（5），且 `/odom` 没有超时时，节点才会输出非零速度。运行过程中丢失定位时默认中止任务并持续输出零速度。
+只有里程计和融合健康消息均未超时，且健康状态位于 `allowed_fusion_states` 中，节点才会输出非零速度。`DEGRADED_*` 状态按 `degraded_speed_scale` 同时限制线速度和角速度；`FAULT`、未知状态、消息陈旧、无效位姿或坐标系不一致都会停车。旧 `/tracking_state` 检查由 `require_tracking_state` 参数选择性启用。
+
+普通 bringup 的 `require_actuator_health` 默认为 `false`，便于不连接下位机时测试；`visual_navigation_serial_bringup.launch.py` 强制设为 `true`。此时启动前必须收到新鲜的 `connected=true`，运行中断连或心跳超过 `actuator_health_timeout`（默认 `0.8 s`）会立即停车并锁止任务，重连后不会自动续走。
 
 ## 航点文件
 
@@ -60,7 +65,7 @@ x,y,yaw,speed,tolerance,stop_time
 1.0,1.0,1.570796,0.15,0.12,1.0
 ```
 
-航点必须与 `/odom.header.frame_id` 使用同一坐标系。当前 ORB-SLAM3 包默认把第一次有效位姿设置为 `map` 原点，因此第一版应从固定位置和固定方向启动，并按该启动坐标记录航点。
+航点必须与 `/odometry/fused.header.frame_id` 使用同一坐标系；节点不做 TF 转换，坐标系不一致时会拒绝里程计并停车。
 
 如果需要使用已有地图中的绝对航点，需要后续增加 `外部地图 -> ORB里程计坐标` 的对齐节点，不能仅修改 CSV 中的 `frame_id`。
 
@@ -72,25 +77,16 @@ colcon build --symlink-install --packages-select visual_navigation
 source install/setup.bash
 ```
 
-如果 `orbslam3` 尚未构建，可以一起构建：
-
-```bash
-colcon build --symlink-install --packages-select orbslam3 visual_navigation \
-  --cmake-args \
-  -DSophus_DIR=$PWD/src/deps/share/sophus/cmake \
-  -DPangolin_DIR=$PWD/src/deps/lib/cmake/Pangolin
-```
-
 ## 只启动航点导航
 
-先单独启动 ORB-SLAM3，确认 `/odom` 和 `/tracking_state` 正常，然后执行：
+先由外部总启动拉起传感器和融合包，确认 `/odometry/fused` 与 `/odometry/fusion_status` 正常，然后执行：
 
 ```bash
 ros2 launch visual_navigation waypoint_navigation.launch.py \
   route_file:=/absolute/path/to/route.csv
 ```
 
-默认不会自动行驶。确认车辆架空或场地安全后启动任务：
+CSV 模式默认不会自动行驶。需要时可用现有服务启动：
 
 ```bash
 ros2 service call /waypoint_navigator/start std_srvs/srv/Trigger '{}'
@@ -103,14 +99,28 @@ ros2 service call /waypoint_navigator/stop std_srvs/srv/Trigger '{}'
 ros2 service call /waypoint_navigator/reset std_srvs/srv/Trigger '{}'
 ```
 
-## 启动完整视觉导航
+## 图形路线编辑器
 
-下面的 Launch 同时启动 D455、ORB-SLAM3 和航点导航节点：
+导航节点运行后，另开终端启动编辑器：
+
+```bash
+source install/setup.bash
+ros2 launch visual_navigation route_editor.launch.py
+```
+
+网格每格固定为 `0.6 m`，原点箭头为车头初始的 `+X` 方向。左键添加航点，按住航点拖动可调整箭头方向，右键删除最后一个点。顶部显示 `ODOM READY` 后，点击“发布并启用路线”会通过 `/waypoint_navigation/route_input` 一次发布全部航点。
+
+导航节点收到合法动态路线后会立即发零速度、清零航点索引并进入 `IDLE`。编辑器等待 `/waypoint_path` 回显确认本次路线后，会自动调用启动服务；确认或启动失败会在界面显示，不需要手动执行服务命令。历史 transient-local 路线只会被加载，不会自行启动。
+
+动态路线中的速度和到达容差使用 `default_speed` 和 `waypoint_tolerance` 参数。重启导航节点后仍会先加载 `route_file` 指定的 CSV；需要再次点击发布按钮才能重新启用编辑路线。
+
+## 导航 Bringup
+
+下面的 Launch 只启动导航节点，传感器和融合由外部总启动编排：
 
 ```bash
 ros2 launch visual_navigation visual_navigation_bringup.launch.py \
   route_file:=/absolute/path/to/route.csv \
-  body_frame_id:=camera_link \
   autostart:=false
 ```
 
@@ -119,7 +129,6 @@ ros2 launch visual_navigation visual_navigation_bringup.launch.py \
 ```bash
 ros2 launch visual_navigation visual_navigation_serial_bringup.launch.py \
   route_file:=/absolute/path/to/route.csv \
-  body_frame_id:=camera_link \
   serial_device:=/dev/ttyUSB0 \
   serial_baud_rate:=115200 \
   autostart:=false

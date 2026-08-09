@@ -8,53 +8,43 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    visual_navigation_share = FindPackageShare("visual_navigation")
-
+    package_share = FindPackageShare("visual_navigation")
     route_file = LaunchConfiguration("route_file")
     route_frame = LaunchConfiguration("route_frame")
+    odom_topic = LaunchConfiguration("odom_topic")
+    fusion_status_topic = LaunchConfiguration("fusion_status_topic")
+    actuator_health_topic = LaunchConfiguration("actuator_health_topic")
+    actuator_health_timeout = LaunchConfiguration("actuator_health_timeout")
     cmd_vel_topic = LaunchConfiguration("cmd_vel_topic")
+    route_input_topic = LaunchConfiguration("route_input_topic")
     autostart = LaunchConfiguration("autostart")
-    serial_no = LaunchConfiguration("serial_no")
-    initial_reset = LaunchConfiguration("initial_reset")
-    body_frame_id = LaunchConfiguration("body_frame_id")
-    visualization = LaunchConfiguration("visualization")
-    use_imu = LaunchConfiguration("use_imu")
-    use_slam_imu = LaunchConfiguration("use_slam_imu")
-    equalize = LaunchConfiguration("equalize")
     serial_device = LaunchConfiguration("serial_device")
     serial_baud_rate = LaunchConfiguration("serial_baud_rate")
     serial_send_rate_hz = LaunchConfiguration("serial_send_rate_hz")
     serial_command_timeout_s = LaunchConfiguration("serial_command_timeout_s")
 
     default_route = PathJoinSubstitution(
-        [visual_navigation_share, "routes", "example_route.csv"]
+        [package_share, "routes", "example_route.csv"]
     )
-
     navigation = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution(
-                [
-                    visual_navigation_share,
-                    "launch",
-                    "visual_navigation_bringup.launch.py",
-                ]
+                [package_share, "launch", "visual_navigation_bringup.launch.py"]
             )
         ),
         launch_arguments={
             "route_file": route_file,
             "route_frame": route_frame,
+            "odom_topic": odom_topic,
+            "fusion_status_topic": fusion_status_topic,
+            "actuator_health_topic": actuator_health_topic,
+            "require_actuator_health": "true",
+            "actuator_health_timeout": actuator_health_timeout,
             "cmd_vel_topic": cmd_vel_topic,
+            "route_input_topic": route_input_topic,
             "autostart": autostart,
-            "serial_no": serial_no,
-            "initial_reset": initial_reset,
-            "body_frame_id": body_frame_id,
-            "visualization": visualization,
-            "use_imu": use_imu,
-            "use_slam_imu": use_slam_imu,
-            "equalize": equalize,
         }.items(),
     )
-
     serial_bridge = Node(
         package="cup_car_serial",
         executable="cmd_vel_serial_node",
@@ -79,15 +69,20 @@ def generate_launch_description():
         [
             DeclareLaunchArgument("route_file", default_value=default_route),
             DeclareLaunchArgument("route_frame", default_value="map"),
+            DeclareLaunchArgument("odom_topic", default_value="/odometry/fused"),
+            DeclareLaunchArgument(
+                "fusion_status_topic", default_value="/odometry/fusion_status"
+            ),
+            DeclareLaunchArgument(
+                "actuator_health_topic", default_value="/cup_car_serial/connected"
+            ),
+            DeclareLaunchArgument("actuator_health_timeout", default_value="0.8"),
             DeclareLaunchArgument("cmd_vel_topic", default_value="/cmd_vel_nav"),
+            DeclareLaunchArgument(
+                "route_input_topic",
+                default_value="/waypoint_navigation/route_input",
+            ),
             DeclareLaunchArgument("autostart", default_value="false"),
-            DeclareLaunchArgument("serial_no", default_value="_038122250473"),
-            DeclareLaunchArgument("initial_reset", default_value="false"),
-            DeclareLaunchArgument("body_frame_id", default_value="camera_link"),
-            DeclareLaunchArgument("visualization", default_value="false"),
-            DeclareLaunchArgument("use_imu", default_value="true"),
-            DeclareLaunchArgument("use_slam_imu", default_value="false"),
-            DeclareLaunchArgument("equalize", default_value="true"),
             DeclareLaunchArgument("serial_device", default_value="auto"),
             DeclareLaunchArgument("serial_baud_rate", default_value="115200"),
             DeclareLaunchArgument("serial_send_rate_hz", default_value="20.0"),

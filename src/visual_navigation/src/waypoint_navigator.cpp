@@ -18,9 +18,13 @@
 #include "nav_msgs/msg/odometry.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/int32.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "std_srvs/srv/trigger.hpp"
+#include "visual_navigation/actuator_health_policy.hpp"
+#include "visual_navigation/fusion_health_policy.hpp"
+#include "visual_navigation/rate_limiter.hpp"
 
 namespace
 {
@@ -47,6 +51,32 @@ double YawFromQuaternion(const geometry_msgs::msg::Quaternion &quaternion)
   const double cosYaw = 1.0 - 2.0 *
     (quaternion.y * quaternion.y + quaternion.z * quaternion.z);
   return std::atan2(sinYaw, cosYaw);
+}
+
+double YawFromValidQuaternion(const geometry_msgs::msg::Quaternion &quaternion)
+{
+  const double norm = std::sqrt(
+    quaternion.x * quaternion.x + quaternion.y * quaternion.y +
+    quaternion.z * quaternion.z + quaternion.w * quaternion.w);
+  geometry_msgs::msg::Quaternion normalized;
+  normalized.x = quaternion.x / norm;
+  normalized.y = quaternion.y / norm;
+  normalized.z = quaternion.z / norm;
+  normalized.w = quaternion.w / norm;
+  return YawFromQuaternion(normalized);
+}
+
+bool QuaternionIsValid(const geometry_msgs::msg::Quaternion &quaternion)
+{
+  if (!std::isfinite(quaternion.x) || !std::isfinite(quaternion.y) ||
+    !std::isfinite(quaternion.z) || !std::isfinite(quaternion.w))
+  {
+    return false;
+  }
+
+  const double squaredNorm = quaternion.x * quaternion.x + quaternion.y * quaternion.y +
+    quaternion.z * quaternion.z + quaternion.w * quaternion.w;
+  return std::isfinite(squaredNorm) && squaredNorm > 1e-12;
 }
 
 geometry_msgs::msg::Quaternion QuaternionFromYaw(double yaw)
@@ -95,10 +125,16 @@ public:
   {
     routeFile_ = declare_parameter<std::string>("route_file", "");
     routeFrame_ = declare_parameter<std::string>("route_frame", "map");
-    odomTopic_ = declare_parameter<std::string>("odom_topic", "/odom");
+    odomTopic_ = declare_parameter<std::string>("odom_topic", "/odometry/fused");
+    fusionStatusTopic_ = declare_parameter<std::string>(
+      "fusion_status_topic", "/odometry/fusion_status");
+    actuatorHealthTopic_ = declare_parameter<std::string>(
+      "actuator_health_topic", "/cup_car_serial/connected");
     trackingStateTopic_ = declare_parameter<std::string>("tracking_state_topic", "/tracking_state");
     cmdVelTopic_ = declare_parameter<std::string>("cmd_vel_topic", "/cmd_vel_nav");
     pathTopic_ = declare_parameter<std::string>("path_topic", "/waypoint_path");
+    routeInputTopic_ = declare_parameter<std::string>(
+      "route_input_topic", "/waypoint_navigation/route_input");
     statusTopic_ = declare_parameter<std::string>("status_topic", "/waypoint_navigation/status");
     currentWaypointTopic_ = declare_parameter<std::string>(
       "current_waypoint_topic", "/waypoint_navigation/current_waypoint");
@@ -107,6 +143,12 @@ public:
     defaultSpeed_ = std::max(0.0, declare_parameter<double>("default_speed", 0.20));
     maxLinearSpeed_ = std::max(0.0, declare_parameter<double>("max_linear_speed", 0.30));
     maxAngularSpeed_ = std::max(0.0, declare_parameter<double>("max_angular_speed", 0.80));
+    maxLinearAcceleration_ = std::max(
+      0.01, declare_parameter<double>("max_linear_acceleration", 0.40));
+    maxLinearDeceleration_ = std::max(
+      0.01, declare_parameter<double>("max_linear_deceleration", 0.80));
+    maxAngularAcceleration_ = std::max(
+      0.01, declare_parameter<double>("max_angular_acceleration", 1.50));
     linearGain_ = std::max(0.0, declare_parameter<double>("linear_gain", 0.8));
     angularGain_ = std::max(0.0, declare_parameter<double>("angular_gain", 1.8));
     pathPidKp_ = std::max(0.0, declare_parameter<double>("path_pid_kp", 2.2));
@@ -123,8 +165,29 @@ public:
     finalYawTolerance_ = std::max(
       0.001, declare_parameter<double>("final_yaw_tolerance", 0.12));
     odomTimeout_ = std::max(0.01, declare_parameter<double>("odom_timeout", 0.40));
-    requireTrackingState_ = declare_parameter<bool>("require_tracking_state", true);
-    abortOnTrackingLoss_ = declare_parameter<bool>("abort_on_tracking_loss", true);
+    fusionStatusTimeout_ = std::max(
+      0.01, declare_parameter<double>("fusion_status_timeout", 0.60));
+    actuatorHealthTimeout_ = std::max(
+      0.01, declare_parameter<double>("actuator_health_timeout", 0.80));
+    requireFusionStatus_ = declare_parameter<bool>("require_fusion_status", true);
+    requireActuatorHealth_ = declare_parameter<bool>("require_actuator_health", false);
+    allowedFusionStates_ = declare_parameter<std::vector<std::string>>(
+      "allowed_fusion_states",
+      {"FULL", "DEGRADED_NO_VISION", "DEGRADED_NO_IMU", "DEGRADED_NO_WHEEL",
+        "DEGRADED_VISION_ONLY", "DEGRADED_WHEEL_ONLY", "DEGRADED_VISUAL_REALIGNED"});
+    visual_navigation::FusionSpeedScales fusionSpeedScales;
+    fusionSpeedScales.fallback = declare_parameter<double>("degraded_speed_scale", 0.50);
+    fusionSpeedScales.no_vision = declare_parameter<double>("no_vision_speed_scale", 0.50);
+    fusionSpeedScales.no_imu = declare_parameter<double>("no_imu_speed_scale", 0.65);
+    fusionSpeedScales.no_wheel = declare_parameter<double>("no_wheel_speed_scale", 0.60);
+    fusionSpeedScales.vision_only = declare_parameter<double>("vision_only_speed_scale", 0.40);
+    fusionSpeedScales.wheel_only = declare_parameter<double>("wheel_only_speed_scale", 0.25);
+    fusionSpeedScales.visual_realigned = declare_parameter<double>(
+      "visual_realigned_speed_scale", 0.50);
+    fusionHealthPolicy_ = visual_navigation::FusionHealthPolicy(
+      allowedFusionStates_, fusionSpeedScales);
+    requireTrackingState_ = declare_parameter<bool>("require_tracking_state", false);
+    abortOnTrackingLoss_ = declare_parameter<bool>("abort_on_tracking_loss", false);
     autostart_ = declare_parameter<bool>("autostart", false);
 
     cmdVelPublisher_ = create_publisher<geometry_msgs::msg::Twist>(cmdVelTopic_, 10);
@@ -138,9 +201,18 @@ public:
     odomSubscription_ = create_subscription<nav_msgs::msg::Odometry>(
       odomTopic_, 10,
       std::bind(&WaypointNavigator::HandleOdometry, this, std::placeholders::_1));
+    fusionStatusSubscription_ = create_subscription<std_msgs::msg::String>(
+      fusionStatusTopic_, 10,
+      std::bind(&WaypointNavigator::HandleFusionStatus, this, std::placeholders::_1));
+    actuatorHealthSubscription_ = create_subscription<std_msgs::msg::Bool>(
+      actuatorHealthTopic_, rclcpp::QoS(1).transient_local().reliable(),
+      std::bind(&WaypointNavigator::HandleActuatorHealth, this, std::placeholders::_1));
     trackingStateSubscription_ = create_subscription<std_msgs::msg::Int32>(
       trackingStateTopic_, 10,
       std::bind(&WaypointNavigator::HandleTrackingState, this, std::placeholders::_1));
+    routeInputSubscription_ = create_subscription<nav_msgs::msg::Path>(
+      routeInputTopic_, rclcpp::QoS(1).transient_local().reliable(),
+      std::bind(&WaypointNavigator::HandleRouteInput, this, std::placeholders::_1));
 
     startService_ = create_service<std_srvs::srv::Trigger>(
       "~/start",
@@ -182,8 +254,10 @@ public:
 
     RCLCPP_INFO(
       get_logger(),
-      "Waypoint navigator ready: odom=%s tracking=%s output=%s",
-      odomTopic_.c_str(), trackingStateTopic_.c_str(), cmdVelTopic_.c_str());
+      "Waypoint navigator ready: odom=%s fusion_status=%s actuator_health=%s "
+      "route_input=%s output=%s",
+      odomTopic_.c_str(), fusionStatusTopic_.c_str(), actuatorHealthTopic_.c_str(),
+      routeInputTopic_.c_str(), cmdVelTopic_.c_str());
   }
 
   ~WaypointNavigator() override
@@ -329,25 +403,112 @@ private:
 
   void HandleOdometry(const nav_msgs::msg::Odometry::SharedPtr message)
   {
-    currentX_ = message->pose.pose.position.x;
-    currentY_ = message->pose.pose.position.y;
-    currentYaw_ = YawFromQuaternion(message->pose.pose.orientation);
+    currentOdomFrameValid_ = message->header.frame_id.empty() ||
+      message->header.frame_id == routeFrame_;
+    currentOdomPoseValid_ =
+      std::isfinite(message->pose.pose.position.x) &&
+      std::isfinite(message->pose.pose.position.y) &&
+      QuaternionIsValid(message->pose.pose.orientation);
     lastOdomArrival_ = now();
     hasOdometry_ = true;
 
-    if (!message->header.frame_id.empty() && message->header.frame_id != routeFrame_)
+    if (!currentOdomFrameValid_)
     {
-      RCLCPP_WARN_THROTTLE(
+      RCLCPP_ERROR_THROTTLE(
         get_logger(), *get_clock(), 5000,
-        "Odometry frame '%s' differs from route frame '%s'; no TF conversion is performed",
+        "Rejecting odometry frame '%s'; route frame is '%s' and TF conversion is disabled",
         message->header.frame_id.c_str(), routeFrame_.c_str());
+      return;
     }
+    if (!currentOdomPoseValid_)
+    {
+      RCLCPP_ERROR_THROTTLE(
+        get_logger(), *get_clock(), 5000, "Rejecting invalid odometry pose");
+      return;
+    }
+
+    currentX_ = message->pose.pose.position.x;
+    currentY_ = message->pose.pose.position.y;
+    currentYaw_ = YawFromValidQuaternion(message->pose.pose.orientation);
   }
 
   void HandleTrackingState(const std_msgs::msg::Int32::SharedPtr message)
   {
     trackingState_ = message->data;
     hasTrackingState_ = true;
+  }
+
+  void HandleFusionStatus(const std_msgs::msg::String::SharedPtr message)
+  {
+    fusionStatus_ = Trim(message->data);
+    lastFusionStatusArrival_ = now();
+    hasFusionStatus_ = true;
+  }
+
+  void HandleActuatorHealth(const std_msgs::msg::Bool::SharedPtr message)
+  {
+    actuatorConnected_ = message->data;
+    lastActuatorHealthArrival_ = now();
+    hasActuatorHealth_ = true;
+  }
+
+  void HandleRouteInput(const nav_msgs::msg::Path::SharedPtr message)
+  {
+    if (message->poses.empty())
+    {
+      RCLCPP_WARN(get_logger(), "Ignoring empty dynamic waypoint route");
+      return;
+    }
+
+    if (!message->header.frame_id.empty() && message->header.frame_id != routeFrame_)
+    {
+      RCLCPP_ERROR(
+        get_logger(), "Ignoring dynamic route in frame '%s'; expected '%s'",
+        message->header.frame_id.c_str(), routeFrame_.c_str());
+      return;
+    }
+
+    std::vector<Waypoint> loadedWaypoints;
+    loadedWaypoints.reserve(message->poses.size());
+    for (std::size_t index = 0; index < message->poses.size(); ++index)
+    {
+      const auto &pose = message->poses[index].pose;
+      if (!std::isfinite(pose.position.x) || !std::isfinite(pose.position.y) ||
+        !QuaternionIsValid(pose.orientation))
+      {
+        RCLCPP_ERROR(
+          get_logger(), "Ignoring dynamic route: waypoint %zu has an invalid pose", index);
+        return;
+      }
+
+      Waypoint waypoint;
+      waypoint.x = pose.position.x;
+      waypoint.y = pose.position.y;
+      waypoint.yaw = YawFromValidQuaternion(pose.orientation);
+      waypoint.speed = defaultSpeed_;
+      waypoint.tolerance = waypointTolerance_;
+      waypoint.stopTime = 0.0;
+      loadedWaypoints.push_back(waypoint);
+    }
+
+    // Route replacement always stops first. The editor starts through ~/start only
+    // after observing the republished route, so retained Path data cannot cause motion.
+    navigationActive_ = false;
+    currentWaypointIndex_ = 0;
+    localizationWasValid_ = false;
+    waitAction_ = WaitAction::NONE;
+    pathSegmentInitialized_ = false;
+    ResetPathPid();
+    PublishStop();
+
+    waypoints_ = std::move(loadedWaypoints);
+    routeLoaded_ = true;
+    PublishRoutePath();
+    PublishCurrentWaypoint();
+    SetState("IDLE");
+    RCLCPP_INFO(
+      get_logger(), "Loaded %zu dynamic waypoints; waiting for an explicit start request",
+      waypoints_.size());
   }
 
   void HandleStart(
@@ -358,6 +519,29 @@ private:
     {
       response->success = false;
       response->message = "Waypoint route is not loaded";
+      return;
+    }
+
+    const auto fusionHealth = FusionHealth();
+    if (!visual_navigation::LocalizationCanStart(
+        OdometryIsValid(), fusionHealth, TrackingStateIsValid()))
+    {
+      navigationActive_ = false;
+      PublishStop();
+      const std::string failureState = LocalizationFailureState(fusionHealth);
+      SetState(failureState);
+      response->success = false;
+      response->message = "Navigation start rejected: " + failureState;
+      return;
+    }
+    if (!ActuatorHealthIsValid())
+    {
+      navigationActive_ = false;
+      PublishStop();
+      const std::string failureState = ActuatorFailureState();
+      SetState(failureState);
+      response->success = false;
+      response->message = "Navigation start rejected: " + failureState;
       return;
     }
 
@@ -404,17 +588,75 @@ private:
     response->message = "Waypoint navigation reset";
   }
 
-  bool LocalizationIsValid() const
+  bool OdometryIsValid() const
   {
     if (!hasOdometry_)
       return false;
-    if ((now() - lastOdomArrival_).seconds() > odomTimeout_)
-      return false;
-    if (!requireTrackingState_)
-      return true;
-    if (!hasTrackingState_)
-      return false;
-    return trackingState_ == 2 || trackingState_ == 5;
+    return currentOdomFrameValid_ && currentOdomPoseValid_ &&
+      (now() - lastOdomArrival_).seconds() <= odomTimeout_;
+  }
+
+  bool TrackingStateIsValid() const
+  {
+    return !requireTrackingState_ ||
+      (hasTrackingState_ && (trackingState_ == 2 || trackingState_ == 5));
+  }
+
+  bool FusionStatusIsFresh() const
+  {
+    return hasFusionStatus_ &&
+      (now() - lastFusionStatusArrival_).seconds() <= fusionStatusTimeout_;
+  }
+
+  visual_navigation::FusionHealthDecision FusionHealth() const
+  {
+    if (!requireFusionStatus_)
+      return visual_navigation::FusionHealthDecision{true, false, 1.0};
+    if (!FusionStatusIsFresh())
+      return visual_navigation::FusionHealthDecision{};
+    return fusionHealthPolicy_.Evaluate(fusionStatus_);
+  }
+
+  bool ActuatorHealthIsFresh() const
+  {
+    return hasActuatorHealth_ &&
+      (now() - lastActuatorHealthArrival_).seconds() <= actuatorHealthTimeout_;
+  }
+
+  bool ActuatorHealthIsValid() const
+  {
+    return visual_navigation::ActuatorHealthIsValid(
+      requireActuatorHealth_, hasActuatorHealth_, ActuatorHealthIsFresh(),
+      actuatorConnected_);
+  }
+
+  std::string ActuatorFailureState() const
+  {
+    if (!hasActuatorHealth_ || !ActuatorHealthIsFresh())
+      return "FAULT_ACTUATOR_STALE";
+    return "FAULT_ACTUATOR_DISCONNECTED";
+  }
+
+  std::string LocalizationFailureState(
+    const visual_navigation::FusionHealthDecision &health) const
+  {
+    if (!OdometryIsValid())
+    {
+      if (hasOdometry_ && !currentOdomFrameValid_)
+        return "FAULT_ODOMETRY_FRAME";
+      if (hasOdometry_ && !currentOdomPoseValid_)
+        return "FAULT_ODOMETRY_INVALID";
+      return "WAITING_FOR_ODOMETRY";
+    }
+    if (requireFusionStatus_ && !FusionStatusIsFresh())
+      return "FAULT_FUSION_STATUS_STALE";
+    if (health.fault)
+      return "FAULT_FUSION_STATUS";
+    if (requireFusionStatus_ && !health.allowed)
+      return "WAITING_FOR_ALLOWED_FUSION_STATUS";
+    if (!TrackingStateIsValid())
+      return "FAULT_TRACKING_LOST";
+    return "WAITING_FOR_LOCALIZATION";
   }
 
   void RunControl()
@@ -425,18 +667,37 @@ private:
       return;
     }
 
-    if (!LocalizationIsValid())
+    if (visual_navigation::ShouldLatchActuatorLoss(
+        navigationActive_, ActuatorHealthIsValid()))
+    {
+      navigationActive_ = false;
+      PublishStop();
+      ResetPathPid();
+      SetState(ActuatorFailureState());
+      return;
+    }
+
+    const auto fusionHealth = FusionHealth();
+    const bool localizationValid =
+      OdometryIsValid() && fusionHealth.allowed && TrackingStateIsValid();
+    if (!localizationValid)
     {
       PublishStop();
       ResetPathPid();
-      if (localizationWasValid_ && abortOnTrackingLoss_)
+      if (visual_navigation::ShouldLatchFusedLocalizationLoss(
+          localizationWasValid_, OdometryIsValid(), fusionHealth))
+      {
+        navigationActive_ = false;
+        SetState(LocalizationFailureState(fusionHealth));
+      }
+      else if (!TrackingStateIsValid() && localizationWasValid_ && abortOnTrackingLoss_)
       {
         navigationActive_ = false;
         SetState("FAULT_TRACKING_LOST");
       }
       else
       {
-        SetState("WAITING_FOR_LOCALIZATION");
+        SetState(LocalizationFailureState(fusionHealth));
       }
       return;
     }
@@ -491,9 +752,10 @@ private:
         if (std::abs(finalYawError) > finalYawTolerance_)
         {
           geometry_msgs::msg::Twist command;
+          const double scaledMaxAngularSpeed = maxAngularSpeed_ * fusionHealth.speed_scale;
           command.angular.z = Clamp(
-            angularGain_ * finalYawError, -maxAngularSpeed_, maxAngularSpeed_);
-          cmdVelPublisher_->publish(command);
+            angularGain_ * finalYawError, -scaledMaxAngularSpeed, scaledMaxAngularSpeed);
+          PublishMotionCommand(command);
           SetState("ALIGNING_FINAL_YAW");
           return;
         }
@@ -530,7 +792,7 @@ private:
       std::cos(pathHeading) * (currentY_ - pathSegmentStartY_) -
       std::sin(pathHeading) * (currentX_ - pathSegmentStartX_);
     const double pathError = headingError - crossTrackGain_ * crossTrackError;
-    const double angularSpeed = UpdatePathPid(pathError);
+    const double angularSpeed = UpdatePathPid(pathError) * fusionHealth.speed_scale;
 
     geometry_msgs::msg::Twist command;
     command.angular.z = angularSpeed;
@@ -542,10 +804,10 @@ private:
       double linearSpeed = requestedSpeed;
       if (finalWaypoint)
         linearSpeed = std::min(requestedSpeed, linearGain_ * distance);
-      command.linear.x = linearSpeed * headingScale;
+      command.linear.x = linearSpeed * headingScale * fusionHealth.speed_scale;
     }
 
-    cmdVelPublisher_->publish(command);
+    PublishMotionCommand(command);
     SetState("FOLLOWING");
   }
 
@@ -599,7 +861,36 @@ private:
 
   void PublishStop()
   {
-    cmdVelPublisher_->publish(geometry_msgs::msg::Twist());
+    geometry_msgs::msg::Twist command;
+    cmdVelPublisher_->publish(command);
+    lastMotionCommand_ = command;
+    lastMotionCommandTime_ = std::chrono::steady_clock::now();
+    motionCommandInitialized_ = true;
+  }
+
+  void PublishMotionCommand(const geometry_msgs::msg::Twist &desired)
+  {
+    const auto currentTime = std::chrono::steady_clock::now();
+    double dt = 1.0 / controlFrequency_;
+    if (motionCommandInitialized_)
+    {
+      const double measuredDt =
+        std::chrono::duration<double>(currentTime - lastMotionCommandTime_).count();
+      if (measuredDt > 0.0 && measuredDt <= 0.2)
+        dt = measuredDt;
+    }
+
+    geometry_msgs::msg::Twist limited = desired;
+    limited.linear.x = visual_navigation::LimitRate(
+      desired.linear.x, lastMotionCommand_.linear.x,
+      maxLinearAcceleration_, maxLinearDeceleration_, dt);
+    limited.angular.z = visual_navigation::LimitRate(
+      desired.angular.z, lastMotionCommand_.angular.z,
+      maxAngularAcceleration_, maxAngularAcceleration_, dt);
+    cmdVelPublisher_->publish(limited);
+    lastMotionCommand_ = limited;
+    lastMotionCommandTime_ = currentTime;
+    motionCommandInitialized_ = true;
   }
 
   void PublishCurrentWaypoint()
@@ -623,15 +914,21 @@ private:
   std::string routeFile_;
   std::string routeFrame_;
   std::string odomTopic_;
+  std::string fusionStatusTopic_;
+  std::string actuatorHealthTopic_;
   std::string trackingStateTopic_;
   std::string cmdVelTopic_;
   std::string pathTopic_;
+  std::string routeInputTopic_;
   std::string statusTopic_;
   std::string currentWaypointTopic_;
   double controlFrequency_{30.0};
   double defaultSpeed_{0.20};
   double maxLinearSpeed_{0.30};
   double maxAngularSpeed_{0.80};
+  double maxLinearAcceleration_{0.40};
+  double maxLinearDeceleration_{0.80};
+  double maxAngularAcceleration_{1.50};
   double linearGain_{0.8};
   double angularGain_{1.8};
   double pathPidKp_{2.2};
@@ -643,18 +940,30 @@ private:
   double waypointTolerance_{0.15};
   double finalYawTolerance_{0.12};
   double odomTimeout_{0.40};
-  bool requireTrackingState_{true};
-  bool abortOnTrackingLoss_{true};
+  double fusionStatusTimeout_{0.60};
+  double actuatorHealthTimeout_{0.80};
+  bool requireFusionStatus_{true};
+  bool requireActuatorHealth_{false};
+  bool requireTrackingState_{false};
+  bool abortOnTrackingLoss_{false};
   bool autostart_{false};
+  std::vector<std::string> allowedFusionStates_;
+  visual_navigation::FusionHealthPolicy fusionHealthPolicy_;
 
   std::vector<Waypoint> waypoints_;
   std::size_t currentWaypointIndex_{0};
   bool routeLoaded_{false};
   bool navigationActive_{false};
   bool hasOdometry_{false};
+  bool currentOdomFrameValid_{false};
+  bool currentOdomPoseValid_{false};
+  bool hasFusionStatus_{false};
+  bool hasActuatorHealth_{false};
   bool hasTrackingState_{false};
   bool localizationWasValid_{false};
   int trackingState_{-1};
+  std::string fusionStatus_;
+  bool actuatorConnected_{false};
   double currentX_{0.0};
   double currentY_{0.0};
   double currentYaw_{0.0};
@@ -666,8 +975,13 @@ private:
   bool pathPidInitialized_{false};
   std::string state_;
   rclcpp::Time lastOdomArrival_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time lastFusionStatusArrival_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time lastActuatorHealthArrival_{0, 0, RCL_ROS_TIME};
   rclcpp::Time waitUntil_{0, 0, RCL_ROS_TIME};
   std::chrono::steady_clock::time_point lastPathPidTime_{};
+  std::chrono::steady_clock::time_point lastMotionCommandTime_{};
+  geometry_msgs::msg::Twist lastMotionCommand_;
+  bool motionCommandInitialized_{false};
   WaitAction waitAction_{WaitAction::NONE};
 
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmdVelPublisher_;
@@ -675,7 +989,10 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr statusPublisher_;
   rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr currentWaypointPublisher_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odomSubscription_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr fusionStatusSubscription_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr actuatorHealthSubscription_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr trackingStateSubscription_;
+  rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr routeInputSubscription_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr startService_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr stopService_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr resetService_;

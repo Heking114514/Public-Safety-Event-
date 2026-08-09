@@ -472,7 +472,7 @@ private:
       pitch_ = std::atan2(-accel[0], std::hypot(accel[1], accel[2]));
       last_stamp_ = stamp;
       initialized_ = true;
-      publish_outputs(*message, gyro, accel, gyro_covariance, accel_covariance);
+      publish_outputs(*message, gyro, accel, gyro_covariance, accel_covariance, false);
       return;
     }
 
@@ -523,7 +523,7 @@ private:
       stamp, acceleration_error, angular_rate_norm);
     apply_stationary_update(stamp, stationary);
     apply_visual_update();
-    publish_outputs(*message, gyro, accel, gyro_covariance, accel_covariance);
+    publish_outputs(*message, gyro, accel, gyro_covariance, accel_covariance, stationary);
 
     RCLCPP_INFO_THROTTLE(
       get_logger(), *get_clock(), 1000,
@@ -598,7 +598,7 @@ private:
 
   void publish_outputs(
     const sensor_msgs::msg::Imu & input, const Vector3 & gyro, const Vector3 & accel,
-    const Matrix3 & gyro_covariance, const Matrix3 & accel_covariance)
+    const Matrix3 & gyro_covariance, const Matrix3 & accel_covariance, bool stationary)
   {
     std_msgs::msg::Header header = input.header;
     header.frame_id = output_frame_;
@@ -625,7 +625,7 @@ private:
       0.0, 0.0, yaw_filter_.yaw_variance()};
     filtered.angular_velocity.x = gyro[0];
     filtered.angular_velocity.y = gyro[1];
-    filtered.angular_velocity.z = gyro[2];
+    filtered.angular_velocity.z = stationary ? 0.0 : gyro[2] - yaw_filter_.bias();
     filtered.angular_velocity_covariance = gyro_covariance;
     filtered.linear_acceleration.x = accel[0];
     filtered.linear_acceleration.y = accel[1];

@@ -1,0 +1,47 @@
+wheel_odometry_node:
+  ros__parameters:
+    input_topic: /cup_car_serial/encoder_ticks
+    odom_topic: /wheel/odom
+    odom_frame: odom
+    base_frame: base_link
+    # ORB-SLAM already publishes the live robot transform. Enable this only
+    # when wheel odometry is the sole odometry source.
+    publish_tf: false
+
+    # Keep these values synchronized with the STM32 chassis calibration.
+    wheel_radius_m: 0.0325
+    ticks_per_revolution: 1925.0
+    wheel_track_m: 0.254
+    left_distance_scale: 1.000
+    right_distance_scale: 1.010
+
+    # Reject a sample if either wheel would have exceeded this speed.
+    max_wheel_speed_mps: 2.0
+    min_dt_s: 0.0001
+    # Firmware encoder publication period. Timing gaps relative to this value
+    # increase the reported twist uncertainty.
+    nominal_sample_period_s: 0.02
+
+    # Initial uncertainty and motion-dependent growth. These are deliberately
+    # conservative: wheel odometry is a short-term increment source, not truth.
+    pose_xy_variance: 0.02
+    pose_yaw_variance: 0.05
+    twist_linear_variance: 0.05
+    twist_yaw_variance: 0.10
+    pose_xy_variance_per_meter: 0.02
+    pose_xy_variance_per_radian: 0.005
+    pose_yaw_variance_per_meter: 0.02
+    pose_yaw_variance_per_radian: 0.05
+    pose_xy_variance_per_missing_sample: 0.001
+    pose_yaw_variance_per_missing_sample: 0.002
+    pose_xy_variance_per_rebase: 0.01
+    pose_yaw_variance_per_rebase: 0.02
+    twist_linear_variance_per_missing_sample: 0.01
+    twist_yaw_variance_per_missing_sample: 0.02
+    twist_linear_variance_per_interval_ratio: 0.02
+    twist_yaw_variance_per_interval_ratio: 0.04
+    twist_linear_variance_per_wheel_difference_mps: 0.05
+    twist_yaw_variance_per_wheel_difference_mps: 0.15
+
+    diagnostic_stale_timeout_s: 0.5
+    diagnostic_period_s: 0.5

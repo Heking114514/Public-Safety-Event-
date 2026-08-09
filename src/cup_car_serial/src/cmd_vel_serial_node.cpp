@@ -265,6 +265,9 @@ public:
     timer_ = create_wall_timer(
       std::chrono::duration_cast<std::chrono::nanoseconds>(period),
       std::bind(&CmdVelSerialNode::send_command, this));
+    connectionHeartbeatTimer_ = create_wall_timer(
+      std::chrono::milliseconds(500),
+      std::bind(&CmdVelSerialNode::publish_connection_heartbeat, this));
 
     connect();
     RCLCPP_INFO(
@@ -311,6 +314,13 @@ private:
     connectedPublisher_->publish(message);
     last_connection_state_ = connected;
     connection_state_published_ = true;
+  }
+
+  void publish_connection_heartbeat()
+  {
+    std_msgs::msg::Bool message;
+    message.data = serial_connected_;
+    connectedPublisher_->publish(message);
   }
 
   void receive_feedback()
@@ -460,6 +470,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr receivePublisher_;
   rclcpp::Publisher<std_msgs::msg::Int32MultiArray>::SharedPtr encoderPublisher_;
   rclcpp::TimerBase::SharedPtr timer_;
+  rclcpp::TimerBase::SharedPtr connectionHeartbeatTimer_;
 };
 
 int main(int argc, char * argv[])

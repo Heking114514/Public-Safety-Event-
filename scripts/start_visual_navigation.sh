@@ -9,8 +9,8 @@ ROS_SETUP="/opt/ros/${ROS_DISTRO_NAME}/setup.bash"
 ORB_ROOT="${WORKSPACE_ROOT}/src/ORB_SLAM3"
 DEPS_ROOT="${WORKSPACE_ROOT}/src/deps"
 
-ROUTE_FILE="${WORKSPACE_ROOT}/src/visual_navigation/routes/example_route.csv"
-SERIAL_DEVICE="auto"
+ROUTE_FILE="${WORKSPACE_ROOT}/src/visual_navigation/routes/straight_x_3_6m.csv"
+SERIAL_DEVICE="/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
 SERIAL_BAUD_RATE="115200"
 USE_SERIAL="true"
 CAMERA_SERIAL=""
@@ -21,7 +21,7 @@ VISUALIZATION="false"
 AUTOSTART="false"
 BUILD_IF_NEEDED="true"
 CHECK_CAMERA="true"
-FORCE_CAMERA_RESET="true"
+FORCE_CAMERA_RESET="false"
 CAMERA_INITIAL_RESET="false"
 BUILD_JOBS="2"
 
@@ -39,9 +39,9 @@ usage() {
 Usage: scripts/start_visual_navigation.sh [options]
 
 Options:
-  --route PATH              CSV route file
+  --route PATH              CSV route file (default: straight_x_3_6m.csv)
   --camera-serial SERIAL    D455 serial number; auto-detected by default
-  --serial-device DEVICE    Controller serial device (default: auto)
+  --serial-device DEVICE    Controller serial device (default: CH340 stable path)
   --serial-baud RATE        Controller baud rate (default: 115200)
   --no-serial               Run upper-computer algorithms without the controller
   --no-imu                  Disable the D455 IMU and IMU filter
@@ -51,13 +51,13 @@ Options:
   --autostart               Start waypoint motion immediately (unsafe on a bench)
   --no-build                Fail instead of building missing binaries
   --skip-camera-check       Launch without checking for a connected D455
-  --reset-camera            Force a D455 firmware reset before opening streams (default with IMU)
-  --no-camera-reset         Skip the default reset if the D455 is already known to be healthy
+  --reset-camera            Force a D455 firmware reset before opening streams
+  --no-camera-reset         Skip camera reset (default)
   --jobs COUNT              Parallel build jobs
   -h, --help                Show this help
 
-Navigation does not move until the start service is called unless --autostart is used:
-  ros2 service call /waypoint_navigator/start std_srvs/srv/Trigger '{}'
+The route editor publishes, confirms, and starts a clicked route with one button.
+The startup CSV remains idle unless --autostart is used.
 EOF
 }
 
@@ -151,6 +151,9 @@ done
 set +u
 source "${ROS_SETUP}"
 set -u
+
+[[ -x "/opt/ros/${ROS_DISTRO_NAME}/lib/robot_localization/ekf_node" ]] ||
+  fail "robot_localization is missing; install ros-${ROS_DISTRO_NAME}-robot-localization"
 
 find_ros_processes() {
   local pattern
@@ -313,7 +316,7 @@ build_orb_slam3() {
 
 build_ros_packages() {
   log "Building ROS 2 nodes"
-  local packages=(orbslam3 imu_rpy_filter visual_navigation)
+  local packages=(orbslam3 imu_rpy_filter wheel_odometry fused_odometry visual_navigation)
   if [[ "${USE_SERIAL}" == "true" ]]; then
     packages+=(cup_car_serial)
   fi
@@ -331,6 +334,8 @@ runtime_ready() {
     [[ -f "${ORB_ROOT}/lib/libORB_SLAM3.so" ]] &&
     [[ -x "${WORKSPACE_ROOT}/install/orbslam3/lib/orbslam3/stereo-inertial" ]] &&
     [[ -x "${WORKSPACE_ROOT}/install/imu_rpy_filter/lib/imu_rpy_filter/imu_rpy_filter_node" ]] &&
+    [[ -x "${WORKSPACE_ROOT}/install/wheel_odometry/lib/wheel_odometry/wheel_odometry_node" ]] &&
+    [[ -x "${WORKSPACE_ROOT}/install/fused_odometry/lib/fused_odometry/fusion_gate_node" ]] &&
     [[ -x "${WORKSPACE_ROOT}/install/visual_navigation/lib/visual_navigation/waypoint_navigator" ]] &&
     { [[ "${USE_SERIAL}" == "false" ]] ||
       [[ -x "${WORKSPACE_ROOT}/install/cup_car_serial/lib/cup_car_serial/cmd_vel_serial_node" ]]; }
@@ -362,7 +367,7 @@ set -u
 
 export LD_LIBRARY_PATH="${ORB_ROOT}/lib:${DEPS_ROOT}/lib:${LD_LIBRARY_PATH:-}"
 
-log "Starting visual navigation"
+log "Starting decoupled odometry and navigation stacks"
 log "Route: ${ROUTE_FILE}"
 log "IMU filter: ${USE_IMU}; SLAM IMU fusion: ${USE_SLAM_IMU}; CLAHE: ${EQUALIZE}; visualization: ${VISUALIZATION}; autostart: ${AUTOSTART}"
 if [[ "${USE_SERIAL}" == "true" ]]; then
@@ -373,25 +378,92 @@ else
   LAUNCH_FILE="visual_navigation_bringup.launch.py"
 fi
 
-LAUNCH_ARGS=(
-  "route_file:=${ROUTE_FILE}"
-  "route_frame:=map"
-  "body_frame_id:=camera_link"
-  "cmd_vel_topic:=/cmd_vel_nav"
+ODOMETRY_LAUNCH_ARGS=(
   "serial_no:=_${CAMERA_SERIAL}"
   "initial_reset:=${CAMERA_INITIAL_RESET}"
   "visualization:=${VISUALIZATION}"
   "use_imu:=${USE_IMU}"
   "use_slam_imu:=${USE_SLAM_IMU}"
   "equalize:=${EQUALIZE}"
+  "use_wheel:=${USE_SERIAL}"
+)
+
+NAVIGATION_LAUNCH_ARGS=(
+  "route_file:=${ROUTE_FILE}"
+  "route_frame:=map"
+  "odom_topic:=/odometry/fused"
+  "fusion_status_topic:=/odometry/fusion_status"
+  "cmd_vel_topic:=/cmd_vel_nav"
   "autostart:=${AUTOSTART}"
 )
 
 if [[ "${USE_SERIAL}" == "true" ]]; then
-  LAUNCH_ARGS+=(
+  NAVIGATION_LAUNCH_ARGS+=(
     "serial_device:=${SERIAL_DEVICE}"
     "serial_baud_rate:=${SERIAL_BAUD_RATE}"
   )
 fi
 
-exec ros2 launch visual_navigation "${LAUNCH_FILE}" "${LAUNCH_ARGS[@]}"
+declare -a STACK_PIDS=()
+STACK_STOPPED="false"
+
+stop_stack() {
+  [[ "${STACK_STOPPED}" == "false" ]] || return 0
+  STACK_STOPPED="true"
+  if ((${#STACK_PIDS[@]} > 0)); then
+    local -a remaining=()
+    local attempt
+    local pid
+
+    timeout 1.0 ros2 service call \
+      /waypoint_navigator/stop std_srvs/srv/Trigger '{}' >/dev/null 2>&1 || true
+    timeout 1.5 ros2 topic pub -r 20 -t 4 -w 0 \
+      /cmd_vel_nav geometry_msgs/msg/Twist '{}' >/dev/null 2>&1 || true
+
+    kill -INT "${STACK_PIDS[@]}" 2>/dev/null || true
+    for attempt in {1..30}; do
+      remaining=()
+      for pid in "${STACK_PIDS[@]}"; do
+        kill -0 "${pid}" 2>/dev/null && remaining+=("${pid}")
+      done
+      ((${#remaining[@]} == 0)) && break
+      sleep 0.1
+    done
+
+    if ((${#remaining[@]} > 0)); then
+      kill -TERM "${remaining[@]}" 2>/dev/null || true
+      for attempt in {1..10}; do
+        STACK_PIDS=()
+        for pid in "${remaining[@]}"; do
+          kill -0 "${pid}" 2>/dev/null && STACK_PIDS+=("${pid}")
+        done
+        ((${#STACK_PIDS[@]} == 0)) && break
+        sleep 0.1
+      done
+      ((${#STACK_PIDS[@]} == 0)) || kill -KILL "${STACK_PIDS[@]}" 2>/dev/null || true
+    fi
+
+    for pid in "${STACK_PIDS[@]}"; do
+      wait "${pid}" 2>/dev/null || true
+    done
+  fi
+}
+
+trap stop_stack EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+ros2 launch fused_odometry odometry_bringup.launch.py \
+  "${ODOMETRY_LAUNCH_ARGS[@]}" &
+STACK_PIDS+=("$!")
+
+ros2 launch visual_navigation "${LAUNCH_FILE}" \
+  "${NAVIGATION_LAUNCH_ARGS[@]}" &
+STACK_PIDS+=("$!")
+
+set +e
+wait -n "${STACK_PIDS[@]}"
+STACK_STATUS=$?
+set -e
+log "A stack process exited with status ${STACK_STATUS}; stopping the remaining stack"
+exit "${STACK_STATUS}"

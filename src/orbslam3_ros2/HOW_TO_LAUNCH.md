@@ -98,6 +98,7 @@ ros2 topic echo /diagnostics --once | grep tracking_state
 |------|------|------|
 | `/pose` | `geometry_msgs/PoseStamped` | 当前位姿 |
 | `/odom` | `nav_msgs/Odometry` | 位姿 + 速度 + 协方差 |
+| `/odom/orb_raw` | `nav_msgs/Odometry` | 首帧机体对齐的 map 位姿；不做丢跟踪连续化，不发布 TF |
 | `/path` | `nav_msgs/Path` | 历史轨迹（最多 2000 帧） |
 | `/tracking_state` | `std_msgs/Int32` | 跟踪状态码 |
 | `/diagnostics` | `diagnostic_msgs/DiagnosticArray` | 诊断信息 |
@@ -133,6 +134,7 @@ rviz2
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `odom_topic` | `odom` | 里程计话题名 |
+| `raw_odom_topic` | `/odom/orb_raw` | 原始 ORB 里程计话题名 |
 | `pose_topic` | `pose` | 位姿话题名 |
 | `path_topic` | `path` | 轨迹话题名 |
 | `tracking_state_topic` | `tracking_state` | 跟踪状态话题名 |
