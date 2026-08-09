@@ -16,6 +16,11 @@ waypoint_navigator:
     max_angular_speed: 0.80
     linear_gain: 0.80
     angular_gain: 1.80
+    path_pid_kp: 2.20
+    path_pid_ki: 0.25
+    path_pid_kd: 0.05
+    cross_track_gain: 3.50
+    path_pid_integral_limit: 2.00
     rotate_in_place_threshold: 0.60
     waypoint_tolerance: 0.15
     final_yaw_tolerance: 0.12

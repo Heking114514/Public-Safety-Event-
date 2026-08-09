@@ -109,6 +109,13 @@ public:
     maxAngularSpeed_ = std::max(0.0, declare_parameter<double>("max_angular_speed", 0.80));
     linearGain_ = std::max(0.0, declare_parameter<double>("linear_gain", 0.8));
     angularGain_ = std::max(0.0, declare_parameter<double>("angular_gain", 1.8));
+    pathPidKp_ = std::max(0.0, declare_parameter<double>("path_pid_kp", 2.2));
+    pathPidKi_ = std::max(0.0, declare_parameter<double>("path_pid_ki", 0.25));
+    pathPidKd_ = std::max(0.0, declare_parameter<double>("path_pid_kd", 0.05));
+    crossTrackGain_ = std::max(
+      0.0, declare_parameter<double>("cross_track_gain", 3.5));
+    pathPidIntegralLimit_ = std::max(
+      0.0, declare_parameter<double>("path_pid_integral_limit", 2.0));
     rotateInPlaceThreshold_ = std::max(
       0.0, declare_parameter<double>("rotate_in_place_threshold", 0.60));
     waypointTolerance_ = std::max(
@@ -359,6 +366,8 @@ private:
     waitAction_ = WaitAction::NONE;
     navigationActive_ = true;
     localizationWasValid_ = false;
+    pathSegmentInitialized_ = false;
+    ResetPathPid();
     SetState("WAITING_FOR_LOCALIZATION");
     response->success = true;
     response->message = "Waypoint navigation started";
@@ -370,6 +379,8 @@ private:
   {
     navigationActive_ = false;
     waitAction_ = WaitAction::NONE;
+    pathSegmentInitialized_ = false;
+    ResetPathPid();
     PublishStop();
     SetState("IDLE");
     response->success = true;
@@ -384,6 +395,8 @@ private:
     currentWaypointIndex_ = 0;
     localizationWasValid_ = false;
     waitAction_ = WaitAction::NONE;
+    pathSegmentInitialized_ = false;
+    ResetPathPid();
     PublishStop();
     PublishCurrentWaypoint();
     SetState("IDLE");
@@ -415,6 +428,7 @@ private:
     if (!LocalizationIsValid())
     {
       PublishStop();
+      ResetPathPid();
       if (localizationWasValid_ && abortOnTrackingLoss_)
       {
         navigationActive_ = false;
@@ -443,6 +457,8 @@ private:
       if (completedAction == WaitAction::ADVANCE)
       {
         ++currentWaypointIndex_;
+        pathSegmentInitialized_ = false;
+        ResetPathPid();
         PublishCurrentWaypoint();
       }
       else
@@ -459,6 +475,9 @@ private:
     }
 
     const Waypoint &target = waypoints_[currentWaypointIndex_];
+    if (!pathSegmentInitialized_)
+      BeginPathSegment();
+
     const double deltaX = target.x - currentX_;
     const double deltaY = target.y - currentY_;
     const double distance = std::hypot(deltaX, deltaY);
@@ -496,20 +515,30 @@ private:
       }
 
       ++currentWaypointIndex_;
+      pathSegmentInitialized_ = false;
+      ResetPathPid();
       PublishCurrentWaypoint();
       return;
     }
 
-    const double targetHeading = std::atan2(deltaY, deltaX);
-    const double headingError = NormalizeAngle(targetHeading - currentYaw_);
-    geometry_msgs::msg::Twist command;
-    command.angular.z = Clamp(
-      angularGain_ * headingError, -maxAngularSpeed_, maxAngularSpeed_);
+    const double pathDeltaX = target.x - pathSegmentStartX_;
+    const double pathDeltaY = target.y - pathSegmentStartY_;
+    const double pathHeading = std::atan2(pathDeltaY, pathDeltaX);
+    const double headingError = NormalizeAngle(pathHeading - currentYaw_);
+    // Positive cross-track error means the car is to the left of the path.
+    const double crossTrackError =
+      std::cos(pathHeading) * (currentY_ - pathSegmentStartY_) -
+      std::sin(pathHeading) * (currentX_ - pathSegmentStartX_);
+    const double pathError = headingError - crossTrackGain_ * crossTrackError;
+    const double angularSpeed = UpdatePathPid(pathError);
 
-    if (std::abs(headingError) < rotateInPlaceThreshold_)
+    geometry_msgs::msg::Twist command;
+    command.angular.z = angularSpeed;
+
+    if (std::abs(pathError) < rotateInPlaceThreshold_)
     {
       const double requestedSpeed = std::min(target.speed, maxLinearSpeed_);
-      const double headingScale = std::max(0.0, std::cos(headingError));
+      const double headingScale = std::max(0.0, std::cos(pathError));
       double linearSpeed = requestedSpeed;
       if (finalWaypoint)
         linearSpeed = std::min(requestedSpeed, linearGain_ * distance);
@@ -523,8 +552,49 @@ private:
   void CompleteNavigation()
   {
     navigationActive_ = false;
+    pathSegmentInitialized_ = false;
+    ResetPathPid();
     PublishStop();
     SetState("GOAL_REACHED");
+  }
+
+  void BeginPathSegment()
+  {
+    pathSegmentStartX_ = currentX_;
+    pathSegmentStartY_ = currentY_;
+    pathSegmentInitialized_ = true;
+    ResetPathPid();
+  }
+
+  void ResetPathPid()
+  {
+    pathPidIntegral_ = 0.0;
+    previousPathError_ = 0.0;
+    pathPidInitialized_ = false;
+  }
+
+  double UpdatePathPid(double error)
+  {
+    const auto currentTime = std::chrono::steady_clock::now();
+    double derivative = 0.0;
+    if (pathPidInitialized_)
+    {
+      const double dt = std::chrono::duration<double>(currentTime - lastPathPidTime_).count();
+      if (dt > 0.0 && dt <= 0.2)
+      {
+        pathPidIntegral_ = Clamp(
+          pathPidIntegral_ + error * dt,
+          -pathPidIntegralLimit_, pathPidIntegralLimit_);
+        derivative = (error - previousPathError_) / dt;
+      }
+    }
+
+    previousPathError_ = error;
+    lastPathPidTime_ = currentTime;
+    pathPidInitialized_ = true;
+    return Clamp(
+      pathPidKp_ * error + pathPidKi_ * pathPidIntegral_ + pathPidKd_ * derivative,
+      -maxAngularSpeed_, maxAngularSpeed_);
   }
 
   void PublishStop()
@@ -564,6 +634,11 @@ private:
   double maxAngularSpeed_{0.80};
   double linearGain_{0.8};
   double angularGain_{1.8};
+  double pathPidKp_{2.2};
+  double pathPidKi_{0.25};
+  double pathPidKd_{0.05};
+  double crossTrackGain_{3.5};
+  double pathPidIntegralLimit_{2.0};
   double rotateInPlaceThreshold_{0.60};
   double waypointTolerance_{0.15};
   double finalYawTolerance_{0.12};
@@ -583,9 +658,16 @@ private:
   double currentX_{0.0};
   double currentY_{0.0};
   double currentYaw_{0.0};
+  double pathSegmentStartX_{0.0};
+  double pathSegmentStartY_{0.0};
+  double pathPidIntegral_{0.0};
+  double previousPathError_{0.0};
+  bool pathSegmentInitialized_{false};
+  bool pathPidInitialized_{false};
   std::string state_;
   rclcpp::Time lastOdomArrival_{0, 0, RCL_ROS_TIME};
   rclcpp::Time waitUntil_{0, 0, RCL_ROS_TIME};
+  std::chrono::steady_clock::time_point lastPathPidTime_{};
   WaitAction waitAction_{WaitAction::NONE};
 
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmdVelPublisher_;

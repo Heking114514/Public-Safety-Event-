@@ -595,19 +595,19 @@ distance <= target.tolerance
 
 ## 12. 当前控制算法
 
-当前实现不是 Pure Pursuit，而是一个适合差速底盘初期调试的“航向误差 + 距离误差”逐航点控制器。
+当前实现是逐航点的直线路径跟随器。每一段从开始导航或到达上一航点时的当前位置开始，终点为当前航点；航向误差和横向误差进入 PID，持续补偿左右轮机械差异造成的跑偏。
 
 ### 12.1 目标方向
 
 ```text
-target_heading = atan2(target_y - current_y,
-                       target_x - current_x)
+path_heading = atan2(target_y - segment_start_y,
+                     target_x - segment_start_x)
 ```
 
 ### 12.2 航向误差
 
 ```text
-heading_error = normalize(target_heading - current_yaw)
+heading_error = normalize(path_heading - current_yaw)
 ```
 
 `normalize()` 把角度限制到：
@@ -621,7 +621,12 @@ heading_error = normalize(target_heading - current_yaw)
 ### 12.3 角速度
 
 ```text
-angular_z = angular_gain × heading_error
+cross_track_error = cos(path_heading) × (current_y - segment_start_y)
+                    - sin(path_heading) × (current_x - segment_start_x)
+path_error = heading_error - cross_track_gain × cross_track_error
+angular_z = path_pid_kp × path_error
+          + path_pid_ki × integral(path_error)
+          + path_pid_kd × derivative(path_error)
 ```
 
 并限制到：
@@ -778,7 +783,12 @@ config/waypoint_navigation.yaml
 | `max_linear_speed` | `0.30` | 全局最大线速度，m/s |
 | `max_angular_speed` | `0.80` | 最大角速度，rad/s |
 | `linear_gain` | `0.80` | 最终航点距离误差到线速度的比例增益 |
-| `angular_gain` | `1.80` | 航向误差到角速度的比例增益 |
+| `angular_gain` | `1.80` | 终点朝向对齐的比例增益 |
+| `path_pid_kp` | `2.20` | 路径误差 PID 的比例增益 |
+| `path_pid_ki` | `0.25` | 路径误差 PID 的积分增益，用于补偿持续机械跑偏 |
+| `path_pid_kd` | `0.05` | 路径误差 PID 的微分增益 |
+| `cross_track_gain` | `3.50` | 横向偏差到航向误差的换算增益，rad/m |
+| `path_pid_integral_limit` | `2.00` | PID 积分限幅，避免定位跳变后持续过度转向 |
 | `rotate_in_place_threshold` | `0.60` | 超过该航向误差时禁止前进，rad |
 | `waypoint_tolerance` | `0.15` | CSV 未填写容差时的默认值，m |
 | `final_yaw_tolerance` | `0.12` | 最终朝向容差，rad |
