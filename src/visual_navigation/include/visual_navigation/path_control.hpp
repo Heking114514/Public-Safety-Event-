@@ -138,7 +138,7 @@ inline double CrossTrackSpeedLimit(
   return requested + progress * (minimum - requested);
 }
 
-inline double FinalApproachSpeedLimit(
+inline double WaypointApproachSpeedLimit(
   double speed_after_cross_track_limit, double requested_speed,
   double linear_gain, double distance)
 {

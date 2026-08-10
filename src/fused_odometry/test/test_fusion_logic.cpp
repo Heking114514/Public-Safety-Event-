@@ -31,6 +31,14 @@ TEST(PoseResidual, GatesPositionAndWrappedYawWithoutChangingCoordinates)
     Pose2d{1.0, 2.0, reference.yaw - 0.3}, reference, 0.3, 0.2));
 }
 
+TEST(DisagreementCovariance, IsBoundedAndNeverRejectsThePrimaryRateSource)
+{
+  EXPECT_DOUBLE_EQ(fused_odometry::disagreement_covariance_scale(0.0, 0.2, 0.8), 1.0);
+  EXPECT_NEAR(fused_odometry::disagreement_covariance_scale(0.4, 0.2, 0.8), 5.0, 1e-9);
+  EXPECT_NEAR(fused_odometry::disagreement_covariance_scale(2.0, 0.2, 0.8), 17.0, 1e-9);
+  EXPECT_DOUBLE_EQ(fused_odometry::disagreement_covariance_scale(NAN, 0.2, 0.8), 100.0);
+}
+
 TEST(ResidualGate, RejectsAndRecoversWithHysteresis)
 {
   fused_odometry::ResidualGate gate(1.0, 3, 2);

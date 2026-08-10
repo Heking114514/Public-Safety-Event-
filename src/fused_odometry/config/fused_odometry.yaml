@@ -33,7 +33,6 @@ fused_odometry_gate:
     fused_timeout_s: 0.50
     command_timeout_s: 0.40
     raw_visual_timeout_s: 0.30
-    raw_sync_tolerance_s: 0.08
     # Reject optical-frame or otherwise non-planar poses mislabeled as map.
     raw_visual_max_tilt_rad: 0.50
     visual_recovery_samples: 5
@@ -51,17 +50,18 @@ fused_odometry_gate:
     max_wheel_only_speed_mps: 0.30
     max_wheel_speed_mps: 1.5
     max_wheel_yaw_rate_radps: 4.0
+    max_imu_yaw_rate_radps: 4.0
 
     consistency_window_s: 0.75
     robust_min_samples: 5
     wheel_visual_soft_mps: 0.15
     wheel_visual_reject_mps: 0.45
-    imu_visual_soft_radps: 0.20
-    imu_visual_reject_radps: 0.80
+    imu_visual_soft_radps: 0.15
+    imu_visual_covariance_cap_radps: 0.80
     residual_bad_samples: 3
     residual_recovery_samples: 10
     wheel_imu_yaw_soft_radps: 0.15
-    wheel_imu_yaw_reject_radps: 0.45
+    wheel_imu_yaw_reject_radps: 0.25
     wheel_yaw_validation_s: 2.0
     wheel_yaw_backup_s: 2.0
 
@@ -70,7 +70,10 @@ fused_odometry_gate:
     motion_stationary_threshold_mps: 0.02
     motion_fault_dwell_s: 0.60
     motion_recovery_dwell_s: 1.00
-    angular_stall_command_threshold_radps: 0.30
+    # Path tracking is allowed to request up to 0.45 rad/s while the car is
+    # translating. Treat only rotate-in-place-sized commands as an angular
+    # stall, otherwise drivetrain steering deadband can abort a healthy run.
+    angular_stall_command_threshold_radps: 0.55
     angular_stall_stationary_threshold_radps: 0.10
     angular_stall_dwell_s: 0.80
     angular_stall_recovery_dwell_s: 1.00

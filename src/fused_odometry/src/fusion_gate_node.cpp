@@ -105,10 +105,6 @@ public:
       positive("wheel_visual_reject_mps", 0.45),
       positive_count("residual_bad_samples", 3),
       positive_count("residual_recovery_samples", 10)),
-    imu_gate_(
-      positive("imu_visual_reject_radps", 0.8),
-      static_cast<std::size_t>(get_parameter("residual_bad_samples").as_int()),
-      static_cast<std::size_t>(get_parameter("residual_recovery_samples").as_int())),
     visual_vx_window_(positive("consistency_window_s", 0.75)),
     visual_wz_window_(get_parameter("consistency_window_s").as_double()),
     wheel_vx_window_(get_parameter("consistency_window_s").as_double()),
@@ -162,7 +158,6 @@ public:
     fused_timeout_ = positive("fused_timeout_s", 0.5);
     command_timeout_ = positive("command_timeout_s", 0.4);
     raw_visual_timeout_ = positive("raw_visual_timeout_s", 0.3);
-    raw_sync_tolerance_ = positive("raw_sync_tolerance_s", 0.08);
     raw_visual_max_tilt_ = positive("raw_visual_max_tilt_rad", 0.50);
     max_dead_reckoning_time_ = positive("max_dead_reckoning_time_s", 2.0);
     max_dead_reckoning_distance_ = positive("max_dead_reckoning_distance_m", 0.30);
@@ -171,8 +166,10 @@ public:
     max_wheel_only_speed_ = positive("max_wheel_only_speed_mps", 0.30);
     max_wheel_speed_ = positive("max_wheel_speed_mps", 1.5);
     max_wheel_yaw_rate_ = positive("max_wheel_yaw_rate_radps", 4.0);
+    max_imu_yaw_rate_ = positive("max_imu_yaw_rate_radps", 4.0);
     wheel_soft_residual_ = positive("wheel_visual_soft_mps", 0.15);
     imu_soft_residual_ = positive("imu_visual_soft_radps", 0.20);
+    imu_visual_covariance_cap_ = positive("imu_visual_covariance_cap_radps", 0.80);
     visual_position_gate_ = positive("visual_fused_position_gate_m", 0.8);
     visual_yaw_gate_ = positive("visual_fused_yaw_gate_rad", 0.7);
     visual_hard_position_gate_ = positive("visual_recovery_hard_position_m", 1.5);
@@ -273,8 +270,7 @@ private:
 
   bool imu_healthy() const
   {
-    return imu_received_ && !imu_gate_.rejected() &&
-           age_seconds(imu_received_at_) <= imu_timeout_;
+    return imu_received_ && age_seconds(imu_received_at_) <= imu_timeout_;
   }
 
   void tracking_callback(const std_msgs::msg::Int32::SharedPtr message)
@@ -293,6 +289,17 @@ private:
     if (!visual_interrupted_) {
       visual_interrupted_ = true;
       visual_accepted_ = false;
+      visual_velocity_valid_ = false;
+      last_visual_pose_valid_ = false;
+      visual_forward_velocity_ = 0.0;
+      visual_yaw_rate_ = 0.0;
+      imu_residual_ = 0.0;
+      imu_visual_robust_residual_ = 0.0;
+      visual_yaw_disagreement_scale_ = 1.0;
+      visual_vx_window_.clear();
+      visual_wz_window_.clear();
+      wheel_visual_residual_window_.clear();
+      imu_visual_residual_window_.clear();
       visual_recovery_count_ = 0;
       dead_reckoning_distance_ = 0.0;
       dead_reckoning_since_ = std::chrono::steady_clock::now();
@@ -381,9 +388,14 @@ private:
       }
     }
 
+    // Both ORB topics are published from the same pose with the same stamp. DDS
+    // does not preserve callback ordering across topics, so a tolerance here can
+    // pair the previous raw pose with the current continuous pose and create a
+    // zero/double yaw-rate pattern. Fall back to the continuous pose unless the
+    // latest raw sample is from this exact frame.
     const bool raw_synchronized = raw_visual_received_ &&
       age_seconds(raw_visual_received_at_) <= raw_visual_timeout_ &&
-      std::abs((message_stamp - last_raw_visual_stamp_).seconds()) <= raw_sync_tolerance_;
+      last_raw_visual_stamp_ == message_stamp;
     Pose2d aligned = aligner_.apply(continuous_raw);
     using_raw_visual_ = false;
     if (raw_synchronized) {
@@ -435,6 +447,12 @@ private:
       1.0 + std::pow(position_residual / visual_position_gate_, 2), 1.0, 25.0);
     double yaw_scale = std::clamp(
       1.0 + std::pow(yaw_residual / visual_yaw_gate_, 2), 1.0, 25.0);
+    visual_yaw_disagreement_scale_ = 1.0;
+    if (imu_healthy() && imu_visual_residual_window_.ready(robust_min_samples_)) {
+      visual_yaw_disagreement_scale_ = disagreement_covariance_scale(
+        imu_visual_robust_residual_, imu_soft_residual_, imu_visual_covariance_cap_);
+      yaw_scale = std::max(yaw_scale, visual_yaw_disagreement_scale_);
+    }
     if (!recovering && fused_fresh() &&
       !pose_residual_within(
         aligned, fused_pose_, visual_hard_position_gate_, visual_hard_yaw_gate_))
@@ -607,12 +625,14 @@ private:
   void imu_callback(const sensor_msgs::msg::Imu::SharedPtr message)
   {
     const double yaw_rate = message->angular_velocity.z;
-    if (message->header.frame_id != imu_expected_frame_ || !finite(yaw_rate)) {
+    if (message->header.frame_id != imu_expected_frame_ || !finite(yaw_rate) ||
+      std::abs(yaw_rate) > max_imu_yaw_rate_)
+    {
       ++invalid_imu_count_;
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 2000,
-        "Rejecting IMU with invalid wz/frame (%s; expected %s)",
-        message->header.frame_id.c_str(), imu_expected_frame_.c_str());
+        "Rejecting IMU with invalid wz/frame (wz=%.3f, %s; expected %s)",
+        yaw_rate, message->header.frame_id.c_str(), imu_expected_frame_.c_str());
       return;
     }
     const rclcpp::Time message_stamp(message->header.stamp);
@@ -629,13 +649,14 @@ private:
       imu_visual_residual_window_.add(
         steady_seconds(), std::abs(yaw_rate - visual_yaw_rate_));
       residual = imu_visual_residual_window_.median();
-      imu_gate_.update(residual + 1.4826 * imu_visual_residual_window_.mad());
+      imu_visual_robust_residual_ =
+        residual + 1.4826 * imu_visual_residual_window_.mad();
       compared = true;
     }
     imu_received_ = true;
     imu_received_at_ = std::chrono::steady_clock::now();
     imu_residual_ = compared ? residual : 0.0;
-    if (imu_gate_.rejected() || !ever_accepted_visual_) {
+    if (!ever_accepted_visual_) {
       return;
     }
 
@@ -648,12 +669,10 @@ private:
     output.angular_velocity_covariance.fill(0.0);
     output.angular_velocity_covariance[0] = 1.0e6;
     output.angular_velocity_covariance[4] = 1.0e6;
-    const double scale = compared ?
-      imu_gate_.covariance_scale(residual, imu_soft_residual_) : 2.0;
     const double source_variance = message->angular_velocity_covariance[8];
     const double base_variance = finite(source_variance) && source_variance > 0.0 ?
       std::max(imu_wz_variance_, source_variance) : imu_wz_variance_;
-    output.angular_velocity_covariance[8] = base_variance * scale;
+    output.angular_velocity_covariance[8] = base_variance;
     imu_publisher_->publish(output);
   }
 
@@ -755,6 +774,8 @@ private:
     item.values.push_back(value("wheel_visual_residual_mps", std::to_string(wheel_residual_)));
     item.values.push_back(value("imu_visual_residual_radps", std::to_string(imu_residual_)));
     item.values.push_back(value(
+      "visual_yaw_disagreement_scale", std::to_string(visual_yaw_disagreement_scale_)));
+    item.values.push_back(value(
       "wheel_imu_yaw_residual_radps",
       std::to_string(wheel_imu_yaw_residual_window_.median())));
     item.values.push_back(value(
@@ -791,7 +812,6 @@ private:
   }
 
   ResidualGate wheel_gate_;
-  ResidualGate imu_gate_;
   PoseAligner aligner_;
   PoseAligner raw_aligner_;
   RobustWindow visual_vx_window_;
@@ -830,7 +850,6 @@ private:
   double fused_timeout_{0.5};
   double command_timeout_{0.4};
   double raw_visual_timeout_{0.3};
-  double raw_sync_tolerance_{0.08};
   double raw_visual_max_tilt_{0.5};
   double max_dead_reckoning_time_{2.0};
   double max_dead_reckoning_distance_{0.3};
@@ -839,8 +858,10 @@ private:
   double max_wheel_only_speed_{0.3};
   double max_wheel_speed_{1.5};
   double max_wheel_yaw_rate_{4.0};
+  double max_imu_yaw_rate_{4.0};
   double wheel_soft_residual_{0.15};
   double imu_soft_residual_{0.2};
+  double imu_visual_covariance_cap_{0.8};
   double visual_position_gate_{0.8};
   double visual_yaw_gate_{0.7};
   double visual_hard_position_gate_{1.5};
@@ -895,6 +916,8 @@ private:
   double visual_yaw_rate_{0.0};
   double wheel_residual_{0.0};
   double imu_residual_{0.0};
+  double imu_visual_robust_residual_{0.0};
+  double visual_yaw_disagreement_scale_{1.0};
   double dead_reckoning_distance_{0.0};
   double command_velocity_{0.0};
   double command_yaw_rate_{0.0};

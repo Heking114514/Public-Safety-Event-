@@ -13,6 +13,19 @@ double wrap_angle(double angle)
   return std::remainder(angle, 2.0 * kPi);
 }
 
+double disagreement_covariance_scale(
+  double absolute_residual, double soft_threshold, double residual_cap)
+{
+  if (!std::isfinite(absolute_residual) || !std::isfinite(soft_threshold) ||
+    !std::isfinite(residual_cap) || soft_threshold <= 0.0 || residual_cap <= 0.0)
+  {
+    return 100.0;
+  }
+  const double bounded_residual = std::min(std::abs(absolute_residual), residual_cap);
+  const double ratio = bounded_residual / soft_threshold;
+  return std::clamp(1.0 + ratio * ratio, 1.0, 100.0);
+}
+
 bool pose_residual_within(
   const Pose2d & measurement, const Pose2d & reference,
   double max_position_residual, double max_yaw_residual)

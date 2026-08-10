@@ -1029,11 +1029,8 @@ private:
       double linearSpeed = visual_navigation::CrossTrackSpeedLimit(
         requestedSpeed, std::abs(crossTrackError),
         crossTrackSlowdownStart_, crossTrackSlowdownFull_, crossTrackMinimumSpeed_);
-      if (finalWaypoint)
-      {
-        linearSpeed = visual_navigation::FinalApproachSpeedLimit(
-          linearSpeed, requestedSpeed, linearGain_, distance);
-      }
+      linearSpeed = visual_navigation::WaypointApproachSpeedLimit(
+        linearSpeed, requestedSpeed, linearGain_, distance);
       command.linear.x = linearSpeed * headingScale * fusionHealth.speed_scale;
     }
 

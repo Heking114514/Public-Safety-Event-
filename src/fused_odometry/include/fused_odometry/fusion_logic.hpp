@@ -11,6 +11,9 @@ constexpr double kPi = 3.14159265358979323846;
 
 double wrap_angle(double angle);
 
+double disagreement_covariance_scale(
+  double absolute_residual, double soft_threshold, double residual_cap);
+
 struct Pose2d
 {
   double x{0.0};

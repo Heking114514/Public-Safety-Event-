@@ -34,13 +34,14 @@ should not use those as the public odometry interface.
 
 `robot_localization` performs the planar EKF. The gate independently validates
 finite values, expected frames, monotonic timestamps and source freshness. It
-uses median/MAD residual windows, recovery hysteresis, and increases measurement
-covariance as wheel/IMU residuals approach their rejection thresholds. IMU yaw
-rate is compared with the latest visual yaw rate so rapid direction reversals do
-not compare a current sample with a delayed 0.75-second visual median. Three
-consecutive hard robust residuals reject a source; ten consistent comparisons
-are required to restore it. Wheel covariance supplied by the encoder node is
-retained as the lower bound before this adaptive inflation.
+uses median/MAD residual windows, recovery hysteresis, and adaptive measurement
+covariance. IMU yaw rate is the primary short-term rotation source: it is removed
+only for an invalid frame/value, implausible magnitude, non-monotonic timestamp,
+or timeout. IMU/visual disagreement increases visual yaw covariance instead of
+interrupting `/fusion/input/imu`, because visual angular rate can lag during a
+rapid turn. Wheel residuals retain hard rejection and recovery hysteresis. Wheel
+covariance supplied by the encoder node remains the lower bound before adaptive
+inflation.
 
 Command, wheel, and visual motion are classified only after a configurable dwell:
 wheel motion without visual motion is `WHEEL_SLIP`; commanded motion with neither
@@ -67,7 +68,9 @@ reasonable recovery enters a 0.75-second covariance ramp so correction is
 gradual. A recovery beyond 1.50 m or 1.00 rad is rejected instead of moving the
 visual origin onto the wheel prediction. The established visual map transform
 is preserved across an outage, allowing accepted visual recovery to correct
-wheel dead-reckoning drift.
+wheel dead-reckoning drift. Raw and continuous ORB poses are paired only when
+their timestamps are identical; if DDS delivers the continuous topic first, the
+gate uses it for that frame rather than pairing it with an older raw pose.
 
 Raw ORB pose is accepted only when its body Z axis remains within 0.50 rad of
 the map Z axis. This rejects the optical-world coordinates produced by older

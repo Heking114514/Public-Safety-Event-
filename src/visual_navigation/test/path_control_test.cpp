@@ -78,12 +78,12 @@ TEST(PathControl, CrossTrackErrorProgressivelyLimitsForwardSpeed)
     visual_navigation::CrossTrackSpeedLimit(0.05, 0.08, 0.03, 0.06, 0.08), 0.05);
 }
 
-TEST(PathControl, FinalApproachDoesNotOverrideCrossTrackSpeedLimit)
+TEST(PathControl, WaypointApproachDoesNotOverrideCrossTrackSpeedLimit)
 {
   EXPECT_DOUBLE_EQ(
-    visual_navigation::FinalApproachSpeedLimit(0.08, 0.20, 0.8, 1.0), 0.08);
+    visual_navigation::WaypointApproachSpeedLimit(0.08, 0.20, 0.8, 1.0), 0.08);
   EXPECT_DOUBLE_EQ(
-    visual_navigation::FinalApproachSpeedLimit(0.20, 0.20, 0.8, 0.05), 0.04);
+    visual_navigation::WaypointApproachSpeedLimit(0.20, 0.20, 0.8, 0.05), 0.04);
 }
 
 TEST(PathControl, RotateInPlaceUsesHysteresis)
