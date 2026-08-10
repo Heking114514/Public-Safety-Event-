@@ -18,12 +18,15 @@
 #include "nav_msgs/msg/odometry.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "sensor_msgs/msg/imu.hpp"
 #include "std_msgs/msg/bool.hpp"
+#include "std_msgs/msg/empty.hpp"
 #include "std_msgs/msg/int32.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "std_srvs/srv/trigger.hpp"
 #include "visual_navigation/actuator_health_policy.hpp"
 #include "visual_navigation/fusion_health_policy.hpp"
+#include "visual_navigation/path_control.hpp"
 #include "visual_navigation/rate_limiter.hpp"
 
 namespace
@@ -126,6 +129,11 @@ public:
     routeFile_ = declare_parameter<std::string>("route_file", "");
     routeFrame_ = declare_parameter<std::string>("route_frame", "map");
     odomTopic_ = declare_parameter<std::string>("odom_topic", "/odometry/fused");
+    imuTopic_ = declare_parameter<std::string>("imu_topic", "/imu/filtered");
+    trackingPointOffsetX_ = declare_parameter<double>("tracking_point_offset_x", 0.087);
+    trackingPointOffsetY_ = declare_parameter<double>("tracking_point_offset_y", 0.040);
+    if (!std::isfinite(trackingPointOffsetX_) || !std::isfinite(trackingPointOffsetY_))
+      throw std::invalid_argument("tracking point offsets must be finite");
     fusionStatusTopic_ = declare_parameter<std::string>(
       "fusion_status_topic", "/odometry/fusion_status");
     actuatorHealthTopic_ = declare_parameter<std::string>(
@@ -135,6 +143,8 @@ public:
     pathTopic_ = declare_parameter<std::string>("path_topic", "/waypoint_path");
     routeInputTopic_ = declare_parameter<std::string>(
       "route_input_topic", "/waypoint_navigation/route_input");
+    startTopic_ = declare_parameter<std::string>(
+      "start_topic", "/waypoint_navigation/start");
     statusTopic_ = declare_parameter<std::string>("status_topic", "/waypoint_navigation/status");
     currentWaypointTopic_ = declare_parameter<std::string>(
       "current_waypoint_topic", "/waypoint_navigation/current_waypoint");
@@ -143,32 +153,87 @@ public:
     defaultSpeed_ = std::max(0.0, declare_parameter<double>("default_speed", 0.20));
     maxLinearSpeed_ = std::max(0.0, declare_parameter<double>("max_linear_speed", 0.30));
     maxAngularSpeed_ = std::max(0.0, declare_parameter<double>("max_angular_speed", 0.80));
+    maxPathAngularSpeed_ = std::min(
+      maxAngularSpeed_, std::max(
+        0.0, declare_parameter<double>("max_path_angular_speed", 0.65)));
     maxLinearAcceleration_ = std::max(
       0.01, declare_parameter<double>("max_linear_acceleration", 0.40));
     maxLinearDeceleration_ = std::max(
       0.01, declare_parameter<double>("max_linear_deceleration", 0.80));
     maxAngularAcceleration_ = std::max(
-      0.01, declare_parameter<double>("max_angular_acceleration", 1.50));
+      0.01, declare_parameter<double>("max_angular_acceleration", 2.50));
+    maxAngularDeceleration_ = std::max(
+      0.01, declare_parameter<double>("max_angular_deceleration", 4.00));
     linearGain_ = std::max(0.0, declare_parameter<double>("linear_gain", 0.8));
-    angularGain_ = std::max(0.0, declare_parameter<double>("angular_gain", 1.8));
-    pathPidKp_ = std::max(0.0, declare_parameter<double>("path_pid_kp", 2.2));
-    pathPidKi_ = std::max(0.0, declare_parameter<double>("path_pid_ki", 0.25));
-    pathPidKd_ = std::max(0.0, declare_parameter<double>("path_pid_kd", 0.05));
+    angularGain_ = std::max(0.0, declare_parameter<double>("angular_gain", 2.0));
+    pathPidKp_ = std::max(0.0, declare_parameter<double>("path_pid_kp", 2.4));
+    pathPidKi_ = std::max(0.0, declare_parameter<double>("path_pid_ki", 0.35));
+    pathPidKd_ = std::max(0.0, declare_parameter<double>("path_pid_kd", 0.0));
+    pathYawRateDamping_ = std::max(
+      0.0, declare_parameter<double>("path_yaw_rate_damping", 0.18));
+    turnYawRateDamping_ = std::max(
+      0.0, declare_parameter<double>("turn_yaw_rate_damping", 0.10));
+    turnBrakeHorizon_ = std::max(
+      0.0, declare_parameter<double>("turn_brake_horizon", 0.35));
+    turnCruiseSpeed_ = std::min(
+      maxAngularSpeed_, std::max(
+        0.0, declare_parameter<double>("turn_cruise_speed", 0.65)));
     crossTrackGain_ = std::max(
-      0.0, declare_parameter<double>("cross_track_gain", 3.5));
+      0.0, declare_parameter<double>("cross_track_gain", 2.6));
+    stanleySofteningSpeed_ = std::max(
+      0.01, declare_parameter<double>("stanley_softening_speed", 0.25));
+    maxCrossTrackCorrection_ = std::max(
+      0.0, declare_parameter<double>("max_cross_track_correction", 0.70));
+    crossTrackSlowdownStart_ = std::max(
+      0.0, declare_parameter<double>("cross_track_slowdown_start", 0.03));
+    crossTrackSlowdownFull_ = std::max(
+      crossTrackSlowdownStart_ + 0.001,
+      declare_parameter<double>("cross_track_slowdown_full", 0.06));
+    crossTrackMinimumSpeed_ = std::max(
+      0.0, declare_parameter<double>("cross_track_minimum_speed", 0.08));
     pathPidIntegralLimit_ = std::max(
-      0.0, declare_parameter<double>("path_pid_integral_limit", 2.0));
+      0.0, declare_parameter<double>("path_pid_integral_limit", 0.4));
     rotateInPlaceThreshold_ = std::max(
-      0.0, declare_parameter<double>("rotate_in_place_threshold", 0.60));
+      0.0, declare_parameter<double>("rotate_in_place_threshold", 0.18));
+    rotateInPlaceReentryThreshold_ = std::max(
+      rotateInPlaceThreshold_,
+      declare_parameter<double>("rotate_in_place_reentry_threshold", 0.44));
+    rotateInPlaceExitThreshold_ = std::min(
+      rotateInPlaceThreshold_, std::max(
+        0.0, declare_parameter<double>("rotate_in_place_exit_threshold", 0.035)));
+    precisionTurnThreshold_ = std::max(
+      rotateInPlaceExitThreshold_,
+      declare_parameter<double>("precision_turn_threshold", 0.45));
+    turnSettleYawRate_ = std::max(
+      0.01, declare_parameter<double>("turn_settle_yaw_rate", 0.12));
+    turnSettleDwell_ = std::max(
+      0.0, declare_parameter<double>("turn_settle_dwell", 0.30));
+    minPrecisionTurnSpeed_ = std::min(
+      turnCruiseSpeed_, std::max(
+        0.0, declare_parameter<double>("min_precision_turn_speed", 0.25)));
     waypointTolerance_ = std::max(
-      0.001, declare_parameter<double>("waypoint_tolerance", 0.15));
+      0.001, declare_parameter<double>("waypoint_tolerance", 0.08));
     finalYawTolerance_ = std::max(
-      0.001, declare_parameter<double>("final_yaw_tolerance", 0.12));
+      0.001, declare_parameter<double>("final_yaw_tolerance", 0.060));
+    finalYawMaxAngularSpeed_ = std::min(
+      maxAngularSpeed_, std::max(
+        0.0, declare_parameter<double>("final_yaw_max_angular_speed", 0.80)));
+    finalYawMinTurnSpeed_ = std::min(
+      finalYawMaxAngularSpeed_, std::max(
+        0.0, declare_parameter<double>("final_yaw_min_turn_speed", 0.70)));
+    finalYawMinPrecisionSpeed_ = std::min(
+      finalYawMinTurnSpeed_, std::max(
+        0.0, declare_parameter<double>("final_yaw_min_precision_speed", 0.32)));
     odomTimeout_ = std::max(0.01, declare_parameter<double>("odom_timeout", 0.40));
+    imuTimeout_ = std::max(0.01, declare_parameter<double>("imu_timeout", 0.15));
     fusionStatusTimeout_ = std::max(
       0.01, declare_parameter<double>("fusion_status_timeout", 0.60));
     actuatorHealthTimeout_ = std::max(
       0.01, declare_parameter<double>("actuator_health_timeout", 0.80));
+    transientLocalizationGrace_ = std::max(
+      0.0, declare_parameter<double>("transient_localization_grace", 2.00));
+    transientFaultSpeedScale_ = Clamp(
+      declare_parameter<double>("transient_fault_speed_scale", 0.25), 0.0, 1.0);
     requireFusionStatus_ = declare_parameter<bool>("require_fusion_status", true);
     requireActuatorHealth_ = declare_parameter<bool>("require_actuator_health", false);
     allowedFusionStates_ = declare_parameter<std::vector<std::string>>(
@@ -201,6 +266,9 @@ public:
     odomSubscription_ = create_subscription<nav_msgs::msg::Odometry>(
       odomTopic_, 10,
       std::bind(&WaypointNavigator::HandleOdometry, this, std::placeholders::_1));
+    imuSubscription_ = create_subscription<sensor_msgs::msg::Imu>(
+      imuTopic_, rclcpp::SensorDataQoS(),
+      std::bind(&WaypointNavigator::HandleImu, this, std::placeholders::_1));
     fusionStatusSubscription_ = create_subscription<std_msgs::msg::String>(
       fusionStatusTopic_, 10,
       std::bind(&WaypointNavigator::HandleFusionStatus, this, std::placeholders::_1));
@@ -211,8 +279,11 @@ public:
       trackingStateTopic_, 10,
       std::bind(&WaypointNavigator::HandleTrackingState, this, std::placeholders::_1));
     routeInputSubscription_ = create_subscription<nav_msgs::msg::Path>(
-      routeInputTopic_, rclcpp::QoS(1).transient_local().reliable(),
+      routeInputTopic_, rclcpp::QoS(1).reliable(),
       std::bind(&WaypointNavigator::HandleRouteInput, this, std::placeholders::_1));
+    startSubscription_ = create_subscription<std_msgs::msg::Empty>(
+      startTopic_, rclcpp::QoS(1).reliable(),
+      std::bind(&WaypointNavigator::HandleStartTopic, this, std::placeholders::_1));
 
     startService_ = create_service<std_srvs::srv::Trigger>(
       "~/start",
@@ -427,9 +498,26 @@ private:
       return;
     }
 
-    currentX_ = message->pose.pose.position.x;
-    currentY_ = message->pose.pose.position.y;
     currentYaw_ = YawFromValidQuaternion(message->pose.pose.orientation);
+    if (!trackingReferenceInitialized_)
+    {
+      trackingReferenceYaw_ = currentYaw_;
+      trackingReferenceInitialized_ = true;
+    }
+    const auto basePosition = visual_navigation::BasePositionFromTrackingPoint(
+      message->pose.pose.position.x, message->pose.pose.position.y,
+      currentYaw_, trackingReferenceYaw_, trackingPointOffsetX_, trackingPointOffsetY_);
+    currentX_ = basePosition.x;
+    currentY_ = basePosition.y;
+  }
+
+  void HandleImu(const sensor_msgs::msg::Imu::SharedPtr message)
+  {
+    if (!std::isfinite(message->angular_velocity.z))
+      return;
+    imuYawRate_ = message->angular_velocity.z;
+    lastImuArrival_ = now();
+    hasImu_ = true;
   }
 
   void HandleTrackingState(const std_msgs::msg::Int32::SharedPtr message)
@@ -491,10 +579,10 @@ private:
       loadedWaypoints.push_back(waypoint);
     }
 
-    // Route replacement always stops first. The editor starts through ~/start only
-    // after observing the republished route, so retained Path data cannot cause motion.
+    // Stop the old route before atomically replacing it with the new one.
     navigationActive_ = false;
     currentWaypointIndex_ = 0;
+    finalPositionCaptured_ = false;
     localizationWasValid_ = false;
     waitAction_ = WaitAction::NONE;
     pathSegmentInitialized_ = false;
@@ -503,11 +591,12 @@ private:
 
     waypoints_ = std::move(loadedWaypoints);
     routeLoaded_ = true;
+    navigationActive_ = true;
     PublishRoutePath();
     PublishCurrentWaypoint();
-    SetState("IDLE");
+    SetState("WAITING_FOR_LOCALIZATION");
     RCLCPP_INFO(
-      get_logger(), "Loaded %zu dynamic waypoints; waiting for an explicit start request",
+      get_logger(), "Loaded and activated %zu dynamic waypoints",
       waypoints_.size());
   }
 
@@ -515,11 +604,24 @@ private:
     const std_srvs::srv::Trigger::Request::SharedPtr,
     std_srvs::srv::Trigger::Response::SharedPtr response)
   {
+    response->success = ActivateNavigation(response->message);
+  }
+
+  void HandleStartTopic(const std_msgs::msg::Empty::SharedPtr)
+  {
+    std::string result;
+    if (ActivateNavigation(result))
+      RCLCPP_INFO(get_logger(), "Navigation start topic accepted: %s", result.c_str());
+    else
+      RCLCPP_WARN(get_logger(), "Navigation start topic rejected: %s", result.c_str());
+  }
+
+  bool ActivateNavigation(std::string & result)
+  {
     if (!routeLoaded_)
     {
-      response->success = false;
-      response->message = "Waypoint route is not loaded";
-      return;
+      result = "Waypoint route is not loaded";
+      return false;
     }
 
     const auto fusionHealth = FusionHealth();
@@ -530,9 +632,8 @@ private:
       PublishStop();
       const std::string failureState = LocalizationFailureState(fusionHealth);
       SetState(failureState);
-      response->success = false;
-      response->message = "Navigation start rejected: " + failureState;
-      return;
+      result = "Navigation start rejected: " + failureState;
+      return false;
     }
     if (!ActuatorHealthIsValid())
     {
@@ -540,21 +641,21 @@ private:
       PublishStop();
       const std::string failureState = ActuatorFailureState();
       SetState(failureState);
-      response->success = false;
-      response->message = "Navigation start rejected: " + failureState;
-      return;
+      result = "Navigation start rejected: " + failureState;
+      return false;
     }
 
     if (currentWaypointIndex_ >= waypoints_.size())
       currentWaypointIndex_ = 0;
     waitAction_ = WaitAction::NONE;
+    finalPositionCaptured_ = false;
     navigationActive_ = true;
     localizationWasValid_ = false;
     pathSegmentInitialized_ = false;
     ResetPathPid();
     SetState("WAITING_FOR_LOCALIZATION");
-    response->success = true;
-    response->message = "Waypoint navigation started";
+    result = "Waypoint navigation started";
+    return true;
   }
 
   void HandleStop(
@@ -563,6 +664,7 @@ private:
   {
     navigationActive_ = false;
     waitAction_ = WaitAction::NONE;
+    finalPositionCaptured_ = false;
     pathSegmentInitialized_ = false;
     ResetPathPid();
     PublishStop();
@@ -577,6 +679,7 @@ private:
   {
     navigationActive_ = false;
     currentWaypointIndex_ = 0;
+    finalPositionCaptured_ = false;
     localizationWasValid_ = false;
     waitAction_ = WaitAction::NONE;
     pathSegmentInitialized_ = false;
@@ -594,6 +697,16 @@ private:
       return false;
     return currentOdomFrameValid_ && currentOdomPoseValid_ &&
       (now() - lastOdomArrival_).seconds() <= odomTimeout_;
+  }
+
+  bool ImuYawRateIsFresh() const
+  {
+    return hasImu_ && (now() - lastImuArrival_).seconds() <= imuTimeout_;
+  }
+
+  double ControlYawRate() const
+  {
+    return ImuYawRateIsFresh() ? imuYawRate_ : 0.0;
   }
 
   bool TrackingStateIsValid() const
@@ -677,15 +790,36 @@ private:
       return;
     }
 
-    const auto fusionHealth = FusionHealth();
+    auto fusionHealth = FusionHealth();
     const bool localizationValid =
       OdometryIsValid() && fusionHealth.allowed && TrackingStateIsValid();
-    if (!localizationValid)
+    const auto controlTime = std::chrono::steady_clock::now();
+    if (localizationValid)
+    {
+      lastValidLocalizationTime_ = controlTime;
+      validLocalizationTimeInitialized_ = true;
+    }
+
+    const double secondsSinceValid = validLocalizationTimeInitialized_ ?
+      std::chrono::duration<double>(controlTime - lastValidLocalizationTime_).count() :
+      std::numeric_limits<double>::infinity();
+    const bool hardFault = fusionStatus_ == "FAULT_STALLED";
+    const bool bridgeTransientLoss = !localizationValid &&
+      visual_navigation::CanBridgeTransientLocalizationLoss(
+        localizationWasValid_, hardFault, secondsSinceValid, transientLocalizationGrace_);
+
+    if (bridgeTransientLoss)
+    {
+      fusionHealth.allowed = true;
+      fusionHealth.fault = false;
+      fusionHealth.speed_scale = transientFaultSpeedScale_;
+      SetState("DEGRADED_TRANSIENT_LOCALIZATION");
+    }
+    else if (!localizationValid)
     {
       PublishStop();
       ResetPathPid();
-      if (visual_navigation::ShouldLatchFusedLocalizationLoss(
-          localizationWasValid_, OdometryIsValid(), fusionHealth))
+      if (hardFault)
       {
         navigationActive_ = false;
         SetState(LocalizationFailureState(fusionHealth));
@@ -742,19 +876,31 @@ private:
     const double deltaX = target.x - currentX_;
     const double deltaY = target.y - currentY_;
     const double distance = std::hypot(deltaX, deltaY);
+    const double controlYawRate = ControlYawRate();
     const bool finalWaypoint = currentWaypointIndex_ + 1 == waypoints_.size();
+    finalPositionCaptured_ = visual_navigation::FinalPositionCaptured(
+      finalPositionCaptured_, finalWaypoint, distance, target.tolerance);
 
-    if (distance <= target.tolerance)
+    if (finalPositionCaptured_)
     {
-      if (finalWaypoint && std::isfinite(target.yaw))
+      if (std::isfinite(target.yaw))
       {
         const double finalYawError = NormalizeAngle(target.yaw - currentYaw_);
-        if (std::abs(finalYawError) > finalYawTolerance_)
+        if (std::abs(finalYawError) > finalYawTolerance_ ||
+          std::abs(controlYawRate) > turnSettleYawRate_)
         {
           geometry_msgs::msg::Twist command;
-          const double scaledMaxAngularSpeed = maxAngularSpeed_ * fusionHealth.speed_scale;
-          command.angular.z = Clamp(
-            angularGain_ * finalYawError, -scaledMaxAngularSpeed, scaledMaxAngularSpeed);
+          const double scaledMaxAngularSpeed =
+            finalYawMaxAngularSpeed_ * fusionHealth.speed_scale;
+          const double requestedAngularSpeed = Clamp(
+            angularGain_ * finalYawError - turnYawRateDamping_ * controlYawRate,
+            -scaledMaxAngularSpeed, scaledMaxAngularSpeed);
+          const double minimumTurnSpeed = visual_navigation::SelectMinimumTurnSpeed(
+            std::abs(finalYawError), precisionTurnThreshold_,
+            finalYawMinPrecisionSpeed_, finalYawMinTurnSpeed_);
+          command.angular.z = visual_navigation::EnforceMinimumTurnSpeed(
+            requestedAngularSpeed, finalYawError,
+            minimumTurnSpeed * fusionHealth.speed_scale, scaledMaxAngularSpeed);
           PublishMotionCommand(command);
           SetState("ALIGNING_FINAL_YAW");
           return;
@@ -764,17 +910,18 @@ private:
       if (target.stopTime > 0.0)
       {
         waitUntil_ = now() + rclcpp::Duration::from_seconds(target.stopTime);
-        waitAction_ = finalWaypoint ? WaitAction::COMPLETE : WaitAction::ADVANCE;
+        waitAction_ = WaitAction::COMPLETE;
         PublishStop();
         SetState("WAITING_AT_WAYPOINT");
         return;
       }
 
-      if (finalWaypoint)
-      {
-        CompleteNavigation();
-        return;
-      }
+      CompleteNavigation();
+      return;
+    }
+
+    if (distance <= target.tolerance)
+    {
 
       ++currentWaypointIndex_;
       pathSegmentInitialized_ = false;
@@ -791,29 +938,113 @@ private:
     const double crossTrackError =
       std::cos(pathHeading) * (currentY_ - pathSegmentStartY_) -
       std::sin(pathHeading) * (currentX_ - pathSegmentStartX_);
-    const double pathError = headingError - crossTrackGain_ * crossTrackError;
-    const double angularSpeed = UpdatePathPid(pathError) * fusionHealth.speed_scale;
+    const double requestedSpeed = std::min(target.speed, maxLinearSpeed_);
+    const double pathError = visual_navigation::StanleyPathError(
+      headingError, crossTrackError, crossTrackGain_, requestedSpeed,
+      stanleySofteningSpeed_, maxCrossTrackCorrection_);
+    const double rotationEntryThreshold = visual_navigation::RotationEntryThreshold(
+      pathAlignmentCompleted_, rotateInPlaceThreshold_, rotateInPlaceReentryThreshold_);
+    const bool shouldRotateInPlace = visual_navigation::ShouldRotateInPlace(
+      false, std::abs(headingError), std::abs(controlYawRate),
+      rotationEntryThreshold, rotateInPlaceExitThreshold_, turnSettleYawRate_);
+
+    if (!rotatingInPlace_ && shouldRotateInPlace)
+    {
+      ResetPathPid();
+      rotatingInPlace_ = true;
+      turnDirection_ = std::copysign(1.0, headingError);
+    }
+    else if (!rotatingInPlace_ && !pathAlignmentCompleted_)
+    {
+      pathAlignmentCompleted_ = true;
+    }
+
+    const bool allowPathIntegral = !rotatingInPlace_ &&
+      std::abs(headingError) < 0.30 && std::abs(crossTrackError) < 0.08;
+    double angularSpeed = UpdatePathPid(
+      pathError, crossTrackError, allowPathIntegral, controlYawRate) *
+      fusionHealth.speed_scale;
+    if (rotatingInPlace_)
+    {
+      if (turnBraking_)
+      {
+        PublishStop();
+        if (std::abs(controlYawRate) > turnSettleYawRate_)
+        {
+          turnSettleTimerInitialized_ = false;
+          SetState("ROTATING_TO_PATH");
+          return;
+        }
+        const auto settleTime = std::chrono::steady_clock::now();
+        if (!turnSettleTimerInitialized_)
+        {
+          turnSettleStarted_ = settleTime;
+          turnSettleTimerInitialized_ = true;
+        }
+        const double settledSeconds =
+          std::chrono::duration<double>(settleTime - turnSettleStarted_).count();
+        if (!visual_navigation::TurnHasSettled(
+            std::abs(controlYawRate), settledSeconds,
+            turnSettleYawRate_, turnSettleDwell_))
+        {
+          SetState("ROTATING_TO_PATH");
+          return;
+        }
+        if (std::abs(headingError) <= rotateInPlaceExitThreshold_)
+        {
+          ResetPathPid();
+          pathAlignmentCompleted_ = true;
+          SetState("PATH_ALIGNED");
+          return;
+        }
+        turnBraking_ = false;
+        turnSettleTimerInitialized_ = false;
+        turnDirection_ = std::copysign(1.0, headingError);
+      }
+
+      const double directedError = turnDirection_ * headingError;
+      if (visual_navigation::ShouldBrakeTurn(
+          directedError, std::abs(controlYawRate),
+          rotateInPlaceExitThreshold_, turnBrakeHorizon_))
+      {
+        turnBraking_ = true;
+        turnSettleTimerInitialized_ = false;
+        PublishStop();
+        SetState("ROTATING_TO_PATH");
+        return;
+      }
+
+      const double turnSpeed = visual_navigation::TurnSpeedForError(
+        directedError, rotateInPlaceExitThreshold_, precisionTurnThreshold_,
+        minPrecisionTurnSpeed_, turnCruiseSpeed_);
+      angularSpeed = turnDirection_ * turnSpeed * fusionHealth.speed_scale;
+    }
 
     geometry_msgs::msg::Twist command;
     command.angular.z = angularSpeed;
 
-    if (std::abs(pathError) < rotateInPlaceThreshold_)
+    if (!rotatingInPlace_)
     {
-      const double requestedSpeed = std::min(target.speed, maxLinearSpeed_);
       const double headingScale = std::max(0.0, std::cos(pathError));
-      double linearSpeed = requestedSpeed;
+      double linearSpeed = visual_navigation::CrossTrackSpeedLimit(
+        requestedSpeed, std::abs(crossTrackError),
+        crossTrackSlowdownStart_, crossTrackSlowdownFull_, crossTrackMinimumSpeed_);
       if (finalWaypoint)
-        linearSpeed = std::min(requestedSpeed, linearGain_ * distance);
+      {
+        linearSpeed = visual_navigation::FinalApproachSpeedLimit(
+          linearSpeed, requestedSpeed, linearGain_, distance);
+      }
       command.linear.x = linearSpeed * headingScale * fusionHealth.speed_scale;
     }
 
     PublishMotionCommand(command);
-    SetState("FOLLOWING");
+    SetState(rotatingInPlace_ ? "ROTATING_TO_PATH" : "FOLLOWING");
   }
 
   void CompleteNavigation()
   {
     navigationActive_ = false;
+    finalPositionCaptured_ = false;
     pathSegmentInitialized_ = false;
     ResetPathPid();
     PublishStop();
@@ -822,9 +1053,18 @@ private:
 
   void BeginPathSegment()
   {
-    pathSegmentStartX_ = currentX_;
-    pathSegmentStartY_ = currentY_;
+    if (currentWaypointIndex_ > 0)
+    {
+      pathSegmentStartX_ = waypoints_[currentWaypointIndex_ - 1].x;
+      pathSegmentStartY_ = waypoints_[currentWaypointIndex_ - 1].y;
+    }
+    else
+    {
+      pathSegmentStartX_ = currentX_;
+      pathSegmentStartY_ = currentY_;
+    }
     pathSegmentInitialized_ = true;
+    pathAlignmentCompleted_ = false;
     ResetPathPid();
   }
 
@@ -833,9 +1073,14 @@ private:
     pathPidIntegral_ = 0.0;
     previousPathError_ = 0.0;
     pathPidInitialized_ = false;
+    rotatingInPlace_ = false;
+    turnBraking_ = false;
+    turnDirection_ = 0.0;
+    turnSettleTimerInitialized_ = false;
   }
 
-  double UpdatePathPid(double error)
+  double UpdatePathPid(
+    double error, double crossTrackError, bool allowIntegral, double yawRate)
   {
     const auto currentTime = std::chrono::steady_clock::now();
     double derivative = 0.0;
@@ -844,9 +1089,16 @@ private:
       const double dt = std::chrono::duration<double>(currentTime - lastPathPidTime_).count();
       if (dt > 0.0 && dt <= 0.2)
       {
-        pathPidIntegral_ = Clamp(
-          pathPidIntegral_ + error * dt,
-          -pathPidIntegralLimit_, pathPidIntegralLimit_);
+        if (allowIntegral)
+        {
+          pathPidIntegral_ = Clamp(
+            pathPidIntegral_ - crossTrackError * dt,
+            -pathPidIntegralLimit_, pathPidIntegralLimit_);
+        }
+        else
+        {
+          pathPidIntegral_ *= std::max(0.0, 1.0 - 4.0 * dt);
+        }
         derivative = (error - previousPathError_) / dt;
       }
     }
@@ -855,8 +1107,9 @@ private:
     lastPathPidTime_ = currentTime;
     pathPidInitialized_ = true;
     return Clamp(
-      pathPidKp_ * error + pathPidKi_ * pathPidIntegral_ + pathPidKd_ * derivative,
-      -maxAngularSpeed_, maxAngularSpeed_);
+      pathPidKp_ * error + pathPidKi_ * pathPidIntegral_ +
+      pathPidKd_ * derivative - pathYawRateDamping_ * yawRate,
+      -maxPathAngularSpeed_, maxPathAngularSpeed_);
   }
 
   void PublishStop()
@@ -886,7 +1139,7 @@ private:
       maxLinearAcceleration_, maxLinearDeceleration_, dt);
     limited.angular.z = visual_navigation::LimitRate(
       desired.angular.z, lastMotionCommand_.angular.z,
-      maxAngularAcceleration_, maxAngularAcceleration_, dt);
+      maxAngularAcceleration_, maxAngularDeceleration_, dt);
     cmdVelPublisher_->publish(limited);
     lastMotionCommand_ = limited;
     lastMotionCommandTime_ = currentTime;
@@ -914,34 +1167,61 @@ private:
   std::string routeFile_;
   std::string routeFrame_;
   std::string odomTopic_;
+  std::string imuTopic_;
   std::string fusionStatusTopic_;
   std::string actuatorHealthTopic_;
   std::string trackingStateTopic_;
   std::string cmdVelTopic_;
   std::string pathTopic_;
   std::string routeInputTopic_;
+  std::string startTopic_;
   std::string statusTopic_;
   std::string currentWaypointTopic_;
   double controlFrequency_{30.0};
+  double trackingPointOffsetX_{0.087};
+  double trackingPointOffsetY_{0.040};
   double defaultSpeed_{0.20};
   double maxLinearSpeed_{0.30};
   double maxAngularSpeed_{0.80};
+  double maxPathAngularSpeed_{0.65};
   double maxLinearAcceleration_{0.40};
   double maxLinearDeceleration_{0.80};
-  double maxAngularAcceleration_{1.50};
+  double maxAngularAcceleration_{2.50};
+  double maxAngularDeceleration_{4.00};
   double linearGain_{0.8};
-  double angularGain_{1.8};
-  double pathPidKp_{2.2};
-  double pathPidKi_{0.25};
-  double pathPidKd_{0.05};
-  double crossTrackGain_{3.5};
-  double pathPidIntegralLimit_{2.0};
-  double rotateInPlaceThreshold_{0.60};
-  double waypointTolerance_{0.15};
-  double finalYawTolerance_{0.12};
+  double angularGain_{2.0};
+  double pathPidKp_{2.4};
+  double pathPidKi_{0.35};
+  double pathPidKd_{0.0};
+  double pathYawRateDamping_{0.18};
+  double turnYawRateDamping_{0.10};
+  double turnBrakeHorizon_{0.35};
+  double turnCruiseSpeed_{0.65};
+  double crossTrackGain_{2.6};
+  double stanleySofteningSpeed_{0.25};
+  double maxCrossTrackCorrection_{0.70};
+  double crossTrackSlowdownStart_{0.03};
+  double crossTrackSlowdownFull_{0.06};
+  double crossTrackMinimumSpeed_{0.08};
+  double pathPidIntegralLimit_{0.4};
+  double rotateInPlaceThreshold_{0.18};
+  double rotateInPlaceReentryThreshold_{0.44};
+  double rotateInPlaceExitThreshold_{0.035};
+  double precisionTurnThreshold_{0.45};
+  double turnSettleYawRate_{0.12};
+  double turnSettleDwell_{0.30};
+  double minPrecisionTurnSpeed_{0.25};
+  double waypointTolerance_{0.08};
+  double finalYawTolerance_{0.060};
+  double finalYawMaxAngularSpeed_{0.80};
+  double finalYawMinTurnSpeed_{0.70};
+  double finalYawMinPrecisionSpeed_{0.32};
   double odomTimeout_{0.40};
+  double imuTimeout_{0.15};
   double fusionStatusTimeout_{0.60};
   double actuatorHealthTimeout_{0.80};
+  double transientLocalizationGrace_{2.00};
+  double transientFaultSpeedScale_{0.25};
   bool requireFusionStatus_{true};
   bool requireActuatorHealth_{false};
   bool requireTrackingState_{false};
@@ -955,31 +1235,45 @@ private:
   bool routeLoaded_{false};
   bool navigationActive_{false};
   bool hasOdometry_{false};
+  bool hasImu_{false};
   bool currentOdomFrameValid_{false};
   bool currentOdomPoseValid_{false};
   bool hasFusionStatus_{false};
   bool hasActuatorHealth_{false};
   bool hasTrackingState_{false};
+  bool trackingReferenceInitialized_{false};
   bool localizationWasValid_{false};
+  bool validLocalizationTimeInitialized_{false};
   int trackingState_{-1};
   std::string fusionStatus_;
   bool actuatorConnected_{false};
   double currentX_{0.0};
   double currentY_{0.0};
   double currentYaw_{0.0};
+  double trackingReferenceYaw_{0.0};
+  double imuYawRate_{0.0};
   double pathSegmentStartX_{0.0};
   double pathSegmentStartY_{0.0};
   double pathPidIntegral_{0.0};
   double previousPathError_{0.0};
   bool pathSegmentInitialized_{false};
+  bool pathAlignmentCompleted_{false};
   bool pathPidInitialized_{false};
+  bool rotatingInPlace_{false};
+  bool turnBraking_{false};
+  double turnDirection_{0.0};
+  bool turnSettleTimerInitialized_{false};
+  bool finalPositionCaptured_{false};
   std::string state_;
   rclcpp::Time lastOdomArrival_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time lastImuArrival_{0, 0, RCL_ROS_TIME};
   rclcpp::Time lastFusionStatusArrival_{0, 0, RCL_ROS_TIME};
   rclcpp::Time lastActuatorHealthArrival_{0, 0, RCL_ROS_TIME};
   rclcpp::Time waitUntil_{0, 0, RCL_ROS_TIME};
   std::chrono::steady_clock::time_point lastPathPidTime_{};
   std::chrono::steady_clock::time_point lastMotionCommandTime_{};
+  std::chrono::steady_clock::time_point lastValidLocalizationTime_{};
+  std::chrono::steady_clock::time_point turnSettleStarted_{};
   geometry_msgs::msg::Twist lastMotionCommand_;
   bool motionCommandInitialized_{false};
   WaitAction waitAction_{WaitAction::NONE};
@@ -989,10 +1283,12 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr statusPublisher_;
   rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr currentWaypointPublisher_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odomSubscription_;
+  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imuSubscription_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr fusionStatusSubscription_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr actuatorHealthSubscription_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr trackingStateSubscription_;
   rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr routeInputSubscription_;
+  rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr startSubscription_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr startService_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr stopService_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr resetService_;

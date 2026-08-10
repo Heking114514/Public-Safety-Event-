@@ -13,6 +13,23 @@ double wrap_angle(double angle)
   return std::remainder(angle, 2.0 * kPi);
 }
 
+bool pose_residual_within(
+  const Pose2d & measurement, const Pose2d & reference,
+  double max_position_residual, double max_yaw_residual)
+{
+  if (!std::isfinite(measurement.x) || !std::isfinite(measurement.y) ||
+    !std::isfinite(measurement.yaw) || !std::isfinite(reference.x) ||
+    !std::isfinite(reference.y) || !std::isfinite(reference.yaw) ||
+    !std::isfinite(max_position_residual) || max_position_residual < 0.0 ||
+    !std::isfinite(max_yaw_residual) || max_yaw_residual < 0.0)
+  {
+    return false;
+  }
+  return std::hypot(measurement.x - reference.x, measurement.y - reference.y) <=
+           max_position_residual &&
+         std::abs(wrap_angle(measurement.yaw - reference.yaw)) <= max_yaw_residual;
+}
+
 void PoseAligner::clear()
 {
   offset_ = {};
@@ -243,6 +260,58 @@ MotionFault MotionClassifier::update(
   return active_fault_;
 }
 
+AngularStallDetector::AngularStallDetector(const AngularStallConfig & config)
+: config_(config)
+{
+  if (!std::isfinite(config_.command_threshold) || config_.command_threshold <= 0.0 ||
+    !std::isfinite(config_.stationary_threshold) || config_.stationary_threshold < 0.0 ||
+    !std::isfinite(config_.fault_dwell_seconds) || config_.fault_dwell_seconds <= 0.0 ||
+    !std::isfinite(config_.recovery_dwell_seconds) || config_.recovery_dwell_seconds <= 0.0)
+  {
+    throw std::invalid_argument("invalid angular stall detector configuration");
+  }
+}
+
+bool AngularStallDetector::update(
+  double time_seconds, double command_yaw_rate, double measured_yaw_rate,
+  bool command_valid, bool measurement_valid)
+{
+  const bool observed = std::isfinite(time_seconds) && command_valid && measurement_valid &&
+    std::isfinite(command_yaw_rate) && std::isfinite(measured_yaw_rate) &&
+    std::abs(command_yaw_rate) >= config_.command_threshold &&
+    std::abs(measured_yaw_rate) <= config_.stationary_threshold;
+
+  if (!stalled_) {
+    recovery_active_ = false;
+    if (!observed) {
+      candidate_active_ = false;
+      return false;
+    }
+    if (!candidate_active_ || time_seconds < candidate_since_) {
+      candidate_since_ = time_seconds;
+      candidate_active_ = true;
+    } else if (time_seconds - candidate_since_ >= config_.fault_dwell_seconds) {
+      stalled_ = true;
+      candidate_active_ = false;
+    }
+    return stalled_;
+  }
+
+  candidate_active_ = false;
+  if (observed) {
+    recovery_active_ = false;
+    return true;
+  }
+  if (!recovery_active_ || time_seconds < recovery_since_) {
+    recovery_since_ = time_seconds;
+    recovery_active_ = true;
+  } else if (time_seconds - recovery_since_ >= config_.recovery_dwell_seconds) {
+    stalled_ = false;
+    recovery_active_ = false;
+  }
+  return stalled_;
+}
+
 const char * motion_fault_name(MotionFault fault)
 {
   switch (fault) {
@@ -283,16 +352,20 @@ FusionMode select_mode(
     return FusionMode::kVisionOnly;
   }
 
+  // Once IMU yaw-rate is back, wheel + IMU can continue without waiting for
+  // visual recovery. The bounded window applies only to pure wheel fallback.
+  if (wheel && imu) {
+    return FusionMode::kNoVision;
+  }
   const bool within_dead_reckoning_limit =
     seconds_without_vision <= max_seconds_without_vision &&
     distance_without_vision <= max_distance_without_vision;
-  if (wheel && imu && within_dead_reckoning_limit) {
-    return FusionMode::kNoVision;
-  }
   const bool within_wheel_only_limit =
     seconds_without_vision <= max_wheel_only_seconds &&
     distance_without_vision <= max_wheel_only_distance;
-  if (wheel && !imu && wheel_yaw_backup && within_wheel_only_limit) {
+  if (wheel && !imu && wheel_yaw_backup &&
+    within_dead_reckoning_limit && within_wheel_only_limit)
+  {
     return FusionMode::kWheelOnly;
   }
   return FusionMode::kFault;

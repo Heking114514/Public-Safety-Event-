@@ -9,7 +9,7 @@ ROS_SETUP="/opt/ros/${ROS_DISTRO_NAME}/setup.bash"
 ORB_ROOT="${WORKSPACE_ROOT}/src/ORB_SLAM3"
 DEPS_ROOT="${WORKSPACE_ROOT}/src/deps"
 
-ROUTE_FILE="${WORKSPACE_ROOT}/src/visual_navigation/routes/straight_x_3_6m.csv"
+ROUTE_FILE="${WORKSPACE_ROOT}/src/visual_navigation/routes/fixed_rectangle_2_4x1_8m.csv"
 SERIAL_DEVICE="/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
 SERIAL_BAUD_RATE="115200"
 USE_SERIAL="true"
@@ -24,6 +24,32 @@ CHECK_CAMERA="true"
 FORCE_CAMERA_RESET="false"
 CAMERA_INITIAL_RESET="false"
 BUILD_JOBS="2"
+ROSBAG_OUTPUT="${WORKSPACE_ROOT}/latest_navigation_bag"
+ROSBAG_TOPICS=(
+  /odom
+  /odom/orb_raw
+  /wheel/odom
+  /odometry/fused
+  /fusion/input/visual_odom
+  /fusion/input/wheel_odom
+  /fusion/input/imu
+  /camera/camera/imu
+  /imu/filtered
+  /imu/rpy
+  /tracking_state
+  /odometry/fusion_status
+  /cmd_vel_nav
+  /waypoint_path
+  /waypoint_navigation/status
+  /waypoint_navigation/current_waypoint
+  /waypoint_navigation/start
+  /cup_car_serial/encoder_ticks
+  /cup_car_serial/connected
+  /cup_car_serial/rx
+  /diagnostics
+  /tf
+  /tf_static
+)
 
 log() {
   printf '[visual-navigation] %s\n' "$*"
@@ -39,7 +65,7 @@ usage() {
 Usage: scripts/start_visual_navigation.sh [options]
 
 Options:
-  --route PATH              CSV route file (default: straight_x_3_6m.csv)
+  --route PATH              CSV route file (default: fixed 2.4 m x 1.8 m rectangle)
   --camera-serial SERIAL    D455 serial number; auto-detected by default
   --serial-device DEVICE    Controller serial device (default: CH340 stable path)
   --serial-baud RATE        Controller baud rate (default: 115200)
@@ -48,7 +74,7 @@ Options:
   --slam-imu                Fuse raw D455 IMU measurements inside ORB-SLAM3
   --no-equalize             Disable CLAHE image enhancement before ORB-SLAM3
   --visualization           Enable the Pangolin window
-  --autostart               Start waypoint motion immediately (unsafe on a bench)
+  --autostart               Start waypoint motion immediately (disabled by default)
   --no-build                Fail instead of building missing binaries
   --skip-camera-check       Launch without checking for a connected D455
   --reset-camera            Force a D455 firmware reset before opening streams
@@ -56,8 +82,8 @@ Options:
   --jobs COUNT              Parallel build jobs
   -h, --help                Show this help
 
-The route editor publishes, confirms, and starts a clicked route with one button.
-The startup CSV remains idle unless --autostart is used.
+The fixed startup route remains idle until /waypoint_navigation/start is published.
+The route editor can still replace it by publishing a clicked route.
 EOF
 }
 
@@ -367,6 +393,13 @@ set -u
 
 export LD_LIBRARY_PATH="${ORB_ROOT}/lib:${DEPS_ROOT}/lib:${LD_LIBRARY_PATH:-}"
 
+[[ "${ROSBAG_OUTPUT}" == "${WORKSPACE_ROOT}/latest_navigation_bag" ]] ||
+  fail "refusing to replace unexpected rosbag path: ${ROSBAG_OUTPUT}"
+if [[ -e "${ROSBAG_OUTPUT}" || -L "${ROSBAG_OUTPUT}" ]]; then
+  log "Removing previous rosbag: ${ROSBAG_OUTPUT}"
+  rm -rf -- "${ROSBAG_OUTPUT}"
+fi
+
 log "Starting decoupled odometry and navigation stacks"
 log "Route: ${ROUTE_FILE}"
 log "IMU filter: ${USE_IMU}; SLAM IMU fusion: ${USE_SLAM_IMU}; CLAHE: ${EQUALIZE}; visualization: ${VISUALIZATION}; autostart: ${AUTOSTART}"
@@ -421,7 +454,8 @@ stop_stack() {
       /cmd_vel_nav geometry_msgs/msg/Twist '{}' >/dev/null 2>&1 || true
 
     kill -INT "${STACK_PIDS[@]}" 2>/dev/null || true
-    for attempt in {1..30}; do
+    # Give rosbag enough time to flush metadata and close its database.
+    for attempt in {1..80}; do
       remaining=()
       for pid in "${STACK_PIDS[@]}"; do
         kill -0 "${pid}" 2>/dev/null && remaining+=("${pid}")
@@ -459,6 +493,10 @@ STACK_PIDS+=("$!")
 
 ros2 launch visual_navigation "${LAUNCH_FILE}" \
   "${NAVIGATION_LAUNCH_ARGS[@]}" &
+STACK_PIDS+=("$!")
+
+log "Recording latest navigation data: ${ROSBAG_OUTPUT}"
+ros2 bag record --output "${ROSBAG_OUTPUT}" "${ROSBAG_TOPICS[@]}" &
 STACK_PIDS+=("$!")
 
 set +e

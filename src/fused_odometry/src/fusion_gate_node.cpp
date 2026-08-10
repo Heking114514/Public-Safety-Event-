@@ -120,7 +120,12 @@ public:
       positive("motion_moving_threshold_mps", 0.04),
       positive("motion_stationary_threshold_mps", 0.02),
       positive("motion_fault_dwell_s", 0.6),
-      positive("motion_recovery_dwell_s", 1.0)})
+      positive("motion_recovery_dwell_s", 1.0)}),
+    angular_stall_detector_(AngularStallConfig{
+      positive("angular_stall_command_threshold_radps", 0.30),
+      positive("angular_stall_stationary_threshold_radps", 0.10),
+      positive("angular_stall_dwell_s", 0.8),
+      positive("angular_stall_recovery_dwell_s", 1.0)})
   {
     visual_topic_ = declare_parameter<std::string>("visual_topic", "/odom");
     raw_visual_topic_ = declare_parameter<std::string>("raw_visual_topic", "/odom/orb_raw");
@@ -161,9 +166,9 @@ public:
     raw_visual_max_tilt_ = positive("raw_visual_max_tilt_rad", 0.50);
     max_dead_reckoning_time_ = positive("max_dead_reckoning_time_s", 2.0);
     max_dead_reckoning_distance_ = positive("max_dead_reckoning_distance_m", 0.30);
-    max_wheel_only_time_ = positive("max_wheel_only_time_s", 0.75);
-    max_wheel_only_distance_ = positive("max_wheel_only_distance_m", 0.10);
-    max_wheel_only_speed_ = positive("max_wheel_only_speed_mps", 0.12);
+    max_wheel_only_time_ = positive("max_wheel_only_time_s", 2.0);
+    max_wheel_only_distance_ = positive("max_wheel_only_distance_m", 0.30);
+    max_wheel_only_speed_ = positive("max_wheel_only_speed_mps", 0.30);
     max_wheel_speed_ = positive("max_wheel_speed_mps", 1.5);
     max_wheel_yaw_rate_ = positive("max_wheel_yaw_rate_radps", 4.0);
     wheel_soft_residual_ = positive("wheel_visual_soft_mps", 0.15);
@@ -177,7 +182,7 @@ public:
     wheel_imu_yaw_soft_ = positive("wheel_imu_yaw_soft_radps", 0.15);
     wheel_imu_yaw_reject_ = positive("wheel_imu_yaw_reject_radps", 0.45);
     wheel_yaw_validation_time_ = positive("wheel_yaw_validation_s", 2.0);
-    wheel_yaw_backup_time_ = positive("wheel_yaw_backup_s", 0.75);
+    wheel_yaw_backup_time_ = positive("wheel_yaw_backup_s", 2.0);
     wheel_vx_variance_ = positive("wheel_vx_variance", 0.08);
     wheel_wz_variance_ = positive("wheel_wz_variance", 0.50);
     imu_wz_variance_ = positive("imu_wz_variance", 0.015);
@@ -373,14 +378,7 @@ private:
       }
       if (!ever_accepted_visual_) {
         aligner_.clear();
-      } else if (fused_fresh()) {
-        aligner_.align_to(continuous_raw, fused_pose_);
       }
-      visual_interrupted_ = false;
-      dead_reckoning_active_ = false;
-      dead_reckoning_distance_ = 0.0;
-      ever_accepted_visual_ = true;
-      RCLCPP_INFO(get_logger(), "Visual odometry accepted after %zu healthy samples", visual_recovery_count_);
     }
 
     const bool raw_synchronized = raw_visual_received_ &&
@@ -392,28 +390,39 @@ private:
       if (!raw_aligner_.initialized()) {
         raw_aligner_.align_to(latest_raw_pose_, aligned);
       }
-      Pose2d raw_candidate = raw_aligner_.apply(latest_raw_pose_);
-      if (recovering && fused_fresh()) {
-        const double recovery_position_residual = std::hypot(
-          raw_candidate.x - fused_pose_.x, raw_candidate.y - fused_pose_.y);
-        const double recovery_yaw_residual = std::abs(
-          wrap_angle(raw_candidate.yaw - fused_pose_.yaw));
-        if (recovery_position_residual > visual_hard_position_gate_ ||
-          recovery_yaw_residual > visual_hard_yaw_gate_)
-        {
-          raw_aligner_.align_to(latest_raw_pose_, fused_pose_);
-          raw_candidate = raw_aligner_.apply(latest_raw_pose_);
-          visual_realigned_until_ = steady_seconds() + visual_ramp_duration_;
-          ++visual_realign_count_;
-        }
-        visual_ramp_started_at_ = steady_seconds();
-        visual_ramp_active_ = true;
-      }
-      aligned = raw_candidate;
+      aligned = raw_aligner_.apply(latest_raw_pose_);
       using_raw_visual_ = true;
-    } else if (recovering && fused_fresh()) {
+    }
+
+    // Preserve the established visual map transform across an outage. A plausible
+    // recovery can then correct wheel drift; an implausible jump is not disguised
+    // by moving the visual origin onto the dead-reckoned pose.
+    if (recovering && ever_accepted_visual_ && fused_fresh() &&
+      !pose_residual_within(
+        aligned, fused_pose_, visual_hard_position_gate_, visual_hard_yaw_gate_))
+    {
+      ++visual_recovery_rejected_count_;
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "Rejecting visual recovery inconsistent with prediction (position=%.3f m yaw=%.3f rad)",
+        std::hypot(aligned.x - fused_pose_.x, aligned.y - fused_pose_.y),
+        std::abs(wrap_angle(aligned.yaw - fused_pose_.yaw)));
+      return;
+    }
+
+    if (recovering) {
+      visual_interrupted_ = false;
+      dead_reckoning_active_ = false;
+      dead_reckoning_distance_ = 0.0;
+      ever_accepted_visual_ = true;
       visual_ramp_started_at_ = steady_seconds();
       visual_ramp_active_ = true;
+      visual_realigned_until_ = visual_ramp_started_at_ + visual_ramp_duration_;
+      ++visual_realign_count_;
+      RCLCPP_INFO(
+        get_logger(),
+        "Visual odometry accepted after %zu healthy samples; correcting fused drift gradually",
+        visual_recovery_count_);
     }
 
     double position_residual = 0.0;
@@ -427,21 +436,15 @@ private:
     double yaw_scale = std::clamp(
       1.0 + std::pow(yaw_residual / visual_yaw_gate_, 2), 1.0, 25.0);
     if (!recovering && fused_fresh() &&
-      (position_residual > visual_hard_position_gate_ || yaw_residual > visual_hard_yaw_gate_))
+      !pose_residual_within(
+        aligned, fused_pose_, visual_hard_position_gate_, visual_hard_yaw_gate_))
     {
-      if (using_raw_visual_) {
-        raw_aligner_.align_to(latest_raw_pose_, fused_pose_);
-        aligned = raw_aligner_.apply(latest_raw_pose_);
-      } else {
-        aligner_.align_to(continuous_raw, fused_pose_);
-        aligned = aligner_.apply(continuous_raw);
-      }
-      position_scale = visual_ramp_initial_scale_;
-      yaw_scale = visual_ramp_initial_scale_;
-      visual_ramp_started_at_ = steady_seconds();
-      visual_ramp_active_ = true;
-      visual_realigned_until_ = visual_ramp_started_at_ + visual_ramp_duration_;
-      ++visual_realign_count_;
+      ++visual_recovery_rejected_count_;
+      mark_visual_interrupted();
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "Visual pose jumped outside the fusion gate; waiting for stable recovery");
+      return;
     }
     if (visual_ramp_active_) {
       const double progress = std::clamp(
@@ -622,9 +625,9 @@ private:
     latest_imu_yaw_rate_ = yaw_rate;
     double residual = 0.0;
     bool compared = false;
-    if (visual_wz_window_.ready(robust_min_samples_) && vision_healthy()) {
+    if (visual_velocity_valid_ && vision_healthy()) {
       imu_visual_residual_window_.add(
-        steady_seconds(), std::abs(yaw_rate - visual_wz_window_.median()));
+        steady_seconds(), std::abs(yaw_rate - visual_yaw_rate_));
       residual = imu_visual_residual_window_.median();
       imu_gate_.update(residual + 1.4826 * imu_visual_residual_window_.mad());
       compared = true;
@@ -701,6 +704,23 @@ private:
       vision && visual_vx_window_.ready(robust_min_samples_));
     const bool wheel = wheel_healthy();
     const bool imu = imu_healthy();
+    std::size_t angular_source_count = 0;
+    double measured_yaw_rate = 0.0;
+    if (vision && visual_velocity_valid_) {
+      measured_yaw_rate = std::max(measured_yaw_rate, std::abs(visual_yaw_rate_));
+      ++angular_source_count;
+    }
+    if (imu) {
+      measured_yaw_rate = std::max(measured_yaw_rate, std::abs(latest_imu_yaw_rate_));
+      ++angular_source_count;
+    }
+    if (wheel && wheel_yaw_rate_finite_) {
+      measured_yaw_rate = std::max(measured_yaw_rate, std::abs(latest_wheel_yaw_rate_));
+      ++angular_source_count;
+    }
+    angular_stalled_ = angular_stall_detector_.update(
+      steady_seconds(), command_yaw_rate_, measured_yaw_rate,
+      command_fresh, angular_source_count >= 2);
     const bool wheel_yaw_backup = wheel_yaw_validated_ &&
       steady_seconds() - wheel_yaw_last_validated_at_ <= wheel_yaw_backup_time_ &&
       std::abs(latest_wheel_velocity_) <= max_wheel_only_speed_;
@@ -708,7 +728,8 @@ private:
     const double outage_time = dead_reckoning_active_ ? age_seconds(dead_reckoning_since_) : 0.0;
     const FusionMode mode = select_mode(
       ever_accepted_visual_, vision, wheel, imu, wheel_yaw_backup, visual_realigned,
-      motion_fault_ == MotionFault::kStalled, outage_time, dead_reckoning_distance_,
+      motion_fault_ == MotionFault::kStalled || angular_stalled_,
+      outage_time, dead_reckoning_distance_,
       max_dead_reckoning_time_, max_dead_reckoning_distance_,
       max_wheel_only_time_, max_wheel_only_distance_);
 
@@ -741,10 +762,16 @@ private:
       std::to_string(wheel_visual_residual_window_.mad())));
     item.values.push_back(value("motion_fault", motion_fault_name(motion_fault_)));
     item.values.push_back(value("command_vx_mps", std::to_string(command_velocity_)));
+    item.values.push_back(value("command_wz_radps", std::to_string(command_yaw_rate_)));
+    item.values.push_back(value("measured_wz_radps", std::to_string(measured_yaw_rate)));
+    item.values.push_back(value("angular_sources", std::to_string(angular_source_count)));
+    item.values.push_back(value("angular_stalled", angular_stalled_ ? "true" : "false"));
     item.values.push_back(value("wheel_yaw_validated", wheel_yaw_validated_ ? "true" : "false"));
     item.values.push_back(value("wheel_yaw_backup", wheel_yaw_backup ? "true" : "false"));
     item.values.push_back(value("raw_visual_used", using_raw_visual_ ? "true" : "false"));
     item.values.push_back(value("visual_realign_count", std::to_string(visual_realign_count_)));
+    item.values.push_back(value(
+      "visual_recovery_rejected", std::to_string(visual_recovery_rejected_count_)));
     item.values.push_back(value("vision_outage_s", std::to_string(outage_time)));
     item.values.push_back(value("dead_reckoning_distance_m", std::to_string(dead_reckoning_distance_)));
     item.values.push_back(value(
@@ -774,6 +801,7 @@ private:
   RobustWindow wheel_imu_yaw_residual_window_;
   RobustWindow imu_visual_residual_window_;
   MotionClassifier motion_classifier_;
+  AngularStallDetector angular_stall_detector_;
 
   std::string visual_topic_;
   std::string raw_visual_topic_;
@@ -806,9 +834,9 @@ private:
   double raw_visual_max_tilt_{0.5};
   double max_dead_reckoning_time_{2.0};
   double max_dead_reckoning_distance_{0.3};
-  double max_wheel_only_time_{0.75};
-  double max_wheel_only_distance_{0.1};
-  double max_wheel_only_speed_{0.12};
+  double max_wheel_only_time_{2.0};
+  double max_wheel_only_distance_{0.3};
+  double max_wheel_only_speed_{0.3};
   double max_wheel_speed_{1.5};
   double max_wheel_yaw_rate_{4.0};
   double wheel_soft_residual_{0.15};
@@ -822,7 +850,7 @@ private:
   double wheel_imu_yaw_soft_{0.15};
   double wheel_imu_yaw_reject_{0.45};
   double wheel_yaw_validation_time_{2.0};
-  double wheel_yaw_backup_time_{0.75};
+  double wheel_yaw_backup_time_{2.0};
   double wheel_vx_variance_{0.08};
   double wheel_wz_variance_{0.5};
   double imu_wz_variance_{0.015};
@@ -850,6 +878,7 @@ private:
   bool wheel_yaw_rate_finite_{false};
   bool wheel_yaw_validation_active_{false};
   bool wheel_yaw_validated_{false};
+  bool angular_stalled_{false};
   bool visual_stamp_valid_{false};
   bool wheel_stamp_valid_{false};
   bool imu_stamp_valid_{false};
@@ -860,6 +889,7 @@ private:
   std::size_t invalid_imu_count_{0};
   std::size_t invalid_raw_visual_count_{0};
   std::size_t visual_realign_count_{0};
+  std::size_t visual_recovery_rejected_count_{0};
   double last_visual_stamp_{0.0};
   double visual_forward_velocity_{0.0};
   double visual_yaw_rate_{0.0};

@@ -95,4 +95,16 @@ TEST(FusionHealthPolicy, RuntimeLossLatchesButStartupWaitDoesNot)
     visual_navigation::ShouldLatchFusedLocalizationLoss(true, true, degraded));
 }
 
+TEST(FusionHealthPolicy, BriefRecoverableLossCanBeBridged)
+{
+  EXPECT_TRUE(visual_navigation::CanBridgeTransientLocalizationLoss(
+      true, false, 1.9, 2.0));
+  EXPECT_FALSE(visual_navigation::CanBridgeTransientLocalizationLoss(
+      true, false, 2.1, 2.0));
+  EXPECT_FALSE(visual_navigation::CanBridgeTransientLocalizationLoss(
+      true, true, 0.1, 0.5));
+  EXPECT_FALSE(visual_navigation::CanBridgeTransientLocalizationLoss(
+      false, false, 0.1, 0.5));
+}
+
 }  // namespace

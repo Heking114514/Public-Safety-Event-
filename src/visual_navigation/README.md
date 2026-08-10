@@ -67,6 +67,10 @@ x,y,yaw,speed,tolerance,stop_time
 
 航点必须与 `/odometry/fused.header.frame_id` 使用同一坐标系；节点不做 TF 转换，坐标系不一致时会拒绝里程计并停车。
 
+最终航点首次进入位置容差后会锁定终点对角阶段。此后原地旋转造成的
+`camera_link` 位置摆动不会让导航重新追踪最后一段路径方向；达到最终
+`yaw` 容差后直接发布零速度并进入 `GOAL_REACHED`。
+
 如果需要使用已有地图中的绝对航点，需要后续增加 `外部地图 -> ORB里程计坐标` 的对齐节点，不能仅修改 CSV 中的 `frame_id`。
 
 ## 构建

@@ -3,8 +3,12 @@ waypoint_navigator:
     route_file: ""
     route_frame: "map"
     route_input_topic: "/waypoint_navigation/route_input"
+    start_topic: "/waypoint_navigation/start"
 
     odom_topic: "/odometry/fused"
+    imu_topic: "/imu/filtered"
+    tracking_point_offset_x: 0.087
+    tracking_point_offset_y: 0.040
     fusion_status_topic: "/odometry/fusion_status"
     actuator_health_topic: "/cup_car_serial/connected"
     tracking_state_topic: "/tracking_state"
@@ -17,22 +21,45 @@ waypoint_navigator:
     default_speed: 0.20
     max_linear_speed: 0.30
     max_angular_speed: 0.80
+    max_path_angular_speed: 0.45
     max_linear_acceleration: 0.40
     max_linear_deceleration: 0.80
-    max_angular_acceleration: 1.50
+    max_angular_acceleration: 2.50
+    max_angular_deceleration: 4.00
     linear_gain: 0.80
-    angular_gain: 1.80
-    path_pid_kp: 2.20
-    path_pid_ki: 0.25
-    path_pid_kd: 0.05
-    cross_track_gain: 3.50
-    path_pid_integral_limit: 2.00
-    rotate_in_place_threshold: 0.60
-    waypoint_tolerance: 0.15
-    final_yaw_tolerance: 0.12
+    angular_gain: 2.00
+    path_pid_kp: 1.80
+    path_pid_ki: 0.35
+    path_pid_kd: 0.00
+    path_yaw_rate_damping: 0.35
+    turn_yaw_rate_damping: 0.10
+    turn_brake_horizon: 0.35
+    turn_cruise_speed: 0.65
+    cross_track_gain: 1.80
+    stanley_softening_speed: 0.25
+    max_cross_track_correction: 0.70
+    cross_track_slowdown_start: 0.03
+    cross_track_slowdown_full: 0.06
+    cross_track_minimum_speed: 0.08
+    path_pid_integral_limit: 0.40
+    rotate_in_place_threshold: 0.18
+    rotate_in_place_reentry_threshold: 0.44
+    rotate_in_place_exit_threshold: 0.035
+    precision_turn_threshold: 0.45
+    turn_settle_yaw_rate: 0.12
+    turn_settle_dwell: 0.30
+    min_precision_turn_speed: 0.25
+    waypoint_tolerance: 0.08
+    final_yaw_tolerance: 0.060
+    final_yaw_max_angular_speed: 0.80
+    final_yaw_min_turn_speed: 0.70
+    final_yaw_min_precision_speed: 0.32
     odom_timeout: 0.40
+    imu_timeout: 0.15
     fusion_status_timeout: 0.60
     actuator_health_timeout: 0.80
+    transient_localization_grace: 2.00
+    transient_fault_speed_scale: 0.25
     require_fusion_status: true
     require_actuator_health: false
     allowed_fusion_states:

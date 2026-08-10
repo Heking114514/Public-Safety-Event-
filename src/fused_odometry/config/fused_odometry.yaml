@@ -44,9 +44,11 @@ fused_odometry_gate:
 
     max_dead_reckoning_time_s: 2.0
     max_dead_reckoning_distance_m: 0.30
-    max_wheel_only_time_s: 0.75
-    max_wheel_only_distance_m: 0.10
-    max_wheel_only_speed_mps: 0.12
+    # Pure wheel fallback bridges a short simultaneous camera/IMU outage.
+    # Wheel + IMU may continue after this window without waiting for vision.
+    max_wheel_only_time_s: 2.0
+    max_wheel_only_distance_m: 0.30
+    max_wheel_only_speed_mps: 0.30
     max_wheel_speed_mps: 1.5
     max_wheel_yaw_rate_radps: 4.0
 
@@ -61,13 +63,17 @@ fused_odometry_gate:
     wheel_imu_yaw_soft_radps: 0.15
     wheel_imu_yaw_reject_radps: 0.45
     wheel_yaw_validation_s: 2.0
-    wheel_yaw_backup_s: 0.75
+    wheel_yaw_backup_s: 2.0
 
     command_motion_threshold_mps: 0.08
     motion_moving_threshold_mps: 0.04
     motion_stationary_threshold_mps: 0.02
     motion_fault_dwell_s: 0.60
     motion_recovery_dwell_s: 1.00
+    angular_stall_command_threshold_radps: 0.30
+    angular_stall_stationary_threshold_radps: 0.10
+    angular_stall_dwell_s: 0.80
+    angular_stall_recovery_dwell_s: 1.00
 
     visual_fused_position_gate_m: 0.80
     visual_fused_yaw_gate_rad: 0.70

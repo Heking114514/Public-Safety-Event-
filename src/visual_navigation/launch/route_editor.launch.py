@@ -17,9 +17,6 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "route_feedback_topic", default_value="/waypoint_path"
             ),
-            DeclareLaunchArgument(
-                "start_service", default_value="/waypoint_navigator/start"
-            ),
             DeclareLaunchArgument("odom_timeout", default_value="0.5"),
             DeclareLaunchArgument("activation_timeout", default_value="3.0"),
             Node(
@@ -40,9 +37,6 @@ def generate_launch_description():
                         ),
                         "route_feedback_topic": ParameterValue(
                             LaunchConfiguration("route_feedback_topic"), value_type=str
-                        ),
-                        "start_service": ParameterValue(
-                            LaunchConfiguration("start_service"), value_type=str
                         ),
                         "odom_timeout": ParameterValue(
                             LaunchConfiguration("odom_timeout"), value_type=float

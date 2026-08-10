@@ -18,6 +18,10 @@ struct Pose2d
   double yaw{0.0};
 };
 
+bool pose_residual_within(
+  const Pose2d & measurement, const Pose2d & reference,
+  double max_position_residual, double max_yaw_residual);
+
 class PoseAligner
 {
 public:
@@ -101,6 +105,32 @@ private:
   double recovery_since_{0.0};
   bool candidate_active_{false};
   bool recovery_active_{false};
+};
+
+struct AngularStallConfig
+{
+  double command_threshold{0.30};
+  double stationary_threshold{0.10};
+  double fault_dwell_seconds{0.8};
+  double recovery_dwell_seconds{1.0};
+};
+
+class AngularStallDetector
+{
+public:
+  explicit AngularStallDetector(const AngularStallConfig & config);
+  bool update(
+    double time_seconds, double command_yaw_rate, double measured_yaw_rate,
+    bool command_valid, bool measurement_valid);
+  bool stalled() const {return stalled_;}
+
+private:
+  AngularStallConfig config_;
+  double candidate_since_{0.0};
+  double recovery_since_{0.0};
+  bool candidate_active_{false};
+  bool recovery_active_{false};
+  bool stalled_{false};
 };
 
 const char * motion_fault_name(MotionFault fault);

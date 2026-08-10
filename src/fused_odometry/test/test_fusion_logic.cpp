@@ -20,6 +20,17 @@ TEST(PoseAligner, RecoveryPoseMatchesPredictionAndKeepsIncrements)
   EXPECT_NEAR(next.y, 6.0, 1e-9);
 }
 
+TEST(PoseResidual, GatesPositionAndWrappedYawWithoutChangingCoordinates)
+{
+  const Pose2d reference{1.0, 2.0, fused_odometry::kPi - 0.05};
+  EXPECT_TRUE(fused_odometry::pose_residual_within(
+    Pose2d{1.2, 2.1, -fused_odometry::kPi + 0.05}, reference, 0.3, 0.2));
+  EXPECT_FALSE(fused_odometry::pose_residual_within(
+    Pose2d{1.5, 2.0, reference.yaw}, reference, 0.3, 0.2));
+  EXPECT_FALSE(fused_odometry::pose_residual_within(
+    Pose2d{1.0, 2.0, reference.yaw - 0.3}, reference, 0.3, 0.2));
+}
+
 TEST(ResidualGate, RejectsAndRecoversWithHysteresis)
 {
   fused_odometry::ResidualGate gate(1.0, 3, 2);
@@ -44,11 +55,15 @@ TEST(FusionMode, ConservativeDegradation)
   EXPECT_EQ(
     fused_odometry::select_mode(
       true, false, true, true, false, false, false, 2.1, 0.2, 2.0, 0.3, 0.75, 0.1),
-    FusionMode::kFault);
+    FusionMode::kNoVision);
   EXPECT_EQ(
     fused_odometry::select_mode(
       true, false, true, false, true, false, false, 0.1, 0.01, 2.0, 0.3, 0.75, 0.1),
     FusionMode::kWheelOnly);
+  EXPECT_EQ(
+    fused_odometry::select_mode(
+      true, false, true, false, true, false, false, 2.1, 0.2, 2.0, 0.3, 2.0, 0.3),
+    FusionMode::kFault);
   EXPECT_EQ(
     fused_odometry::select_mode(
       true, true, false, true, false, false, false, 0.0, 0.0, 2.0, 0.3, 0.75, 0.1),
@@ -116,4 +131,18 @@ TEST(MotionClassifier, DetectsPersistentFaultsAndUsesRecoveryHysteresis)
   EXPECT_EQ(
     encoder.update(0.6, 0.2, 0.0, 0.2, true, true, true),
     fused_odometry::MotionFault::kEncoderFailure);
+}
+
+TEST(AngularStallDetector, DetectsCommandedTurnWithoutMeasuredRotation)
+{
+  fused_odometry::AngularStallDetector detector({0.3, 0.1, 0.8, 1.0});
+  EXPECT_FALSE(detector.update(0.0, 0.6, 0.0, true, true));
+  EXPECT_FALSE(detector.update(0.7, 0.6, 0.0, true, true));
+  EXPECT_TRUE(detector.update(0.9, 0.6, 0.0, true, true));
+  EXPECT_TRUE(detector.update(1.2, 0.0, 0.0, true, true));
+  EXPECT_FALSE(detector.update(2.3, 0.0, 0.0, true, true));
+
+  fused_odometry::AngularStallDetector moving({0.3, 0.1, 0.8, 1.0});
+  EXPECT_FALSE(moving.update(0.0, 0.6, 0.4, true, true));
+  EXPECT_FALSE(moving.update(1.0, 0.6, 0.4, true, true));
 }

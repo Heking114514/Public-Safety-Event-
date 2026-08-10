@@ -34,11 +34,13 @@ should not use those as the public odometry interface.
 
 `robot_localization` performs the planar EKF. The gate independently validates
 finite values, expected frames, monotonic timestamps and source freshness. It
-uses 0.75-second median/MAD windows, recovery hysteresis, and increases
-measurement covariance as wheel/IMU residuals approach their rejection
-thresholds. Three consecutive hard robust residuals reject a source; ten
-consistent comparisons are required to restore it. Wheel covariance supplied by
-the encoder node is retained as the lower bound before this adaptive inflation.
+uses median/MAD residual windows, recovery hysteresis, and increases measurement
+covariance as wheel/IMU residuals approach their rejection thresholds. IMU yaw
+rate is compared with the latest visual yaw rate so rapid direction reversals do
+not compare a current sample with a delayed 0.75-second visual median. Three
+consecutive hard robust residuals reject a source; ten consistent comparisons
+are required to restore it. Wheel covariance supplied by the encoder node is
+retained as the lower bound before this adaptive inflation.
 
 Command, wheel, and visual motion are classified only after a configurable dwell:
 wheel motion without visual motion is `WHEEL_SLIP`; commanded motion with neither
@@ -46,24 +48,26 @@ wheel nor visual motion is `MECHANICAL_STALL`; visual motion without wheel motio
 is `ENCODER_FAILURE`. A stall publishes `FAULT_STALLED`. Slip and encoder failure
 remove wheel measurements from the EKF, leaving visual/IMU degradation where
 available. Recovery also has a separate dwell to prevent rapid state toggling.
+Angular stall detection requires at least two fresh angular-rate sources and
+publishes `FAULT_STALLED` after a turn command produces no measured rotation for
+0.8 seconds.
 
-During visual loss, wheel `vx` plus IMU `wz` keep the EKF predicting for at most
-2 seconds or 0.30 m. Beyond either limit the status becomes `FAULT`. The odometry
-topic may continue publishing a prediction; a navigator must treat `FAULT` as a
-mandatory stop condition. This package itself cannot stop the chassis.
+During visual loss, wheel `vx` plus IMU `wz` keep the EKF predicting in
+`DEGRADED_NO_VISION`; navigation applies a reduced speed until vision returns.
+The stricter time and distance window below applies when IMU is also absent.
 
 If IMU disappears after wheel yaw rate has agreed with it for at least 2 seconds,
-wheel-only prediction is permitted for at most 0.75 seconds, 0.10 m, and only at
-or below 0.12 m/s. It otherwise becomes `FAULT`. Linear acceleration is never
+wheel-only prediction is permitted for at most 2 seconds, 0.30 m, and only at
+or below 0.30 m/s. It otherwise becomes `FAULT`. Linear acceleration is never
 fused.
 
 After five good recovery frames, the gate prefers `/odom/orb_raw`. An existing
 raw-to-fused SE(2) alignment is checked against the current prediction. A
 reasonable recovery enters a 0.75-second covariance ramp so correction is
-gradual. A recovery beyond 1.50 m or 1.00 rad is re-aligned exactly at the current
-prediction and reported as `DEGRADED_VISUAL_REALIGNED`; it can never pull the
-published pose back in one update. If raw odometry is absent, continuous `/odom`
-is aligned to the prediction and receives the same ramp.
+gradual. A recovery beyond 1.50 m or 1.00 rad is rejected instead of moving the
+visual origin onto the wheel prediction. The established visual map transform
+is preserved across an outage, allowing accepted visual recovery to correct
+wheel dead-reckoning drift.
 
 Raw ORB pose is accepted only when its body Z axis remains within 0.50 rad of
 the map Z axis. This rejects the optical-world coordinates produced by older

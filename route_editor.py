@@ -15,7 +15,6 @@ from rclpy.qos import (
     ReliabilityPolicy,
     qos_profile_sensor_data,
 )
-from std_srvs.srv import Trigger
 
 
 GRID_METERS = 0.6
@@ -58,7 +57,6 @@ class RouteEditorNode(Node):
             "route_input_topic", "/waypoint_navigation/route_input"
         )
         self.declare_parameter("route_feedback_topic", "/waypoint_path")
-        self.declare_parameter("start_service", "/waypoint_navigator/start")
         self.declare_parameter("route_frame", "map")
         self.declare_parameter("odom_timeout", 0.5)
         self.declare_parameter("activation_timeout", 3.0)
@@ -66,7 +64,6 @@ class RouteEditorNode(Node):
         self.odom_topic = self.get_parameter("odom_topic").value
         self.route_input_topic = self.get_parameter("route_input_topic").value
         self.route_feedback_topic = self.get_parameter("route_feedback_topic").value
-        self.start_service_name = self.get_parameter("start_service").value
         self.route_frame = self.get_parameter("route_frame").value
         self.odom_timeout = max(0.05, float(self.get_parameter("odom_timeout").value))
         self.activation_timeout = max(
@@ -77,24 +74,27 @@ class RouteEditorNode(Node):
         self._activation_deadline = 0.0
         self._pending_fingerprint = None
         self._pending_stamp_ns = 0
-        self._start_future = None
         self._activation_result = None
 
-        route_qos = QoSProfile(
+        route_input_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.VOLATILE,
+        )
+        route_feedback_qos = QoSProfile(
             depth=1,
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
         self.route_publisher = self.create_publisher(
-            Path, self.route_input_topic, route_qos
+            Path, self.route_input_topic, route_input_qos
         )
         self.route_feedback_subscription = self.create_subscription(
-            Path, self.route_feedback_topic, self._handle_route_feedback, route_qos
+            Path, self.route_feedback_topic, self._handle_route_feedback, route_feedback_qos
         )
         self.odom_subscription = self.create_subscription(
             Odometry, self.odom_topic, self._handle_odom, qos_profile_sensor_data
         )
-        self.start_client = self.create_client(Trigger, self.start_service_name)
 
     def _handle_odom(self, message):
         x = message.pose.pose.position.x
@@ -147,33 +147,18 @@ class RouteEditorNode(Node):
             return
         if path_fingerprint(path) != self._pending_fingerprint:
             return
-        self._activation_phase = "WAIT_SERVICE"
+        self._finish_activation(True, "路线已发布并由导航器启用")
 
     def poll_activation(self):
         if not self.activation_busy:
             return
         if time.monotonic() > self._activation_deadline:
-            self._finish_activation(False, "导航器未及时确认并启动路线")
-            return
-        if self._activation_phase == "WAIT_SERVICE":
-            if not self.start_client.service_is_ready():
-                return
-            self._start_future = self.start_client.call_async(Trigger.Request())
-            self._activation_phase = "WAIT_RESPONSE"
-            return
-        if self._activation_phase == "WAIT_RESPONSE" and self._start_future.done():
-            try:
-                response = self._start_future.result()
-            except Exception as exception:
-                self._finish_activation(False, f"启动服务调用失败: {exception}")
-                return
-            self._finish_activation(bool(response.success), response.message)
+            self._finish_activation(False, "导航器未及时确认路线")
 
     def _finish_activation(self, success, message):
         self._activation_phase = "SUCCEEDED" if success else "FAILED"
         self._activation_result = (success, message)
         self._pending_fingerprint = None
-        self._start_future = None
 
     def take_activation_result(self):
         result = self._activation_result

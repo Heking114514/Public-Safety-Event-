@@ -2,6 +2,7 @@
 #define VISUAL_NAVIGATION__FUSION_HEALTH_POLICY_HPP_
 
 #include <algorithm>
+#include <cmath>
 #include <string>
 #include <utility>
 #include <vector>
@@ -39,6 +40,15 @@ inline bool ShouldLatchFusedLocalizationLoss(
 {
   return health.fault ||
     (localization_was_valid && (!odometry_valid || !health.allowed));
+}
+
+inline bool CanBridgeTransientLocalizationLoss(
+  bool localization_was_valid, bool hard_fault,
+  double seconds_since_valid, double grace_seconds)
+{
+  return localization_was_valid && !hard_fault &&
+    std::isfinite(seconds_since_valid) && seconds_since_valid >= 0.0 &&
+    seconds_since_valid <= std::max(0.0, grace_seconds);
 }
 
 class FusionHealthPolicy

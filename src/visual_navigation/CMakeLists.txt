@@ -13,6 +13,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 
@@ -23,6 +24,7 @@ ament_target_dependencies(
   rclcpp
   nav_msgs
   geometry_msgs
+  sensor_msgs
   std_msgs
   std_srvs
 )
@@ -48,6 +50,8 @@ if(BUILD_TESTING)
   target_include_directories(actuator_health_policy_test PRIVATE include)
   ament_add_gtest(rate_limiter_test test/rate_limiter_test.cpp)
   target_include_directories(rate_limiter_test PRIVATE include)
+  ament_add_gtest(path_control_test test/path_control_test.cpp)
+  target_include_directories(path_control_test PRIVATE include)
 endif()
 
 ament_package()
