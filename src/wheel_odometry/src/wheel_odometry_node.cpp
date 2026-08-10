@@ -69,11 +69,14 @@ private:
       "left_distance_scale", config.left_distance_scale);
     config.right_distance_scale = positive_parameter(
       "right_distance_scale", config.right_distance_scale);
+    config.yaw_slip_scale = positive_parameter("yaw_slip_scale", config.yaw_slip_scale);
     config.max_wheel_speed_mps = positive_parameter(
       "max_wheel_speed_mps", config.max_wheel_speed_mps);
     config.min_dt_s = positive_parameter("min_dt_s", config.min_dt_s);
     config.nominal_sample_period_s = positive_parameter(
       "nominal_sample_period_s", config.nominal_sample_period_s);
+    config.nominal_sequence_increment = positive_integer_parameter(
+      "nominal_sequence_increment", config.nominal_sequence_increment);
     config.pose_xy_variance = nonnegative_parameter(
       "pose_xy_variance", config.pose_xy_variance);
     config.pose_yaw_variance = nonnegative_parameter(
@@ -133,6 +136,15 @@ private:
       throw std::invalid_argument(name + " must be finite and non-negative");
     }
     return value;
+  }
+
+  uint32_t positive_integer_parameter(const std::string & name, uint32_t default_value)
+  {
+    const std::int64_t value = declare_parameter<std::int64_t>(name, default_value);
+    if (value < 1 || value > static_cast<std::int64_t>(UINT32_MAX)) {
+      throw std::invalid_argument(name + " must be a positive uint32 value");
+    }
+    return static_cast<uint32_t>(value);
   }
 
   void encoder_callback(const std_msgs::msg::Int32MultiArray & message)

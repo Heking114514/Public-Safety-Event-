@@ -55,6 +55,28 @@ TEST(OdometryIntegrator, UsesMidpointHeadingForArc)
   EXPECT_NEAR(integrator.state().yaw_rad, delta_yaw, 1.0e-12);
 }
 
+TEST(OdometryIntegrator, ModelsTurnSlipWithoutChangingPhysicalWheelTrack)
+{
+  IntegratorConfig config = test_config();
+  config.yaw_slip_scale = 0.61;
+  OdometryIntegrator integrator(config);
+  integrator.update(sample(0, 1, 0, 0));
+  integrator.update(sample(1000, 2, -1000, 1000));
+
+  const double wheel_distance = 1000.0 * 2.0 * kPi * 0.0325 / 1925.0;
+  const double expected_yaw = 2.0 * wheel_distance / 0.254 * 0.61;
+  EXPECT_NEAR(integrator.state().yaw_rad, expected_yaw, 1.0e-12);
+  EXPECT_NEAR(integrator.state().x_m, 0.0, 1.0e-12);
+  EXPECT_NEAR(integrator.state().y_m, 0.0, 1.0e-12);
+}
+
+TEST(OdometryIntegrator, RejectsInvalidTurnSlipScale)
+{
+  IntegratorConfig config = test_config();
+  config.yaw_slip_scale = 0.0;
+  EXPECT_THROW(OdometryIntegrator integrator(config), std::invalid_argument);
+}
+
 TEST(OdometryIntegrator, IntegratesAcrossDroppedMessages)
 {
   OdometryIntegrator integrator(test_config());
@@ -71,6 +93,25 @@ TEST(OdometryIntegrator, IntegratesAcrossDroppedMessages)
   EXPECT_GT(
     integrator.uncertainty().twist_linear_variance,
     test_config().twist_linear_variance);
+}
+
+TEST(OdometryIntegrator, SupportsMcuSequenceStrideWithoutFalseMissingSamples)
+{
+  IntegratorConfig config = test_config();
+  config.nominal_sample_period_s = 0.05;
+  config.nominal_sequence_increment = 5;
+  OdometryIntegrator integrator(config);
+  integrator.update(sample(100, 20, 100, 100));
+
+  const UpdateResult normal = integrator.update(sample(150, 25, 150, 150));
+  ASSERT_TRUE(normal.publish);
+  EXPECT_EQ(integrator.statistics().sequence_gap_events, 0U);
+  EXPECT_EQ(integrator.statistics().missing_samples, 0U);
+
+  const UpdateResult one_report_missing = integrator.update(sample(250, 35, 250, 250));
+  ASSERT_TRUE(one_report_missing.publish);
+  EXPECT_EQ(integrator.statistics().sequence_gap_events, 1U);
+  EXPECT_EQ(integrator.statistics().missing_samples, 1U);
 }
 
 TEST(OdometryIntegrator, AcceptsSequenceAndMcuTimeWrap)

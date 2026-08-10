@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <deque>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <numeric>
 #include <stdexcept>
@@ -13,17 +14,22 @@
 #include <utility>
 #include <vector>
 
+#include "diagnostic_msgs/msg/diagnostic_array.hpp"
+#include "diagnostic_msgs/msg/diagnostic_status.hpp"
+#include "diagnostic_msgs/msg/key_value.hpp"
 #include "geometry_msgs/msg/quaternion.hpp"
+#include "geometry_msgs/msg/twist.hpp"
 #include "geometry_msgs/msg/vector3_stamped.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/imu.hpp"
 #include "std_msgs/msg/int32.hpp"
 
+#include "imu_rpy_filter/yaw_filter.hpp"
+
 namespace imu_rpy_filter
 {
 
-constexpr double kPi = 3.14159265358979323846;
 constexpr double kGravity = 9.80665;
 
 double radians(double degrees)
@@ -34,11 +40,6 @@ double radians(double degrees)
 double degrees(double angle)
 {
   return angle * 180.0 / kPi;
-}
-
-double wrap_angle(double angle)
-{
-  return std::remainder(angle, 2.0 * kPi);
 }
 
 using Vector3 = std::array<double, 3>;
@@ -185,121 +186,45 @@ private:
   Vector3 value_{};
 };
 
-class StationaryDetector
+class TimedScalarMedian
 {
 public:
-  StationaryDetector(
-    double dwell_time, double acceleration_enter, double acceleration_exit,
-    double gyro_enter, double gyro_exit)
-  : dwell_time_(dwell_time),
-    acceleration_enter_(acceleration_enter),
-    acceleration_exit_(acceleration_exit),
-    gyro_enter_(gyro_enter),
-    gyro_exit_(gyro_exit)
+  explicit TimedScalarMedian(double duration_s)
+  : duration_s_(duration_s)
   {
   }
 
-  bool update(double stamp, double acceleration_error, double gyro_norm)
+  void add(double stamp, double value)
   {
-    if (active_) {
-      if (acceleration_error > acceleration_exit_ || gyro_norm > gyro_exit_) {
-        active_ = false;
-        candidate_since_ = -1.0;
-      }
-      return active_;
+    samples_.emplace_back(stamp, value);
+    while (!samples_.empty() && stamp - samples_.front().first > duration_s_) {
+      samples_.pop_front();
     }
-
-    if (acceleration_error <= acceleration_enter_ && gyro_norm <= gyro_enter_) {
-      if (candidate_since_ < 0.0) {
-        candidate_since_ = stamp;
-      } else if (stamp - candidate_since_ >= dwell_time_) {
-        active_ = true;
-      }
-    } else {
-      candidate_since_ = -1.0;
-    }
-    return active_;
   }
 
-  bool has_candidate() const
+  void clear() {samples_.clear();}
+
+  bool ready(std::size_t minimum_samples) const
   {
-    return candidate_since_ >= 0.0;
+    return samples_.size() >= minimum_samples &&
+           samples_.back().first - samples_.front().first >= 0.5 * duration_s_;
+  }
+
+  double median() const
+  {
+    std::vector<double> values;
+    values.reserve(samples_.size());
+    for (const auto & sample : samples_) {
+      values.push_back(sample.second);
+    }
+    const auto middle = values.begin() + static_cast<std::ptrdiff_t>(values.size() / 2);
+    std::nth_element(values.begin(), middle, values.end());
+    return *middle;
   }
 
 private:
-  double dwell_time_;
-  double acceleration_enter_;
-  double acceleration_exit_;
-  double gyro_enter_;
-  double gyro_exit_;
-  double candidate_since_{-1.0};
-  bool active_{false};
-};
-
-class YawBiasKalman
-{
-public:
-  YawBiasKalman(double gyro_noise, double bias_walk)
-  : gyro_noise_(gyro_noise), bias_walk_(bias_walk)
-  {
-  }
-
-  void predict(double measured_yaw_rate, double dt)
-  {
-    yaw_ = wrap_angle(yaw_ + (measured_yaw_rate - bias_) * dt);
-
-    const double old_p00 = p00_;
-    const double old_p01 = p01_;
-    const double old_p10 = p10_;
-    const double old_p11 = p11_;
-    p00_ = old_p00 - dt * (old_p01 + old_p10) + dt * dt * old_p11 +
-      std::pow(gyro_noise_ * dt, 2);
-    p01_ = old_p01 - dt * old_p11;
-    p10_ = old_p10 - dt * old_p11;
-    p11_ = old_p11 + bias_walk_ * bias_walk_ * dt;
-  }
-
-  double innovation(double measured_yaw) const
-  {
-    return wrap_angle(measured_yaw - yaw_);
-  }
-
-  void update(double measured_yaw, double measurement_std)
-  {
-    const double residual = innovation(measured_yaw);
-    const double residual_covariance = p00_ + measurement_std * measurement_std;
-    const double gain_yaw = p00_ / residual_covariance;
-    const double gain_bias = p10_ / residual_covariance;
-
-    yaw_ = wrap_angle(yaw_ + gain_yaw * residual);
-    bias_ = std::clamp(bias_ + gain_bias * residual, radians(-5.0), radians(5.0));
-
-    const double old_p00 = p00_;
-    const double old_p01 = p01_;
-    const double old_p10 = p10_;
-    const double old_p11 = p11_;
-    p00_ = std::max((1.0 - gain_yaw) * old_p00, 1e-12);
-    p01_ = (1.0 - gain_yaw) * old_p01;
-    p10_ = old_p10 - gain_bias * old_p00;
-    p11_ = std::max(old_p11 - gain_bias * old_p01, 1e-12);
-    const double off_diagonal = 0.5 * (p01_ + p10_);
-    p01_ = off_diagonal;
-    p10_ = off_diagonal;
-  }
-
-  double yaw() const {return yaw_;}
-  double bias() const {return bias_;}
-  double yaw_variance() const {return p00_;}
-
-private:
-  double yaw_{0.0};
-  double bias_{0.0};
-  double p00_{std::pow(radians(5.0), 2)};
-  double p01_{0.0};
-  double p10_{0.0};
-  double p11_{std::pow(radians(1.0), 2)};
-  double gyro_noise_;
-  double bias_walk_;
+  double duration_s_;
+  std::deque<std::pair<double, double>> samples_;
 };
 
 geometry_msgs::msg::Quaternion quaternion_from_rpy(double roll, double pitch, double yaw)
@@ -341,13 +266,15 @@ public:
     low_pass_accel_(get_parameter("low_pass_cutoff_hz").as_double()),
     stationary_detector_(
       declare_nonnegative("stationary_dwell_seconds", 0.5),
+      declare_nonnegative("stationary_exit_dwell_seconds", 0.15),
       declare_nonnegative("stationary_accel_enter", 0.20),
       declare_nonnegative("stationary_accel_exit", 0.35),
       declare_nonnegative("stationary_gyro_enter", 0.02),
       declare_nonnegative("stationary_gyro_exit", 0.05)),
     yaw_filter_(
       radians(declare_nonnegative("kalman_gyro_noise_deg_s", 0.6)),
-      radians(declare_nonnegative("kalman_bias_walk_deg_s", 0.03)))
+      radians(declare_nonnegative("kalman_bias_walk_deg_s", 0.03))),
+    stationary_bias_window_(declare_positive("stationary_bias_window_seconds", 0.5))
   {
     imu_topic_ = declare_parameter<std::string>("imu_topic", "/camera/camera/imu");
     rpy_topic_ = declare_parameter<std::string>("rpy_topic", "/imu/rpy");
@@ -361,9 +288,26 @@ public:
     use_yaw_reference_ = declare_parameter<bool>("use_yaw_reference", false);
     yaw_reference_topic_ = declare_parameter<std::string>("yaw_reference_topic", "/odom");
     tracking_topic_ = declare_parameter<std::string>("tracking_topic", "/tracking_state");
+    command_topic_ = declare_parameter<std::string>("command_topic", "/cmd_vel_nav");
+    wheel_topic_ = declare_parameter<std::string>("wheel_topic", "/wheel/odom");
+    external_motion_timeout_ = declare_positive("external_motion_timeout_seconds", 0.35);
+    command_linear_stationary_threshold_ = declare_nonnegative(
+      "command_linear_stationary_threshold_mps", 0.02);
+    command_yaw_stationary_threshold_ = declare_nonnegative(
+      "command_yaw_stationary_threshold_rad_s", 0.03);
+    wheel_linear_stationary_threshold_ = declare_nonnegative(
+      "wheel_linear_stationary_threshold_mps", 0.02);
+    wheel_yaw_stationary_threshold_ = declare_nonnegative(
+      "wheel_yaw_stationary_threshold_rad_s", 0.05);
     visual_yaw_std_ = radians(declare_positive("visual_yaw_std_degrees", 2.0));
     visual_yaw_gate_ = radians(declare_positive("visual_yaw_gate_degrees", 15.0));
     stationary_yaw_std_ = radians(declare_positive("stationary_yaw_std_degrees", 0.5));
+    stationary_bias_std_ = radians(
+      declare_positive("stationary_bias_std_deg_s", 0.15));
+    moving_yaw_rate_variance_ = std::pow(
+      radians(declare_positive("moving_yaw_rate_std_deg_s", 1.0)), 2);
+    stationary_yaw_rate_variance_ = std::pow(
+      radians(declare_positive("stationary_yaw_rate_std_deg_s", 0.15)), 2);
     roll_pitch_variance_ = std::pow(
       radians(declare_positive("roll_pitch_std_degrees", 1.0)), 2);
 
@@ -374,9 +318,17 @@ public:
       rpy_degrees_topic_, sensor_qos);
     filtered_imu_publisher_ = create_publisher<sensor_msgs::msg::Imu>(
       filtered_imu_topic_, sensor_qos);
+    diagnostic_publisher_ = create_publisher<diagnostic_msgs::msg::DiagnosticArray>(
+      "/diagnostics", 10);
     imu_subscription_ = create_subscription<sensor_msgs::msg::Imu>(
       imu_topic_, sensor_qos,
       std::bind(&ImuRpyFilterNode::imu_callback, this, std::placeholders::_1));
+    command_subscription_ = create_subscription<geometry_msgs::msg::Twist>(
+      command_topic_, 10,
+      std::bind(&ImuRpyFilterNode::command_callback, this, std::placeholders::_1));
+    wheel_subscription_ = create_subscription<nav_msgs::msg::Odometry>(
+      wheel_topic_, sensor_qos,
+      std::bind(&ImuRpyFilterNode::wheel_callback, this, std::placeholders::_1));
 
     if (use_yaw_reference_) {
       odometry_subscription_ = create_subscription<nav_msgs::msg::Odometry>(
@@ -386,6 +338,8 @@ public:
         tracking_topic_, sensor_qos,
         std::bind(&ImuRpyFilterNode::tracking_callback, this, std::placeholders::_1));
     }
+    diagnostic_timer_ = create_wall_timer(
+      std::chrono::milliseconds(500), [this]() {publish_diagnostics();});
 
     RCLCPP_INFO(
       get_logger(),
@@ -437,6 +391,54 @@ private:
     have_tracking_state_ = true;
   }
 
+  void command_callback(const geometry_msgs::msg::Twist::SharedPtr message)
+  {
+    latest_command_linear_ = message->linear.x;
+    latest_command_yaw_rate_ = message->angular.z;
+    command_received_at_ = std::chrono::steady_clock::now();
+    have_command_ = std::isfinite(latest_command_linear_) &&
+      std::isfinite(latest_command_yaw_rate_);
+  }
+
+  void wheel_callback(const nav_msgs::msg::Odometry::SharedPtr message)
+  {
+    latest_wheel_linear_ = message->twist.twist.linear.x;
+    latest_wheel_yaw_rate_ = message->twist.twist.angular.z;
+    wheel_received_at_ = std::chrono::steady_clock::now();
+    have_wheel_ = std::isfinite(latest_wheel_linear_) &&
+      std::isfinite(latest_wheel_yaw_rate_);
+  }
+
+  bool externally_stationary() const
+  {
+    const auto current = std::chrono::steady_clock::now();
+    return command_fresh(current) && wheel_fresh(current) &&
+           std::abs(latest_command_linear_) <= command_linear_stationary_threshold_ &&
+           std::abs(latest_command_yaw_rate_) <= command_yaw_stationary_threshold_ &&
+           std::abs(latest_wheel_linear_) <= wheel_linear_stationary_threshold_ &&
+           std::abs(latest_wheel_yaw_rate_) <= wheel_yaw_stationary_threshold_;
+  }
+
+  bool externally_moving() const
+  {
+    const auto current = std::chrono::steady_clock::now();
+    return wheel_fresh(current) &&
+           (std::abs(latest_wheel_linear_) > wheel_linear_stationary_threshold_ ||
+           std::abs(latest_wheel_yaw_rate_) > wheel_yaw_stationary_threshold_);
+  }
+
+  bool command_fresh(const std::chrono::steady_clock::time_point & current) const
+  {
+    return have_command_ && std::chrono::duration<double>(
+      current - command_received_at_).count() <= external_motion_timeout_;
+  }
+
+  bool wheel_fresh(const std::chrono::steady_clock::time_point & current) const
+  {
+    return have_wheel_ && std::chrono::duration<double>(
+      current - wheel_received_at_).count() <= external_motion_timeout_;
+  }
+
   void imu_callback(const sensor_msgs::msg::Imu::SharedPtr message)
   {
     Vector3 gyro = {
@@ -472,7 +474,8 @@ private:
       pitch_ = std::atan2(-accel[0], std::hypot(accel[1], accel[2]));
       last_stamp_ = stamp;
       initialized_ = true;
-      publish_outputs(*message, gyro, accel, gyro_covariance, accel_covariance, false);
+      publish_outputs(
+        *message, gyro, accel, gyro_covariance, accel_covariance, true, 0.0);
       return;
     }
 
@@ -498,6 +501,8 @@ private:
     const double roll_rate = gyro[0] + std::sin(roll_) * tan_pitch * gyro[1] +
       std::cos(roll_) * tan_pitch * gyro[2];
     const double pitch_rate = std::cos(roll_) * gyro[1] - std::sin(roll_) * gyro[2];
+    // Convert the camera-frame angular velocity to Euler yaw rate. The D455 is
+    // mounted with a fixed pitch, so using gyro.z directly undercounts turns.
     const double yaw_rate = std::sin(roll_) / cos_pitch * gyro[1] +
       std::cos(roll_) / cos_pitch * gyro[2];
 
@@ -517,13 +522,26 @@ private:
 
     const double corrected_yaw_rate = yaw_rate - yaw_filter_.bias();
     const double angular_rate_norm = std::sqrt(
-      roll_rate * roll_rate + pitch_rate * pitch_rate +
+      gyro[0] * gyro[0] + gyro[1] * gyro[1] +
       corrected_yaw_rate * corrected_yaw_rate);
+    external_stationary_ = externally_stationary();
+    external_moving_ = externally_moving();
     const bool stationary = stationary_detector_.update(
-      stamp, acceleration_error, angular_rate_norm);
+      stamp,
+      external_stationary_ ? 0.0 : (external_moving_ ? 1.0 : acceleration_error),
+      external_stationary_ ? 0.0 : (external_moving_ ? 1.0 : angular_rate_norm));
+    const bool stationary_like = stationary || stationary_detector_.has_candidate();
+    const bool imu_quiet = acceleration_error <= 0.35 && angular_rate_norm <= 0.05;
+    if (stationary_like && !stationary_detector_.exit_pending() && imu_quiet) {
+      stationary_bias_window_.add(stamp, yaw_rate);
+    } else if (!stationary_like) {
+      stationary_bias_window_.clear();
+    }
     apply_stationary_update(stamp, stationary);
     apply_visual_update();
-    publish_outputs(*message, gyro, accel, gyro_covariance, accel_covariance, stationary);
+    publish_outputs(
+      *message, gyro, accel, gyro_covariance, accel_covariance, stationary_like,
+      corrected_yaw_rate);
 
     RCLCPP_INFO_THROTTLE(
       get_logger(), *get_clock(), 1000,
@@ -534,23 +552,24 @@ private:
 
   void apply_stationary_update(double stamp, bool stationary)
   {
-    if (stationary) {
+    const bool candidate = stationary_detector_.has_candidate();
+    if (stationary || candidate) {
       if (!have_stationary_anchor_) {
         stationary_anchor_ = yaw_filter_.yaw();
         last_stationary_update_ = stamp;
         have_stationary_anchor_ = true;
       } else if (stamp - last_stationary_update_ >= 0.05) {
-        yaw_filter_.update(stationary_anchor_, stationary_yaw_std_);
+        if (stationary_detector_.exit_pending()) {
+          correction_source_ = "stationary_hold";
+          return;
+        }
+        yaw_filter_.hold_yaw(stationary_anchor_);
+        if (stationary_bias_window_.ready(20)) {
+          yaw_filter_.update_bias(stationary_bias_window_.median(), stationary_bias_std_);
+        }
         last_stationary_update_ = stamp;
-        correction_source_ = "stationary";
+        correction_source_ = stationary ? "stationary" : "stationary_candidate";
       }
-    } else if (stationary_detector_.has_candidate()) {
-      if (!have_stationary_anchor_) {
-        stationary_anchor_ = yaw_filter_.yaw();
-        last_stationary_update_ = stamp;
-        have_stationary_anchor_ = true;
-      }
-      correction_source_ = "gyro";
     } else {
       have_stationary_anchor_ = false;
       correction_source_ = "gyro";
@@ -598,7 +617,8 @@ private:
 
   void publish_outputs(
     const sensor_msgs::msg::Imu & input, const Vector3 & gyro, const Vector3 & accel,
-    const Matrix3 & gyro_covariance, const Matrix3 & accel_covariance, bool stationary)
+    const Matrix3 & gyro_covariance, const Matrix3 & accel_covariance, bool stationary_like,
+    double corrected_yaw_rate)
   {
     std_msgs::msg::Header header = input.header;
     header.frame_id = output_frame_;
@@ -622,16 +642,67 @@ private:
     filtered.orientation_covariance = {
       roll_pitch_variance_, 0.0, 0.0,
       0.0, roll_pitch_variance_, 0.0,
-      0.0, 0.0, yaw_filter_.yaw_variance()};
+      0.0, 0.0, std::max(yaw_filter_.yaw_variance(), stationary_yaw_std_ * stationary_yaw_std_)};
     filtered.angular_velocity.x = gyro[0];
     filtered.angular_velocity.y = gyro[1];
-    filtered.angular_velocity.z = stationary ? 0.0 : gyro[2] - yaw_filter_.bias();
+    filtered.angular_velocity.z = stationary_like ? 0.0 : corrected_yaw_rate;
     filtered.angular_velocity_covariance = gyro_covariance;
+    filtered.angular_velocity_covariance[8] = stationary_like ?
+      stationary_yaw_rate_variance_ : moving_yaw_rate_variance_;
     filtered.linear_acceleration.x = accel[0];
     filtered.linear_acceleration.y = accel[1];
     filtered.linear_acceleration.z = accel[2];
     filtered.linear_acceleration_covariance = accel_covariance;
     filtered_imu_publisher_->publish(filtered);
+  }
+
+  static diagnostic_msgs::msg::KeyValue diagnostic_value(
+    const std::string & key, const std::string & value)
+  {
+    diagnostic_msgs::msg::KeyValue item;
+    item.key = key;
+    item.value = value;
+    return item;
+  }
+
+  void publish_diagnostics()
+  {
+    diagnostic_msgs::msg::DiagnosticStatus status;
+    status.name = get_fully_qualified_name() + std::string(": yaw filter");
+    status.hardware_id = "d455_imu";
+    status.level = initialized_ ? diagnostic_msgs::msg::DiagnosticStatus::OK :
+      diagnostic_msgs::msg::DiagnosticStatus::WARN;
+    status.message = !initialized_ ? "waiting for IMU" :
+      (stationary_detector_.active() ? "stationary bias tracking" : "integrating yaw rate");
+    status.values.push_back(diagnostic_value(
+      "stationary", stationary_detector_.active() ? "true" : "false"));
+    status.values.push_back(diagnostic_value(
+      "stationary_candidate", stationary_detector_.has_candidate() ? "true" : "false"));
+    status.values.push_back(diagnostic_value(
+      "stationary_exit_pending", stationary_detector_.exit_pending() ? "true" : "false"));
+    status.values.push_back(diagnostic_value(
+      "external_stationary", external_stationary_ ? "true" : "false"));
+    status.values.push_back(diagnostic_value(
+      "external_moving", external_moving_ ? "true" : "false"));
+    status.values.push_back(diagnostic_value(
+      "gyro_bias_z_deg_s", std::to_string(degrees(yaw_filter_.bias()))));
+    status.values.push_back(diagnostic_value(
+      "gyro_bias_std_deg_s",
+      std::to_string(degrees(std::sqrt(yaw_filter_.bias_variance())))));
+    status.values.push_back(diagnostic_value(
+      "yaw_deg", std::to_string(degrees(yaw_filter_.yaw()))));
+    status.values.push_back(diagnostic_value(
+      "yaw_std_deg", std::to_string(degrees(std::sqrt(std::max(
+        yaw_filter_.yaw_variance(), stationary_yaw_std_ * stationary_yaw_std_))))));
+    status.values.push_back(diagnostic_value(
+      "rejected_stationary_transients",
+      std::to_string(stationary_detector_.rejected_transient_count())));
+    status.values.push_back(diagnostic_value("correction_source", correction_source_));
+
+    diagnostic_msgs::msg::DiagnosticArray array;
+    array.header.stamp = now();
+    array.status.push_back(std::move(status));
+    diagnostic_publisher_->publish(array);
   }
 
   VectorMedianFilter median_gyro_;
@@ -642,6 +713,7 @@ private:
   LowPassFilter low_pass_accel_;
   StationaryDetector stationary_detector_;
   YawBiasKalman yaw_filter_;
+  TimedScalarMedian stationary_bias_window_;
 
   std::string imu_topic_;
   std::string rpy_topic_;
@@ -650,11 +722,21 @@ private:
   std::string output_frame_;
   std::string yaw_reference_topic_;
   std::string tracking_topic_;
+  std::string command_topic_;
+  std::string wheel_topic_;
   std::string correction_source_{"gyro"};
   double correction_time_{0.5};
   double visual_yaw_std_{radians(2.0)};
   double visual_yaw_gate_{radians(15.0)};
   double stationary_yaw_std_{radians(0.5)};
+  double stationary_bias_std_{radians(0.15)};
+  double moving_yaw_rate_variance_{std::pow(radians(1.0), 2)};
+  double stationary_yaw_rate_variance_{std::pow(radians(0.15), 2)};
+  double external_motion_timeout_{0.35};
+  double command_linear_stationary_threshold_{0.02};
+  double command_yaw_stationary_threshold_{0.03};
+  double wheel_linear_stationary_threshold_{0.02};
+  double wheel_yaw_stationary_threshold_{0.05};
   double roll_pitch_variance_{std::pow(radians(1.0), 2)};
   double last_stamp_{0.0};
   double roll_{0.0};
@@ -663,6 +745,10 @@ private:
   double last_stationary_update_{0.0};
   double latest_reference_yaw_{0.0};
   double reference_offset_{0.0};
+  double latest_command_linear_{0.0};
+  double latest_command_yaw_rate_{0.0};
+  double latest_wheel_linear_{0.0};
+  double latest_wheel_yaw_rate_{0.0};
   bool transform_optical_frame_{true};
   bool use_yaw_reference_{false};
   bool initialized_{false};
@@ -670,20 +756,30 @@ private:
   bool have_reference_{false};
   bool have_reference_offset_{false};
   bool have_tracking_state_{false};
+  bool have_command_{false};
+  bool have_wheel_{false};
+  bool external_stationary_{false};
+  bool external_moving_{false};
   int tracking_state_{0};
   int rejected_reference_count_{0};
   std::size_t reference_sequence_{0};
   std::size_t applied_reference_sequence_{0};
   std::chrono::steady_clock::time_point reference_received_at_{};
   std::chrono::steady_clock::time_point tracking_received_at_{};
+  std::chrono::steady_clock::time_point command_received_at_{};
+  std::chrono::steady_clock::time_point wheel_received_at_{};
 
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_subscription_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odometry_subscription_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr tracking_subscription_;
+  rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr command_subscription_;
+  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr wheel_subscription_;
   rclcpp::Publisher<geometry_msgs::msg::Vector3Stamped>::SharedPtr rpy_publisher_;
   rclcpp::Publisher<geometry_msgs::msg::Vector3Stamped>::SharedPtr
     rpy_degrees_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr filtered_imu_publisher_;
+  rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diagnostic_publisher_;
+  rclcpp::TimerBase::SharedPtr diagnostic_timer_;
 };
 
 }  // namespace imu_rpy_filter

@@ -8,19 +8,25 @@ wheel_odometry_node:
     # when wheel odometry is the sole odometry source.
     publish_tf: false
 
-    # Keep these values synchronized with the STM32 chassis calibration.
+    # Physical geometry matches the STM32; distance/slip terms are calibrated
+    # observation corrections used only by the upper-computer odometry.
     wheel_radius_m: 0.0325
     ticks_per_revolution: 1925.0
+    # Measured physical distance between the left and right wheel contact lines.
     wheel_track_m: 0.254
-    left_distance_scale: 1.000
-    right_distance_scale: 1.010
+    left_distance_scale: 1.058
+    right_distance_scale: 1.110
+    # Physical track remains 0.254 m. This separate empirical term models
+    # lateral tire scrub observed during in-place turns.
+    yaw_slip_scale: 0.61
 
     # Reject a sample if either wheel would have exceeded this speed.
     max_wheel_speed_mps: 2.0
     min_dt_s: 0.0001
-    # Firmware encoder publication period. Timing gaps relative to this value
-    # increase the reported twist uncertainty.
-    nominal_sample_period_s: 0.02
+    # Firmware samples at 100 Hz and reports cumulative counts at 20 Hz. Thus a
+    # healthy report advances sample_sequence by five every 50 ms.
+    nominal_sample_period_s: 0.05
+    nominal_sequence_increment: 5
 
     # Initial uncertainty and motion-dependent growth. These are deliberately
     # conservative: wheel odometry is a short-term increment source, not truth.

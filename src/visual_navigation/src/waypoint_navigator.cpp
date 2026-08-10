@@ -368,6 +368,30 @@ private:
     COMPLETE
   };
 
+  static bool RoutesEquivalent(
+    const std::vector<Waypoint> &left, const std::vector<Waypoint> &right)
+  {
+    if (left.size() != right.size())
+      return false;
+
+    constexpr double kPositionTolerance = 1e-6;
+    constexpr double kYawTolerance = 1e-6;
+    for (std::size_t index = 0; index < left.size(); ++index)
+    {
+      const bool leftYawFinite = std::isfinite(left[index].yaw);
+      const bool rightYawFinite = std::isfinite(right[index].yaw);
+      if (std::abs(left[index].x - right[index].x) > kPositionTolerance ||
+        std::abs(left[index].y - right[index].y) > kPositionTolerance ||
+        leftYawFinite != rightYawFinite ||
+        (leftYawFinite &&
+        std::abs(NormalizeAngle(left[index].yaw - right[index].yaw)) > kYawTolerance))
+      {
+        return false;
+      }
+    }
+    return true;
+  }
+
   bool LoadRoute(const std::string &routeFile)
   {
     if (routeFile.empty())
@@ -591,6 +615,24 @@ private:
       waypoint.tolerance = waypointTolerance_;
       waypoint.stopTime = 0.0;
       loadedWaypoints.push_back(waypoint);
+    }
+
+    if (routeLoaded_ && RoutesEquivalent(waypoints_, loadedWaypoints))
+    {
+      // Re-publish the accepted path so the editor receives its acknowledgement,
+      // but never reset a route that is already running. After a latched fault,
+      // accept a retry only once localization and the actuator are healthy again.
+      if (navigationActive_ ||
+        !visual_navigation::LocalizationCanStart(
+          OdometryIsValid(), FusionHealth(), TrackingStateIsValid()) ||
+        !ActuatorHealthIsValid())
+      {
+        PublishRoutePath();
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 2000,
+          "Ignoring duplicate route while navigation is active or unhealthy");
+        return;
+      }
     }
 
     // Stop the old route before atomically replacing it with the new one.

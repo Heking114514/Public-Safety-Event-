@@ -20,8 +20,10 @@ OdometryIntegrator::OdometryIntegrator(const IntegratorConfig & config)
 {
   if (!(config_.wheel_radius_m > 0.0) || !(config_.ticks_per_revolution > 0.0) ||
     !(config_.wheel_track_m > 0.0) || !(config_.left_distance_scale > 0.0) ||
-    !(config_.right_distance_scale > 0.0) || !(config_.max_wheel_speed_mps > 0.0) ||
-    !(config_.min_dt_s > 0.0) || !(config_.nominal_sample_period_s > 0.0))
+    !(config_.right_distance_scale > 0.0) || !(config_.yaw_slip_scale > 0.0) ||
+    !(config_.max_wheel_speed_mps > 0.0) ||
+    !(config_.min_dt_s > 0.0) || !(config_.nominal_sample_period_s > 0.0) ||
+    config_.nominal_sequence_increment == 0U)
   {
     throw std::invalid_argument("wheel odometry parameters must be finite and positive");
   }
@@ -118,7 +120,7 @@ UpdateResult OdometryIntegrator::update(const EncoderSample & sample)
 
   const double center_distance_m = 0.5 * (left_distance_m + right_distance_m);
   const double delta_yaw_rad = (right_distance_m - left_distance_m) /
-    config_.wheel_track_m;
+    config_.wheel_track_m * config_.yaw_slip_scale;
   const double midpoint_yaw_rad = state_.yaw_rad + 0.5 * delta_yaw_rad;
   state_.x_m += center_distance_m * std::cos(midpoint_yaw_rad);
   state_.y_m += center_distance_m * std::sin(midpoint_yaw_rad);
@@ -126,12 +128,17 @@ UpdateResult OdometryIntegrator::update(const EncoderSample & sample)
   state_.linear_velocity_mps = center_distance_m / dt_s;
   state_.angular_velocity_radps = delta_yaw_rad / dt_s;
 
-  const uint32_t missing_samples = sequence_delta > 1U ? sequence_delta - 1U : 0U;
+  // The MCU updates its encoder sequence faster than it reports cumulative
+  // counts, so a healthy serial frame can advance by more than one.
+  const uint32_t sequence_increment = config_.nominal_sequence_increment;
+  const uint32_t represented_intervals = std::max(
+    1U, (sequence_delta + sequence_increment / 2U) / sequence_increment);
+  const uint32_t missing_samples = represented_intervals > 1U ? represented_intervals - 1U : 0U;
   const double wheel_travel_m = 0.5 * (std::abs(left_distance_m) + std::abs(right_distance_m));
   const double abs_turn_rad = std::abs(delta_yaw_rad);
   const double wheel_difference_mps = std::abs(right_distance_m - left_distance_m) / dt_s;
   const double expected_dt_s = config_.nominal_sample_period_s *
-    static_cast<double>(sequence_delta);
+    static_cast<double>(represented_intervals);
   const double interval_ratio = std::max(0.0, dt_s / expected_dt_s - 1.0);
 
   uncertainty_.pose_xy_variance +=

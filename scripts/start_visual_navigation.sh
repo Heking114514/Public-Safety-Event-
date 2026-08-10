@@ -39,6 +39,7 @@ ROSBAG_TOPICS=(
   /odometry/fusion_status
   /cmd_vel_nav
   /waypoint_path
+  /waypoint_navigation/route_input
   /waypoint_navigation/status
   /waypoint_navigation/current_waypoint
   /waypoint_navigation/motion_hold_state

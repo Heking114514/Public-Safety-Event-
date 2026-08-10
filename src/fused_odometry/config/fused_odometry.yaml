@@ -84,7 +84,9 @@ fused_odometry_gate:
     visual_yaw_variance: 0.04
     wheel_vx_variance: 0.08
     wheel_wz_variance: 0.50
-    imu_wz_variance: 0.015
+    # Static bag noise after robust filtering is about 1 deg/s. Keep a modest
+    # floor without effectively discarding the IMU in favor of visual yaw.
+    imu_wz_variance: 0.0004
 
 fused_ekf:
   ros__parameters:

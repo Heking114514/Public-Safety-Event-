@@ -4,6 +4,8 @@ imu_rpy_filter:
     rpy_topic: /imu/rpy
     rpy_degrees_topic: /imu/rpy_degrees
     filtered_imu_topic: /imu/filtered
+    command_topic: /cmd_vel_nav
+    wheel_topic: /wheel/odom
     output_frame: camera_link
     transform_optical_frame: true
 
@@ -13,14 +15,25 @@ imu_rpy_filter:
     tilt_correction_time: 0.5
 
     stationary_dwell_seconds: 0.5
+    # A single D455 spike must not release the stationary yaw anchor.
+    stationary_exit_dwell_seconds: 0.15
     stationary_accel_enter: 0.20
     stationary_accel_exit: 0.35
     stationary_gyro_enter: 0.02
     stationary_gyro_exit: 0.05
+    external_motion_timeout_seconds: 0.35
+    command_linear_stationary_threshold_mps: 0.02
+    command_yaw_stationary_threshold_rad_s: 0.03
+    wheel_linear_stationary_threshold_mps: 0.02
+    wheel_yaw_stationary_threshold_rad_s: 0.05
 
     kalman_gyro_noise_deg_s: 0.6
     kalman_bias_walk_deg_s: 0.03
     stationary_yaw_std_degrees: 0.5
+    stationary_bias_window_seconds: 0.5
+    stationary_bias_std_deg_s: 0.15
+    moving_yaw_rate_std_deg_s: 1.0
+    stationary_yaw_rate_std_deg_s: 0.15
     roll_pitch_std_degrees: 1.0
 
     # Keep this false when /imu/filtered will be fused back into odometry.

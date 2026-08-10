@@ -13,9 +13,11 @@ struct IntegratorConfig
   double wheel_track_m{0.254};
   double left_distance_scale{1.000};
   double right_distance_scale{1.010};
+  double yaw_slip_scale{1.0};
   double max_wheel_speed_mps{2.0};
   double min_dt_s{1.0e-4};
   double nominal_sample_period_s{0.02};
+  uint32_t nominal_sequence_increment{1};
 
   // Variances grow with motion because wheel scale and slip errors accumulate.
   double pose_xy_variance{0.02};
