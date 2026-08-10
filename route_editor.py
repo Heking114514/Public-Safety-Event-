@@ -6,8 +6,10 @@ import tkinter as tk
 from tkinter import messagebox
 
 import rclpy
-from nav_msgs.msg import Odometry, Path
 from geometry_msgs.msg import PoseStamped
+from mission_control_interfaces.msg import MotionHoldState
+from mission_control_interfaces.srv import SetMotionHold
+from nav_msgs.msg import Odometry, Path
 from rclpy.node import Node
 from rclpy.qos import (
     DurabilityPolicy,
@@ -57,6 +59,12 @@ class RouteEditorNode(Node):
             "route_input_topic", "/waypoint_navigation/route_input"
         )
         self.declare_parameter("route_feedback_topic", "/waypoint_path")
+        self.declare_parameter(
+            "motion_hold_service", "/waypoint_navigator/set_motion_hold"
+        )
+        self.declare_parameter(
+            "motion_hold_state_topic", "/waypoint_navigation/motion_hold_state"
+        )
         self.declare_parameter("route_frame", "map")
         self.declare_parameter("odom_timeout", 0.5)
         self.declare_parameter("activation_timeout", 3.0)
@@ -64,6 +72,10 @@ class RouteEditorNode(Node):
         self.odom_topic = self.get_parameter("odom_topic").value
         self.route_input_topic = self.get_parameter("route_input_topic").value
         self.route_feedback_topic = self.get_parameter("route_feedback_topic").value
+        self.motion_hold_service = self.get_parameter("motion_hold_service").value
+        self.motion_hold_state_topic = self.get_parameter(
+            "motion_hold_state_topic"
+        ).value
         self.route_frame = self.get_parameter("route_frame").value
         self.odom_timeout = max(0.05, float(self.get_parameter("odom_timeout").value))
         self.activation_timeout = max(
@@ -75,6 +87,11 @@ class RouteEditorNode(Node):
         self._pending_fingerprint = None
         self._pending_stamp_ns = 0
         self._activation_result = None
+        self._motion_hold_future = None
+        self._motion_hold_result = None
+        self.motion_hold_state_received = False
+        self.motion_held = False
+        self.active_hold_sources = ()
 
         route_input_qos = QoSProfile(
             depth=1,
@@ -94,6 +111,15 @@ class RouteEditorNode(Node):
         )
         self.odom_subscription = self.create_subscription(
             Odometry, self.odom_topic, self._handle_odom, qos_profile_sensor_data
+        )
+        self.motion_hold_subscription = self.create_subscription(
+            MotionHoldState,
+            self.motion_hold_state_topic,
+            self._handle_motion_hold_state,
+            route_feedback_qos,
+        )
+        self.motion_hold_client = self.create_client(
+            SetMotionHold, self.motion_hold_service
         )
 
     def _handle_odom(self, message):
@@ -165,6 +191,49 @@ class RouteEditorNode(Node):
         self._activation_result = None
         return result
 
+    @property
+    def motion_hold_busy(self):
+        return self._motion_hold_future is not None
+
+    @property
+    def motion_hold_service_ready(self):
+        return self.motion_hold_client.service_is_ready()
+
+    def _handle_motion_hold_state(self, message):
+        self.motion_hold_state_received = True
+        self.motion_held = bool(message.held)
+        self.active_hold_sources = tuple(message.active_sources)
+
+    def request_motion_hold(self, hold, reason=""):
+        if self.motion_hold_busy:
+            raise RuntimeError("驻停请求正在处理中")
+        if not self.motion_hold_service_ready:
+            raise RuntimeError("导航驻停服务尚未就绪")
+        request = SetMotionHold.Request()
+        request.source = "route_editor"
+        request.hold = bool(hold)
+        request.reason = reason
+        self._motion_hold_future = self.motion_hold_client.call_async(request)
+
+    def poll_motion_hold_request(self):
+        if self._motion_hold_future is None or not self._motion_hold_future.done():
+            return
+        try:
+            response = self._motion_hold_future.result()
+            self.motion_hold_state_received = True
+            self.motion_held = bool(response.motion_held)
+            self.active_hold_sources = tuple(response.active_sources)
+            self._motion_hold_result = (bool(response.success), response.message)
+        except Exception as exception:  # rclpy transports service errors as exceptions.
+            self._motion_hold_result = (False, str(exception))
+        finally:
+            self._motion_hold_future = None
+
+    def take_motion_hold_result(self):
+        result = self._motion_hold_result
+        self._motion_hold_result = None
+        return result
+
 
 class RouteEditorWindow:
     def __init__(self, root):
@@ -201,6 +270,20 @@ class RouteEditorWindow:
             pady=4,
         )
         self.publish_button.pack(side=tk.RIGHT)
+        self.motion_hold_button = tk.Button(
+            toolbar,
+            text="暂停小车",
+            command=self.toggle_motion_hold,
+            state=tk.DISABLED,
+            padx=12,
+            pady=4,
+            takefocus=False,
+        )
+        self.motion_hold_button.pack(side=tk.RIGHT, padx=(0, 8))
+        self.motion_hold_label = tk.Label(
+            toolbar, text="驻停服务未就绪", fg="#991b1b", bg="#f3f4f6"
+        )
+        self.motion_hold_label.pack(side=tk.LEFT, padx=(0, 12))
 
         self.canvas = tk.Canvas(root, bg="#ffffff", highlightthickness=0)
         self.canvas.pack(fill=tk.BOTH, expand=True)
@@ -211,6 +294,8 @@ class RouteEditorWindow:
         self.canvas.bind("<Button-3>", self.on_right_click)
 
         self.node = RouteEditorNode(self.on_odometry)
+        self.root.bind("<space>", self.toggle_motion_hold)
+        self.root.bind("<Escape>", self.pause_motion)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self.root.after(20, self.spin_ros)
         self.root.after(100, self.refresh_status)
@@ -242,6 +327,7 @@ class RouteEditorWindow:
 
     def refresh_status(self):
         self.node.poll_activation()
+        self.node.poll_motion_hold_request()
         activation_result = self.node.take_activation_result()
         if activation_result is not None:
             success, message = activation_result
@@ -251,6 +337,13 @@ class RouteEditorWindow:
                 self.publish_label.configure(text="启用失败", fg="#991b1b")
                 messagebox.showerror("路线启用失败", message)
             self.update_publish_button()
+
+        hold_result = self.node.take_motion_hold_result()
+        if hold_result is not None:
+            success, message = hold_result
+            if not success:
+                messagebox.showerror("驻停操作失败", message)
+        self.update_motion_hold_controls()
 
         ready = (
             self.current_pose is not None
@@ -265,6 +358,66 @@ class RouteEditorWindow:
             self.update_publish_button()
             self.redraw()
         self.root.after(100, self.refresh_status)
+
+    def update_motion_hold_controls(self):
+        own_hold = "route_editor" in self.node.active_hold_sources
+        if self.node.motion_hold_busy:
+            text = "处理中..."
+        else:
+            text = "继续行驶" if own_hold else "暂停小车"
+        state = (
+            tk.NORMAL
+            if self.node.motion_hold_service_ready
+            and self.node.motion_hold_state_received
+            and not self.node.motion_hold_busy
+            else tk.DISABLED
+        )
+        self.motion_hold_button.configure(text=text, state=state)
+
+        if not self.node.motion_hold_service_ready:
+            label, color = "驻停服务未就绪", "#991b1b"
+        elif not self.node.motion_hold_state_received:
+            label, color = "等待驻停状态", "#92400e"
+        elif self.node.motion_held:
+            sources = list(self.node.active_hold_sources)
+            visible = ", ".join(sources[:2])
+            if len(sources) > 2:
+                visible += f" +{len(sources) - 2}"
+            label, color = f"已驻停: {visible}", "#991b1b"
+        else:
+            label, color = "允许行驶", "#166534"
+        self.motion_hold_label.configure(text=label, fg=color)
+
+    def toggle_motion_hold(self, _event=None):
+        if (
+            not self.node.motion_hold_service_ready
+            or not self.node.motion_hold_state_received
+            or self.node.motion_hold_busy
+        ):
+            return "break"
+        own_hold = "route_editor" in self.node.active_hold_sources
+        try:
+            self.node.request_motion_hold(
+                not own_hold, "route editor operator pause" if not own_hold else ""
+            )
+        except RuntimeError as exception:
+            messagebox.showerror("驻停操作失败", str(exception))
+        self.update_motion_hold_controls()
+        return "break"
+
+    def pause_motion(self, _event=None):
+        if (
+            self.node.motion_hold_service_ready
+            and self.node.motion_hold_state_received
+            and not self.node.motion_hold_busy
+            and "route_editor" not in self.node.active_hold_sources
+        ):
+            try:
+                self.node.request_motion_hold(True, "route editor escape key")
+            except RuntimeError as exception:
+                messagebox.showerror("驻停操作失败", str(exception))
+            self.update_motion_hold_controls()
+        return "break"
 
     def update_publish_button(self):
         state = (

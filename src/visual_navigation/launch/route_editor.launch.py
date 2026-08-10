@@ -17,6 +17,14 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "route_feedback_topic", default_value="/waypoint_path"
             ),
+            DeclareLaunchArgument(
+                "motion_hold_service",
+                default_value="/waypoint_navigator/set_motion_hold",
+            ),
+            DeclareLaunchArgument(
+                "motion_hold_state_topic",
+                default_value="/waypoint_navigation/motion_hold_state",
+            ),
             DeclareLaunchArgument("odom_timeout", default_value="0.5"),
             DeclareLaunchArgument("activation_timeout", default_value="3.0"),
             Node(
@@ -37,6 +45,13 @@ def generate_launch_description():
                         ),
                         "route_feedback_topic": ParameterValue(
                             LaunchConfiguration("route_feedback_topic"), value_type=str
+                        ),
+                        "motion_hold_service": ParameterValue(
+                            LaunchConfiguration("motion_hold_service"), value_type=str
+                        ),
+                        "motion_hold_state_topic": ParameterValue(
+                            LaunchConfiguration("motion_hold_state_topic"),
+                            value_type=str,
                         ),
                         "odom_timeout": ParameterValue(
                             LaunchConfiguration("odom_timeout"), value_type=float

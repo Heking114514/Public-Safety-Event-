@@ -6,6 +6,7 @@
 #include <fstream>
 #include <functional>
 #include <limits>
+#include <map>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -15,6 +16,8 @@
 
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/twist.hpp"
+#include "mission_control_interfaces/msg/motion_hold_state.hpp"
+#include "mission_control_interfaces/srv/set_motion_hold.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "rclcpp/rclcpp.hpp"
@@ -148,6 +151,8 @@ public:
     statusTopic_ = declare_parameter<std::string>("status_topic", "/waypoint_navigation/status");
     currentWaypointTopic_ = declare_parameter<std::string>(
       "current_waypoint_topic", "/waypoint_navigation/current_waypoint");
+    motionHoldStateTopic_ = declare_parameter<std::string>(
+      "motion_hold_state_topic", "/waypoint_navigation/motion_hold_state");
 
     controlFrequency_ = std::max(1.0, declare_parameter<double>("control_frequency", 30.0));
     defaultSpeed_ = std::max(0.0, declare_parameter<double>("default_speed", 0.50));
@@ -262,6 +267,9 @@ public:
       statusTopic_, rclcpp::QoS(1).transient_local().reliable());
     currentWaypointPublisher_ = create_publisher<std_msgs::msg::Int32>(
       currentWaypointTopic_, rclcpp::QoS(1).transient_local().reliable());
+    motionHoldStatePublisher_ =
+      create_publisher<mission_control_interfaces::msg::MotionHoldState>(
+      motionHoldStateTopic_, rclcpp::QoS(1).transient_local().reliable());
 
     odomSubscription_ = create_subscription<nav_msgs::msg::Odometry>(
       odomTopic_, 10,
@@ -300,6 +308,11 @@ public:
       std::bind(
         &WaypointNavigator::HandleReset, this,
         std::placeholders::_1, std::placeholders::_2));
+    motionHoldService_ = create_service<mission_control_interfaces::srv::SetMotionHold>(
+      "~/set_motion_hold",
+      std::bind(
+        &WaypointNavigator::HandleSetMotionHold, this,
+        std::placeholders::_1, std::placeholders::_2));
 
     routeLoaded_ = LoadRoute(routeFile_);
     if (routeLoaded_)
@@ -322,6 +335,7 @@ public:
     {
       SetState(routeFile_.empty() ? "WAITING_FOR_ROUTE" : "FAULT_ROUTE_NOT_LOADED");
     }
+    PublishMotionHoldState();
 
     RCLCPP_INFO(
       get_logger(),
@@ -586,6 +600,7 @@ private:
     localizationWasValid_ = false;
     waitAction_ = WaitAction::NONE;
     pathSegmentInitialized_ = false;
+    resumePathFromCurrentPose_ = false;
     ResetPathPid();
     PublishStop();
 
@@ -594,7 +609,7 @@ private:
     navigationActive_ = true;
     PublishRoutePath();
     PublishCurrentWaypoint();
-    SetState("WAITING_FOR_LOCALIZATION");
+    SetState(MotionHeld() ? "HELD_FOR_MISSION" : "WAITING_FOR_LOCALIZATION");
     RCLCPP_INFO(
       get_logger(), "Loaded and activated %zu dynamic waypoints",
       waypoints_.size());
@@ -653,7 +668,7 @@ private:
     localizationWasValid_ = false;
     pathSegmentInitialized_ = false;
     ResetPathPid();
-    SetState("WAITING_FOR_LOCALIZATION");
+    SetState(MotionHeld() ? "HELD_FOR_MISSION" : "WAITING_FOR_LOCALIZATION");
     result = "Waypoint navigation started";
     return true;
   }
@@ -671,6 +686,78 @@ private:
     SetState("IDLE");
     response->success = true;
     response->message = "Waypoint navigation stopped";
+  }
+
+  void HandleSetMotionHold(
+    const mission_control_interfaces::srv::SetMotionHold::Request::SharedPtr request,
+    mission_control_interfaces::srv::SetMotionHold::Response::SharedPtr response)
+  {
+    const std::string source = Trim(request->source);
+    const std::string reason = Trim(request->reason);
+    if (source.empty() || source.size() > 128)
+    {
+      response->success = false;
+      response->motion_held = MotionHeld();
+      response->active_sources = ActiveHoldSources();
+      response->message = "source must contain 1 to 128 non-whitespace characters";
+      return;
+    }
+    if (reason.size() > 256)
+    {
+      response->success = false;
+      response->motion_held = MotionHeld();
+      response->active_sources = ActiveHoldSources();
+      response->message = "reason must not exceed 256 characters";
+      return;
+    }
+
+    const bool wasHeld = MotionHeld();
+    if (request->hold)
+    {
+      motionHolds_[source] = reason;
+      if (!wasHeld)
+      {
+        motionHoldStartedAt_ = now();
+        motionHoldStartInitialized_ = true;
+        pathSegmentInitialized_ = false;
+        finalPositionCaptured_ = false;
+        ResetPathPid();
+      }
+      PublishStop();
+      SetState("HELD_FOR_MISSION");
+      response->message = "Motion hold acquired for " + source;
+    }
+    else
+    {
+      const bool sourceWasActive = motionHolds_.erase(source) > 0;
+      if (wasHeld && !MotionHeld())
+      {
+        if (waitAction_ != WaitAction::NONE && motionHoldStartInitialized_)
+        {
+          const rclcpp::Duration holdDuration = now() - motionHoldStartedAt_;
+          if (holdDuration.nanoseconds() > 0)
+            waitUntil_ = waitUntil_ + holdDuration;
+        }
+        motionHoldStartInitialized_ = false;
+        localizationWasValid_ = false;
+        pathSegmentInitialized_ = false;
+        resumePathFromCurrentPose_ = true;
+        finalPositionCaptured_ = false;
+        ResetPathPid();
+        SetState(navigationActive_ ? "RESUME_PENDING_LOCALIZATION" : "IDLE");
+      }
+      response->message = sourceWasActive ?
+        "Motion hold released for " + source :
+        "No motion hold was active for " + source;
+    }
+
+    PublishMotionHoldState();
+    response->success = true;
+    response->motion_held = MotionHeld();
+    response->active_sources = ActiveHoldSources();
+    RCLCPP_INFO(
+      get_logger(), "Motion hold request: source=%s hold=%s active_sources=%zu",
+      source.c_str(), request->hold ? "true" : "false", motionHolds_.size());
   }
 
   void HandleReset(
@@ -774,6 +861,13 @@ private:
 
   void RunControl()
   {
+    if (MotionHeld())
+    {
+      PublishStop();
+      SetState("HELD_FOR_MISSION");
+      return;
+    }
+
     if (!navigationActive_)
     {
       PublishStop();
@@ -1109,16 +1203,17 @@ private:
 
   void BeginPathSegment()
   {
-    if (currentWaypointIndex_ > 0)
-    {
-      pathSegmentStartX_ = waypoints_[currentWaypointIndex_ - 1].x;
-      pathSegmentStartY_ = waypoints_[currentWaypointIndex_ - 1].y;
-    }
-    else
+    if (resumePathFromCurrentPose_ || currentWaypointIndex_ == 0)
     {
       pathSegmentStartX_ = currentX_;
       pathSegmentStartY_ = currentY_;
     }
+    else
+    {
+      pathSegmentStartX_ = waypoints_[currentWaypointIndex_ - 1].x;
+      pathSegmentStartY_ = waypoints_[currentWaypointIndex_ - 1].y;
+    }
+    resumePathFromCurrentPose_ = false;
     pathSegmentInitialized_ = true;
     pathAlignmentCompleted_ = false;
     ResetPathPid();
@@ -1209,6 +1304,34 @@ private:
     currentWaypointPublisher_->publish(message);
   }
 
+  bool MotionHeld() const
+  {
+    return !motionHolds_.empty();
+  }
+
+  std::vector<std::string> ActiveHoldSources() const
+  {
+    std::vector<std::string> sources;
+    sources.reserve(motionHolds_.size());
+    for (const auto &entry : motionHolds_)
+      sources.push_back(entry.first);
+    return sources;
+  }
+
+  void PublishMotionHoldState()
+  {
+    mission_control_interfaces::msg::MotionHoldState message;
+    message.held = MotionHeld();
+    message.active_sources.reserve(motionHolds_.size());
+    message.reasons.reserve(motionHolds_.size());
+    for (const auto &entry : motionHolds_)
+    {
+      message.active_sources.push_back(entry.first);
+      message.reasons.push_back(entry.second);
+    }
+    motionHoldStatePublisher_->publish(message);
+  }
+
   void SetState(const std::string &state)
   {
     if (state == state_)
@@ -1233,6 +1356,7 @@ private:
   std::string startTopic_;
   std::string statusTopic_;
   std::string currentWaypointTopic_;
+  std::string motionHoldStateTopic_;
   double controlFrequency_{30.0};
   double trackingPointOffsetX_{0.087};
   double trackingPointOffsetY_{0.040};
@@ -1290,6 +1414,8 @@ private:
   std::size_t currentWaypointIndex_{0};
   bool routeLoaded_{false};
   bool navigationActive_{false};
+  bool resumePathFromCurrentPose_{false};
+  bool motionHoldStartInitialized_{false};
   bool hasOdometry_{false};
   bool hasImu_{false};
   bool currentOdomFrameValid_{false};
@@ -1321,11 +1447,13 @@ private:
   bool turnSettleTimerInitialized_{false};
   bool finalPositionCaptured_{false};
   std::string state_;
+  std::map<std::string, std::string> motionHolds_;
   rclcpp::Time lastOdomArrival_{0, 0, RCL_ROS_TIME};
   rclcpp::Time lastImuArrival_{0, 0, RCL_ROS_TIME};
   rclcpp::Time lastFusionStatusArrival_{0, 0, RCL_ROS_TIME};
   rclcpp::Time lastActuatorHealthArrival_{0, 0, RCL_ROS_TIME};
   rclcpp::Time waitUntil_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time motionHoldStartedAt_{0, 0, RCL_ROS_TIME};
   std::chrono::steady_clock::time_point lastPathPidTime_{};
   std::chrono::steady_clock::time_point lastMotionCommandTime_{};
   std::chrono::steady_clock::time_point lastValidLocalizationTime_{};
@@ -1338,6 +1466,8 @@ private:
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pathPublisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr statusPublisher_;
   rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr currentWaypointPublisher_;
+  rclcpp::Publisher<mission_control_interfaces::msg::MotionHoldState>::SharedPtr
+    motionHoldStatePublisher_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odomSubscription_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imuSubscription_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr fusionStatusSubscription_;
@@ -1348,6 +1478,8 @@ private:
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr startService_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr stopService_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr resetService_;
+  rclcpp::Service<mission_control_interfaces::srv::SetMotionHold>::SharedPtr
+    motionHoldService_;
   rclcpp::TimerBase::SharedPtr controlTimer_;
 };
 

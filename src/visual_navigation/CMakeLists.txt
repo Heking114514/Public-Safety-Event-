@@ -16,6 +16,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(mission_control_interfaces REQUIRED)
 
 add_executable(waypoint_navigator src/waypoint_navigator.cpp)
 target_include_directories(waypoint_navigator PRIVATE include)
@@ -27,6 +28,7 @@ ament_target_dependencies(
   sensor_msgs
   std_msgs
   std_srvs
+  mission_control_interfaces
 )
 
 install(TARGETS waypoint_navigator

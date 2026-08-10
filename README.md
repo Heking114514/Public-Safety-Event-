@@ -312,6 +312,24 @@ ros2 topic echo /cmd_vel_nav
 
 ## 6. 停止和复位自动导航
 
+任务侦察期间驻停但保留导航任务、定位和当前航点：
+
+```bash
+ros2 service call /waypoint_navigator/set_motion_hold \
+  mission_control_interfaces/srv/SetMotionHold \
+  "{source: 'inspection', hold: true, reason: 'recognizing clue'}"
+```
+
+侦察完成后释放该任务来源：
+
+```bash
+ros2 service call /waypoint_navigator/set_motion_hold \
+  mission_control_interfaces/srv/SetMotionHold \
+  "{source: 'inspection', hold: false, reason: ''}"
+```
+
+`route_editor.py` 顶部按钮提供相同控制；`Space` 切换暂停/继续，`Esc` 只暂停。
+
 停止任务并保持当前航点：
 
 ```bash

@@ -24,8 +24,35 @@ find_package(diagnostic_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(OpenCV REQUIRED COMPONENTS core imgproc calib3d)
-find_package(Sophus REQUIRED)
-find_package(Pangolin REQUIRED)
+
+# Use the relocatable Sophus package bundled with this workspace so a clean
+# colcon build does not depend on a manually supplied Sophus_DIR.
+set(_BUNDLED_SOPHUS_DIR
+  "${CMAKE_CURRENT_SOURCE_DIR}/../deps/share/sophus/cmake")
+if(EXISTS "${_BUNDLED_SOPHUS_DIR}/SophusConfig.cmake")
+  if(NOT Sophus_DIR OR NOT EXISTS "${Sophus_DIR}/SophusConfig.cmake")
+    set(Sophus_DIR "${_BUNDLED_SOPHUS_DIR}" CACHE PATH
+      "Directory containing SophusConfig.cmake" FORCE)
+  endif()
+endif()
+find_package(Sophus REQUIRED CONFIG)
+unset(_BUNDLED_SOPHUS_DIR)
+
+# Prefer the relocatable Pangolin installation shipped with this workspace.
+# This also repairs stale caches that reference another checkout's
+# build/pangolin directory and its non-existent generated include directory.
+set(_BUNDLED_PANGOLIN_DIR
+  "${CMAKE_CURRENT_SOURCE_DIR}/../deps/lib/cmake/Pangolin")
+if(EXISTS "${_BUNDLED_PANGOLIN_DIR}/PangolinConfig.cmake")
+  if(NOT Pangolin_DIR
+     OR NOT EXISTS "${Pangolin_DIR}/PangolinConfig.cmake"
+     OR Pangolin_DIR MATCHES "[/\\\\]build[/\\\\]pangolin$")
+    set(Pangolin_DIR "${_BUNDLED_PANGOLIN_DIR}" CACHE PATH
+      "Directory containing PangolinConfig.cmake" FORCE)
+  endif()
+endif()
+find_package(Pangolin REQUIRED CONFIG)
+unset(_BUNDLED_PANGOLIN_DIR)
 find_package(ORB_SLAM3 REQUIRED)
 
 include_directories(

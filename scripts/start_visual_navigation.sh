@@ -41,6 +41,7 @@ ROSBAG_TOPICS=(
   /waypoint_path
   /waypoint_navigation/status
   /waypoint_navigation/current_waypoint
+  /waypoint_navigation/motion_hold_state
   /waypoint_navigation/start
   /cup_car_serial/encoder_ticks
   /cup_car_serial/connected
@@ -334,13 +335,14 @@ build_orb_slam3() {
 
 build_ros_packages() {
   log "Building ROS 2 nodes"
-  local packages=(orbslam3 imu_rpy_filter wheel_odometry fused_odometry visual_navigation)
+  local packages=(mission_control_interfaces orbslam3 imu_rpy_filter wheel_odometry fused_odometry visual_navigation)
   if [[ "${USE_SERIAL}" == "true" ]]; then
     packages+=(cup_car_serial)
   fi
 
   cd "${WORKSPACE_ROOT}"
-  colcon build --symlink-install \
+  CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS}" colcon build --symlink-install \
+    --executor sequential \
     --packages-ignore ORB_SLAM3 pangolin \
     --packages-select "${packages[@]}" \
     --cmake-args \
@@ -354,6 +356,7 @@ runtime_ready() {
     [[ -x "${WORKSPACE_ROOT}/install/imu_rpy_filter/lib/imu_rpy_filter/imu_rpy_filter_node" ]] &&
     [[ -x "${WORKSPACE_ROOT}/install/wheel_odometry/lib/wheel_odometry/wheel_odometry_node" ]] &&
     [[ -x "${WORKSPACE_ROOT}/install/fused_odometry/lib/fused_odometry/fusion_gate_node" ]] &&
+    [[ -f "${WORKSPACE_ROOT}/install/mission_control_interfaces/share/mission_control_interfaces/srv/SetMotionHold.srv" ]] &&
     [[ -x "${WORKSPACE_ROOT}/install/visual_navigation/lib/visual_navigation/waypoint_navigator" ]] &&
     { [[ "${USE_SERIAL}" == "false" ]] ||
       [[ -x "${WORKSPACE_ROOT}/install/cup_car_serial/lib/cup_car_serial/cmd_vel_serial_node" ]]; }

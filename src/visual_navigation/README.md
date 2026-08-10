@@ -29,6 +29,7 @@
 | `/waypoint_path` | `nav_msgs/msg/Path` | CSV 航点路线 |
 | `/waypoint_navigation/status` | `std_msgs/msg/String` | 导航状态 |
 | `/waypoint_navigation/current_waypoint` | `std_msgs/msg/Int32` | 当前目标航点索引 |
+| `/waypoint_navigation/motion_hold_state` | `mission_control_interfaces/msg/MotionHoldState` | 驻停状态与所有驻停来源 |
 
 服务：
 
@@ -37,6 +38,19 @@
 | `/waypoint_navigator/start` | `std_srvs/srv/Trigger` | 从当前索引开始导航 |
 | `/waypoint_navigator/stop` | `std_srvs/srv/Trigger` | 停车并保持当前索引 |
 | `/waypoint_navigator/reset` | `std_srvs/srv/Trigger` | 停车并回到第 0 个航点 |
+| `/waypoint_navigator/set_motion_hold` | `mission_control_interfaces/srv/SetMotionHold` | 按来源申请或释放任务驻停 |
+
+任务驻停只冻结路线控制并持续输出零速度，不关闭 ORB-SLAM3、相机、IMU、轮式里程计或融合定位。多个来源同时申请时，必须全部释放后才会恢复运动。
+
+```bash
+ros2 service call /waypoint_navigator/set_motion_hold \
+  mission_control_interfaces/srv/SetMotionHold \
+  "{source: 'inspection', hold: true, reason: 'recognizing clue'}"
+
+ros2 service call /waypoint_navigator/set_motion_hold \
+  mission_control_interfaces/srv/SetMotionHold \
+  "{source: 'inspection', hold: false, reason: ''}"
+```
 
 只有里程计和融合健康消息均未超时，且健康状态位于 `allowed_fusion_states` 中，节点才会输出非零速度。`DEGRADED_*` 状态按 `degraded_speed_scale` 同时限制线速度和角速度；`FAULT`、未知状态、消息陈旧、无效位姿或坐标系不一致都会停车。旧 `/tracking_state` 检查由 `require_tracking_state` 参数选择性启用。
 
@@ -77,7 +91,7 @@ x,y,yaw,speed,tolerance,stop_time
 
 ```bash
 cd ~/colcon_ws
-colcon build --symlink-install --packages-select visual_navigation
+colcon build --symlink-install --packages-up-to visual_navigation
 source install/setup.bash
 ```
 
@@ -113,6 +127,8 @@ ros2 launch visual_navigation route_editor.launch.py
 ```
 
 网格每格固定为 `0.6 m`，原点箭头为车头初始的 `+X` 方向。左键添加航点，按住航点拖动可调整箭头方向，右键删除最后一个点。顶部显示 `ODOM READY` 后，点击“发布并启用路线”会通过 `/waypoint_navigation/route_input` 一次发布全部航点。
+
+“暂停小车/继续行驶”按钮使用 `route_editor` 作为驻停来源。`Space` 切换该来源的驻停状态，`Esc` 只申请驻停，不会误触恢复。若还有其他任务来源处于驻停状态，UI 释放后小车仍保持停止。
 
 导航节点收到合法动态路线后会立即发零速度、清零航点索引并开始导航。编辑器等待 `/waypoint_path` 回显确认本次路线；确认失败会在界面显示，不需要手动执行服务或发布启动话题。历史 transient-local 路线回显不会触发编辑器重复发布。
 
