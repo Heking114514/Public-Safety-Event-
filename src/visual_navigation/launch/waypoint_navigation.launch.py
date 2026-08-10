@@ -11,10 +11,6 @@ def generate_launch_description():
     default_parameters = PathJoinSubstitution(
         [package_share, "config", "waypoint_navigation.yaml"]
     )
-    default_route = PathJoinSubstitution(
-        [package_share, "routes", "example_route.csv"]
-    )
-
     parameters_file = LaunchConfiguration("parameters_file")
     route_file = LaunchConfiguration("route_file")
     route_frame = LaunchConfiguration("route_frame")
@@ -72,8 +68,8 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "route_file",
-                default_value=default_route,
-                description="CSV waypoint route file",
+                default_value="",
+                description="Optional CSV route; empty waits for route_input_topic",
             ),
             DeclareLaunchArgument("route_frame", default_value="map"),
             DeclareLaunchArgument("odom_topic", default_value="/odometry/fused"),

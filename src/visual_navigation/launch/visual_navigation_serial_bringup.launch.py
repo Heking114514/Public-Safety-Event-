@@ -23,9 +23,6 @@ def generate_launch_description():
     serial_send_rate_hz = LaunchConfiguration("serial_send_rate_hz")
     serial_command_timeout_s = LaunchConfiguration("serial_command_timeout_s")
 
-    default_route = PathJoinSubstitution(
-        [package_share, "routes", "example_route.csv"]
-    )
     navigation = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution(
@@ -67,7 +64,7 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
-            DeclareLaunchArgument("route_file", default_value=default_route),
+            DeclareLaunchArgument("route_file", default_value=""),
             DeclareLaunchArgument("route_frame", default_value="map"),
             DeclareLaunchArgument("odom_topic", default_value="/odometry/fused"),
             DeclareLaunchArgument(

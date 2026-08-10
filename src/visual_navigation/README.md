@@ -114,9 +114,9 @@ ros2 launch visual_navigation route_editor.launch.py
 
 网格每格固定为 `0.6 m`，原点箭头为车头初始的 `+X` 方向。左键添加航点，按住航点拖动可调整箭头方向，右键删除最后一个点。顶部显示 `ODOM READY` 后，点击“发布并启用路线”会通过 `/waypoint_navigation/route_input` 一次发布全部航点。
 
-导航节点收到合法动态路线后会立即发零速度、清零航点索引并进入 `IDLE`。编辑器等待 `/waypoint_path` 回显确认本次路线后，会自动调用启动服务；确认或启动失败会在界面显示，不需要手动执行服务命令。历史 transient-local 路线只会被加载，不会自行启动。
+导航节点收到合法动态路线后会立即发零速度、清零航点索引并开始导航。编辑器等待 `/waypoint_path` 回显确认本次路线；确认失败会在界面显示，不需要手动执行服务或发布启动话题。历史 transient-local 路线回显不会触发编辑器重复发布。
 
-动态路线中的速度和到达容差使用 `default_speed` 和 `waypoint_tolerance` 参数。重启导航节点后仍会先加载 `route_file` 指定的 CSV；需要再次点击发布按钮才能重新启用编辑路线。
+动态路线中的速度和到达容差使用 `default_speed` 和 `waypoint_tolerance` 参数。当前默认巡航速度和最高线速度均为 `0.5 m/s`。默认启动不加载 CSV，重启导航节点后需要再次点击发布按钮才能重新启用编辑路线。
 
 ## 导航 Bringup
 

@@ -9,7 +9,6 @@ ROS_SETUP="/opt/ros/${ROS_DISTRO_NAME}/setup.bash"
 ORB_ROOT="${WORKSPACE_ROOT}/src/ORB_SLAM3"
 DEPS_ROOT="${WORKSPACE_ROOT}/src/deps"
 
-ROUTE_FILE="${WORKSPACE_ROOT}/src/visual_navigation/routes/fixed_rectangle_2_4x1_8m.csv"
 SERIAL_DEVICE="/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
 SERIAL_BAUD_RATE="115200"
 USE_SERIAL="true"
@@ -65,7 +64,6 @@ usage() {
 Usage: scripts/start_visual_navigation.sh [options]
 
 Options:
-  --route PATH              CSV route file (default: fixed 2.4 m x 1.8 m rectangle)
   --camera-serial SERIAL    D455 serial number; auto-detected by default
   --serial-device DEVICE    Controller serial device (default: CH340 stable path)
   --serial-baud RATE        Controller baud rate (default: 115200)
@@ -82,18 +80,13 @@ Options:
   --jobs COUNT              Parallel build jobs
   -h, --help                Show this help
 
-The fixed startup route remains idle until /waypoint_navigation/start is published.
-The route editor can still replace it by publishing a clicked route.
+No CSV route is loaded at startup. Run route_editor.py, click the route, then
+press its publish button to load and start the route immediately.
 EOF
 }
 
 while (($# > 0)); do
   case "$1" in
-    --route)
-      (($# >= 2)) || fail "--route requires a path"
-      ROUTE_FILE="$2"
-      shift 2
-      ;;
     --camera-serial)
       (($# >= 2)) || fail "--camera-serial requires a serial number"
       CAMERA_SERIAL="${2#_}"
@@ -166,7 +159,6 @@ while (($# > 0)); do
 done
 
 [[ -f "${ROS_SETUP}" ]] || fail "ROS 2 setup not found: ${ROS_SETUP}"
-[[ -f "${ROUTE_FILE}" ]] || fail "route file not found: ${ROUTE_FILE}"
 [[ "${BUILD_JOBS}" =~ ^[1-9][0-9]*$ ]] || fail "--jobs must be a positive integer"
 [[ "${SERIAL_BAUD_RATE}" =~ ^[0-9]+$ ]] || fail "--serial-baud must be an integer"
 [[ -f "${ORB_ROOT}/CMakeLists.txt" ]] || fail "ORB_SLAM3 submodule is missing; run: git submodule update --init --recursive"
@@ -401,7 +393,7 @@ if [[ -e "${ROSBAG_OUTPUT}" || -L "${ROSBAG_OUTPUT}" ]]; then
 fi
 
 log "Starting decoupled odometry and navigation stacks"
-log "Route: ${ROUTE_FILE}"
+log "Route: waiting for /waypoint_navigation/route_input from route_editor.py"
 log "IMU filter: ${USE_IMU}; SLAM IMU fusion: ${USE_SLAM_IMU}; CLAHE: ${EQUALIZE}; visualization: ${VISUALIZATION}; autostart: ${AUTOSTART}"
 if [[ "${USE_SERIAL}" == "true" ]]; then
   log "Controller serial: ${SERIAL_DEVICE} at ${SERIAL_BAUD_RATE} baud"
@@ -422,7 +414,6 @@ ODOMETRY_LAUNCH_ARGS=(
 )
 
 NAVIGATION_LAUNCH_ARGS=(
-  "route_file:=${ROUTE_FILE}"
   "route_frame:=map"
   "odom_topic:=/odometry/fused"
   "fusion_status_topic:=/odometry/fusion_status"

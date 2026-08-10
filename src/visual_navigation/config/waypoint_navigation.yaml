@@ -18,8 +18,8 @@ waypoint_navigator:
     current_waypoint_topic: "/waypoint_navigation/current_waypoint"
 
     control_frequency: 30.0
-    default_speed: 0.20
-    max_linear_speed: 0.30
+    default_speed: 0.50
+    max_linear_speed: 0.50
     max_angular_speed: 0.80
     max_path_angular_speed: 0.45
     max_linear_acceleration: 0.40

@@ -18,9 +18,6 @@ def generate_launch_description():
     route_input_topic = LaunchConfiguration("route_input_topic")
     autostart = LaunchConfiguration("autostart")
 
-    default_route = PathJoinSubstitution(
-        [package_share, "routes", "example_route.csv"]
-    )
     waypoint_navigation = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution(
@@ -43,7 +40,7 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
-            DeclareLaunchArgument("route_file", default_value=default_route),
+            DeclareLaunchArgument("route_file", default_value=""),
             DeclareLaunchArgument("route_frame", default_value="map"),
             DeclareLaunchArgument("odom_topic", default_value="/odometry/fused"),
             DeclareLaunchArgument(

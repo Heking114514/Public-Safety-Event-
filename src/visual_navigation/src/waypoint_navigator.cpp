@@ -150,8 +150,8 @@ public:
       "current_waypoint_topic", "/waypoint_navigation/current_waypoint");
 
     controlFrequency_ = std::max(1.0, declare_parameter<double>("control_frequency", 30.0));
-    defaultSpeed_ = std::max(0.0, declare_parameter<double>("default_speed", 0.20));
-    maxLinearSpeed_ = std::max(0.0, declare_parameter<double>("max_linear_speed", 0.30));
+    defaultSpeed_ = std::max(0.0, declare_parameter<double>("default_speed", 0.50));
+    maxLinearSpeed_ = std::max(0.0, declare_parameter<double>("max_linear_speed", 0.50));
     maxAngularSpeed_ = std::max(0.0, declare_parameter<double>("max_angular_speed", 0.80));
     maxPathAngularSpeed_ = std::min(
       maxAngularSpeed_, std::max(
@@ -320,7 +320,7 @@ public:
     }
     else
     {
-      SetState(routeLoaded_ ? "IDLE" : "FAULT_ROUTE_NOT_LOADED");
+      SetState(routeFile_.empty() ? "WAITING_FOR_ROUTE" : "FAULT_ROUTE_NOT_LOADED");
     }
 
     RCLCPP_INFO(
@@ -358,7 +358,7 @@ private:
   {
     if (routeFile.empty())
     {
-      RCLCPP_ERROR(get_logger(), "Parameter 'route_file' is empty");
+      RCLCPP_INFO(get_logger(), "No startup route configured; waiting for a dynamic route");
       return false;
     }
 
@@ -886,9 +886,68 @@ private:
       if (std::isfinite(target.yaw))
       {
         const double finalYawError = NormalizeAngle(target.yaw - currentYaw_);
-        if (std::abs(finalYawError) > finalYawTolerance_ ||
-          std::abs(controlYawRate) > turnSettleYawRate_)
+        const bool finalYawNeedsControl =
+          std::abs(finalYawError) > finalYawTolerance_ ||
+          std::abs(controlYawRate) > turnSettleYawRate_ || rotatingInPlace_;
+        if (finalYawNeedsControl)
         {
+          if (!rotatingInPlace_)
+          {
+            rotatingInPlace_ = true;
+            turnDirection_ = std::copysign(1.0, finalYawError);
+            turnBraking_ = false;
+            turnSettleTimerInitialized_ = false;
+          }
+
+          if (turnBraking_)
+          {
+            PublishStop();
+            if (std::abs(controlYawRate) > turnSettleYawRate_)
+            {
+              turnSettleTimerInitialized_ = false;
+              SetState("ALIGNING_FINAL_YAW");
+              return;
+            }
+
+            const auto settleTime = std::chrono::steady_clock::now();
+            if (!turnSettleTimerInitialized_)
+            {
+              turnSettleStarted_ = settleTime;
+              turnSettleTimerInitialized_ = true;
+            }
+            const double settledSeconds =
+              std::chrono::duration<double>(settleTime - turnSettleStarted_).count();
+            if (!visual_navigation::TurnHasSettled(
+                std::abs(controlYawRate), settledSeconds,
+                turnSettleYawRate_, turnSettleDwell_))
+            {
+              SetState("ALIGNING_FINAL_YAW");
+              return;
+            }
+
+            if (std::abs(finalYawError) <= finalYawTolerance_)
+            {
+              CompleteNavigation();
+              return;
+            }
+
+            turnBraking_ = false;
+            turnSettleTimerInitialized_ = false;
+            turnDirection_ = std::copysign(1.0, finalYawError);
+          }
+
+          const double directedError = turnDirection_ * finalYawError;
+          if (visual_navigation::ShouldBrakeTurn(
+              directedError, std::abs(controlYawRate),
+              finalYawTolerance_, turnBrakeHorizon_))
+          {
+            turnBraking_ = true;
+            turnSettleTimerInitialized_ = false;
+            PublishStop();
+            SetState("ALIGNING_FINAL_YAW");
+            return;
+          }
+
           geometry_msgs::msg::Twist command;
           const double scaledMaxAngularSpeed =
             finalYawMaxAngularSpeed_ * fusionHealth.speed_scale;
@@ -1177,8 +1236,8 @@ private:
   double controlFrequency_{30.0};
   double trackingPointOffsetX_{0.087};
   double trackingPointOffsetY_{0.040};
-  double defaultSpeed_{0.20};
-  double maxLinearSpeed_{0.30};
+  double defaultSpeed_{0.50};
+  double maxLinearSpeed_{0.50};
   double maxAngularSpeed_{0.80};
   double maxPathAngularSpeed_{0.65};
   double maxLinearAcceleration_{0.40};

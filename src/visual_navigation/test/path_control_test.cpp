@@ -59,6 +59,12 @@ TEST(PathControl, TurnBrakesBeforeCrossingTarget)
   EXPECT_TRUE(visual_navigation::ShouldBrakeTurn(-0.01, 0.10, 0.035, 0.35));
 }
 
+TEST(PathControl, FinalYawBrakesUnderRecordedApproachRate)
+{
+  EXPECT_TRUE(visual_navigation::ShouldBrakeTurn(0.11, 0.43, 0.06, 0.35));
+  EXPECT_FALSE(visual_navigation::ShouldBrakeTurn(0.30, 0.43, 0.06, 0.35));
+}
+
 TEST(PathControl, TurnRequiresContinuousLowRateBeforeSettling)
 {
   EXPECT_FALSE(visual_navigation::TurnHasSettled(0.20, 1.0, 0.12, 0.30));
