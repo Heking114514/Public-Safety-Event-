@@ -7,8 +7,9 @@ waypoint_navigator:
 
     odom_topic: "/odometry/fused"
     imu_topic: "/imu/filtered"
-    tracking_point_offset_x: 0.087
-    tracking_point_offset_y: 0.040
+    # /odometry/fused is already expressed at base_link by the measured TF.
+    tracking_point_offset_x: 0.0
+    tracking_point_offset_y: 0.0
     fusion_status_topic: "/odometry/fusion_status"
     actuator_health_topic: "/cup_car_serial/connected"
     tracking_state_topic: "/tracking_state"
@@ -21,28 +22,42 @@ waypoint_navigator:
     control_frequency: 30.0
     default_speed: 0.50
     max_linear_speed: 0.50
-    max_angular_speed: 0.80
+    max_angular_speed: 0.95
     max_path_angular_speed: 0.45
+    min_path_angular_speed: 0.14
+    path_angular_activation_error: 0.025
+    path_yaw_response_threshold: 0.04
     max_linear_acceleration: 0.40
     max_linear_deceleration: 0.80
-    max_angular_acceleration: 2.50
-    max_angular_deceleration: 4.00
+    # Physical stopping model used to keep 0.5m/s cruise speed without
+    # carrying residual forward velocity into a waypoint turn.
+    effective_braking_deceleration: 0.35
+    braking_control_delay: 0.20
+    braking_safety_margin: 0.015
+    braking_distance_feedback_gain: 1.00
+    max_angular_acceleration: 1.80
+    max_angular_deceleration: 3.00
     linear_gain: 0.80
-    angular_gain: 2.00
+    angular_gain: 2.80
     path_pid_kp: 1.80
-    path_pid_ki: 0.35
+    path_pid_ki: 0.15
     path_pid_kd: 0.00
-    path_yaw_rate_damping: 0.35
-    turn_yaw_rate_damping: 0.10
-    turn_brake_horizon: 0.35
-    turn_cruise_speed: 0.65
-    cross_track_gain: 1.80
+    path_yaw_rate_damping: 0.45
+    turn_yaw_rate_damping: 0.55
+    # The latest bag only reached 0.65 rad/s and the chassis achieved about
+    # 0.30-0.47 rad/s. Keep IMU damping and raise the target enough to clear
+    # the drivetrain's low-speed turn dead zone.
+    turn_cruise_speed: 0.90
+    turn_position_hold_gain: 0.80
+    turn_position_hold_deadband: 0.015
+    turn_position_hold_max_speed: 0.08
+    cross_track_gain: 1.50
     stanley_softening_speed: 0.25
     max_cross_track_correction: 0.70
-    cross_track_slowdown_start: 0.03
+    cross_track_slowdown_start: 0.015
     cross_track_slowdown_full: 0.06
-    cross_track_minimum_speed: 0.08
-    path_pid_integral_limit: 0.40
+    cross_track_minimum_speed: 0.20
+    path_pid_integral_limit: 0.20
     rotate_in_place_threshold: 0.18
     rotate_in_place_reentry_threshold: 0.44
     rotate_in_place_exit_threshold: 0.035
@@ -50,11 +65,22 @@ waypoint_navigator:
     turn_settle_yaw_rate: 0.12
     turn_settle_dwell: 0.30
     min_precision_turn_speed: 0.25
-    waypoint_tolerance: 0.08
+    waypoint_tolerance: 0.04
+    waypoint_pass_longitudinal_tolerance: 0.01
+    waypoint_pass_lateral_tolerance: 0.06
+    waypoint_recovery_speed: 0.10
+    waypoint_recovery_heading_tolerance: 0.12
+    waypoint_recovery_max_angular_speed: 0.60
+    pre_turn_stop_heading_threshold: 0.18
+    pre_turn_stop_speed: 0.03
+    pre_turn_stop_dwell: 0.10
+    stop_motion_window: 0.20
+    pre_turn_minimum_stop_time: 0.20
+    pre_turn_brake_timeout: 0.60
     final_yaw_tolerance: 0.060
-    final_yaw_max_angular_speed: 0.80
+    final_yaw_max_angular_speed: 0.90
     final_yaw_min_turn_speed: 0.70
-    final_yaw_min_precision_speed: 0.32
+    final_yaw_min_precision_speed: 0.22
     odom_timeout: 0.40
     imu_timeout: 0.15
     fusion_status_timeout: 0.60

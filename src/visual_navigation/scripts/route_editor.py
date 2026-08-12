@@ -21,7 +21,7 @@ GRID_METERS = 0.6
 PIXELS_PER_METER = 100.0
 POINT_HIT_RADIUS = 13.0
 
-
+1
 def quaternion_to_yaw(quaternion):
     values = (quaternion.x, quaternion.y, quaternion.z, quaternion.w)
     if not all(math.isfinite(value) for value in values):

@@ -115,11 +115,12 @@ header.frame_id
 pose.pose.position.x
 pose.pose.position.y
 pose.pose.orientation
+twist.twist.linear.x
 ```
 
-节点把四元数转换为平面偏航角 `yaw`，只使用二维位置和绕 Z 轴旋转。
+节点把四元数转换为平面偏航角 `yaw`，用纵向速度反馈提前制动，并用约 `0.2 s` 的融合位置位移窗口判断车体是否已经停稳。
 
-当前代码不使用 `/odom` 中的速度字段，也不使用 Z 方向位置、横滚角和俯仰角。
+当前代码不使用 Z 方向位置、横滚角和俯仰角，也不积分里程计速度来计算位置。
 
 #### `/tracking_state`
 
@@ -508,6 +509,9 @@ abort_on_tracking_loss: true
 | `IDLE` | 路线已加载，但导航未启动 |
 | `WAITING_FOR_LOCALIZATION` | 已请求启动，正在等待有效定位 |
 | `FOLLOWING` | 正在向当前航点运动 |
+| `BRAKING_APPROACH` | 按剩余距离和实际车速执行航点接近制动 |
+| `BRAKING_AT_WAYPOINT` | 已收点，持续发零速并等待车体停稳后再转向 |
+| `RECOVERING_FINAL_POSITION` | 最终朝向调整后位置超差，正在低速回收终点位置 |
 | `WAITING_AT_WAYPOINT` | 已到达航点，按照 `stop_time` 停车等待 |
 | `ALIGNING_FINAL_YAW` | 已到达最终位置，正在调整最终朝向 |
 | `GOAL_REACHED` | 已完成全部航点 |
@@ -660,24 +664,20 @@ linear_x = 0
 ```text
 requested_speed = min(waypoint.speed, max_linear_speed)
 heading_scale = max(0, cos(heading_error))
-
-中间航点：
-linear_x = requested_speed × heading_scale
-
-最终航点：
-distance_speed = linear_gain × distance
-linear_x = min(requested_speed, distance_speed) × heading_scale
+d_available = max(remaining_distance - braking_safety_margin, 0)
+v_limit = -a × delay + sqrt((a × delay)^2 + 2 × a × d_available)
+linear_x = min(requested_speed, v_limit, cross_track_limit) × heading_scale
 ```
 
 该计算实现了以下行为：
 
 1. 不超过航点指定速度。
 2. 不超过全局最大速度。
-3. 中间航点不根据剩余距离减速，以当前航点的设定速度通过。
-4. 只有接近最终航点时根据距离自动减速。
-5. 航向误差越大，前进速度越低。
+3. 需要转弯或结束的航点根据剩余距离进入物理制动曲线，直线连续航点可直接通过。
+4. 到达需要转弯的中间航点或最终点后，用融合里程计实际纵向速度确认停稳。
+5. 航向误差或横向误差越大，前进速度越低。
 
-中间航点仍可能因为航向误差超过 `rotate_in_place_threshold` 而停止前进并原地转向；这属于转向安全逻辑，不是距离减速。
+相邻路径方向变化小于 `pre_turn_stop_heading_threshold` 时可以连续通过；超过阈值时先停稳再转向。
 
 ### 12.6 最终朝向控制
 
@@ -779,19 +779,34 @@ config/waypoint_navigation.yaml
 | 参数 | 默认值 | 作用 |
 | --- | --- | --- |
 | `control_frequency` | `30.0` | 控制频率，Hz |
-| `default_speed` | `0.20` | CSV 未填写速度时的默认速度，m/s |
-| `max_linear_speed` | `0.30` | 全局最大线速度，m/s |
-| `max_angular_speed` | `0.80` | 最大角速度，rad/s |
-| `linear_gain` | `0.80` | 最终航点距离误差到线速度的比例增益 |
-| `angular_gain` | `1.80` | 终点朝向对齐的比例增益 |
-| `path_pid_kp` | `2.20` | 路径误差 PID 的比例增益 |
-| `path_pid_ki` | `0.25` | 路径误差 PID 的积分增益，用于补偿持续机械跑偏 |
-| `path_pid_kd` | `0.05` | 路径误差 PID 的微分增益 |
-| `cross_track_gain` | `3.50` | 横向偏差到航向误差的换算增益，rad/m |
-| `path_pid_integral_limit` | `2.00` | PID 积分限幅，避免定位跳变后持续过度转向 |
-| `rotate_in_place_threshold` | `0.60` | 超过该航向误差时禁止前进，rad |
-| `waypoint_tolerance` | `0.15` | CSV 未填写容差时的默认值，m |
-| `final_yaw_tolerance` | `0.12` | 最终朝向容差，rad |
+| `default_speed` | `0.50` | CSV 未填写速度时的默认速度，m/s |
+| `max_linear_speed` | `0.50` | 全局最大线速度，m/s |
+| `max_angular_speed` | `0.95` | 最大角速度，rad/s |
+| `effective_braking_deceleration` | `0.35` | 实车有效制动减速度，m/s^2 |
+| `braking_control_delay` | `0.20` | 串口、控制与执行总延迟估计，s |
+| `braking_safety_margin` | `0.015` | 航点前预留的制动距离，m |
+| `braking_distance_feedback_gain` | `1.00` | 实际停止距离超出剩余距离时的速度压低增益 |
+| `angular_gain` | `2.80` | 终点朝向对齐的比例增益 |
+| `path_pid_kp` | `1.80` | 路径误差 PID 的比例增益 |
+| `path_pid_ki` | `0.15` | 路径误差 PID 的积分增益，用于补偿持续机械跑偏 |
+| `path_pid_kd` | `0.00` | 路径误差 PID 的微分增益 |
+| `path_yaw_rate_damping` | `0.45` | 实际角速度阻尼，用于抑制横向纠偏过冲 |
+| `cross_track_gain` | `1.50` | 横向偏差到航向误差的换算增益，rad/m |
+| `path_pid_integral_limit` | `0.20` | PID 积分限幅，避免定位跳变后持续过度转向 |
+| `rotate_in_place_threshold` | `0.18` | 超过该航向误差时禁止前进，rad |
+| `waypoint_tolerance` | `0.04` | 动态路线未填写容差时的默认值，m |
+| `waypoint_pass_longitudinal_tolerance` | `0.01` | 距终点平面的提前收点余量，m |
+| `waypoint_pass_lateral_tolerance` | `0.06` | 越过终点时允许直接收点的横向走廊，m |
+| `waypoint_recovery_speed` | `0.10` | 超出走廊后回收至航点的最高线速度，m/s |
+| `waypoint_recovery_heading_tolerance` | `0.12` | 回收时允许开始低速前进的朝向误差，rad |
+| `waypoint_recovery_max_angular_speed` | `0.60` | 航点回收的最高角速度，rad/s |
+| `pre_turn_stop_heading_threshold` | `0.18` | 相邻路径转角超过此值时要求先停稳，rad |
+| `pre_turn_stop_speed` | `0.03` | 判断车体停稳的纵向速度阈值，m/s |
+| `pre_turn_stop_dwell` | `0.10` | 速度连续低于阈值的确认时间，s |
+| `stop_motion_window` | `0.20` | 从融合位姿计算实际移动速度的窗口，s |
+| `pre_turn_minimum_stop_time` | `0.20` | 收点后最短制动等待时间，s |
+| `pre_turn_brake_timeout` | `0.60` | 速度反馈异常时避免状态机永久卡住的上限，s |
+| `final_yaw_tolerance` | `0.06` | 最终朝向容差，rad |
 | `odom_timeout` | `0.40` | 里程计到达超时时间，s |
 
 ### 14.3 行为和安全参数
@@ -828,18 +843,18 @@ max_angular_speed
 
 可以：
 
-- 减小 `max_linear_speed`
-- 减小航点文件中的 `speed`
-- 减小 `rotate_in_place_threshold`
-- 在拐弯前增加一个低速航点
+- 检查 `/odometry/fused.twist.twist.linear.x` 是否能在停车后回到零附近
+- 减小 `effective_braking_deceleration`，使系统更早制动
+- 增大 `braking_control_delay` 或 `braking_safety_margin`
+- 适当增大 `pre_turn_minimum_stop_time`
 
 ### 15.3 到达航点后振荡
 
 可以：
 
 - 略微增大该航点的 `tolerance`
-- 减小航点附近的 `speed`
-- 如果是最终航点，减小 `linear_gain`
+- 检查有效制动减速度和延迟是否与实车一致
+- 检查停稳速度阈值是否被融合里程计零偏持续触发
 - 检查视觉位姿是否抖动
 
 ### 15.4 小角度误差时一直缓慢转动

@@ -18,10 +18,13 @@
 
 #include "geometry_msgs/msg/twist.hpp"
 #include "geometry_msgs/msg/vector3_stamped.hpp"
+#include "mission_control_interfaces/msg/control_telemetry.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/int32_multi_array.hpp"
 #include "std_msgs/msg/string.hpp"
+
+#include "cup_car_serial/protocol.hpp"
 
 namespace
 {
@@ -65,73 +68,6 @@ std::string detect_serial_device()
     }
   }
   return "";
-}
-
-bool parse_int32(const std::string & text, int32_t * value)
-{
-  if (text.empty()) {
-    return false;
-  }
-
-  char * end = nullptr;
-  errno = 0;
-  const long long parsed = std::strtoll(text.c_str(), &end, 10);
-  if (errno != 0 || end == text.c_str() || *end != '\0' ||
-    parsed < INT32_MIN || parsed > INT32_MAX)
-  {
-    return false;
-  }
-  *value = static_cast<int32_t>(parsed);
-  return true;
-}
-
-bool parse_encoder_frame(const std::string & line, std::vector<int32_t> * values)
-{
-  if (line.rfind("ENC,", 0) != 0) {
-    return false;
-  }
-
-  std::vector<std::string> fields;
-  size_t start = 0;
-  while (start <= line.size()) {
-    const size_t comma = line.find(',', start);
-    fields.push_back(line.substr(start, comma - start));
-    if (comma == std::string::npos) {
-      break;
-    }
-    start = comma + 1;
-  }
-
-  // Current firmware sends ENC,time_ms,sequence,left_total,right_total. Accept
-  // the legacy ENC,left_total,right_total form while a controller is being updated.
-  if (fields.size() != 5 && fields.size() != 3) {
-    return false;
-  }
-
-  values->clear();
-  values->reserve(4);
-  if (fields.size() == 3) {
-    int32_t left_total;
-    int32_t right_total;
-    if (!parse_int32(fields[1], &left_total) || !parse_int32(fields[2], &right_total)) {
-      return false;
-    }
-    values->push_back(0);
-    values->push_back(0);
-    values->push_back(left_total);
-    values->push_back(right_total);
-    return true;
-  }
-
-  for (size_t index = 1; index < fields.size(); ++index) {
-    int32_t value;
-    if (!parse_int32(fields[index], &value)) {
-      values->clear();
-      return false;
-    }
-    values->push_back(value);
-  }
-  return true;
 }
 
 class SerialPort
@@ -229,6 +165,8 @@ public:
     send_rate_hz_ = declare_parameter<double>("send_rate_hz", 20.0);
     command_timeout_s_ = declare_parameter<double>("command_timeout_s", 0.4);
     rpy_timeout_s_ = declare_parameter<double>("rpy_timeout_s", 0.4);
+    control_telemetry_timeout_s_ =
+      declare_parameter<double>("control_telemetry_timeout_s", 0.35);
 
     connectedPublisher_ = create_publisher<std_msgs::msg::Bool>(
       "/cup_car_serial/connected", rclcpp::QoS(1).transient_local().reliable());
@@ -236,10 +174,18 @@ public:
       "/cup_car_serial/rx", 10);
     encoderPublisher_ = create_publisher<std_msgs::msg::Int32MultiArray>(
       "/cup_car_serial/encoder_ticks", 10);
+    controlTelemetryPublisher_ =
+      create_publisher<mission_control_interfaces::msg::ControlTelemetry>(
+      "/cup_car_serial/control_telemetry", 20);
+    actuatorHealthyPublisher_ = create_publisher<std_msgs::msg::Bool>(
+      "/cup_car_serial/actuator_healthy", rclcpp::QoS(1).transient_local().reliable());
 
-    if (send_rate_hz_ <= 0.0 || command_timeout_s_ <= 0.0 || rpy_timeout_s_ <= 0.0) {
+    if (send_rate_hz_ <= 0.0 || command_timeout_s_ <= 0.0 || rpy_timeout_s_ <= 0.0 ||
+      control_telemetry_timeout_s_ <= 0.0)
+    {
       throw std::invalid_argument(
-              "send_rate_hz, command_timeout_s, and rpy_timeout_s must be positive");
+              "send_rate_hz, command_timeout_s, rpy_timeout_s, and "
+              "control_telemetry_timeout_s must be positive");
     }
 
     subscription_ = create_subscription<geometry_msgs::msg::Twist>(
@@ -266,8 +212,8 @@ public:
       std::chrono::duration_cast<std::chrono::nanoseconds>(period),
       std::bind(&CmdVelSerialNode::send_command, this));
     connectionHeartbeatTimer_ = create_wall_timer(
-      std::chrono::milliseconds(500),
-      std::bind(&CmdVelSerialNode::publish_connection_heartbeat, this));
+      std::chrono::milliseconds(100),
+      std::bind(&CmdVelSerialNode::publish_health_heartbeats, this));
 
     connect();
     RCLCPP_INFO(
@@ -293,6 +239,7 @@ private:
       serial_.open(device, baud_rate_);
       active_device_ = device;
       serial_connected_ = true;
+      control_telemetry_received_ = false;
       receive_buffer_.clear();
       set_connected(true);
       RCLCPP_INFO(get_logger(), "Serial port connected: %s", active_device_.c_str());
@@ -314,13 +261,36 @@ private:
     connectedPublisher_->publish(message);
     last_connection_state_ = connected;
     connection_state_published_ = true;
+    if (!connected) {
+      control_telemetry_received_ = false;
+      publish_actuator_health(false);
+    }
   }
 
-  void publish_connection_heartbeat()
+  void publish_health_heartbeats()
   {
     std_msgs::msg::Bool message;
     message.data = serial_connected_;
     connectedPublisher_->publish(message);
+    publish_actuator_health(control_is_healthy());
+  }
+
+  bool control_is_healthy() const
+  {
+    if (!serial_connected_ || !control_telemetry_received_) {
+      return false;
+    }
+    const double age = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - last_control_telemetry_arrival_).count();
+    return age <= control_telemetry_timeout_s_ &&
+           cup_car_serial::control_state_is_healthy(latest_control_telemetry_);
+  }
+
+  void publish_actuator_health(bool healthy)
+  {
+    std_msgs::msg::Bool message;
+    message.data = healthy;
+    actuatorHealthyPublisher_->publish(message);
   }
 
   void receive_feedback()
@@ -346,6 +316,7 @@ private:
         message.data = line;
         receivePublisher_->publish(message);
         publish_encoder_frame(line);
+        publish_control_telemetry_frame(line);
       }
     }
 
@@ -361,7 +332,7 @@ private:
     if (line.rfind("ENC,", 0) != 0) {
       return;
     }
-    if (!parse_encoder_frame(line, &values)) {
+    if (!cup_car_serial::parse_encoder_frame(line, &values)) {
       RCLCPP_WARN(get_logger(), "Ignoring malformed encoder frame: '%s'", line.c_str());
       return;
     }
@@ -370,6 +341,48 @@ private:
     // data: [mcu_time_ms, sequence, left_total_ticks, right_total_ticks]
     message.data = std::move(values);
     encoderPublisher_->publish(message);
+  }
+
+  void publish_control_telemetry_frame(const std::string & line)
+  {
+    if (line.rfind("CTL,", 0) != 0) {
+      return;
+    }
+    cup_car_serial::ControlTelemetryFrame frame;
+    if (!cup_car_serial::parse_control_telemetry_frame(line, &frame)) {
+      RCLCPP_WARN(get_logger(), "Ignoring malformed control telemetry frame: '%s'", line.c_str());
+      return;
+    }
+
+    constexpr float milli_to_si = 0.001F;
+    mission_control_interfaces::msg::ControlTelemetry message;
+    message.header.stamp = now();
+    message.mcu_time_ms = frame.mcu_time_ms;
+    message.sample_sequence = frame.sample_sequence;
+    message.mode = frame.mode;
+    message.emergency_stop = frame.emergency_stop;
+    message.command_valid = frame.command_valid;
+    message.command_age_ms = frame.command_age_ms;
+    message.received_linear_velocity_mps =
+      static_cast<float>(frame.received_linear_velocity_milli) * milli_to_si;
+    message.received_angular_velocity_radps =
+      static_cast<float>(frame.received_angular_velocity_milli) * milli_to_si;
+    message.target_left_velocity_mps =
+      static_cast<float>(frame.target_left_velocity_milli) * milli_to_si;
+    message.target_right_velocity_mps =
+      static_cast<float>(frame.target_right_velocity_milli) * milli_to_si;
+    message.measured_left_velocity_mps =
+      static_cast<float>(frame.measured_left_velocity_milli) * milli_to_si;
+    message.measured_right_velocity_mps =
+      static_cast<float>(frame.measured_right_velocity_milli) * milli_to_si;
+    message.pwm_left = frame.pwm_left;
+    message.pwm_right = frame.pwm_right;
+    controlTelemetryPublisher_->publish(message);
+
+    latest_control_telemetry_ = frame;
+    last_control_telemetry_arrival_ = std::chrono::steady_clock::now();
+    control_telemetry_received_ = true;
+    publish_actuator_health(control_is_healthy());
   }
 
   void send_command()
@@ -450,12 +463,14 @@ private:
   double send_rate_hz_{};
   double command_timeout_s_{};
   double rpy_timeout_s_{};
+  double control_telemetry_timeout_s_{};
   SerialPort serial_;
   bool serial_connected_{false};
   bool connection_state_published_{false};
   bool last_connection_state_{false};
   bool received_command_{false};
   bool received_rpy_{false};
+  bool control_telemetry_received_{false};
   double vx_mps_{0.0};
   double az_radps_{0.0};
   double roll_rad_{0.0};
@@ -464,11 +479,16 @@ private:
   rclcpp::Time last_command_time_{0, 0, RCL_ROS_TIME};
   rclcpp::Time last_rpy_time_{0, 0, RCL_ROS_TIME};
   std::chrono::steady_clock::time_point last_connect_attempt_{};
+  std::chrono::steady_clock::time_point last_control_telemetry_arrival_{};
+  cup_car_serial::ControlTelemetryFrame latest_control_telemetry_{};
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr subscription_;
   rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr rpySubscription_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr connectedPublisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr receivePublisher_;
   rclcpp::Publisher<std_msgs::msg::Int32MultiArray>::SharedPtr encoderPublisher_;
+  rclcpp::Publisher<mission_control_interfaces::msg::ControlTelemetry>::SharedPtr
+    controlTelemetryPublisher_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr actuatorHealthyPublisher_;
   rclcpp::TimerBase::SharedPtr timer_;
   rclcpp::TimerBase::SharedPtr connectionHeartbeatTimer_;
 };

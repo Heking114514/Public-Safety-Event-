@@ -21,6 +21,22 @@ struct Pose2d
   double yaw{0.0};
 };
 
+Pose2d compose_pose(const Pose2d & parent_from_middle, const Pose2d & middle_from_body);
+Pose2d inverse_pose(const Pose2d & parent_from_body);
+Pose2d interpolate_pose(const Pose2d & from, const Pose2d & to, double fraction);
+bool yaw_rates_excited(double wheel_rate, double imu_rate, double minimum_rate);
+bool yaw_rates_consistent(double wheel_rate, double imu_rate, double maximum_residual);
+
+double wheel_vx_turn_covariance_scale(
+  double imu_yaw_rate, double command_yaw_rate,
+  bool imu_valid, bool command_valid,
+  double downweight_start_rate, double full_downweight_rate,
+  double maximum_scale);
+
+bool zero_wheel_vx_during_in_place_turn(
+  double command_velocity, double command_yaw_rate, bool command_valid,
+  double maximum_linear_speed, double minimum_yaw_rate);
+
 bool pose_residual_within(
   const Pose2d & measurement, const Pose2d & reference,
   double max_position_residual, double max_yaw_residual);
@@ -35,6 +51,20 @@ public:
 
 private:
   Pose2d offset_{};
+  bool initialized_{false};
+};
+
+class TranslationAligner
+{
+public:
+  void clear();
+  void align_to(const Pose2d & raw, const Pose2d & target);
+  Pose2d apply(const Pose2d & raw) const;
+  bool initialized() const {return initialized_;}
+
+private:
+  double offset_x_{0.0};
+  double offset_y_{0.0};
   bool initialized_{false};
 };
 
@@ -69,6 +99,28 @@ public:
 private:
   double duration_seconds_;
   std::deque<std::pair<double, double>> samples_;
+};
+
+// Estimates only a slowly varying gyro z bias. The reference is normally the
+// robust visual yaw rate; callers decide when learning is safe (straight,
+// healthy visual tracking). During turns the last bias is held constant.
+class YawBiasEstimator
+{
+public:
+  YawBiasEstimator(double time_constant_seconds = 3.0, double maximum_bias = 0.08);
+
+  void reset();
+  double correct(
+    double time_seconds, double measured_rate, double reference_rate,
+    bool reference_valid, bool learn);
+  double bias() const {return bias_;}
+
+private:
+  double time_constant_seconds_;
+  double maximum_bias_;
+  double bias_{0.0};
+  double last_time_seconds_{0.0};
+  bool initialized_{false};
 };
 
 enum class MotionFault

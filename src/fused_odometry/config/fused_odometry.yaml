@@ -3,6 +3,7 @@ fused_odometry_gate:
     visual_topic: /odom
     raw_visual_topic: /odom/orb_raw
     tracking_topic: /tracking_state
+    map_change_topic: /orbslam3/map_change
     wheel_topic: /wheel/odom
     imu_topic: /imu/filtered
     fused_topic: /odometry/fused
@@ -13,18 +14,16 @@ fused_odometry_gate:
     status_topic: /odometry/fusion_status
     diagnostics_topic: /diagnostics
 
-    # The repository does not yet contain a measured base_link-to-camera_link
-    # extrinsic. Until it is measured, all gated measurements use camera_link.
     world_frame: map
-    base_frame: camera_link
+    base_frame: base_link
     visual_expected_frame: map
-    visual_expected_child_frame: camera_link
+    visual_expected_child_frame: base_link
     raw_visual_expected_frame: map
-    # The wheel node must be launched with base_frame:=camera_link until a
-    # measured chassis-camera transform is available. Other frames are rejected.
-    wheel_expected_child_frame: camera_link
+    wheel_expected_child_frame: base_link
+    # The filter already converts camera gyro measurements to Euler yaw rate;
+    # the gate republishes that scalar rate in the planar base_link frame.
     imu_expected_frame: camera_link
-    publish_tf: true
+    publish_tf: false
 
     visual_timeout_s: 0.40
     tracking_timeout_s: 0.60
@@ -35,6 +34,7 @@ fused_odometry_gate:
     raw_visual_timeout_s: 0.30
     # Reject optical-frame or otherwise non-planar poses mislabeled as map.
     raw_visual_max_tilt_rad: 0.50
+    map_change_grace_s: 1.00
     visual_recovery_samples: 5
     visual_recovery_ramp_s: 0.75
     visual_recovery_initial_covariance_scale: 50.0
@@ -62,8 +62,12 @@ fused_odometry_gate:
     residual_recovery_samples: 10
     wheel_imu_yaw_soft_radps: 0.15
     wheel_imu_yaw_reject_radps: 0.25
+    wheel_yaw_validation_min_rate_radps: 0.08
     wheel_yaw_validation_s: 2.0
     wheel_yaw_backup_s: 2.0
+    # The current encoders provide useful forward distance but overestimate
+    # turns. Keep wheel yaw diagnostic-only until repeated turn calibration.
+    fuse_wheel_yaw: false
 
     command_motion_threshold_mps: 0.08
     motion_moving_threshold_mps: 0.04
@@ -83,10 +87,25 @@ fused_odometry_gate:
     visual_xy_variance: 0.02
     visual_yaw_variance: 0.04
     wheel_vx_variance: 0.08
+    # Encoder vx is biased during turns because the low-speed reverse wheel
+    # overshoots. Downweight it progressively; during a commanded in-place
+    # turn publish a zero center velocity instead of integrating the bias.
+    wheel_turn_downweight_start_radps: 0.15
+    wheel_turn_full_downweight_radps: 0.60
+    wheel_turn_covariance_scale: 100.0
+    wheel_in_place_max_linear_speed_mps: 0.10
+    wheel_in_place_min_yaw_rate_radps: 0.30
     wheel_wz_variance: 0.50
     # Static bag noise after robust filtering is about 1 deg/s. Keep a modest
     # floor without effectively discarding the IMU in favor of visual yaw.
     imu_wz_variance: 0.0004
+    # Learn only a slow gyro-z bias during commanded straight motion while
+    # visual yaw rate is near zero. The high-frequency IMU signal is preserved
+    # during turns and outages; this only suppresses long straight-run drift.
+    imu_bias_time_constant_s: 3.0
+    imu_bias_max_radps: 0.08
+    imu_bias_learning_max_command_radps: 0.08
+    imu_bias_learning_max_visual_rate_radps: 0.12
 
 fused_ekf:
   ros__parameters:
@@ -99,40 +118,27 @@ fused_ekf:
     debug: false
     permit_corrected_publication: false
     publish_acceleration: false
-    # The gate broadcasts map->camera_link from the validated fused output.
-    publish_tf: false
+    publish_tf: true
     dynamic_process_noise_covariance: true
 
-    # map is deliberately used as the local continuous world frame because the
-    # existing navigator consumes map-frame poses and has no TF pose conversion.
     map_frame: map
     odom_frame: odom
-    base_link_frame: camera_link
-    world_frame: map
+    base_link_frame: base_link
+    world_frame: odom
 
-    odom0: /fusion/input/visual_odom
-    odom0_config: [true, true, false,
-                   false, false, true,
+    # Local odometry intentionally excludes absolute ORB pose. Loop closure
+    # updates map->odom in map_odom_correction without moving odom->base_link.
+    odom0: /fusion/input/wheel_odom
+    odom0_config: [false, false, false,
                    false, false, false,
+                   true, false, false,
                    false, false, false,
                    false, false, false]
-    odom0_queue_size: 5
+    odom0_queue_size: 10
     odom0_nodelay: true
     odom0_differential: false
     odom0_relative: false
-    odom0_pose_rejection_threshold: 4.0
-
-    odom1: /fusion/input/wheel_odom
-    odom1_config: [false, false, false,
-                   false, false, false,
-                   true, false, false,
-                   false, false, true,
-                   false, false, false]
-    odom1_queue_size: 10
-    odom1_nodelay: true
-    odom1_differential: false
-    odom1_relative: false
-    odom1_twist_rejection_threshold: 4.0
+    odom0_twist_rejection_threshold: 4.0
 
     imu0: /fusion/input/imu
     imu0_config: [false, false, false,
@@ -145,4 +151,33 @@ fused_ekf:
     imu0_differential: false
     imu0_relative: false
     imu0_remove_gravitational_acceleration: false
-    imu0_twist_rejection_threshold: 4.0
+    # The fusion gate has already validated and bounded gyro z. A tight second
+    # Mahalanobis gate here rejected real turn acceleration, then accepted it
+    # late and caused a one-frame yaw jump. Keep only a very loose sanity gate.
+    imu0_twist_rejection_threshold: 100.0
+
+map_odom_correction:
+  ros__parameters:
+    visual_topic: /fusion/input/visual_odom
+    local_topic: /odometry/local
+    command_topic: /cmd_vel_nav
+    output_topic: /odometry/fused
+    map_change_topic: /orbslam3/map_change
+    map_frame: map
+    odom_frame: odom
+    base_frame: base_link
+    publish_tf: true
+    publish_frequency: 30.0
+    correction_time_constant_s: 0.75
+    loop_correction_time_constant_s: 1.25
+    map_change_smoothing_window_s: 2.0
+    synchronization_tolerance_s: 0.12
+    local_timeout_s: 0.50
+    visual_timeout_s: 0.60
+    # ORB reported 4-9 cm of XY motion during commanded zero-vx 90-degree
+    # turns. Hold global XY through the turn, then preserve later visual
+    # increments from the anchored position.
+    turn_hold_max_linear_speed_mps: 0.03
+    turn_hold_entry_angular_speed_radps: 0.55
+    turn_hold_min_angular_speed_radps: 0.12
+    turn_hold_release_delay_s: 0.28

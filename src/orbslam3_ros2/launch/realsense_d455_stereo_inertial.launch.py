@@ -70,6 +70,7 @@ def generate_launch_description():
                 "body_frame_id": body_frame_id,
                 "publish_tf": ParameterValue(publish_tf, value_type=bool),
                 "raw_odom_topic": ParameterValue(raw_odom_topic, value_type=str),
+                "map_change_topic": "/orbslam3/map_change",
                 "publish_path": True,
                 "save_trajectory": True,
                 "trajectory_file": "KeyFrameTrajectory.txt",

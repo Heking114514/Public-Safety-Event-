@@ -40,29 +40,93 @@ TEST(PathControl, FinalPositionCaptureIsLatchedAcrossRotationDrift)
   EXPECT_FALSE(visual_navigation::FinalPositionCaptured(false, false, 0.01, 0.08));
 }
 
-TEST(PathControl, TurnSpeedTapersTowardTarget)
+TEST(PathControl, FinalCompletionRechecksPositionAfterYawAlignment)
 {
-  EXPECT_DOUBLE_EQ(
-    visual_navigation::TurnSpeedForError(0.02, 0.035, 0.45, 0.25, 0.65), 0.0);
-  EXPECT_DOUBLE_EQ(
-    visual_navigation::TurnSpeedForError(0.50, 0.035, 0.45, 0.25, 0.65), 0.65);
-  const double middle = visual_navigation::TurnSpeedForError(
-    0.20, 0.035, 0.45, 0.25, 0.65);
-  EXPECT_GT(middle, 0.25);
-  EXPECT_LT(middle, 0.65);
+  EXPECT_TRUE(visual_navigation::FinalPositionCanComplete(true, 0.039, 0.04));
+  EXPECT_FALSE(visual_navigation::FinalPositionCanComplete(true, 0.11, 0.04));
+  EXPECT_FALSE(visual_navigation::FinalPositionCanComplete(false, 0.01, 0.04));
 }
 
-TEST(PathControl, TurnBrakesBeforeCrossingTarget)
+TEST(PathControl, CompletedWaypointBrakeDoesNotRestartAtFinalPoint)
 {
-  EXPECT_TRUE(visual_navigation::ShouldBrakeTurn(0.20, 0.60, 0.035, 0.35));
-  EXPECT_FALSE(visual_navigation::ShouldBrakeTurn(0.30, 0.60, 0.035, 0.35));
-  EXPECT_TRUE(visual_navigation::ShouldBrakeTurn(-0.01, 0.10, 0.035, 0.35));
+  EXPECT_TRUE(visual_navigation::ShouldBeginWaypointBrake(false, false, true, true));
+  EXPECT_FALSE(visual_navigation::ShouldBeginWaypointBrake(false, true, true, true));
+  EXPECT_FALSE(visual_navigation::ShouldBeginWaypointBrake(true, false, true, true));
+  EXPECT_FALSE(visual_navigation::ShouldBeginWaypointBrake(false, false, true, false));
 }
 
-TEST(PathControl, FinalYawBrakesUnderRecordedApproachRate)
+TEST(PathControl, SegmentProjectionKeepsSignedRemainingDistance)
 {
-  EXPECT_TRUE(visual_navigation::ShouldBrakeTurn(0.11, 0.43, 0.06, 0.35));
-  EXPECT_FALSE(visual_navigation::ShouldBrakeTurn(0.30, 0.43, 0.06, 0.35));
+  const auto before = visual_navigation::ProjectOntoPathSegment(
+    0.01, 0.61, 0.0, -0.02, -0.0401, -0.0143);
+  EXPECT_TRUE(before.valid);
+  EXPECT_NEAR(before.remaining, 0.00508, 1e-4);
+  EXPECT_NEAR(before.cross_track, -0.04016, 1e-4);
+
+  const auto passed = visual_navigation::ProjectOntoPathSegment(
+    0.01, 0.61, 0.0, -0.02, -0.0420, -0.0254);
+  EXPECT_TRUE(passed.valid);
+  EXPECT_LT(passed.remaining, 0.0);
+}
+
+TEST(PathControl, PassCorridorCatchesTheRecordedEndpointNearMiss)
+{
+  const auto projection = visual_navigation::ProjectOntoPathSegment(
+    0.01, 0.61, 0.0, -0.02, -0.0401, -0.0143);
+  EXPECT_TRUE(visual_navigation::WaypointReached(
+      0.04048, 0.04, projection, 0.01, 0.06));
+  EXPECT_FALSE(visual_navigation::WaypointNeedsRecovery(
+      projection, 0.01, 0.06));
+}
+
+TEST(PathControl, LargeLateralMissEntersRecoveryInsteadOfEscaping)
+{
+  const auto projection = visual_navigation::ProjectOntoPathSegment(
+    0.0, 0.6, 0.0, 0.0, -0.09, -0.01);
+  EXPECT_FALSE(visual_navigation::WaypointReached(
+      std::hypot(0.09, 0.01), 0.04, projection, 0.01, 0.06));
+  EXPECT_TRUE(visual_navigation::WaypointNeedsRecovery(
+      projection, 0.01, 0.06));
+}
+
+TEST(PathControl, SignedApproachDistanceCannotGrowAfterEndpoint)
+{
+  visual_navigation::PathProjection before{0.03, 0.05, true};
+  visual_navigation::PathProjection passed{-0.20, 0.05, true};
+  EXPECT_DOUBLE_EQ(
+    visual_navigation::EndpointApproachDistance(0.40, before), 0.03);
+  EXPECT_DOUBLE_EQ(
+    visual_navigation::EndpointApproachDistance(0.40, passed), 0.0);
+}
+
+TEST(PathControl, TurnPositionHoldProjectsAnchorErrorOntoBodyForwardAxis)
+{
+  EXPECT_NEAR(
+    visual_navigation::TurnPositionHoldSpeed(
+      0.0, 0.0, 0.0, 0.10, 0.0, 0.8, 0.015, 0.08),
+    0.068, 1e-12);
+  EXPECT_NEAR(
+    visual_navigation::TurnPositionHoldSpeed(
+      0.0, 0.0, 3.14159265358979323846 / 2.0,
+      0.0, -0.10, 0.8, 0.015, 0.08),
+    -0.068, 1e-12);
+  EXPECT_DOUBLE_EQ(
+    visual_navigation::TurnPositionHoldSpeed(
+      0.0, 0.0, 0.0, 0.01, 1.0, 0.8, 0.015, 0.08),
+    0.0);
+}
+
+TEST(PathControl, TurnPositionHoldIsBoundedAndRejectsInvalidInput)
+{
+  EXPECT_DOUBLE_EQ(
+    visual_navigation::TurnPositionHoldSpeed(
+      0.0, 0.0, 0.0, 1.0, 0.0, 2.0, 0.0, 0.08),
+    0.08);
+  EXPECT_DOUBLE_EQ(
+    visual_navigation::TurnPositionHoldSpeed(
+      std::numeric_limits<double>::quiet_NaN(), 0.0, 0.0,
+      1.0, 0.0, 2.0, 0.0, 0.08),
+    0.0);
 }
 
 TEST(PathControl, TurnRequiresContinuousLowRateBeforeSettling)
@@ -90,6 +154,111 @@ TEST(PathControl, WaypointApproachDoesNotOverrideCrossTrackSpeedLimit)
     visual_navigation::WaypointApproachSpeedLimit(0.08, 0.20, 0.8, 1.0), 0.08);
   EXPECT_DOUBLE_EQ(
     visual_navigation::WaypointApproachSpeedLimit(0.20, 0.20, 0.8, 0.05), 0.04);
+}
+
+TEST(PathControl, BrakingProfileUsesPhysicalSpeedAndControlDelay)
+{
+  const double stopping_distance = visual_navigation::BrakingDistance(
+    0.5, 0.35, 0.12, 0.015);
+  EXPECT_NEAR(stopping_distance, 0.43214, 1e-5);
+  EXPECT_NEAR(
+    visual_navigation::BrakingSpeedLimit(0.5, stopping_distance, 0.35, 0.12, 0.015),
+    0.5, 1e-12);
+  EXPECT_LT(
+    visual_navigation::BrakingSpeedLimit(0.5, 0.20, 0.35, 0.12, 0.015), 0.33);
+  EXPECT_DOUBLE_EQ(
+    visual_navigation::BrakingSpeedLimit(0.5, 0.015, 0.35, 0.12, 0.015), 0.0);
+}
+
+TEST(PathControl, BrakingProfileRejectsInvalidInputs)
+{
+  EXPECT_DOUBLE_EQ(
+    visual_navigation::BrakingDistance(
+      std::numeric_limits<double>::quiet_NaN(), 0.35, 0.12, 0.015),
+    0.0);
+  EXPECT_DOUBLE_EQ(
+    visual_navigation::BrakingSpeedLimit(0.5, 1.0, 0.0, 0.12, 0.015), 0.0);
+  EXPECT_DOUBLE_EQ(
+    visual_navigation::BrakingSpeedLimit(
+      0.5, std::numeric_limits<double>::infinity(), 0.35, 0.12, 0.015),
+    0.0);
+}
+
+TEST(PathControl, BrakingFeedbackRespondsToRecordedSpeedLag)
+{
+  // Latest bag: 0.175m remained while fused motion was still 0.570m/s.
+  EXPECT_NEAR(
+    visual_navigation::BrakingFeedbackSpeedLimit(
+      0.5, 0.570, 0.175, 0.35, 0.20, 0.015, 1.0),
+    0.15186, 1e-5);
+  EXPECT_DOUBLE_EQ(
+    visual_navigation::BrakingFeedbackSpeedLimit(
+      0.4, 0.20, 1.0, 0.35, 0.20, 0.015, 1.0),
+    0.4);
+}
+
+TEST(PathControl, BrakingFeedbackFailsClosedForInvalidSpeed)
+{
+  EXPECT_DOUBLE_EQ(
+    visual_navigation::BrakingFeedbackSpeedLimit(
+      0.4, std::numeric_limits<double>::quiet_NaN(),
+      1.0, 0.35, 0.20, 0.015, 1.0),
+    0.0);
+}
+
+TEST(PathControl, WaypointStopRequiresContinuousLowSpeedAndMinimumWait)
+{
+  EXPECT_FALSE(visual_navigation::WaypointStopSatisfied(
+      0.02, 0.10, 0.19, 0.03, 0.10, 0.20, 0.60));
+  EXPECT_FALSE(visual_navigation::WaypointStopSatisfied(
+      0.04, 0.30, 0.30, 0.03, 0.10, 0.20, 0.60));
+  EXPECT_TRUE(visual_navigation::WaypointStopSatisfied(
+      0.02, 0.10, 0.20, 0.03, 0.10, 0.20, 0.60));
+}
+
+TEST(PathControl, WaypointStopTimeoutCannotDeadlockNavigation)
+{
+  EXPECT_FALSE(visual_navigation::WaypointStopSatisfied(
+      std::numeric_limits<double>::quiet_NaN(), 0.0, 0.59,
+      0.03, 0.10, 0.20, 0.60));
+  EXPECT_TRUE(visual_navigation::WaypointStopSatisfied(
+      std::numeric_limits<double>::quiet_NaN(), 0.0, 0.60,
+      0.03, 0.10, 0.20, 0.60));
+}
+
+TEST(PathControl, PathTurnDeadbandBoostsOnlyAnUnexecutedCorrection)
+{
+  EXPECT_DOUBLE_EQ(
+    visual_navigation::CompensatePathTurnDeadband(
+      0.08, 0.05, 0.01, 0.025, 0.04, 0.14, 0.45),
+    0.14);
+  EXPECT_DOUBLE_EQ(
+    visual_navigation::CompensatePathTurnDeadband(
+      -0.08, -0.05, -0.01, 0.025, 0.04, 0.14, 0.45),
+    -0.14);
+  EXPECT_DOUBLE_EQ(
+    visual_navigation::CompensatePathTurnDeadband(
+      0.08, 0.05, 0.06, 0.025, 0.04, 0.14, 0.45),
+    0.08);
+  EXPECT_DOUBLE_EQ(
+    visual_navigation::CompensatePathTurnDeadband(
+      -0.03, 0.05, 0.08, 0.025, 0.04, 0.14, 0.45),
+    -0.03);
+  EXPECT_DOUBLE_EQ(
+    visual_navigation::CompensatePathTurnDeadband(
+      0.02, 0.01, 0.0, 0.025, 0.04, 0.14, 0.45),
+    0.02);
+}
+
+TEST(PathControl, CompetitionSpeedScheduleAvoidsTheLowSpeedDrivetrainDeadZone)
+{
+  EXPECT_DOUBLE_EQ(
+    visual_navigation::CrossTrackSpeedLimit(0.5, 0.015, 0.015, 0.06, 0.20), 0.5);
+  EXPECT_NEAR(
+    visual_navigation::CrossTrackSpeedLimit(0.5, 0.0375, 0.015, 0.06, 0.20),
+    0.35, 1e-12);
+  EXPECT_DOUBLE_EQ(
+    visual_navigation::CrossTrackSpeedLimit(0.5, 0.08, 0.015, 0.06, 0.20), 0.20);
 }
 
 TEST(PathControl, RotateInPlaceUsesHysteresis)

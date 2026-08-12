@@ -1,0 +1,18 @@
+uint8 MODE_REMOTE=0
+uint8 MODE_NAVIGATION=1
+
+std_msgs/Header header
+uint32 mcu_time_ms
+uint32 sample_sequence
+uint8 mode
+bool emergency_stop
+bool command_valid
+uint32 command_age_ms
+float32 received_linear_velocity_mps
+float32 received_angular_velocity_radps
+float32 target_left_velocity_mps
+float32 target_right_velocity_mps
+float32 measured_left_velocity_mps
+float32 measured_right_velocity_mps
+int16 pwm_left
+int16 pwm_right

@@ -13,6 +13,91 @@ double wrap_angle(double angle)
   return std::remainder(angle, 2.0 * kPi);
 }
 
+Pose2d compose_pose(const Pose2d & parent_from_middle, const Pose2d & middle_from_body)
+{
+  const double cosine = std::cos(parent_from_middle.yaw);
+  const double sine = std::sin(parent_from_middle.yaw);
+  return {
+    parent_from_middle.x + cosine * middle_from_body.x - sine * middle_from_body.y,
+    parent_from_middle.y + sine * middle_from_body.x + cosine * middle_from_body.y,
+    wrap_angle(parent_from_middle.yaw + middle_from_body.yaw)};
+}
+
+Pose2d inverse_pose(const Pose2d & parent_from_body)
+{
+  const double cosine = std::cos(parent_from_body.yaw);
+  const double sine = std::sin(parent_from_body.yaw);
+  return {
+    -cosine * parent_from_body.x - sine * parent_from_body.y,
+    sine * parent_from_body.x - cosine * parent_from_body.y,
+    wrap_angle(-parent_from_body.yaw)};
+}
+
+Pose2d interpolate_pose(const Pose2d & from, const Pose2d & to, double fraction)
+{
+  const double bounded = std::clamp(fraction, 0.0, 1.0);
+  return {
+    from.x + bounded * (to.x - from.x),
+    from.y + bounded * (to.y - from.y),
+    wrap_angle(from.yaw + bounded * wrap_angle(to.yaw - from.yaw))};
+}
+
+bool yaw_rates_excited(double wheel_rate, double imu_rate, double minimum_rate)
+{
+  return std::isfinite(wheel_rate) && std::isfinite(imu_rate) &&
+         std::isfinite(minimum_rate) && minimum_rate > 0.0 &&
+         std::abs(wheel_rate) >= minimum_rate && std::abs(imu_rate) >= minimum_rate;
+}
+
+bool yaw_rates_consistent(double wheel_rate, double imu_rate, double maximum_residual)
+{
+  return std::isfinite(wheel_rate) && std::isfinite(imu_rate) &&
+         std::isfinite(maximum_residual) && maximum_residual > 0.0 &&
+         std::abs(wheel_rate - imu_rate) <= maximum_residual;
+}
+
+double wheel_vx_turn_covariance_scale(
+  double imu_yaw_rate, double command_yaw_rate,
+  bool imu_valid, bool command_valid,
+  double downweight_start_rate, double full_downweight_rate,
+  double maximum_scale)
+{
+  if (!std::isfinite(downweight_start_rate) ||
+    !std::isfinite(full_downweight_rate) || !std::isfinite(maximum_scale) ||
+    downweight_start_rate < 0.0 || full_downweight_rate <= downweight_start_rate ||
+    maximum_scale < 1.0)
+  {
+    return 1.0;
+  }
+
+  double turn_rate = 0.0;
+  if (imu_valid && std::isfinite(imu_yaw_rate)) {
+    turn_rate = std::abs(imu_yaw_rate);
+  } else if (command_valid && std::isfinite(command_yaw_rate)) {
+    turn_rate = std::abs(command_yaw_rate);
+  }
+  if (turn_rate <= downweight_start_rate) {
+    return 1.0;
+  }
+
+  const double fraction = std::clamp(
+    (turn_rate - downweight_start_rate) /
+    (full_downweight_rate - downweight_start_rate), 0.0, 1.0);
+  return 1.0 + fraction * fraction * (maximum_scale - 1.0);
+}
+
+bool zero_wheel_vx_during_in_place_turn(
+  double command_velocity, double command_yaw_rate, bool command_valid,
+  double maximum_linear_speed, double minimum_yaw_rate)
+{
+  return command_valid && std::isfinite(command_velocity) &&
+         std::isfinite(command_yaw_rate) && std::isfinite(maximum_linear_speed) &&
+         std::isfinite(minimum_yaw_rate) && maximum_linear_speed >= 0.0 &&
+         minimum_yaw_rate >= 0.0 &&
+         std::abs(command_velocity) <= maximum_linear_speed &&
+         std::abs(command_yaw_rate) >= minimum_yaw_rate;
+}
+
 double disagreement_covariance_scale(
   double absolute_residual, double soft_threshold, double residual_cap)
 {
@@ -72,6 +157,28 @@ Pose2d PoseAligner::apply(const Pose2d & raw) const
     wrap_angle(raw.yaw + offset_.yaw)};
 }
 
+void TranslationAligner::clear()
+{
+  offset_x_ = 0.0;
+  offset_y_ = 0.0;
+  initialized_ = false;
+}
+
+void TranslationAligner::align_to(const Pose2d & raw, const Pose2d & target)
+{
+  offset_x_ = target.x - raw.x;
+  offset_y_ = target.y - raw.y;
+  initialized_ = true;
+}
+
+Pose2d TranslationAligner::apply(const Pose2d & raw) const
+{
+  if (!initialized_) {
+    return raw;
+  }
+  return {raw.x + offset_x_, raw.y + offset_y_, raw.yaw};
+}
+
 ResidualGate::ResidualGate(
   double reject_threshold, std::size_t bad_samples, std::size_t recovery_samples)
 : reject_threshold_(reject_threshold),
@@ -117,6 +224,51 @@ RobustWindow::RobustWindow(double duration_seconds)
   if (!std::isfinite(duration_seconds_) || duration_seconds_ <= 0.0) {
     throw std::invalid_argument("window duration must be finite and positive");
   }
+}
+
+YawBiasEstimator::YawBiasEstimator(double time_constant_seconds, double maximum_bias)
+: time_constant_seconds_(time_constant_seconds), maximum_bias_(maximum_bias)
+{
+  if (!std::isfinite(time_constant_seconds_) || time_constant_seconds_ <= 0.0 ||
+    !std::isfinite(maximum_bias_) || maximum_bias_ < 0.0)
+  {
+    throw std::invalid_argument("yaw bias parameters must be finite and valid");
+  }
+}
+
+void YawBiasEstimator::reset()
+{
+  bias_ = 0.0;
+  last_time_seconds_ = 0.0;
+  initialized_ = false;
+}
+
+double YawBiasEstimator::correct(
+  double time_seconds, double measured_rate, double reference_rate,
+  bool reference_valid, bool learn)
+{
+  if (!std::isfinite(measured_rate)) {
+    return measured_rate;
+  }
+  if (!initialized_) {
+    initialized_ = std::isfinite(time_seconds);
+    last_time_seconds_ = time_seconds;
+    return measured_rate - bias_;
+  }
+
+  const double dt = time_seconds - last_time_seconds_;
+  if (std::isfinite(time_seconds)) {
+    last_time_seconds_ = time_seconds;
+  }
+  if (learn && reference_valid && std::isfinite(reference_rate) &&
+    std::isfinite(dt) && dt > 0.0 && dt <= 1.0)
+  {
+    const double alpha = 1.0 - std::exp(-dt / time_constant_seconds_);
+    const double target_bias = measured_rate - reference_rate;
+    bias_ = std::clamp(
+      bias_ + alpha * (target_bias - bias_), -maximum_bias_, maximum_bias_);
+  }
+  return measured_rate - bias_;
 }
 
 void RobustWindow::add(double time_seconds, double sample)

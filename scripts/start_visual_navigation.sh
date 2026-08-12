@@ -27,7 +27,9 @@ ROSBAG_OUTPUT="${WORKSPACE_ROOT}/latest_navigation_bag"
 ROSBAG_TOPICS=(
   /odom
   /odom/orb_raw
+  /orbslam3/map_change
   /wheel/odom
+  /odometry/local
   /odometry/fused
   /fusion/input/visual_odom
   /fusion/input/wheel_odom
@@ -46,6 +48,8 @@ ROSBAG_TOPICS=(
   /waypoint_navigation/start
   /cup_car_serial/encoder_ticks
   /cup_car_serial/connected
+  /cup_car_serial/actuator_healthy
+  /cup_car_serial/control_telemetry
   /cup_car_serial/rx
   /diagnostics
   /tf
@@ -357,6 +361,7 @@ runtime_ready() {
     [[ -x "${WORKSPACE_ROOT}/install/imu_rpy_filter/lib/imu_rpy_filter/imu_rpy_filter_node" ]] &&
     [[ -x "${WORKSPACE_ROOT}/install/wheel_odometry/lib/wheel_odometry/wheel_odometry_node" ]] &&
     [[ -x "${WORKSPACE_ROOT}/install/fused_odometry/lib/fused_odometry/fusion_gate_node" ]] &&
+    [[ -x "${WORKSPACE_ROOT}/install/fused_odometry/lib/fused_odometry/map_odom_correction_node" ]] &&
     [[ -f "${WORKSPACE_ROOT}/install/mission_control_interfaces/share/mission_control_interfaces/srv/SetMotionHold.srv" ]] &&
     [[ -x "${WORKSPACE_ROOT}/install/visual_navigation/lib/visual_navigation/waypoint_navigator" ]] &&
     { [[ "${USE_SERIAL}" == "false" ]] ||

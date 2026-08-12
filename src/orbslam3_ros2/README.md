@@ -117,12 +117,13 @@ ros2 launch orbslam3 realsense_d455_stereo_inertial.launch.py
 | `/pose` | `geometry_msgs/msg/PoseStamped` | 配置的地图坐标系中的机体位姿 |
 | `/path` | `nav_msgs/msg/Path` | 有长度限制的历史位姿轨迹 |
 | `/tracking_state` | `std_msgs/msg/Int32` | ORB-SLAM3 跟踪状态枚举值 |
+| `/orbslam3/map_change` | `std_msgs/msg/UInt64` | 回环或全局 BA 引起的地图修正序号 |
 | `/diagnostics` | `diagnostic_msgs/msg/DiagnosticArray` | 跟踪、IMU、同步和丢帧状态 |
 | `/tf` | `tf2_msgs/msg/TFMessage` | 从 `map_fram0e_id` 到 `body_frame_id` 的坐标变换 |
 
 跟踪状态值分别为：`-1 SYSTEM_NOT_READY`、`0 NO_IMAGES_YET`、`1 NOT_INITIALIZED`、`2 OK`、`3 RECENTLY_LOST`、`4 LOST` 和 `5 OK_KLT`。仅当状态为 `OK` 或 `OK_KLT` 时才发布里程计数据；跟踪不可用时不会发布过期位姿。
 
-`/odom` 保持连续，适合直接显示和原有消费者。`/odom/orb_raw` 先使用首帧机体位姿将 ORB 光学世界系转换为与 `/odom` 相同的 ROS map 坐标，但不会在跟踪恢复时移动原点，因此仍会保留重定位跳变，供融合器判断和渐进校正。它使用相同的 `map_frame_id` 和 `body_frame_id`，但不会生成另一条 TF。跟踪恢复的第一帧不会跨丢失区间计算速度，其 twist 为零且协方差设为高不确定度。
+`/odom` 保持连续，适合直接显示和原有消费者。`/odom/orb_raw` 先使用首帧机体位姿将 ORB 光学世界系转换为与 `/odom` 相同的 ROS map 坐标，但不会在跟踪恢复时移动原点，因此仍会保留重定位跳变，供融合器判断和渐进校正。该话题输出平面化的 `x、y、yaw`，ORB 内部仍保留完整 SE(3) 地图。它使用相同的 `map_frame_id` 和 `body_frame_id`，但不会生成另一条 TF。跟踪恢复的第一帧不会跨丢失区间计算速度，其 twist 为零且协方差设为高不确定度。
 
 默认机体坐标系为 `camera_link`。在机器人上使用时，请发布从 `base_link` 到 `camera_link` 的实测静态变换，然后运行：
 

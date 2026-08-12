@@ -3,10 +3,13 @@ project(mission_control_interfaces)
 
 find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
+find_package(std_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/ControlTelemetry.msg"
   "msg/MotionHoldState.msg"
   "srv/SetMotionHold.srv"
+  DEPENDENCIES std_msgs
 )
 
 install(FILES README.md

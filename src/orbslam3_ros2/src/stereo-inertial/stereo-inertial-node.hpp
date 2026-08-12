@@ -9,6 +9,7 @@
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/transform_stamped.hpp"
 #include "std_msgs/msg/int32.hpp"
+#include "std_msgs/msg/u_int64.hpp"
 #include "diagnostic_msgs/msg/diagnostic_array.hpp"
 
 #include "message_filters/subscriber.h"
@@ -80,6 +81,7 @@ private:
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr posePublisher_;
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pathPublisher_;
     rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr trackingStatePublisher_;
+    rclcpp::Publisher<std_msgs::msg::UInt64>::SharedPtr mapChangePublisher_;
     rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diagnosticsPublisher_;
     std::unique_ptr<tf2_ros::TransformBroadcaster> tfBroadcaster_;
     std::shared_ptr<tf2_ros::Buffer> tfBuffer_;
@@ -135,6 +137,7 @@ private:
     std::atomic<size_t> droppedStereoPairs_{0};
     std::atomic<size_t> rejectedStereoPairs_{0};
     std::atomic<size_t> warmupStereoPairs_{0};
+    std::atomic<uint64_t> mapChangeCount_{0};
 };
 
 #endif

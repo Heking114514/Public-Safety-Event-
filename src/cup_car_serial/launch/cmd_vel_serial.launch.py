@@ -13,6 +13,9 @@ def generate_launch_description():
     send_rate_hz = LaunchConfiguration("send_rate_hz")
     command_timeout_s = LaunchConfiguration("command_timeout_s")
     rpy_timeout_s = LaunchConfiguration("rpy_timeout_s")
+    control_telemetry_timeout_s = LaunchConfiguration(
+        "control_telemetry_timeout_s"
+    )
 
     serial_node = Node(
         package="cup_car_serial",
@@ -30,6 +33,9 @@ def generate_launch_description():
                     command_timeout_s, value_type=float
                 ),
                 "rpy_timeout_s": ParameterValue(rpy_timeout_s, value_type=float),
+                "control_telemetry_timeout_s": ParameterValue(
+                    control_telemetry_timeout_s, value_type=float
+                ),
             }
         ],
     )
@@ -43,6 +49,9 @@ def generate_launch_description():
             DeclareLaunchArgument("send_rate_hz", default_value="20.0"),
             DeclareLaunchArgument("command_timeout_s", default_value="0.4"),
             DeclareLaunchArgument("rpy_timeout_s", default_value="0.4"),
+            DeclareLaunchArgument(
+                "control_telemetry_timeout_s", default_value="0.35"
+            ),
             serial_node,
         ]
     )

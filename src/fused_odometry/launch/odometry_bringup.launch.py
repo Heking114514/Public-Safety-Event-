@@ -33,6 +33,24 @@ def generate_launch_description():
         "imu_rpy_filter.yaml",
     )
 
+    base_to_camera = Node(
+        package="tf2_ros",
+        executable="static_transform_publisher",
+        name="base_to_d455",
+        output="screen",
+        arguments=[
+            "--x", "0.096",
+            "--y", "0.0",
+            "--z", "0.0",
+            "--yaw", "0.0",
+            "--pitch", "0.0",
+            "--roll", "0.0",
+            "--frame-id", "base_link",
+            "--child-frame-id", "camera_link",
+        ],
+        parameters=[{"use_sim_time": use_sim_time}],
+    )
+
     return LaunchDescription([
         DeclareLaunchArgument("serial_no", default_value="_038122250473"),
         DeclareLaunchArgument("initial_reset", default_value="false"),
@@ -42,13 +60,14 @@ def generate_launch_description():
         DeclareLaunchArgument("equalize", default_value="false"),
         DeclareLaunchArgument("use_wheel", default_value="true"),
         DeclareLaunchArgument("use_sim_time", default_value="false"),
+        base_to_camera,
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 launch_file("orbslam3", "realsense_d455_stereo_inertial.launch.py")
             ),
             launch_arguments={
                 "serial_no": serial_no,
-                "body_frame_id": "camera_link",
+                "body_frame_id": "base_link",
                 "map_frame_id": "map",
                 "publish_tf": "false",
                 "visualization": visualization,
@@ -75,7 +94,7 @@ def generate_launch_description():
             parameters=[
                 wheel_config,
                 {
-                    "base_frame": "camera_link",
+                    "base_frame": "base_link",
                     "publish_tf": False,
                     "use_sim_time": use_sim_time,
                 },

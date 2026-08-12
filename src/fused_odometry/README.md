@@ -12,15 +12,20 @@ Inputs:
   frame, before tracking-loss continuity correction. It is preferred for
   checking relocalization consistency; continuous `/odom` remains the fallback.
 - `/tracking_state` (`std_msgs/Int32`): ORB `OK=2`, `OK_KLT=5` are healthy.
-- `/wheel/odom` (`nav_msgs/Odometry`): body-forward `vx`; `wz` is accepted only
-  after sustained agreement with IMU and remains deliberately low weight.
+- `/orbslam3/map_change` (`std_msgs/UInt64`): verified ORB loop-closure or
+  global-BA map correction sequence.
+- `/wheel/odom` (`nav_msgs/Odometry`): body-forward `vx`; `wz` remains available
+  for consistency diagnostics but is not fused in the current configuration.
 - `/imu/filtered` (`sensor_msgs/Imu`): only `angular_velocity.z` is used.
 - `/cmd_vel_nav` (`geometry_msgs/Twist`): observation-only input for classifying
   slip, mechanical stall, and encoder failure; it is never forwarded or modified.
 
 Outputs:
 
-- `/odometry/fused` (`nav_msgs/Odometry`): continuous EKF estimate.
+- `/odometry/local` (`nav_msgs/Odometry`): continuous local EKF estimate in
+  `odom`; wheel and IMU updates never jump on loop closure.
+- `/odometry/fused` (`nav_msgs/Odometry`): smoothed map-frame pose used by the
+  existing navigator and route editor.
 - `/odometry/fusion_status` (`std_msgs/String`, transient local): `FULL`,
   `DEGRADED_NO_VISION`, `DEGRADED_NO_WHEEL`, `DEGRADED_NO_IMU`,
   `DEGRADED_VISION_ONLY`, `DEGRADED_WHEEL_ONLY`,
@@ -32,7 +37,12 @@ should not use those as the public odometry interface.
 
 ## Behavior
 
-`robot_localization` performs the planar EKF. The gate independently validates
+`robot_localization` performs the local planar EKF from wheel forward velocity
+and IMU yaw rate. A separate correction node combines gated ORB pose with the local
+estimate to publish `map -> odom` and `/odometry/fused`. Normal visual drift is
+corrected with a 0.75-second time constant; a verified ORB map change uses a
+1.25-second time constant so PID control never receives a loop-closure jump.
+The gate independently validates
 finite values, expected frames, monotonic timestamps and source freshness. It
 uses median/MAD residual windows, recovery hysteresis, and adaptive measurement
 covariance. IMU yaw rate is the primary short-term rotation source: it is removed
@@ -42,6 +52,10 @@ interrupting `/fusion/input/imu`, because visual angular rate can lag during a
 rapid turn. Wheel residuals retain hard rejection and recovery hysteresis. Wheel
 covariance supplied by the encoder node remains the lower bound before adaptive
 inflation.
+During healthy commanded straight motion, a slow bounded gyro-z bias estimator
+uses the robust visual yaw rate to suppress long-run lateral drift in
+`/odometry/local`; it freezes during turns and visual outages, so it does not
+replace the high-frequency IMU turn signal.
 
 Command, wheel, and visual motion are classified only after a configurable dwell:
 wheel motion without visual motion is `WHEEL_SLIP`; commanded motion with neither
@@ -57,10 +71,12 @@ During visual loss, wheel `vx` plus IMU `wz` keep the EKF predicting in
 `DEGRADED_NO_VISION`; navigation applies a reduced speed until vision returns.
 The stricter time and distance window below applies when IMU is also absent.
 
-If IMU disappears after wheel yaw rate has agreed with it for at least 2 seconds,
-wheel-only prediction is permitted for at most 2 seconds, 0.30 m, and only at
-or below 0.30 m/s. It otherwise becomes `FAULT`. Linear acceleration is never
-fused.
+Wheel yaw validation requires sustained agreement with IMU during actual
+rotation; stationary zero-rate agreement cannot validate it. Because the latest
+bag still showed a large encoder turn-scale error, `fuse_wheel_yaw` is currently
+false and the EKF wheel input enables only `vx`. If both vision and IMU disappear,
+the fusion therefore becomes `FAULT` instead of attempting an unreliable blind
+turn. Linear acceleration is never fused.
 
 After five good recovery frames, the gate prefers `/odom/orb_raw`. An existing
 raw-to-fused SE(2) alignment is checked against the current prediction. A
@@ -72,31 +88,32 @@ wheel dead-reckoning drift. Raw and continuous ORB poses are paired only when
 their timestamps are identical; if DDS delivers the continuous topic first, the
 gate uses it for that frame rather than pairing it with an older raw pose.
 
-Raw ORB pose is accepted only when its body Z axis remains within 0.50 rad of
-the map Z axis. This rejects the optical-world coordinates produced by older
-builds or a malformed camera transform instead of projecting them into a false
-planar yaw.
+The ROS ORB wrapper publishes `/odom/orb_raw` as planar `x`, `y`, and yaw while
+retaining the full SE(3) map internally. The gate still checks its quaternion and
+frame before using it.
 
-## Frames and current limitation
+## Frames
 
-The repository has no measured `base_link -> camera_link` extrinsic. The default
-fusion body is therefore `camera_link`, matching ORB and filtered IMU. The wheel
-node must also be started with `base_frame: camera_link`; messages still labeled
-`base_link` are deliberately rejected. This treats the encoder forward velocity
-as measured at the camera origin and is only a temporary planar approximation.
+The current planar measurement places `camera_link` 0.096 m forward of the
+drive-wheel center: `base_link -> camera_link = (0.096, 0, 0)`. ORB and wheel
+odometry publish the vehicle center as `base_link`; the IMU filter keeps its
+camera frame but already converts gyro measurements to Euler yaw rate before the
+gate republishes that scalar in `base_link`.
 
-After measuring the extrinsic, change the fusion body to `base_link`, keep the
-wheel output in `base_link`, publish the measured static transform, and let the
-filter transform camera measurements normally. Do not invent a zero transform.
+The local EKF broadcasts `odom -> base_link`; the correction node broadcasts
+`map -> odom`. ORB and wheel TF publication remain disabled to avoid duplicate
+TF parents.
 
-The EKF publishes the validated fused message and the gate is the only component
-that broadcasts its live `map -> camera_link` transform. Disable ORB TF
-(`publish_tf:=false`) and wheel TF (`publish_tf: false`) when using this package.
+During a commanded in-place turn, the correction node holds the global vehicle
+center in XY while the local IMU yaw remains live. When the turn ends, the
+visual translation is rebased to that anchor, so later ORB translation
+increments remain available without accepting the 4-9 cm apparent translation
+observed during zero-linear-speed turns.
 
 ## Start
 
-First start ORB, the IMU filter, and wheel odometry with TF disabled and wheel
-`base_frame` overridden to `camera_link`. Then run:
+First start ORB with body frame `base_link`, the IMU filter, and wheel odometry
+in `base_link`, with their live TF outputs disabled. Then run:
 
 ```bash
 source /opt/ros/humble/setup.bash

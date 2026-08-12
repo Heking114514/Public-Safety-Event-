@@ -35,7 +35,17 @@ ament_target_dependencies(
   std_msgs
   tf2_ros)
 
-install(TARGETS fusion_logic fusion_gate_node
+add_executable(map_odom_correction_node src/map_odom_correction_node.cpp)
+target_link_libraries(map_odom_correction_node fusion_logic)
+ament_target_dependencies(
+  map_odom_correction_node
+  geometry_msgs
+  nav_msgs
+  rclcpp
+  std_msgs
+  tf2_ros)
+
+install(TARGETS fusion_logic fusion_gate_node map_odom_correction_node
   EXPORT export_fusion_logic
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib

@@ -29,6 +29,13 @@ def generate_launch_description():
             name="fused_ekf",
             output="screen",
             parameters=[config, {"use_sim_time": use_sim_time}],
-            remappings=[("odometry/filtered", "/odometry/fused")],
+            remappings=[("odometry/filtered", "/odometry/local")],
+        ),
+        Node(
+            package="fused_odometry",
+            executable="map_odom_correction_node",
+            name="map_odom_correction",
+            output="screen",
+            parameters=[config, {"use_sim_time": use_sim_time}],
         ),
     ])

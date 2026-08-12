@@ -54,6 +54,22 @@ geometry_msgs::msg::Pose PoseFromSE3(const Sophus::SE3f &transform)
     return pose;
 }
 
+geometry_msgs::msg::Pose PlanarPoseFromSE3(const Sophus::SE3f &transform)
+{
+    geometry_msgs::msg::Pose pose = PoseFromSE3(transform);
+    const double yaw = std::atan2(
+        2.0 * (pose.orientation.w * pose.orientation.z +
+               pose.orientation.x * pose.orientation.y),
+        1.0 - 2.0 * (pose.orientation.y * pose.orientation.y +
+                     pose.orientation.z * pose.orientation.z));
+    pose.position.z = 0.0;
+    pose.orientation.x = 0.0;
+    pose.orientation.y = 0.0;
+    pose.orientation.z = std::sin(0.5 * yaw);
+    pose.orientation.w = std::cos(0.5 * yaw);
+    return pose;
+}
+
 geometry_msgs::msg::Transform TransformFromSE3(const Sophus::SE3f &transform)
 {
     geometry_msgs::msg::Transform message;
@@ -130,6 +146,8 @@ StereoInertialNode::StereoInertialNode(
     const std::string poseTopic = this->declare_parameter<std::string>("pose_topic", "pose");
     const std::string pathTopic = this->declare_parameter<std::string>("path_topic", "path");
     const std::string stateTopic = this->declare_parameter<std::string>("tracking_state_topic", "tracking_state");
+    const std::string mapChangeTopic = this->declare_parameter<std::string>(
+        "map_change_topic", "/orbslam3/map_change");
     const std::string diagnosticsTopic = this->declare_parameter<std::string>("diagnostics_topic", "/diagnostics");
 
     RCLCPP_INFO(this->get_logger(), "Rectify: %s", doRectify_ ? "true" : "false");
@@ -179,6 +197,7 @@ StereoInertialNode::StereoInertialNode(
     posePublisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(poseTopic, 10);
     pathPublisher_ = this->create_publisher<nav_msgs::msg::Path>(pathTopic, 10);
     trackingStatePublisher_ = this->create_publisher<std_msgs::msg::Int32>(stateTopic, 10);
+    mapChangePublisher_ = this->create_publisher<std_msgs::msg::UInt64>(mapChangeTopic, 10);
     diagnosticsPublisher_ = this->create_publisher<diagnostic_msgs::msg::DiagnosticArray>(diagnosticsTopic, 10);
 
     tfBuffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
@@ -395,6 +414,15 @@ void StereoInertialNode::SyncWithImu()
         }
 
         const Sophus::SE3f Tcw = SLAM_->TrackStereo(leftImage, rightImage, leftTimestamp, imuMeasurements);
+        if (SLAM_->MapChanged())
+        {
+            std_msgs::msg::UInt64 event;
+            event.data = ++mapChangeCount_;
+            mapChangePublisher_->publish(event);
+            RCLCPP_INFO(
+                this->get_logger(), "ORB map correction detected (sequence=%lu)",
+                static_cast<unsigned long>(event.data));
+        }
         lastImageTimestamp_ = leftTimestamp;
 
         const int trackingState = SLAM_->GetTrackingState();
@@ -529,7 +557,9 @@ void StereoInertialNode::PublishRawOdometry(
     odometry.header.stamp = stamp;
     odometry.header.frame_id = mapFrameId_;
     odometry.child_frame_id = bodyFrameId_;
-    odometry.pose.pose = PoseFromSE3(TrawMapBody);
+    // This topic is the fixed-origin planar observation consumed by the
+    // navigation fusion layer. ORB keeps its full SE(3) map internally.
+    odometry.pose.pose = PlanarPoseFromSE3(TrawMapBody);
     SetCovarianceDiagonal(odometry.pose.covariance, poseCovarianceDiagonal_);
 
     const double timestamp = Utility::StampToSec(stamp);

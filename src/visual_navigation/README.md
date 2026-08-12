@@ -17,7 +17,7 @@
 | --- | --- | --- |
 | `/odometry/fused` | `nav_msgs/msg/Odometry` | 融合后的当前位姿 |
 | `/odometry/fusion_status` | `std_msgs/msg/String` | `FULL`、允许的 `DEGRADED_*` 或 `FAULT` |
-| `/cup_car_serial/connected` | `std_msgs/msg/Bool` | 可选的执行器连接心跳，串口 bringup 强制启用 |
+| `/cup_car_serial/actuator_healthy` | `std_msgs/msg/Bool` | 控制遥测健康状态，串口 bringup 强制启用 |
 | `/tracking_state` | `std_msgs/msg/Int32` | 可选的旧 ORB 兼容检查，默认关闭 |
 | `/waypoint_navigation/route_input` | `nav_msgs/msg/Path` | 动态替换当前路线 |
 
@@ -54,7 +54,7 @@ ros2 service call /waypoint_navigator/set_motion_hold \
 
 只有里程计和融合健康消息均未超时，且健康状态位于 `allowed_fusion_states` 中，节点才会输出非零速度。`DEGRADED_*` 状态按 `degraded_speed_scale` 同时限制线速度和角速度；`FAULT`、未知状态、消息陈旧、无效位姿或坐标系不一致都会停车。旧 `/tracking_state` 检查由 `require_tracking_state` 参数选择性启用。
 
-普通 bringup 的 `require_actuator_health` 默认为 `false`，便于不连接下位机时测试；`visual_navigation_serial_bringup.launch.py` 强制设为 `true`。此时启动前必须收到新鲜的 `connected=true`，运行中断连或心跳超过 `actuator_health_timeout`（默认 `0.8 s`）会立即停车并锁止任务，重连后不会自动续走。
+普通 bringup 的 `require_actuator_health` 默认为 `false`，便于不连接下位机时测试；`visual_navigation_serial_bringup.launch.py` 强制设为 `true`。此时启动前必须收到新鲜的 `actuator_healthy=true`，即下位机控制遥测新鲜、处于导航模式、未急停且命令没有超时。运行中状态变为 `false` 或心跳超过 `actuator_health_timeout`（默认 `0.8 s`）会立即停车并锁止任务，恢复后不会自动续走。
 
 ## 航点文件
 
@@ -154,7 +154,7 @@ ros2 launch visual_navigation visual_navigation_serial_bringup.launch.py \
   autostart:=false
 ```
 
-安装到小车后，建议准确发布 `base_link` 与相机的静态 TF，并将 `body_frame_id` 设置为 `base_link`。如果不存在该静态变换，ORB-SLAM3 将无法输出车体中心位姿。
+当前完整启动链固定发布 `base_link -> camera_link` 前向 `0.096m` 的二维静态 TF，并将 ORB、轮式里程计和融合结果统一到 `base_link`。重新测量安装位置后应同步修改该静态 TF；导航内部的旧相机位置补偿已经清零，不能重复补偿。
 
 ## 下位机连接
 
