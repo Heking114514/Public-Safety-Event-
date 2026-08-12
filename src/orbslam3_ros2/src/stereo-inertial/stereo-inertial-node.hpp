@@ -110,6 +110,8 @@ private:
     std::string trajectoryFile_;
     double maxStereoTimeDiff_;
     double imuTimeOffset_;
+    double rawPoseJumpPositionThreshold_;
+    double rawPoseJumpRotationThreshold_;
     double diagnosticsPeriod_;
     double cameraWarmupSeconds_;
     size_t maxPendingStereoPairs_;
@@ -127,6 +129,9 @@ private:
     orbslam3_ros2::FixedPoseOrigin rawPoseOrigin_;
     orbslam3_ros2::PoseContinuity poseContinuity_;
     orbslam3_ros2::PoseVelocityEstimator rawVelocityEstimator_;
+    bool lastRawPoseValid_{false};
+    Sophus::SE3f lastRawPose_;
+    double lastRawPoseTimestamp_{-1.0};
     Sophus::SE3f lastPublishedPose_;
     double lastPublishedTimestamp_{0.0};
     double lastDiagnosticsTimestamp_{-1.0};

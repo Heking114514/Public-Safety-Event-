@@ -54,6 +54,16 @@ TEST(FixedPoseOriginTest, DoesNotHideSourceFrameJump)
     EXPECT_FALSE(output.rotationMatrix().isApprox(Eigen::Matrix3f::Identity(), 1e-5f));
 }
 
+TEST(PoseContinuityTest, DetectsLargeRawPoseJump)
+{
+    EXPECT_FALSE(orbslam3_ros2::PoseJumpExceedsThreshold(
+        Pose(0.0f, 0.0f, 0.0f), Pose(0.1f, 0.0f, 0.05f), 0.8f, 1.0f));
+    EXPECT_TRUE(orbslam3_ros2::PoseJumpExceedsThreshold(
+        Pose(0.0f, 0.0f, 0.0f), Pose(0.81f, 0.0f, 0.0f), 0.8f, 1.0f));
+    EXPECT_TRUE(orbslam3_ros2::PoseJumpExceedsThreshold(
+        Pose(0.0f, 0.0f, 0.0f), Pose(0.0f, 0.0f, 1.01f), 0.8f, 1.0f));
+}
+
 TEST(FixedPoseOriginTest, MatchesContinuousMapUntilTrackingIsInterrupted)
 {
     orbslam3_ros2::FixedPoseOrigin rawOrigin;

@@ -20,6 +20,7 @@
 | `/cup_car_serial/connected` | `std_msgs/msg/Bool` | 可选的执行器连接心跳，串口 bringup 强制启用 |
 | `/tracking_state` | `std_msgs/msg/Int32` | 可选的旧 ORB 兼容检查，默认关闭 |
 | `/waypoint_navigation/route_input` | `nav_msgs/msg/Path` | 动态替换当前路线 |
+| `/waypoint_navigation/route_plan_input` | `mission_control_interfaces/msg/WaypointRoute` | 接收规划 UI 发布的完整路线 |
 
 发布：
 
@@ -133,6 +134,116 @@ ros2 launch visual_navigation route_editor.launch.py
 导航节点收到合法动态路线后会立即发零速度、清零航点索引并开始导航。编辑器等待 `/waypoint_path` 回显确认本次路线；确认失败会在界面显示，不需要手动执行服务或发布启动话题。历史 transient-local 路线回显不会触发编辑器重复发布。
 
 动态路线中的速度和到达容差使用 `default_speed` 和 `waypoint_tolerance` 参数。当前默认巡航速度和最高线速度均为 `0.5 m/s`。默认启动不加载 CSV，重启导航节点后需要再次点击发布按钮才能重新启用编辑路线。
+
+## 赛场12点栅格路径规划器
+
+`arena_route_planner.py` 按比赛图纸尺寸生成占用栅格，使用 A* 计算固定出发点、
+当前选中默认点和手动目标点之间的可行路径，再使用 Held-Karp 动态规划求精确最短
+闭环。规划结果会转换成以启动位置为原点、初始车头为 `+X` 的 `map` 坐标，
+可以直接由本功能包的航点导航器读取。
+
+在源码工作空间中打开可视化界面：
+
+```bash
+cd /home/j/Public-Safety-Event-hjh
+python3 src/visual_navigation/scripts/arena_route_planner.py
+```
+
+默认 1 至 12 点启动时全部选中。左键或触摸屏单指点击任意白色可通行道路可增加
+手动目标点；右键或触摸屏两指点击默认点或手动点可取消，取消后的默认点变灰，
+再次左键点击可恢复。固定起点 `S` 不能取消，规划路线始终从 `S` 出发并返回 `S`。
+目标点总数最多为 16 个。
+
+点击“开始规划”后，界面只更新 A* 和 Held-Karp 的文字状态，不再绘制搜索展开、
+分段流动或路线回放动画。规划成功后只显示最终红色路线。`shortest` 是目标点
+最短闭环模式，`numbered` 按当前默认点编号及手动点添加顺序访问。
+
+规划完成且里程计、融合状态和底盘连接均正常后，“一键发布并启动导航”按钮
+变为可用。点击后，规划器通过 `/waypoint_navigation/route_plan_input` 发布完整
+路线，保留每个航点的速度、容差和停车时间；导航器回显 `/waypoint_path` 后
+界面显示确认结果并直接开始执行，不需要再调用 `/waypoint_navigator/start`。
+
+完整实车运行只需要两个终端：
+
+```bash
+# 终端 1：完整定位、导航、串口和 rosbag
+cd /home/j/Public-Safety-Event-hjh
+./scripts/start_visual_navigation.sh --serial-device /dev/ttyUSB0
+
+# 终端 2：规划、发布和实时监控 UI
+cd /home/j/Public-Safety-Event-hjh
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+python3 src/visual_navigation/scripts/arena_route_planner.py
+```
+
+终端 1 使用的导航器不预加载 CSV，而是等待 UI 发布路线。UI 的发布按钮只有在
+导航器订阅存在、里程计新鲜、融合状态允许且底盘连接为 `true` 时才会启用。
+使用 `--no-serial` 调试时，应把 `arena_map.yaml` 中的
+`monitoring.require_actuator_health` 改为 `false`。
+
+界面同时作为实时导航监视器，默认订阅：
+
+| 话题 | 显示内容 |
+| --- | --- |
+| `/odometry/fused` | 修正到车体参考点后的实时位置、朝向和蓝色实际轨迹 |
+| `/odometry/fusion_status` | `FULL`、`DEGRADED_*` 或故障状态 |
+| `/waypoint_navigation/status` | `IDLE`、`NAVIGATING`、`GOAL_REACHED` 等状态 |
+| `/waypoint_navigation/current_waypoint` | 当前稠密航点索引和下一个任务编号 |
+| `/waypoint_path` | 导航器实际加载的红色路线，用于索引匹配和任务高亮 |
+
+里程计超过 `0.5 s` 未更新时，车体标记变灰并显示“里程计超时”。监控使用
+与导航器相同的相机到车体偏移，然后把启动相对 `map` 位姿逆变换到赛场坐标。
+打开界面前需要加载 ROS 环境：
+
+```bash
+source /opt/ros/humble/setup.bash
+source /home/j/Public-Safety-Event-hjh/install/setup.bash
+ros2 run visual_navigation arena_route_planner.py
+```
+
+只查看和编辑地图、不连接 ROS 时可以增加 `--no-ros`。监控话题、超时时间、
+轨迹点间距和车体偏移位于 `config/arena_map.yaml` 的 `monitoring` 段；其中
+`tracking_point_offset_x/y` 必须与 `waypoint_navigation.yaml` 保持一致。
+监视器和导航器都会用各自收到的第一帧里程计建立偏移参考朝向，因此应在小车
+仍位于出发区且尚未运动时启动两者。
+
+不打开图形界面直接生成：
+
+```bash
+python3 src/visual_navigation/scripts/arena_route_planner.py --headless
+python3 src/visual_navigation/scripts/arena_route_planner.py --headless --mode numbered
+```
+
+默认输出目录为 `routes/arena_generated`，其中：
+
+| 文件 | 用途 |
+| --- | --- |
+| `arena_route.csv` | 航点导航器读取的启动相对路线 |
+| `arena_map.pgm`、`arena_map.yaml` | ROS 标准占用栅格 |
+| `arena_route_preview.png` | 场地和最终路线预览 |
+| `arena_route_report.json` | 访问顺序、长度和完整性检查结果 |
+
+完成构建后也可以运行安装后的入口：
+
+```bash
+source install/setup.bash
+ros2 run visual_navigation arena_route_planner.py
+```
+
+默认配置位于 `config/arena_map.yaml`。实车前至少核对 `start.position_m`、
+`start.heading_deg`、`arena.inflation_radius_m`、速度和停车时间。默认假设小车
+位于顶部出发区中心并朝向场内；如果摆放方向不同，CSV 与里程计坐标不会对齐。
+
+只启动导航节点并加载生成路线：
+
+```bash
+ros2 launch visual_navigation waypoint_navigation.launch.py \
+  route_file:=/home/j/Public-Safety-Event-hjh/src/visual_navigation/routes/arena_generated/arena_route.csv \
+  autostart:=false
+
+ros2 service call /waypoint_navigator/start std_srvs/srv/Trigger '{}'
+```
 
 ## 导航 Bringup
 

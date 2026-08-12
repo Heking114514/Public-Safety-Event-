@@ -1,0 +1,48 @@
+{
+  "configuration": "/home/j/Public-Safety-Event-hjh/src/visual_navigation/config/arena_map.yaml",
+  "planning_mode": "shortest",
+  "resolution_m": 0.05,
+  "inflation_radius_m": 0.05,
+  "route_frame": "start-relative map frame: +X initial forward, +Y initial left",
+  "optimized_node_order": [
+    "S",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "S"
+  ],
+  "actual_first_visit_order": [
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12"
+  ],
+  "all_tasks_visited": true,
+  "returns_to_start": true,
+  "route_length_m": 14.053587,
+  "waypoint_count": 48,
+  "outputs": {
+    "route_csv": "/home/j/Public-Safety-Event-hjh/src/visual_navigation/routes/arena_generated/arena_route.csv",
+    "map_pgm": "/home/j/Public-Safety-Event-hjh/src/visual_navigation/routes/arena_generated/arena_map.pgm",
+    "map_yaml": "/home/j/Public-Safety-Event-hjh/src/visual_navigation/routes/arena_generated/arena_map.yaml",
+    "preview_png": "/home/j/Public-Safety-Event-hjh/src/visual_navigation/routes/arena_generated/arena_route_preview.png",
+    "report_json": "/home/j/Public-Safety-Event-hjh/src/visual_navigation/routes/arena_generated/arena_route_report.json"
+  }
+}

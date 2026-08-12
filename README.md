@@ -52,7 +52,6 @@ ros2 pkg list | grep -E 'orbslam3|visual_navigation|cup_car_serial|realsense2_ca
 ./scripts/start_visual_navigation.sh --no-serial
 ./scripts/start_visual_navigation.sh --visualization
 ./scripts/start_visual_navigation.sh --serial-device /dev/ttyACM0
-./scripts/start_visual_navigation.sh --route /absolute/path/to/route.csv
 ```
 
 查看全部选项：
@@ -76,6 +75,53 @@ D455 图像和 IMU
   → 下位机桥接节点
   → 小车底盘
 ```
+
+比赛场地固定 1 至 12 点的栅格地图和闭环路线可以通过可视化规划器生成：
+
+```bash
+cd /home/j/Public-Safety-Event-hjh
+python3 src/visual_navigation/scripts/arena_route_planner.py
+```
+
+完整运行只需要两个终端。终端 1 启动程序：
+
+```bash
+cd /home/j/Public-Safety-Event-hjh
+./scripts/start_visual_navigation.sh --serial-device /dev/ttyUSB0
+```
+
+终端 2 启动 UI：
+
+```bash
+cd /home/j/Public-Safety-Event-hjh
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+python3 src/visual_navigation/scripts/arena_route_planner.py
+```
+
+在 UI 点击“开始规划”，规划结束并且定位、融合与底盘连接均正常后，点击
+“一键发布并启动导航”。路线会直接发送给导航器并开始执行，不需要另外调用
+启动服务。
+
+UI 默认选中 1 至 12 点。左键或单指点击白色道路可添加手动目标点；右键或
+触摸屏两指点击可取消默认点或手动点，灰色默认点可再次左键恢复。起点 `S`
+固定且同时作为终点。规划过程只显示文字状态和最终红线，不再播放搜索动画。
+
+无图形界面环境使用：
+
+```bash
+python3 src/visual_navigation/scripts/arena_route_planner.py --headless
+```
+
+加载 ROS 环境后，同一个界面还会实时显示 `/odometry/fused` 车体位姿、实际
+轨迹、融合状态、导航状态、当前航点和导航器实际加载的 `/waypoint_path`。
+超过 `0.5 s` 没有新里程计时会明确显示超时并把车体标记变灰。
+
+默认路线输出到
+`src/visual_navigation/routes/arena_generated/arena_route.csv`。地图尺寸、任务点、
+障碍膨胀、速度和停车时间在
+`src/visual_navigation/config/arena_map.yaml` 中配置。完整操作说明见
+`src/visual_navigation/README.md` 的“赛场12点栅格路径规划器”。
 
 ## 3. 启动完整程序
 

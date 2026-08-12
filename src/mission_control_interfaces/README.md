@@ -6,6 +6,7 @@
 
 - `srv/SetMotionHold.srv`：按 `source` 申请或释放运动驻停。
 - `msg/MotionHoldState.msg`：发布当前驻停状态、来源和原因。
+- `msg/WaypointRoute.msg`：发布包含速度、容差和停车时间的完整规划路线。
 
 服务由 `visual_navigation/waypoint_navigator` 实现：
 

@@ -17,6 +17,7 @@
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/twist.hpp"
 #include "mission_control_interfaces/msg/motion_hold_state.hpp"
+#include "mission_control_interfaces/msg/waypoint_route.hpp"
 #include "mission_control_interfaces/srv/set_motion_hold.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "nav_msgs/msg/path.hpp"
@@ -146,6 +147,8 @@ public:
     pathTopic_ = declare_parameter<std::string>("path_topic", "/waypoint_path");
     routeInputTopic_ = declare_parameter<std::string>(
       "route_input_topic", "/waypoint_navigation/route_input");
+    routePlanInputTopic_ = declare_parameter<std::string>(
+      "route_plan_input_topic", "/waypoint_navigation/route_plan_input");
     startTopic_ = declare_parameter<std::string>(
       "start_topic", "/waypoint_navigation/start");
     statusTopic_ = declare_parameter<std::string>("status_topic", "/waypoint_navigation/status");
@@ -218,6 +221,16 @@ public:
         0.0, declare_parameter<double>("min_precision_turn_speed", 0.25)));
     waypointTolerance_ = std::max(
       0.001, declare_parameter<double>("waypoint_tolerance", 0.08));
+    passedWaypointCrossTrackTolerance_ = std::max(
+      0.0, declare_parameter<double>(
+        "passed_waypoint_cross_track_tolerance", 0.20));
+    lookaheadTime_ = std::max(
+      0.05, declare_parameter<double>("path_lookahead_time", 0.80));
+    minLookaheadDistance_ = std::max(
+      0.05, declare_parameter<double>("path_lookahead_min_distance", 0.25));
+    maxLookaheadDistance_ = std::max(
+      minLookaheadDistance_ + 0.01,
+      declare_parameter<double>("path_lookahead_max_distance", 0.55));
     finalYawTolerance_ = std::max(
       0.001, declare_parameter<double>("final_yaw_tolerance", 0.060));
     finalYawMaxAngularSpeed_ = std::min(
@@ -289,6 +302,10 @@ public:
     routeInputSubscription_ = create_subscription<nav_msgs::msg::Path>(
       routeInputTopic_, rclcpp::QoS(1).reliable(),
       std::bind(&WaypointNavigator::HandleRouteInput, this, std::placeholders::_1));
+    routePlanInputSubscription_ =
+      create_subscription<mission_control_interfaces::msg::WaypointRoute>(
+      routePlanInputTopic_, rclcpp::QoS(1).reliable(),
+      std::bind(&WaypointNavigator::HandleRoutePlanInput, this, std::placeholders::_1));
     startSubscription_ = create_subscription<std_msgs::msg::Empty>(
       startTopic_, rclcpp::QoS(1).reliable(),
       std::bind(&WaypointNavigator::HandleStartTopic, this, std::placeholders::_1));
@@ -340,9 +357,9 @@ public:
     RCLCPP_INFO(
       get_logger(),
       "Waypoint navigator ready: odom=%s fusion_status=%s actuator_health=%s "
-      "route_input=%s output=%s",
+      "route_input=%s route_plan_input=%s output=%s",
       odomTopic_.c_str(), fusionStatusTopic_.c_str(), actuatorHealthTopic_.c_str(),
-      routeInputTopic_.c_str(), cmdVelTopic_.c_str());
+      routeInputTopic_.c_str(), routePlanInputTopic_.c_str(), cmdVelTopic_.c_str());
   }
 
   ~WaypointNavigator() override
@@ -375,7 +392,7 @@ private:
       return false;
 
     constexpr double kPositionTolerance = 1e-6;
-    constexpr double kYawTolerance = 1e-6;
+    constexpr double kValueTolerance = 1e-6;
     for (std::size_t index = 0; index < left.size(); ++index)
     {
       const bool leftYawFinite = std::isfinite(left[index].yaw);
@@ -384,7 +401,10 @@ private:
         std::abs(left[index].y - right[index].y) > kPositionTolerance ||
         leftYawFinite != rightYawFinite ||
         (leftYawFinite &&
-        std::abs(NormalizeAngle(left[index].yaw - right[index].yaw)) > kYawTolerance))
+        std::abs(NormalizeAngle(left[index].yaw - right[index].yaw)) > kValueTolerance) ||
+        std::abs(left[index].speed - right[index].speed) > kValueTolerance ||
+        std::abs(left[index].tolerance - right[index].tolerance) > kValueTolerance ||
+        std::abs(left[index].stopTime - right[index].stopTime) > kValueTolerance)
       {
         return false;
       }
@@ -617,6 +637,56 @@ private:
       loadedWaypoints.push_back(waypoint);
     }
 
+    ActivateDynamicRoute(std::move(loadedWaypoints));
+  }
+
+  void HandleRoutePlanInput(
+    const mission_control_interfaces::msg::WaypointRoute::SharedPtr message)
+  {
+    if (message->waypoints.empty())
+    {
+      RCLCPP_WARN(get_logger(), "Ignoring empty structured waypoint route");
+      return;
+    }
+
+    if (!message->header.frame_id.empty() && message->header.frame_id != routeFrame_)
+    {
+      RCLCPP_ERROR(
+        get_logger(), "Ignoring structured route in frame '%s'; expected '%s'",
+        message->header.frame_id.c_str(), routeFrame_.c_str());
+      return;
+    }
+
+    std::vector<Waypoint> loadedWaypoints;
+    loadedWaypoints.reserve(message->waypoints.size());
+    for (std::size_t index = 0; index < message->waypoints.size(); ++index)
+    {
+      const auto &input = message->waypoints[index];
+      if (!std::isfinite(input.x) || !std::isfinite(input.y) ||
+        !std::isfinite(input.yaw) || !std::isfinite(input.speed) ||
+        !std::isfinite(input.tolerance) || !std::isfinite(input.stop_time) ||
+        input.speed < 0.0 || input.tolerance <= 0.0 || input.stop_time < 0.0)
+      {
+        RCLCPP_ERROR(
+          get_logger(), "Ignoring structured route: waypoint %zu has invalid values", index);
+        return;
+      }
+
+      Waypoint waypoint;
+      waypoint.x = input.x;
+      waypoint.y = input.y;
+      waypoint.yaw = input.yaw;
+      waypoint.speed = input.speed;
+      waypoint.tolerance = input.tolerance;
+      waypoint.stopTime = input.stop_time;
+      loadedWaypoints.push_back(waypoint);
+    }
+
+    ActivateDynamicRoute(std::move(loadedWaypoints));
+  }
+
+  void ActivateDynamicRoute(std::vector<Waypoint> loadedWaypoints)
+  {
     if (routeLoaded_ && RoutesEquivalent(waypoints_, loadedWaypoints))
     {
       // Re-publish the accepted path so the editor receives its acknowledgement,
@@ -990,6 +1060,7 @@ private:
         ++currentWaypointIndex_;
         pathSegmentInitialized_ = false;
         ResetPathPid();
+        pathAlignmentCompleted_ = false;
         PublishCurrentWaypoint();
       }
       else
@@ -1012,10 +1083,62 @@ private:
     const double deltaX = target.x - currentX_;
     const double deltaY = target.y - currentY_;
     const double distance = std::hypot(deltaX, deltaY);
-    const double controlYawRate = ControlYawRate();
+    const double pathDeltaX = target.x - pathSegmentStartX_;
+    const double pathDeltaY = target.y - pathSegmentStartY_;
+    const double pathSegmentLength = std::hypot(pathDeltaX, pathDeltaY);
+    const double pathSegmentProgress = visual_navigation::PathSegmentProgress(
+      pathSegmentStartX_, pathSegmentStartY_, target.x, target.y,
+      currentX_, currentY_);
+    const double segmentHeading = std::atan2(pathDeltaY, pathDeltaX);
+    // Positive cross-track error means the car is to the left of the path.
+    const double segmentCrossTrackError =
+      std::cos(segmentHeading) * (currentY_ - pathSegmentStartY_) -
+      std::sin(segmentHeading) * (currentX_ - pathSegmentStartX_);
     const bool finalWaypoint = currentWaypointIndex_ + 1 == waypoints_.size();
+    const double requestedSpeed = std::min(target.speed, maxLinearSpeed_);
+    std::vector<visual_navigation::PlanarPoint> trackingPath;
+    trackingPath.reserve(waypoints_.size() - currentWaypointIndex_ + 1);
+    trackingPath.push_back({pathSegmentStartX_, pathSegmentStartY_});
+    trackingPath.push_back({target.x, target.y});
+    if (target.stopTime <= 0.0 && !finalWaypoint)
+    {
+      for (std::size_t index = currentWaypointIndex_ + 1;
+        index < waypoints_.size(); ++index)
+      {
+        trackingPath.push_back({waypoints_[index].x, waypoints_[index].y});
+        if (waypoints_[index].stopTime > 0.0)
+          break;
+      }
+    }
+    const double lookaheadSpeed = std::max(
+      0.05, requestedSpeed * Clamp(fusionHealth.speed_scale, 0.0, 1.0));
+    const double lookaheadDistance = Clamp(
+      lookaheadSpeed * lookaheadTime_,
+      minLookaheadDistance_, maxLookaheadDistance_);
+    const auto lookahead = visual_navigation::ComputePolylineLookahead(
+      trackingPath, currentX_, currentY_, lookaheadDistance);
+    double pathHeading = segmentHeading;
+    double crossTrackError = segmentCrossTrackError;
+    if (lookahead.valid)
+    {
+      crossTrackError = lookahead.cross_track_error;
+      const double chordX = lookahead.point.x - lookahead.projection.x;
+      const double chordY = lookahead.point.y - lookahead.projection.y;
+      if (std::hypot(chordX, chordY) > 1.0e-6)
+        pathHeading = std::atan2(chordY, chordX);
+      else
+        pathHeading = lookahead.segment_heading;
+    }
+    const bool waypointReached = visual_navigation::WaypointReached(
+      distance, target.tolerance, pathSegmentProgress, segmentCrossTrackError,
+      passedWaypointCrossTrackTolerance_);
+    const double approachDistance = visual_navigation::WaypointApproachDistance(
+      distance, pathSegmentProgress, pathSegmentLength);
+    const double controlYawRate = ControlYawRate();
     finalPositionCaptured_ = visual_navigation::FinalPositionCaptured(
-      finalPositionCaptured_, finalWaypoint, distance, target.tolerance);
+      finalPositionCaptured_, finalWaypoint, distance, target.tolerance,
+      pathSegmentProgress, segmentCrossTrackError,
+      passedWaypointCrossTrackTolerance_);
 
     if (finalPositionCaptured_)
     {
@@ -1115,25 +1238,24 @@ private:
       return;
     }
 
-    if (distance <= target.tolerance)
+    if (waypointReached)
     {
+      if (target.stopTime > 0.0)
+      {
+        waitUntil_ = now() + rclcpp::Duration::from_seconds(target.stopTime);
+        waitAction_ = WaitAction::ADVANCE;
+        PublishStop();
+        SetState("WAITING_AT_WAYPOINT");
+        return;
+      }
 
       ++currentWaypointIndex_;
-      pathSegmentInitialized_ = false;
-      ResetPathPid();
+      PrepareForContinuousPathTransition();
       PublishCurrentWaypoint();
       return;
     }
 
-    const double pathDeltaX = target.x - pathSegmentStartX_;
-    const double pathDeltaY = target.y - pathSegmentStartY_;
-    const double pathHeading = std::atan2(pathDeltaY, pathDeltaX);
     const double headingError = NormalizeAngle(pathHeading - currentYaw_);
-    // Positive cross-track error means the car is to the left of the path.
-    const double crossTrackError =
-      std::cos(pathHeading) * (currentY_ - pathSegmentStartY_) -
-      std::sin(pathHeading) * (currentX_ - pathSegmentStartX_);
-    const double requestedSpeed = std::min(target.speed, maxLinearSpeed_);
     const double pathError = visual_navigation::StanleyPathError(
       headingError, crossTrackError, crossTrackGain_, requestedSpeed,
       stanleySofteningSpeed_, maxCrossTrackCorrection_);
@@ -1224,8 +1346,13 @@ private:
       double linearSpeed = visual_navigation::CrossTrackSpeedLimit(
         requestedSpeed, std::abs(crossTrackError),
         crossTrackSlowdownStart_, crossTrackSlowdownFull_, crossTrackMinimumSpeed_);
-      linearSpeed = visual_navigation::WaypointApproachSpeedLimit(
-        linearSpeed, requestedSpeed, linearGain_, distance);
+      // Ordinary route samples are passed continuously using the lookahead path.
+      // Only a real stop point or the final goal should taper by target distance.
+      if (target.stopTime > 0.0 || finalWaypoint)
+      {
+        linearSpeed = visual_navigation::WaypointApproachSpeedLimit(
+          linearSpeed, requestedSpeed, linearGain_, approachDistance);
+      }
       command.linear.x = linearSpeed * headingScale * fusionHealth.speed_scale;
     }
 
@@ -1245,7 +1372,8 @@ private:
 
   void BeginPathSegment()
   {
-    if (resumePathFromCurrentPose_ || currentWaypointIndex_ == 0)
+    const bool restartAlignment = resumePathFromCurrentPose_ || currentWaypointIndex_ == 0;
+    if (restartAlignment)
     {
       pathSegmentStartX_ = currentX_;
       pathSegmentStartY_ = currentY_;
@@ -1257,8 +1385,22 @@ private:
     }
     resumePathFromCurrentPose_ = false;
     pathSegmentInitialized_ = true;
-    pathAlignmentCompleted_ = false;
-    ResetPathPid();
+    if (restartAlignment)
+      pathAlignmentCompleted_ = false;
+  }
+
+  void PrepareForContinuousPathTransition()
+  {
+    pathSegmentInitialized_ = false;
+    // Preserve the integral term across ordinary samples of the same path.
+    // Clear derivative and turn state so a new segment cannot create a command spike.
+    previousPathError_ = 0.0;
+    pathPidInitialized_ = false;
+    rotatingInPlace_ = false;
+    turnBraking_ = false;
+    turnDirection_ = 0.0;
+    turnSettleTimerInitialized_ = false;
+    pathAlignmentCompleted_ = true;
   }
 
   void ResetPathPid()
@@ -1395,6 +1537,7 @@ private:
   std::string cmdVelTopic_;
   std::string pathTopic_;
   std::string routeInputTopic_;
+  std::string routePlanInputTopic_;
   std::string startTopic_;
   std::string statusTopic_;
   std::string currentWaypointTopic_;
@@ -1434,6 +1577,10 @@ private:
   double turnSettleDwell_{0.30};
   double minPrecisionTurnSpeed_{0.25};
   double waypointTolerance_{0.08};
+  double passedWaypointCrossTrackTolerance_{0.20};
+  double lookaheadTime_{0.80};
+  double minLookaheadDistance_{0.25};
+  double maxLookaheadDistance_{0.55};
   double finalYawTolerance_{0.060};
   double finalYawMaxAngularSpeed_{0.80};
   double finalYawMinTurnSpeed_{0.70};
@@ -1516,6 +1663,8 @@ private:
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr actuatorHealthSubscription_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr trackingStateSubscription_;
   rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr routeInputSubscription_;
+  rclcpp::Subscription<mission_control_interfaces::msg::WaypointRoute>::SharedPtr
+    routePlanInputSubscription_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr startSubscription_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr startService_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr stopService_;

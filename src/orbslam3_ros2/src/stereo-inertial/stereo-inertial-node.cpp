@@ -109,6 +109,10 @@ StereoInertialNode::StereoInertialNode(
     trajectoryFile_ = this->declare_parameter<std::string>("trajectory_file", "KeyFrameTrajectory.txt");
     maxStereoTimeDiff_ = this->declare_parameter<double>("max_stereo_time_diff", 0.01);
     imuTimeOffset_ = this->declare_parameter<double>("imu_time_offset", 0.0);
+    rawPoseJumpPositionThreshold_ = std::max(0.01, this->declare_parameter<double>(
+        "raw_pose_jump_position_threshold_m", 0.8));
+    rawPoseJumpRotationThreshold_ = std::max(0.1, this->declare_parameter<double>(
+        "raw_pose_jump_rotation_threshold_rad", 1.0));
     diagnosticsPeriod_ = std::max(0.0, this->declare_parameter<double>("diagnostics_period", 1.0));
     cameraWarmupSeconds_ = std::max(0.0, this->declare_parameter<double>("camera_warmup_seconds", 2.0));
     cameraWarmupComplete_ = cameraWarmupSeconds_ == 0.0;
@@ -460,6 +464,23 @@ void StereoInertialNode::PublishPose(
     // once against the first body pose before labeling the result as ROS map.
     // The fixed origin intentionally does not move on tracking recovery.
     const Sophus::SE3f TrawMapBody = rawPoseOrigin_.Align(TworldBody);
+    const double timestamp = Utility::StampToSec(msgLeft->header.stamp);
+    if (lastRawPoseValid_ && timestamp > lastRawPoseTimestamp_ &&
+        orbslam3_ros2::PoseJumpExceedsThreshold(
+            lastRawPose_, TrawMapBody,
+            static_cast<float>(rawPoseJumpPositionThreshold_),
+            static_cast<float>(rawPoseJumpRotationThreshold_)))
+    {
+        RCLCPP_WARN(
+            this->get_logger(),
+            "Detected raw visual pose jump; preserving continuous odometry anchor "
+            "(position threshold %.2f m, rotation threshold %.2f rad)",
+            rawPoseJumpPositionThreshold_, rawPoseJumpRotationThreshold_);
+        HandleTrackingInterruption();
+    }
+    lastRawPose_ = TrawMapBody;
+    lastRawPoseTimestamp_ = timestamp;
+    lastRawPoseValid_ = true;
     PublishRawOdometry(TrawMapBody, msgLeft->header.stamp);
     const bool recoveredFromInterruption = poseContinuity_.RecoveryPending();
     const Sophus::SE3f TmapBody = poseContinuity_.Align(TworldBody);
@@ -468,8 +489,6 @@ void StereoInertialNode::PublishPose(
         RCLCPP_INFO(this->get_logger(), "Tracking recovered; preserving the published odometry frame");
     }
     trackingInterruptionActive_ = false;
-    const double timestamp = Utility::StampToSec(msgLeft->header.stamp);
-
     geometry_msgs::msg::PoseStamped poseMessage;
     poseMessage.header.stamp = msgLeft->header.stamp;
     poseMessage.header.frame_id = mapFrameId_;

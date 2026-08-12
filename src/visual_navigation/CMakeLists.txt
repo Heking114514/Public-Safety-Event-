@@ -34,7 +34,9 @@ ament_target_dependencies(
 install(TARGETS waypoint_navigator
   DESTINATION lib/${PROJECT_NAME})
 
-install(PROGRAMS ${CMAKE_CURRENT_SOURCE_DIR}/../../route_editor.py
+install(PROGRAMS
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../route_editor.py
+  scripts/arena_route_planner.py
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY config launch routes
@@ -46,6 +48,7 @@ install(FILES README.md NAVIGATION_CODE_GUIDE.md
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  find_package(ament_cmake_pytest REQUIRED)
   ament_add_gtest(fusion_health_policy_test test/fusion_health_policy_test.cpp)
   target_include_directories(fusion_health_policy_test PRIVATE include)
   ament_add_gtest(actuator_health_policy_test test/actuator_health_policy_test.cpp)
@@ -54,6 +57,7 @@ if(BUILD_TESTING)
   target_include_directories(rate_limiter_test PRIVATE include)
   ament_add_gtest(path_control_test test/path_control_test.cpp)
   target_include_directories(path_control_test PRIVATE include)
+  ament_add_pytest_test(arena_route_planner_test test/test_arena_route_planner.py)
 endif()
 
 ament_package()

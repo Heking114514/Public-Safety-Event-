@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <limits>
+#include <vector>
 
 #include "visual_navigation/path_control.hpp"
 
@@ -18,6 +19,43 @@ TEST(PathControl, TrackingPointRotationDoesNotMoveCorrectedBase)
   EXPECT_NEAR(initial.y, offset_y, 1e-12);
   EXPECT_NEAR(rotated.x, offset_x, 1e-12);
   EXPECT_NEAR(rotated.y, offset_y, 1e-12);
+}
+
+TEST(PathControl, PolylineLookaheadBlendsAcrossCorner)
+{
+  const std::vector<visual_navigation::PlanarPoint> path = {
+    {0.0, 0.0}, {1.0, 0.0}, {1.0, 1.0}};
+  const auto target = visual_navigation::ComputePolylineLookahead(
+    path, 0.80, -0.02, 0.40);
+
+  ASSERT_TRUE(target.valid);
+  EXPECT_NEAR(target.projection.x, 0.80, 1e-12);
+  EXPECT_NEAR(target.projection.y, 0.00, 1e-12);
+  EXPECT_NEAR(target.point.x, 1.00, 1e-12);
+  EXPECT_NEAR(target.point.y, 0.20, 1e-12);
+  EXPECT_NEAR(target.cross_track_error, -0.02, 1e-12);
+  EXPECT_NEAR(target.distance, 0.40, 1e-12);
+}
+
+TEST(PathControl, PolylineLookaheadClampsAtPathEnd)
+{
+  const std::vector<visual_navigation::PlanarPoint> path = {
+    {0.0, 0.0}, {1.0, 0.0}, {2.0, 0.0}};
+  const auto target = visual_navigation::ComputePolylineLookahead(
+    path, 0.20, 0.10, 5.0);
+
+  ASSERT_TRUE(target.valid);
+  EXPECT_NEAR(target.point.x, 2.0, 1e-12);
+  EXPECT_NEAR(target.point.y, 0.0, 1e-12);
+  EXPECT_NEAR(target.distance, 1.8, 1e-12);
+}
+
+TEST(PathControl, PolylineLookaheadRejectsInvalidPath)
+{
+  const std::vector<visual_navigation::PlanarPoint> path = {
+    {0.0, 0.0}, {std::numeric_limits<double>::quiet_NaN(), 1.0}};
+  EXPECT_FALSE(visual_navigation::ComputePolylineLookahead(
+      path, 0.0, 0.0, 0.30).valid);
 }
 
 TEST(PathControl, StanleyCorrectionIsBoundedAndSpeedAware)
@@ -38,6 +76,71 @@ TEST(PathControl, FinalPositionCaptureIsLatchedAcrossRotationDrift)
   EXPECT_TRUE(visual_navigation::FinalPositionCaptured(false, true, 0.079, 0.08));
   EXPECT_TRUE(visual_navigation::FinalPositionCaptured(true, true, 0.12, 0.08));
   EXPECT_FALSE(visual_navigation::FinalPositionCaptured(false, false, 0.01, 0.08));
+}
+
+TEST(PathControl, PassingTargetPlaneCountsAsReached)
+{
+  const double progress = visual_navigation::PathSegmentProgress(
+    0.0, 0.0, 1.0, 0.0, 1.05, 0.0);
+
+  EXPECT_NEAR(progress, 1.05, 1e-12);
+  EXPECT_TRUE(visual_navigation::WaypointReached(0.05, 0.01, progress, 0.0, 0.20));
+  EXPECT_TRUE(visual_navigation::FinalPositionCaptured(
+      false, true, 0.05, 0.01, progress, 0.0, 0.20));
+}
+
+TEST(PathControl, PassingTargetPlaneRequiresPathCorridor)
+{
+  const double progress = visual_navigation::PathSegmentProgress(
+    0.0, 0.0, 1.0, 0.0, 1.05, 0.0);
+
+  EXPECT_TRUE(visual_navigation::WaypointReached(0.05, 0.01, progress, 0.05, 0.20));
+  EXPECT_FALSE(visual_navigation::WaypointReached(0.30, 0.01, progress, 0.30, 0.20));
+  EXPECT_FALSE(visual_navigation::WaypointReached(
+      0.30, 0.01, progress, std::numeric_limits<double>::quiet_NaN(), 0.20));
+}
+
+TEST(PathControl, ToleranceCircleStillCountsRegardlessOfCorridor)
+{
+  EXPECT_TRUE(visual_navigation::WaypointReached(0.05, 0.08, 0.50, 1.0, 0.20));
+}
+
+TEST(PathControl, WaypointIsNotReachedBeforeToleranceOrTargetPlane)
+{
+  const double progress = visual_navigation::PathSegmentProgress(
+    0.0, 0.0, 1.0, 0.0, 0.90, 0.20);
+
+  EXPECT_NEAR(progress, 0.90, 1e-12);
+  EXPECT_FALSE(visual_navigation::WaypointReached(
+      std::hypot(0.10, 0.20), 0.05, progress, 0.20, 0.20));
+}
+
+TEST(PathControl, ApproachDistanceUsesAlongTrackDistanceNearTargetPlane)
+{
+  const double progress = visual_navigation::PathSegmentProgress(
+    0.0, 0.0, 1.0, 0.0, 0.99, 0.20);
+  const double euclidean_distance = std::hypot(0.01, 0.20);
+
+  EXPECT_NEAR(
+    visual_navigation::WaypointApproachDistance(euclidean_distance, progress, 1.0),
+    0.01, 1e-12);
+  EXPECT_NEAR(
+    visual_navigation::WaypointApproachSpeedLimit(
+      0.20, 0.20, 0.8,
+      visual_navigation::WaypointApproachDistance(euclidean_distance, progress, 1.0)),
+    0.008, 1e-12);
+}
+
+TEST(PathControl, InvalidOrZeroLengthSegmentUsesEuclideanFallback)
+{
+  const double zero_length_progress = visual_navigation::PathSegmentProgress(
+    1.0, 1.0, 1.0, 1.0, 2.0, 1.0);
+
+  EXPECT_FALSE(std::isfinite(zero_length_progress));
+  EXPECT_FALSE(visual_navigation::WaypointReached(
+      1.0, 0.05, zero_length_progress, 0.0, 0.20));
+  EXPECT_DOUBLE_EQ(
+    visual_navigation::WaypointApproachDistance(1.0, zero_length_progress, 0.0), 1.0);
 }
 
 TEST(PathControl, TurnSpeedTapersTowardTarget)

@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include <vector>
 
 namespace visual_navigation
 {
@@ -12,6 +14,123 @@ struct PlanarPoint
   double x{0.0};
   double y{0.0};
 };
+
+struct PolylineLookahead
+{
+  bool valid{false};
+  PlanarPoint projection{};
+  PlanarPoint point{};
+  double segment_heading{0.0};
+  double cross_track_error{0.0};
+  double distance{0.0};
+};
+
+inline PolylineLookahead ComputePolylineLookahead(
+  const std::vector<PlanarPoint> &points,
+  double current_x, double current_y, double lookahead_distance)
+{
+  PolylineLookahead result;
+  if (points.size() < 2 || !std::isfinite(current_x) ||
+    !std::isfinite(current_y) || !std::isfinite(lookahead_distance) ||
+    lookahead_distance < 0.0)
+  {
+    return result;
+  }
+
+  constexpr double kEpsilon = 1.0e-9;
+  double closest_distance_squared = std::numeric_limits<double>::infinity();
+  std::size_t closest_segment = points.size();
+  double closest_fraction = 0.0;
+  double closest_length = 0.0;
+
+  for (std::size_t index = 0; index + 1 < points.size(); ++index)
+  {
+    const PlanarPoint &start = points[index];
+    const PlanarPoint &end = points[index + 1];
+    if (!std::isfinite(start.x) || !std::isfinite(start.y) ||
+      !std::isfinite(end.x) || !std::isfinite(end.y))
+    {
+      return result;
+    }
+
+    const double delta_x = end.x - start.x;
+    const double delta_y = end.y - start.y;
+    const double length_squared = delta_x * delta_x + delta_y * delta_y;
+    if (length_squared <= kEpsilon)
+      continue;
+
+    const double fraction = std::max(0.0, std::min(1.0,
+      ((current_x - start.x) * delta_x + (current_y - start.y) * delta_y) /
+      length_squared));
+    const double projection_x = start.x + fraction * delta_x;
+    const double projection_y = start.y + fraction * delta_y;
+    const double error_x = current_x - projection_x;
+    const double error_y = current_y - projection_y;
+    const double distance_squared = error_x * error_x + error_y * error_y;
+    if (distance_squared < closest_distance_squared)
+    {
+      closest_distance_squared = distance_squared;
+      closest_segment = index;
+      closest_fraction = fraction;
+      closest_length = std::sqrt(length_squared);
+    }
+  }
+
+  if (closest_segment >= points.size() - 1)
+    return result;
+
+  const PlanarPoint &closest_start = points[closest_segment];
+  const PlanarPoint &closest_end = points[closest_segment + 1];
+  const double closest_delta_x = closest_end.x - closest_start.x;
+  const double closest_delta_y = closest_end.y - closest_start.y;
+  const double closest_heading = std::atan2(closest_delta_y, closest_delta_x);
+  result.projection = {
+    closest_start.x + closest_fraction * closest_delta_x,
+    closest_start.y + closest_fraction * closest_delta_y};
+  result.cross_track_error =
+    std::cos(closest_heading) * (current_y - result.projection.y) -
+    std::sin(closest_heading) * (current_x - result.projection.x);
+
+  std::size_t segment = closest_segment;
+  double position = closest_fraction * closest_length;
+  double remaining = lookahead_distance;
+  while (true)
+  {
+    const PlanarPoint &start = points[segment];
+    const PlanarPoint &end = points[segment + 1];
+    const double delta_x = end.x - start.x;
+    const double delta_y = end.y - start.y;
+    const double length = std::hypot(delta_x, delta_y);
+    if (length <= kEpsilon)
+    {
+      if (segment + 1 >= points.size() - 1)
+        break;
+      ++segment;
+      position = 0.0;
+      continue;
+    }
+
+    const double available = std::max(0.0, length - position);
+    if (remaining <= available + kEpsilon || segment + 1 >= points.size() - 1)
+    {
+      const double travel = std::min(available, std::max(0.0, remaining));
+      const double fraction = std::min(1.0, (position + travel) / length);
+      result.point = {
+        start.x + fraction * delta_x,
+        start.y + fraction * delta_y};
+      result.segment_heading = std::atan2(delta_y, delta_x);
+      result.distance = lookahead_distance - std::max(0.0, remaining - travel);
+      result.valid = true;
+      return result;
+    }
+
+    remaining -= available;
+    ++segment;
+    position = 0.0;
+  }
+
+  return result;
+}
 
 inline PlanarPoint BasePositionFromTrackingPoint(
   double tracking_x, double tracking_y, double yaw, double reference_yaw,
@@ -58,12 +177,72 @@ inline double StanleyPathError(
     heading_error - correction, 2.0 * 3.14159265358979323846);
 }
 
+inline double PathSegmentProgress(
+  double start_x, double start_y, double target_x, double target_y,
+  double current_x, double current_y)
+{
+  if (!std::isfinite(start_x) || !std::isfinite(start_y) ||
+    !std::isfinite(target_x) || !std::isfinite(target_y) ||
+    !std::isfinite(current_x) || !std::isfinite(current_y))
+  {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+
+  const double segment_x = target_x - start_x;
+  const double segment_y = target_y - start_y;
+  const double segment_length_squared = segment_x * segment_x + segment_y * segment_y;
+  if (segment_length_squared <= 1.0e-12)
+    return std::numeric_limits<double>::quiet_NaN();
+
+  return ((current_x - start_x) * segment_x +
+    (current_y - start_y) * segment_y) / segment_length_squared;
+}
+
+inline bool WaypointReached(
+  double distance, double tolerance, double segment_progress,
+  double cross_track_error = std::numeric_limits<double>::quiet_NaN(),
+  double passed_waypoint_cross_track_tolerance = 0.0)
+{
+  const bool inside_tolerance =
+    std::isfinite(distance) && std::isfinite(tolerance) &&
+    tolerance > 0.0 && distance <= tolerance;
+  const bool passed_target =
+    std::isfinite(segment_progress) && segment_progress >= 1.0 &&
+    std::isfinite(cross_track_error) &&
+    std::isfinite(passed_waypoint_cross_track_tolerance) &&
+    passed_waypoint_cross_track_tolerance >= 0.0 &&
+    std::abs(cross_track_error) <= passed_waypoint_cross_track_tolerance;
+  return inside_tolerance || passed_target;
+}
+
+inline double WaypointApproachDistance(
+  double euclidean_distance, double segment_progress, double segment_length)
+{
+  if (!std::isfinite(euclidean_distance))
+    return 0.0;
+
+  const double fallback_distance = std::max(0.0, euclidean_distance);
+  if (!std::isfinite(segment_progress) || !std::isfinite(segment_length) ||
+    segment_length <= 1.0e-6)
+  {
+    return fallback_distance;
+  }
+
+  const double along_track_remaining =
+    std::max(0.0, (1.0 - segment_progress) * segment_length);
+  return std::min(fallback_distance, along_track_remaining);
+}
+
 inline bool FinalPositionCaptured(
-  bool already_captured, bool final_waypoint, double distance, double tolerance)
+  bool already_captured, bool final_waypoint, double distance, double tolerance,
+  double segment_progress = std::numeric_limits<double>::quiet_NaN(),
+  double cross_track_error = std::numeric_limits<double>::quiet_NaN(),
+  double passed_waypoint_cross_track_tolerance = 0.0)
 {
   return already_captured ||
-    (final_waypoint && std::isfinite(distance) && std::isfinite(tolerance) &&
-    tolerance > 0.0 && distance <= tolerance);
+    (final_waypoint && WaypointReached(
+      distance, tolerance, segment_progress, cross_track_error,
+      passed_waypoint_cross_track_tolerance));
 }
 
 inline double TurnSpeedForError(

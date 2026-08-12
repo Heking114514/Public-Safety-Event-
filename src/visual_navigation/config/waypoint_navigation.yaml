@@ -3,6 +3,7 @@ waypoint_navigator:
     route_file: ""
     route_frame: "map"
     route_input_topic: "/waypoint_navigation/route_input"
+    route_plan_input_topic: "/waypoint_navigation/route_plan_input"
     start_topic: "/waypoint_navigation/start"
 
     odom_topic: "/odometry/fused"
@@ -29,7 +30,7 @@ waypoint_navigator:
     max_angular_deceleration: 4.00
     linear_gain: 0.80
     angular_gain: 2.00
-    path_pid_kp: 1.80
+    path_pid_kp: 2.40
     path_pid_ki: 0.35
     path_pid_kd: 0.00
     path_yaw_rate_damping: 0.35
@@ -51,6 +52,10 @@ waypoint_navigator:
     turn_settle_dwell: 0.30
     min_precision_turn_speed: 0.25
     waypoint_tolerance: 0.08
+    passed_waypoint_cross_track_tolerance: 0.20
+    path_lookahead_time: 0.80
+    path_lookahead_min_distance: 0.25
+    path_lookahead_max_distance: 0.55
     final_yaw_tolerance: 0.060
     final_yaw_max_angular_speed: 0.80
     final_yaw_min_turn_speed: 0.70

@@ -3,11 +3,14 @@ build/
 install/
 log/
 CMakeFiles/
+__pycache__/
+*.py[cod]
 
 # --- Runtime output ---
 KeyFrameTrajectory.txt
 *.bag
 *.bag.active
+*.db3
 
 # --- Temp files ---
 *~
