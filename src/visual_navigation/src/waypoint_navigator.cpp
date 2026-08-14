@@ -431,8 +431,11 @@ private:
     if (left.size() != right.size())
       return false;
 
-    constexpr double kPositionTolerance = 1e-6;
-    constexpr double kYawTolerance = 1e-6;
+    // Route publishers commonly reconstruct poses from grid/canvas coordinates.
+    // Treat sub-millimetre and sub-milliradian serialization noise as the same
+    // route so a latched route update cannot reset an active mission to index 0.
+    constexpr double kPositionTolerance = 1e-4;
+    constexpr double kYawTolerance = 1e-3;
     for (std::size_t index = 0; index < left.size(); ++index)
     {
       const bool leftYawFinite = std::isfinite(left[index].yaw);
@@ -998,7 +1001,11 @@ private:
     const double secondsSinceValid = validLocalizationTimeInitialized_ ?
       std::chrono::duration<double>(controlTime - lastValidLocalizationTime_).count() :
       std::numeric_limits<double>::infinity();
-    const bool hardFault = fusionStatus_ == "FAULT_STALLED";
+    // A fusion FAULT is never a transient condition. In particular, startup
+    // bags commonly begin with FAULT while the estimator initializes; allowing
+    // the transient-loss bridge here could reuse a stale command. Force zero
+    // velocity and latch navigation until a new route is explicitly accepted.
+    const bool hardFault = fusionHealth.fault || fusionStatus_ == "FAULT_STALLED";
     const bool bridgeTransientLoss = !localizationValid &&
       visual_navigation::CanBridgeTransientLocalizationLoss(
         localizationWasValid_, hardFault, secondsSinceValid, transientLocalizationGrace_);
@@ -1075,7 +1082,12 @@ private:
     const bool finalWaypoint = currentWaypointIndex_ + 1 == waypoints_.size();
     const double pathDeltaX = target.x - pathSegmentStartX_;
     const double pathDeltaY = target.y - pathSegmentStartY_;
-    const double pathHeading = std::atan2(pathDeltaY, pathDeltaX);
+    // Duplicate waypoints can occur at planner cell/curve joins.  A zero-length
+    // segment has no defined heading; steer directly toward the target until it
+    // is consumed instead of entering a spurious ROTATING_TO_PATH loop.
+    const double pathLength = std::hypot(pathDeltaX, pathDeltaY);
+    const double pathHeading = pathLength > 1.0e-6 ?
+      std::atan2(pathDeltaY, pathDeltaX) : std::atan2(deltaY, deltaX);
     const auto pathProjection = visual_navigation::ProjectOntoPathSegment(
       pathSegmentStartX_, pathSegmentStartY_, target.x, target.y,
       currentX_, currentY_);
