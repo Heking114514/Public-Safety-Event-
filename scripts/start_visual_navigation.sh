@@ -25,6 +25,12 @@ CAMERA_INITIAL_RESET="false"
 BUILD_JOBS="2"
 ROSBAG_OUTPUT="${WORKSPACE_ROOT}/latest_navigation_bag"
 ROSBAG_TOPICS=(
+  # Raw stereo streams are required to diagnose ORB-SLAM quality, sync and
+  # calibration during replay. Keep both image and camera_info topics.
+  /camera/camera/infra1/image_rect_raw
+  /camera/camera/infra1/camera_info
+  /camera/camera/infra2/image_rect_raw
+  /camera/camera/infra2/camera_info
   /odom
   /odom/orb_raw
   /orbslam3/map_change

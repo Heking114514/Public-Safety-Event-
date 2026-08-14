@@ -668,6 +668,19 @@ Publisher count: 1
 
 ## 15. 测试通过标准
 
+### 15.0 rosbag 回放诊断数据
+
+`scripts/start_visual_navigation.sh` 生成的 `latest_navigation_bag` 会同时保存
+左右红外校正图像和对应的 `camera_info`，以及 IMU、跟踪状态、融合输入/输出和控制状态。
+回放前可确认四个原始视觉话题存在：
+
+```bash
+ros2 bag info latest_navigation_bag
+ros2 bag play latest_navigation_bag
+```
+
+启动阶段融合状态为 `FAULT` 或尚未发布时，航点导航保持零速度并停在故障状态；恢复后需要重新发布路线/显式启动，避免复用故障前的运动命令。
+
 ### 15.1 航点自动控制
 
 - [ ] 左右红外图像约 30 Hz，IMU 约 200 Hz。

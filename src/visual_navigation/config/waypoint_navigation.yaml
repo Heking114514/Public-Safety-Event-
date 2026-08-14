@@ -121,3 +121,6 @@ waypoint_navigator:
     require_tracking_state: false
     abort_on_tracking_loss: false
     autostart: false
+
+    # A fusion FAULT is latched by the navigator and always commands zero
+    # velocity until a healthy route restart is requested.
