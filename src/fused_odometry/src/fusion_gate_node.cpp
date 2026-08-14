@@ -145,6 +145,9 @@ public:
       "status_topic", "/odometry/fusion_status");
     diagnostics_topic_ = declare_parameter<std::string>("diagnostics_topic", "/diagnostics");
     world_frame_ = declare_parameter<std::string>("world_frame", "map");
+    // Wheel velocity is a local odometry observation. Keep it in odom so it
+    // cannot be mistaken for an absolute map-frame pose by robot_localization.
+    wheel_frame_ = declare_parameter<std::string>("wheel_frame", "odom");
     base_frame_ = declare_parameter<std::string>("base_frame", "base_link");
     visual_expected_child_frame_ = declare_parameter<std::string>(
       "visual_expected_child_frame", "base_link");
@@ -152,6 +155,8 @@ public:
       "raw_visual_expected_frame", "map");
     wheel_expected_child_frame_ = declare_parameter<std::string>(
       "wheel_expected_child_frame", "base_link");
+    wheel_expected_frame_ = declare_parameter<std::string>(
+      "wheel_expected_frame", "odom");
     imu_expected_frame_ = declare_parameter<std::string>("imu_expected_frame", "camera_link");
     publish_tf_ = declare_parameter<bool>("publish_tf", false);
 
@@ -525,14 +530,16 @@ private:
   {
     const double velocity = message->twist.twist.linear.x;
     const double wheel_yaw_rate = message->twist.twist.angular.z;
-    if (message->child_frame_id != wheel_expected_child_frame_ ||
+    if (message->header.frame_id != wheel_expected_frame_ ||
+      message->child_frame_id != wheel_expected_child_frame_ ||
       !finite(velocity) || std::abs(velocity) > max_wheel_speed_)
     {
       ++invalid_wheel_count_;
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 2000,
-        "Rejecting wheel odometry with invalid vx/child frame (%s; expected %s)",
-        message->child_frame_id.c_str(), wheel_expected_child_frame_.c_str());
+        "Rejecting wheel odometry with invalid vx/frame (%s -> %s; expected %s -> %s)",
+        message->header.frame_id.c_str(), message->child_frame_id.c_str(),
+        wheel_expected_frame_.c_str(), wheel_expected_child_frame_.c_str());
       return;
     }
     const rclcpp::Time message_stamp(message->header.stamp);
@@ -626,7 +633,7 @@ private:
 
     nav_msgs::msg::Odometry output;
     output.header = message->header;
-    output.header.frame_id = world_frame_;
+    output.header.frame_id = wheel_frame_;
     output.child_frame_id = base_frame_;
     output.pose.pose.orientation.w = 1.0;
     output.twist.twist.linear.x = velocity;
@@ -926,10 +933,12 @@ private:
   std::string status_topic_;
   std::string diagnostics_topic_;
   std::string world_frame_;
+  std::string wheel_frame_;
   std::string base_frame_;
   std::string visual_expected_child_frame_;
   std::string raw_visual_expected_frame_;
   std::string wheel_expected_child_frame_;
+  std::string wheel_expected_frame_;
   std::string imu_expected_frame_;
   double visual_timeout_{0.4};
   bool publish_tf_{false};

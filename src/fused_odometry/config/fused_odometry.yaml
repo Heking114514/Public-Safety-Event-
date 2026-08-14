@@ -14,10 +14,14 @@ fused_odometry_gate:
     diagnostics_topic: /diagnostics
 
     world_frame: map
+    # Wheel velocity is consumed by the local EKF (world_frame: odom), so
+    # preserve the odom frame instead of relabeling it as an absolute map pose.
+    wheel_frame: odom
     base_frame: base_link
     visual_expected_frame: map
     visual_expected_child_frame: base_link
     raw_visual_expected_frame: map
+    wheel_expected_frame: odom
     wheel_expected_child_frame: base_link
     # The filter already converts camera gyro measurements to Euler yaw rate;
     # the gate republishes that scalar rate in the planar base_link frame.
