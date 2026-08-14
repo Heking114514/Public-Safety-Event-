@@ -1299,15 +1299,6 @@ private:
       std::cos(pathHeading) * (currentY_ - pathSegmentStartY_) -
       std::sin(pathHeading) * (currentX_ - pathSegmentStartX_);
     const double requestedSpeed = std::min(target.speed, maxLinearSpeed_);
-    // Use the speed the chassis will actually be allowed to carry when
-    // computing Stanley correction.  Previously this used requestedSpeed
-    // (normally 0.50 m/s) even after cross-track protection had reduced the
-    // command to 0.10 m/s.  That made a 3-5 cm lateral error look about half
-    // as urgent as it is, so the vehicle could travel parallel to a straight
-    // corridor instead of returning to its centreline.
-    const double crossTrackLimitedSpeed = visual_navigation::CrossTrackSpeedLimit(
-      requestedSpeed, std::abs(crossTrackError),
-      crossTrackSlowdownStart_, crossTrackSlowdownFull_, crossTrackMinimumSpeed_);
     double signedPathCurvature = 0.0;
     if (currentWaypointIndex_ + 1 < waypoints_.size()) {
       const Waypoint & next = waypoints_[currentWaypointIndex_ + 1];
@@ -1320,7 +1311,7 @@ private:
     }
     const double pathCurvature = std::abs(signedPathCurvature);
     const double pathError = visual_navigation::StanleyPathError(
-      headingError, crossTrackError, crossTrackGain_, crossTrackLimitedSpeed,
+      headingError, crossTrackError, crossTrackGain_, requestedSpeed,
       stanleySofteningSpeed_, maxCrossTrackCorrection_);
     const double rotationEntryThreshold = visual_navigation::RotationEntryThreshold(
       pathAlignmentCompleted_, rotateInPlaceThreshold_, rotateInPlaceReentryThreshold_);
@@ -1414,7 +1405,9 @@ private:
     else
     {
       const double headingScale = std::max(0.0, std::cos(pathError));
-      double linearSpeed = crossTrackLimitedSpeed;
+      double linearSpeed = visual_navigation::CrossTrackSpeedLimit(
+        requestedSpeed, std::abs(crossTrackError),
+        crossTrackSlowdownStart_, crossTrackSlowdownFull_, crossTrackMinimumSpeed_);
       linearSpeed = visual_navigation::CurvatureSpeedLimit(
         linearSpeed, pathCurvature, maxLateralAcceleration_);
       const double approachDistance =

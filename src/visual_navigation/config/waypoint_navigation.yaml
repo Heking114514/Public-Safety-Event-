@@ -54,9 +54,7 @@ waypoint_navigator:
     turn_position_hold_gain: 0.80
     turn_position_hold_deadband: 0.015
     turn_position_hold_max_speed: 0.08
-    # A 3-5 cm lateral offset in a 30 cm corridor must actively converge
-    # instead of being treated as a small heading trim.
-    cross_track_gain: 2.50
+    cross_track_gain: 1.50
     stanley_softening_speed: 0.25
     max_cross_track_correction: 0.70
     cross_track_slowdown_start: 0.015
