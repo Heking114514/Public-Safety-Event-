@@ -217,6 +217,10 @@ public:
       declare_parameter<double>("cross_track_slowdown_full", 0.06));
     crossTrackMinimumSpeed_ = std::max(
       0.0, declare_parameter<double>("cross_track_minimum_speed", 0.20));
+    maxLateralAcceleration_ = std::max(
+      0.01, declare_parameter<double>("max_lateral_acceleration", 0.22));
+    pathCurvatureFeedforwardGain_ = std::max(
+      0.0, declare_parameter<double>("path_curvature_feedforward_gain", 1.0));
     pathPidIntegralLimit_ = std::max(
       0.0, declare_parameter<double>("path_pid_integral_limit", 0.20));
     rotateInPlaceThreshold_ = std::max(
@@ -973,13 +977,11 @@ private:
       return;
     }
 
-    if (visual_navigation::ShouldLatchActuatorLoss(
+    if (visual_navigation::ShouldHoldForActuatorRecovery(
         navigationActive_, ActuatorHealthIsValid()))
     {
-      navigationActive_ = false;
       PublishStop();
-      ResetPathPid();
-      SetState(ActuatorFailureState());
+      SetState("WAITING_FOR_ACTUATOR_RECOVERY");
       return;
     }
 
@@ -1297,8 +1299,28 @@ private:
       std::cos(pathHeading) * (currentY_ - pathSegmentStartY_) -
       std::sin(pathHeading) * (currentX_ - pathSegmentStartX_);
     const double requestedSpeed = std::min(target.speed, maxLinearSpeed_);
+    // Use the speed the chassis will actually be allowed to carry when
+    // computing Stanley correction.  Previously this used requestedSpeed
+    // (normally 0.50 m/s) even after cross-track protection had reduced the
+    // command to 0.10 m/s.  That made a 3-5 cm lateral error look about half
+    // as urgent as it is, so the vehicle could travel parallel to a straight
+    // corridor instead of returning to its centreline.
+    const double crossTrackLimitedSpeed = visual_navigation::CrossTrackSpeedLimit(
+      requestedSpeed, std::abs(crossTrackError),
+      crossTrackSlowdownStart_, crossTrackSlowdownFull_, crossTrackMinimumSpeed_);
+    double signedPathCurvature = 0.0;
+    if (currentWaypointIndex_ + 1 < waypoints_.size()) {
+      const Waypoint & next = waypoints_[currentWaypointIndex_ + 1];
+      const double nextLength = std::hypot(next.x - target.x, next.y - target.y);
+      if (nextLength > 1.0e-4) {
+        const double nextHeading = std::atan2(next.y - target.y, next.x - target.x);
+        signedPathCurvature = NormalizeAngle(nextHeading - pathHeading) /
+          std::max(0.02, nextLength);
+      }
+    }
+    const double pathCurvature = std::abs(signedPathCurvature);
     const double pathError = visual_navigation::StanleyPathError(
-      headingError, crossTrackError, crossTrackGain_, requestedSpeed,
+      headingError, crossTrackError, crossTrackGain_, crossTrackLimitedSpeed,
       stanleySofteningSpeed_, maxCrossTrackCorrection_);
     const double rotationEntryThreshold = visual_navigation::RotationEntryThreshold(
       pathAlignmentCompleted_, rotateInPlaceThreshold_, rotateInPlaceReentryThreshold_);
@@ -1322,7 +1344,7 @@ private:
 
     const bool allowPathIntegral = !rotatingInPlace_ &&
       std::abs(headingError) < 0.30 && std::abs(crossTrackError) < 0.08;
-    double angularSpeed = UpdatePathPid(
+    const double pathFeedbackAngularSpeed = UpdatePathPid(
       pathError, crossTrackError, allowPathIntegral, controlYawRate) *
       fusionHealth.speed_scale;
     geometry_msgs::msg::Twist command;
@@ -1391,17 +1413,10 @@ private:
     }
     else
     {
-      const double scaledMaxPathAngularSpeed =
-        maxPathAngularSpeed_ * fusionHealth.speed_scale;
-      command.angular.z = visual_navigation::CompensatePathTurnDeadband(
-        angularSpeed, pathError, controlYawRate,
-        pathAngularActivationError_, pathYawResponseThreshold_,
-        minPathAngularSpeed_ * fusionHealth.speed_scale,
-        scaledMaxPathAngularSpeed);
       const double headingScale = std::max(0.0, std::cos(pathError));
-      double linearSpeed = visual_navigation::CrossTrackSpeedLimit(
-        requestedSpeed, std::abs(crossTrackError),
-        crossTrackSlowdownStart_, crossTrackSlowdownFull_, crossTrackMinimumSpeed_);
+      double linearSpeed = crossTrackLimitedSpeed;
+      linearSpeed = visual_navigation::CurvatureSpeedLimit(
+        linearSpeed, pathCurvature, maxLateralAcceleration_);
       const double approachDistance =
         visual_navigation::EndpointApproachDistance(distance, pathProjection);
       if (waypointRequiresStop)
@@ -1417,6 +1432,21 @@ private:
           brakingSafetyMargin_, brakingDistanceFeedbackGain_);
       }
       command.linear.x = linearSpeed * headingScale * fusionHealth.speed_scale;
+      // Feed the planned curvature forward before the heading error develops.
+      // The feedback PID then only removes odometry, slip and timing error.
+      const double feedforwardAngularSpeed =
+        visual_navigation::CurvatureFeedforwardAngularSpeed(
+        command.linear.x, signedPathCurvature, pathCurvatureFeedforwardGain_);
+      const double scaledMaxPathAngularSpeed =
+        maxPathAngularSpeed_ * fusionHealth.speed_scale;
+      const double lateralAngularLimit =
+        visual_navigation::LateralAccelerationAngularLimit(
+        scaledMaxPathAngularSpeed, command.linear.x, maxLateralAcceleration_);
+      command.angular.z = visual_navigation::CompensatePathTurnDeadband(
+        feedforwardAngularSpeed + pathFeedbackAngularSpeed, pathError, controlYawRate,
+        pathAngularActivationError_, pathYawResponseThreshold_,
+        minPathAngularSpeed_ * fusionHealth.speed_scale,
+        lateralAngularLimit);
 
       const double measuredSpeed = currentOdomLinearVelocityValid_ ?
         std::abs(currentOdomLinearVelocity_) : std::abs(lastMotionCommand_.linear.x);
@@ -1756,6 +1786,8 @@ private:
   double crossTrackSlowdownStart_{0.015};
   double crossTrackSlowdownFull_{0.06};
   double crossTrackMinimumSpeed_{0.20};
+  double maxLateralAcceleration_{0.22};
+  double pathCurvatureFeedforwardGain_{1.0};
   double pathPidIntegralLimit_{0.20};
   double rotateInPlaceThreshold_{0.18};
   double rotateInPlaceReentryThreshold_{0.44};

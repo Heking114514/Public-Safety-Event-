@@ -1,0 +1,23 @@
+# Arena Path Planner
+
+ROS 2 C++ backend for the arena route planner. The package owns map loading,
+task ordering, collision-aware planning, path smoothing, and conversion from
+arena coordinates to the navigation frame.
+
+Interfaces:
+
+- Service: `/arena_path_planner/plan`
+- Arena path: `/arena_path_planner/arena_path`
+- Navigation path: `/arena_path_planner/navigation_path`
+- Occupancy grid: `/arena_path_planner/map`
+- Activated route: `/waypoint_navigation/route_input`
+
+The planning request accepts multiple dynamic obstacle polygons. If a complete
+blockage makes some targets unreachable, the response still contains a route
+through every currently reachable target and lists blocked work in
+`deferred_targets`. The caller can replan those deferred targets once from the
+vehicle's new position instead of abandoning the mission or retrying forever.
+
+Use `scripts/start_arena_planner.sh` from the workspace root to incrementally
+build the backend and open the Python frontend. Simulation requests never
+publish to the activated-route topic.

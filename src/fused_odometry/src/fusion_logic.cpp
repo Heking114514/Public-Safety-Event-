@@ -128,6 +128,39 @@ bool pose_residual_within(
          std::abs(wrap_angle(measurement.yaw - reference.yaw)) <= max_yaw_residual;
 }
 
+double wheel_visual_rejection_residual(
+  double wheel_velocity, double visual_velocity,
+  double visual_stationary_threshold, double stationary_wheel_threshold)
+{
+  if (!std::isfinite(wheel_velocity) || !std::isfinite(visual_velocity) ||
+    !std::isfinite(visual_stationary_threshold) ||
+    !std::isfinite(stationary_wheel_threshold) || visual_stationary_threshold < 0.0 ||
+    stationary_wheel_threshold <= 0.0)
+  {
+    return std::numeric_limits<double>::infinity();
+  }
+  const double residual = std::abs(wheel_velocity - visual_velocity);
+  if (std::abs(visual_velocity) <= visual_stationary_threshold &&
+    std::abs(wheel_velocity) > stationary_wheel_threshold)
+  {
+    // Promote stationary-vision wheel motion above the regular rejection
+    // threshold without changing the residual used for covariance reporting.
+    return std::numeric_limits<double>::infinity();
+  }
+  return residual;
+}
+
+bool motion_command_is_stationary(
+  double linear_velocity, double angular_velocity, bool command_fresh,
+  double maximum_linear_speed, double maximum_angular_speed)
+{
+  return command_fresh && std::isfinite(linear_velocity) &&
+    std::isfinite(angular_velocity) && std::isfinite(maximum_linear_speed) &&
+    std::isfinite(maximum_angular_speed) &&
+    std::abs(linear_velocity) <= std::max(0.0, maximum_linear_speed) &&
+    std::abs(angular_velocity) <= std::max(0.0, maximum_angular_speed);
+}
+
 void PoseAligner::clear()
 {
   offset_ = {};

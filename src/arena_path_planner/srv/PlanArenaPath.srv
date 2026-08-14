@@ -1,0 +1,18 @@
+geometry_msgs/Pose start
+geometry_msgs/Point[] targets
+string[] labels
+geometry_msgs/Polygon[] dynamic_obstacles
+string[] covered_edges
+string mode
+bool activate_navigation
+---
+bool success
+string message
+nav_msgs/Path arena_path
+nav_msgs/Path navigation_path
+string[] visit_order
+string[] deferred_targets
+string[] covered_edges
+bool all_targets_reached
+float64 length
+float64 planning_time_ms

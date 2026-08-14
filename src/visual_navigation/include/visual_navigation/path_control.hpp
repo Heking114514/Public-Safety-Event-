@@ -222,6 +222,51 @@ inline double CrossTrackSpeedLimit(
   return requested + progress * (minimum - requested);
 }
 
+inline double CurvatureSpeedLimit(
+  double requested_speed, double path_curvature, double maximum_lateral_acceleration)
+{
+  if (!std::isfinite(requested_speed) || !std::isfinite(path_curvature) ||
+    !std::isfinite(maximum_lateral_acceleration))
+  {
+    return 0.0;
+  }
+  const double requested = std::max(0.0, requested_speed);
+  const double curvature = std::max(0.0, path_curvature);
+  if (curvature <= 1.0e-6 || maximum_lateral_acceleration <= 0.0) {
+    return requested;
+  }
+  const double safe_speed = std::sqrt(maximum_lateral_acceleration / curvature);
+  return std::min(requested, std::max(0.0, safe_speed));
+}
+
+inline double CurvatureFeedforwardAngularSpeed(
+  double linear_speed, double signed_path_curvature, double gain)
+{
+  if (!std::isfinite(linear_speed) || !std::isfinite(signed_path_curvature) ||
+    !std::isfinite(gain))
+  {
+    return 0.0;
+  }
+  return std::max(0.0, linear_speed) * signed_path_curvature * std::max(0.0, gain);
+}
+
+inline double LateralAccelerationAngularLimit(
+  double maximum_angular_speed, double linear_speed, double maximum_lateral_acceleration)
+{
+  if (!std::isfinite(maximum_angular_speed) || !std::isfinite(linear_speed) ||
+    !std::isfinite(maximum_lateral_acceleration))
+  {
+    return 0.0;
+  }
+  const double maximum = std::max(0.0, maximum_angular_speed);
+  const double speed = std::abs(linear_speed);
+  const double lateral_acceleration = std::max(0.0, maximum_lateral_acceleration);
+  if (speed <= 1.0e-3 || lateral_acceleration <= 0.0) {
+    return maximum;
+  }
+  return std::min(maximum, lateral_acceleration / speed);
+}
+
 inline double WaypointApproachSpeedLimit(
   double speed_after_cross_track_limit, double requested_speed,
   double linear_gain, double distance)

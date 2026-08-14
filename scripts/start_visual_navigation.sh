@@ -187,12 +187,33 @@ find_ros_processes() {
   pgrep -f "${pattern}" 2>/dev/null || true
 }
 
+is_arena_planner_pid() {
+  local pid="$1"
+  ps -p "${pid}" -o args= 2>/dev/null | grep -Eq 'arena_path_planner|start_arena_planner\.sh'
+}
+
 stop_existing_ros_nodes() {
   local -a pids=()
   local -a remaining=()
   local attempt
 
   mapfile -t pids < <(find_ros_processes)
+  # The arena planner is a separate service used by route_frontend.py. Do not
+  # terminate it when refreshing the camera/odometry/navigation stack.
+  local -a kept_pids=()
+  for pid in "${pids[@]}"; do
+    if [[ -n "${pid}" ]] && is_arena_planner_pid "${pid}"; then
+      kept_pids+=("${pid}")
+    fi
+  done
+  if ((${#kept_pids[@]} > 0)); then
+    local -a filtered_pids=()
+    for pid in "${pids[@]}"; do
+      [[ " ${kept_pids[*]} " == *" ${pid} "* ]] || filtered_pids+=("${pid}")
+    done
+    pids=("${filtered_pids[@]}")
+    log "Keeping ${#kept_pids[@]} arena planner process(es)"
+  fi
   if ((${#pids[@]} == 0)); then
     log "No existing ROS 2 nodes found"
   else
@@ -226,8 +247,13 @@ stop_existing_ros_nodes() {
   ros2 daemon stop >/dev/null 2>&1 || true
 
   mapfile -t remaining < <(find_ros_processes)
-  ((${#remaining[@]} == 0)) ||
-    fail "could not stop all existing ROS 2 processes: ${remaining[*]}"
+  local -a unexpected_remaining=()
+  for pid in "${remaining[@]}"; do
+    [[ -n "${pid}" ]] || continue
+    is_arena_planner_pid "${pid}" || unexpected_remaining+=("${pid}")
+  done
+  ((${#unexpected_remaining[@]} == 0)) ||
+    fail "could not stop all existing ROS 2 processes: ${unexpected_remaining[*]}"
 }
 
 detect_camera_serial() {

@@ -8,11 +8,18 @@ CMakeFiles/
 KeyFrameTrajectory.txt
 *.bag
 *.bag.active
+*.db3
+*.mcap
+latest_navigation_bag/
+analysis_bags/
 
 # --- Temp files ---
 *~
 *.swp
 *.swo
+__pycache__/
+*.py[cod]
+scripts/arena_generated/
 .DS_Store
 Thumbs.db
 

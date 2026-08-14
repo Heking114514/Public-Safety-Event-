@@ -10,7 +10,7 @@ inline bool ActuatorHealthIsValid(
   return !required || (has_status && status_is_fresh && connected);
 }
 
-inline bool ShouldLatchActuatorLoss(bool navigation_active, bool actuator_health_valid)
+inline bool ShouldHoldForActuatorRecovery(bool navigation_active, bool actuator_health_valid)
 {
   return navigation_active && !actuator_health_valid;
 }

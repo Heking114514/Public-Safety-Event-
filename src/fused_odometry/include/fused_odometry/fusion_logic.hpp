@@ -41,6 +41,14 @@ bool pose_residual_within(
   const Pose2d & measurement, const Pose2d & reference,
   double max_position_residual, double max_yaw_residual);
 
+double wheel_visual_rejection_residual(
+  double wheel_velocity, double visual_velocity,
+  double visual_stationary_threshold, double stationary_wheel_threshold);
+
+bool motion_command_is_stationary(
+  double linear_velocity, double angular_velocity, bool command_fresh,
+  double maximum_linear_speed, double maximum_angular_speed);
+
 class PoseAligner
 {
 public:

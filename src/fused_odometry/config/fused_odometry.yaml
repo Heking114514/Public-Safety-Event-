@@ -1,6 +1,5 @@
 fused_odometry_gate:
   ros__parameters:
-    visual_topic: /odom
     raw_visual_topic: /odom/orb_raw
     tracking_topic: /tracking_state
     map_change_topic: /orbslam3/map_change
@@ -29,7 +28,6 @@ fused_odometry_gate:
     tracking_timeout_s: 0.60
     wheel_timeout_s: 0.35
     imu_timeout_s: 0.15
-    fused_timeout_s: 0.50
     command_timeout_s: 0.40
     raw_visual_timeout_s: 0.30
     # Reject optical-frame or otherwise non-planar poses mislabeled as map.
@@ -38,8 +36,6 @@ fused_odometry_gate:
     visual_recovery_samples: 5
     visual_recovery_ramp_s: 0.75
     visual_recovery_initial_covariance_scale: 50.0
-    visual_recovery_hard_position_m: 1.50
-    visual_recovery_hard_yaw_rad: 1.00
 
     max_dead_reckoning_time_s: 2.0
     max_dead_reckoning_distance_m: 0.30
@@ -56,6 +52,11 @@ fused_odometry_gate:
     robust_min_samples: 5
     wheel_visual_soft_mps: 0.15
     wheel_visual_reject_mps: 0.45
+    # A wheel moving while raw ORB increments show a stationary chassis is
+    # slip/lift, not vehicle translation. This stricter branch is independent
+    # of whether the absolute visual pose has passed its recovery gate.
+    visual_stationary_speed_mps: 0.025
+    stationary_wheel_reject_speed_mps: 0.03
     imu_visual_soft_radps: 0.15
     imu_visual_covariance_cap_radps: 0.80
     residual_bad_samples: 3
@@ -82,10 +83,11 @@ fused_odometry_gate:
     angular_stall_dwell_s: 0.80
     angular_stall_recovery_dwell_s: 1.00
 
-    visual_fused_position_gate_m: 0.80
-    visual_fused_yaw_gate_rad: 0.70
     visual_xy_variance: 0.02
     visual_yaw_variance: 0.04
+    # Raw ORB frame-to-frame speed is an independent local velocity
+    # observation. It prevents encoder slip/lift from becoming EKF motion.
+    visual_vx_variance: 0.01
     wheel_vx_variance: 0.08
     # Encoder vx is biased during turns because the low-speed reverse wheel
     # overshoots. Downweight it progressively; during a commanded in-place
@@ -140,6 +142,22 @@ fused_ekf:
     odom0_relative: false
     odom0_twist_rejection_threshold: 4.0
 
+    # Visual pose is applied globally through map->odom, never directly to the
+    # local EKF. Only its body-frame forward velocity is fused here so a
+    # stationary visual observation can drive a stale/slipping wheel velocity
+    # back to zero without creating a map-frame feedback loop.
+    odom1: /fusion/input/visual_odom
+    odom1_config: [false, false, false,
+                   false, false, false,
+                   true, false, false,
+                   false, false, false,
+                   false, false, false]
+    odom1_queue_size: 10
+    odom1_nodelay: true
+    odom1_differential: false
+    odom1_relative: false
+    odom1_twist_rejection_threshold: 100.0
+
     imu0: /fusion/input/imu
     imu0_config: [false, false, false,
                   false, false, false,
@@ -166,18 +184,43 @@ map_odom_correction:
     map_frame: map
     odom_frame: odom
     base_frame: base_link
+    # Start-relative map frame: map, odom and base_link coincide at startup,
+    # with the car's initial forward direction as +X.
+    initial_map_x: 0.0
+    initial_map_y: 0.0
+    initial_map_yaw: 0.0
+    # With a healthy visual stream, navigation must follow aligned ORB pose
+    # rather than a lagging wheel/IMU prediction. The local EKF bridges only
+    # visual gaps, then is blended back without a pose jump.
+    direct_visual_tracking: true
+    visual_recovery_gap_s: 0.10
+    visual_recovery_time_constant_s: 0.25
+    visual_recovery_blend_duration_s: 0.80
+    hold_global_xy_during_turn: false
+    # The IMU owns short-term angular continuity in odom. ORB supplies the
+    # long-term yaw correction through map->odom, exactly like its XY update.
     publish_tf: true
     publish_frequency: 30.0
-    correction_time_constant_s: 0.75
+    # Raw ORB is stable in the latest bag; keep normal fused output close to
+    # vision instead of accumulating 8-11cm of local-EKF lag while moving.
+    correction_time_constant_s: 0.15
+    # Once the car is commanded stationary, remove local-EKF residual motion
+    # quickly so /odometry/fused cannot keep sliding while raw ORB is stable.
+    stationary_correction_time_constant_s: 0.08
     loop_correction_time_constant_s: 1.25
     map_change_smoothing_window_s: 2.0
     synchronization_tolerance_s: 0.12
     local_timeout_s: 0.50
     visual_timeout_s: 0.60
+    command_timeout_s: 0.40
+    stationary_max_linear_speed_mps: 0.03
+    stationary_max_angular_speed_radps: 0.12
     # ORB reported 4-9 cm of XY motion during commanded zero-vx 90-degree
     # turns. Hold global XY through the turn, then preserve later visual
     # increments from the anchored position.
     turn_hold_max_linear_speed_mps: 0.03
     turn_hold_entry_angular_speed_radps: 0.55
     turn_hold_min_angular_speed_radps: 0.12
-    turn_hold_release_delay_s: 0.28
+    # Release early inside the navigator's 0.30s settle window so the fast
+    # stationary visual correction is visible before path alignment completes.
+    turn_hold_release_delay_s: 0.10

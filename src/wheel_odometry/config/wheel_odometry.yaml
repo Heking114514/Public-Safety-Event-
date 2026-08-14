@@ -13,7 +13,7 @@ wheel_odometry_node:
     wheel_radius_m: 0.0325
     ticks_per_revolution: 1925.0
     # Measured physical distance between the left and right wheel contact lines.
-    wheel_track_m: 0.254
+    wheel_track_m: 0.187
     # Four straight runs measured wheel x at 3.95-4.01 m while the visual
     # reference was 4.18-4.20 m. The 1.055 global distance correction is
     # applied to both sides; the remaining ratio correction keeps straight
@@ -23,12 +23,13 @@ wheel_odometry_node:
     # right/left scale ratio near 1.012 removes the former 9-12 degree wheel
     # yaw while preserving the global distance correction above.
     right_distance_scale: 1.129
-    # Physical track remains 0.254 m. This separate empirical term models
-    # lateral tire scrub observed during in-place turns.
+    # This separate empirical term models lateral tire scrub observed during
+    # in-place turns. Its value preserves the previously bag-calibrated
+    # effective yaw scale after correcting the physical track to 187 mm.
     # Latest bag: wheel yaw accumulated 192.9 deg while visual/IMU measured
-    # about 105 deg. Keep the physical track unchanged and correct tire scrub
-    # with the empirical yaw scale instead.
-    yaw_slip_scale: 0.33
+    # about 105 deg. The empirical scale corrects tire scrub without changing
+    # the calibrated effective wheel-yaw observation.
+    yaw_slip_scale: 0.448
 
     # Reject a sample if either wheel would have exceeded this speed.
     max_wheel_speed_mps: 2.0

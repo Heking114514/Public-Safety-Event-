@@ -15,9 +15,9 @@ TEST(ActuatorHealthPolicy, RequiredCheckNeedsFreshConnectedStatus)
   EXPECT_FALSE(visual_navigation::ActuatorHealthIsValid(true, true, true, false));
 }
 
-TEST(ActuatorHealthPolicy, RuntimeLossLatchesOnlyAnActiveTask)
+TEST(ActuatorHealthPolicy, RuntimeLossHoldsOnlyAnActiveTask)
 {
-  EXPECT_TRUE(visual_navigation::ShouldLatchActuatorLoss(true, false));
-  EXPECT_FALSE(visual_navigation::ShouldLatchActuatorLoss(true, true));
-  EXPECT_FALSE(visual_navigation::ShouldLatchActuatorLoss(false, false));
+  EXPECT_TRUE(visual_navigation::ShouldHoldForActuatorRecovery(true, false));
+  EXPECT_FALSE(visual_navigation::ShouldHoldForActuatorRecovery(true, true));
+  EXPECT_FALSE(visual_navigation::ShouldHoldForActuatorRecovery(false, false));
 }

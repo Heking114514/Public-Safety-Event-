@@ -79,14 +79,29 @@ public:
     map_frame_ = declare_parameter<std::string>("map_frame", "map");
     odom_frame_ = declare_parameter<std::string>("odom_frame", "odom");
     base_frame_ = declare_parameter<std::string>("base_frame", "base_link");
+    initial_map_x_ = declare_parameter<double>("initial_map_x", 0.0);
+    initial_map_y_ = declare_parameter<double>("initial_map_y", 0.0);
+    initial_map_yaw_ = declare_parameter<double>("initial_map_yaw", 0.0);
     publish_tf_ = declare_parameter<bool>("publish_tf", true);
+    direct_visual_tracking_ = declare_parameter<bool>("direct_visual_tracking", true);
+    visual_recovery_gap_ = positive("visual_recovery_gap_s", 0.10);
+    visual_recovery_time_constant_ = positive(
+      "visual_recovery_time_constant_s", 0.25);
+    visual_recovery_blend_duration_ = positive(
+      "visual_recovery_blend_duration_s", 0.80);
+    hold_global_xy_during_turn_ = declare_parameter<bool>("hold_global_xy_during_turn", false);
     publish_frequency_ = positive("publish_frequency", 30.0);
-    correction_time_constant_ = positive("correction_time_constant_s", 0.75);
+    correction_time_constant_ = positive("correction_time_constant_s", 0.15);
+    stationary_correction_time_constant_ = positive(
+      "stationary_correction_time_constant_s", 0.08);
     loop_correction_time_constant_ = positive("loop_correction_time_constant_s", 1.25);
     map_change_smoothing_window_ = positive("map_change_smoothing_window_s", 2.0);
     synchronization_tolerance_ = positive("synchronization_tolerance_s", 0.12);
     local_timeout_ = positive("local_timeout_s", 0.50);
     visual_timeout_ = positive("visual_timeout_s", 0.60);
+    command_timeout_ = positive("command_timeout_s", 0.40);
+    stationary_max_linear_speed_ = positive("stationary_max_linear_speed_mps", 0.03);
+    stationary_max_angular_speed_ = positive("stationary_max_angular_speed_radps", 0.12);
     turn_hold_max_linear_speed_ = positive("turn_hold_max_linear_speed_mps", 0.03);
     turn_hold_entry_angular_speed_ = positive("turn_hold_entry_angular_speed_radps", 0.55);
     turn_hold_min_angular_speed_ = positive("turn_hold_min_angular_speed_radps", 0.12);
@@ -192,22 +207,36 @@ private:
       return;
     }
 
+    const double visual_arrival = steady_seconds();
+    const bool visual_recovered = correction_valid_ &&
+      visual_arrival - visual_received_at_ > visual_recovery_gap_;
     latest_raw_visual_ = message_pose(*message);
     latest_visual_local_ = closest->pose;
     visual_pair_valid_ = true;
-    visual_received_at_ = steady_seconds();
+    visual_received_at_ = visual_arrival;
     if (turn_hold_active_) {
       return;
     }
 
+    if (!visual_pose_aligner_.initialized()) {
+      // ORB-SLAM's first map has an arbitrary planar yaw and origin. Align
+      // that first visual pose to the start-relative map frame: the car starts
+      // at the map origin and its forward axis is map +X. The local odom frame
+      // remains zeroed at the same vehicle pose.
+      visual_pose_aligner_.align_to(
+        latest_raw_visual_, {initial_map_x_, initial_map_y_, initial_map_yaw_});
+    }
+    const Pose2d aligned_visual = visual_pose_aligner_.apply(latest_raw_visual_);
     desired_map_from_odom_ = fused_odometry::compose_pose(
-      visual_translation_aligner_.apply(latest_raw_visual_),
+      aligned_visual,
       fused_odometry::inverse_pose(latest_visual_local_));
     desired_valid_ = true;
     if (!correction_valid_) {
       map_from_odom_ = desired_map_from_odom_;
       correction_valid_ = true;
       last_update_at_ = visual_received_at_;
+    } else if (visual_recovered) {
+      visual_recovery_blend_until_ = visual_arrival + visual_recovery_blend_duration_;
     }
   }
 
@@ -217,6 +246,13 @@ private:
       return;
     }
     const double current_time = steady_seconds();
+    latest_command_linear_ = message->linear.x;
+    latest_command_angular_ = message->angular.z;
+    command_received_at_ = current_time;
+    command_received_ = true;
+    if (!hold_global_xy_during_turn_) {
+      return;
+    }
     const bool low_linear_speed =
       std::abs(message->linear.x) <= turn_hold_max_linear_speed_;
     const double absolute_angular_speed = std::abs(message->angular.z);
@@ -246,9 +282,12 @@ private:
   void finish_turn_hold()
   {
     if (visual_pair_valid_) {
-      visual_translation_aligner_.align_to(latest_raw_visual_, turn_anchor_global_);
+      // The hold only prevents a transient correction while the chassis is
+      // rotating. Never move the visual origin here: doing so would turn every
+      // encoder/command-classified turn into a permanent global position bias.
+      const Pose2d aligned_visual = visual_pose_aligner_.apply(latest_raw_visual_);
       desired_map_from_odom_ = fused_odometry::compose_pose(
-        visual_translation_aligner_.apply(latest_raw_visual_),
+        aligned_visual,
         fused_odometry::inverse_pose(latest_visual_local_));
       desired_valid_ = true;
     }
@@ -260,7 +299,9 @@ private:
 
   void map_change_callback(const std_msgs::msg::UInt64::SharedPtr message)
   {
-    visual_translation_aligner_.clear();
+    // Keep the startup arena alignment through ORB loop corrections. The raw
+    // pose jump is the global correction we want to smooth into map->odom;
+    // resetting here would erase that correction.
     map_change_sequence_ = message->data;
     map_change_active_until_ = steady_seconds() + map_change_smoothing_window_;
     RCLCPP_INFO(
@@ -287,11 +328,29 @@ private:
       current_time - visual_received_at_ <= visual_timeout_)
     {
       const double elapsed = std::max(0.0, current_time - last_update_at_);
-      const double time_constant = current_time <= map_change_active_until_ ?
-        loop_correction_time_constant_ : correction_time_constant_;
-      const double fraction = 1.0 - std::exp(-elapsed / time_constant);
-      map_from_odom_ = fused_odometry::interpolate_pose(
-        map_from_odom_, desired_map_from_odom_, fraction);
+      const bool command_fresh = command_received_ &&
+        current_time - command_received_at_ <= command_timeout_;
+      const bool stationary = fused_odometry::motion_command_is_stationary(
+        latest_command_linear_, latest_command_angular_, command_fresh,
+        stationary_max_linear_speed_, stationary_max_angular_speed_);
+      const bool recovery_blend = current_time <= visual_recovery_blend_until_;
+      if (direct_visual_tracking_ && !recovery_blend &&
+        current_time > map_change_active_until_)
+      {
+        // While vision is continuous, publish the aligned ORB pose directly.
+        // Wheel/IMU local odometry is retained only to bridge visual gaps.
+        map_from_odom_ = desired_map_from_odom_;
+      } else {
+        double time_constant = recovery_blend ?
+          visual_recovery_time_constant_ : (stationary ?
+          stationary_correction_time_constant_ : correction_time_constant_);
+        if (current_time <= map_change_active_until_) {
+          time_constant = loop_correction_time_constant_;
+        }
+        const double fraction = 1.0 - std::exp(-elapsed / time_constant);
+        map_from_odom_ = fused_odometry::interpolate_pose(
+          map_from_odom_, desired_map_from_odom_, fraction);
+      }
     }
     last_update_at_ = current_time;
 
@@ -333,13 +392,22 @@ private:
   std::string odom_frame_;
   std::string base_frame_;
   bool publish_tf_{true};
+  bool direct_visual_tracking_{true};
+  bool hold_global_xy_during_turn_{false};
   double publish_frequency_{30.0};
-  double correction_time_constant_{0.75};
+  double visual_recovery_gap_{0.10};
+  double visual_recovery_time_constant_{0.25};
+  double visual_recovery_blend_duration_{0.80};
+  double correction_time_constant_{0.15};
+  double stationary_correction_time_constant_{0.08};
   double loop_correction_time_constant_{1.25};
   double map_change_smoothing_window_{2.0};
   double synchronization_tolerance_{0.12};
   double local_timeout_{0.50};
   double visual_timeout_{0.60};
+  double command_timeout_{0.40};
+  double stationary_max_linear_speed_{0.03};
+  double stationary_max_angular_speed_{0.12};
   double turn_hold_max_linear_speed_{0.03};
   double turn_hold_entry_angular_speed_{0.55};
   double turn_hold_min_angular_speed_{0.12};
@@ -352,19 +420,27 @@ private:
   Pose2d latest_raw_visual_;
   Pose2d latest_visual_local_;
   Pose2d turn_anchor_global_;
-  fused_odometry::TranslationAligner visual_translation_aligner_;
+  fused_odometry::PoseAligner visual_pose_aligner_;
   bool local_received_{false};
   bool desired_valid_{false};
   bool correction_valid_{false};
   bool visual_pair_valid_{false};
   bool turn_hold_active_{false};
+  bool command_received_{false};
   double local_received_at_{0.0};
   double visual_received_at_{0.0};
+  double visual_recovery_blend_until_{0.0};
   double last_update_at_{0.0};
   double map_change_active_until_{0.0};
   double last_turn_command_at_{0.0};
+  double command_received_at_{0.0};
+  double latest_command_linear_{0.0};
+  double latest_command_angular_{0.0};
   uint64_t map_change_sequence_{0};
   uint64_t unsynchronized_visual_count_{0};
+  double initial_map_x_{0.0};
+  double initial_map_y_{0.0};
+  double initial_map_yaw_{0.0};
 
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr local_subscription_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr visual_subscription_;

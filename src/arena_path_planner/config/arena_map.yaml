@@ -1,0 +1,124 @@
+arena:
+  width_m: 3.2
+  height_m: 4.4
+  resolution_m: 0.025
+  free_regions:
+    - [0.0, 0.0, 3.2, 3.2]
+    - [1.0, 3.2, 2.2, 4.2]
+    - [1.5, 4.2, 1.7, 4.4]
+  obstacles:
+    - [0.2, 0.2, 1.0, 1.0]
+    - [0.2, 1.2, 1.0, 2.0]
+    - [0.2, 2.2, 1.0, 3.0]
+    - [1.2, 0.2, 2.0, 1.0]
+    - [1.2, 1.2, 2.0, 2.0]
+    - [1.2, 2.2, 2.0, 3.0]
+    - [1.2, 3.2, 2.0, 4.0]
+    - [2.2, 0.2, 3.0, 1.0]
+    - [2.2, 1.2, 3.0, 2.0]
+    - [2.2, 2.2, 3.0, 3.0]
+  inflation_radius_m: 0.05
+  preferred_clearance_m: 0.15
+  clearance_cost_weight: 6.0
+
+start:
+  position_m: [1.6, 4.3]
+  heading_deg: -90.0
+
+tasks:
+  "1": [1.1, 4.1]
+  "2": [0.1, 3.1]
+  "3": [0.1, 2.1]
+  "4": [0.1, 1.1]
+  "5": [0.1, 0.1]
+  "6": [1.1, 0.1]
+  "7": [2.1, 0.1]
+  "8": [3.1, 0.1]
+  "9": [3.1, 1.1]
+  "10": [3.1, 2.1]
+  "11": [3.1, 3.1]
+  "12": [2.1, 4.1]
+
+# Mandatory interior checkpoints. They force the planner to enter each of the
+# three horizontal tunnels instead of merely touching a task at an entrance.
+tunnels:
+  "TUNNEL_1":
+    entry: [1.05, 1.1]
+    exit: [2.15, 1.1]
+  "TUNNEL_2":
+    entry: [1.05, 2.1]
+    exit: [2.15, 2.1]
+  "TUNNEL_3":
+    entry: [1.05, 3.1]
+    exit: [2.15, 3.1]
+  "TUNNEL_4":
+    entry: [1.05, 0.1]
+    exit: [2.15, 0.1]
+
+# Road-centre graph used by coverage mode. Every edge must be inspected at
+# least once because recognition targets may appear anywhere along a road.
+inspection_graph:
+  nodes:
+    - [0.1, 0.1]
+    - [1.1, 0.1]
+    - [2.1, 0.1]
+    - [3.1, 0.1]
+    - [0.1, 1.1]
+    - [1.1, 1.1]
+    - [2.1, 1.1]
+    - [3.1, 1.1]
+    - [0.1, 2.1]
+    - [1.1, 2.1]
+    - [2.1, 2.1]
+    - [3.1, 2.1]
+    - [0.1, 3.1]
+    - [1.1, 3.1]
+    - [2.1, 3.1]
+    - [3.1, 3.1]
+    - [1.1, 4.1]
+    - [2.1, 4.1]
+  edges:
+    # Horizontal roads, including the four mandatory tunnels in the middle.
+    - [0, 1, "ROAD_BOTTOM_LEFT", false]
+    - [1, 2, "TUNNEL_4", true]
+    - [2, 3, "ROAD_BOTTOM_RIGHT", false]
+    - [4, 5, "ROAD_Y1_LEFT", false]
+    - [5, 6, "TUNNEL_1", true]
+    - [6, 7, "ROAD_Y1_RIGHT", false]
+    - [8, 9, "ROAD_Y2_LEFT", false]
+    - [9, 10, "TUNNEL_2", true]
+    - [10, 11, "ROAD_Y2_RIGHT", false]
+    - [12, 13, "ROAD_Y3_LEFT", false]
+    - [13, 14, "TUNNEL_3", true]
+    - [14, 15, "ROAD_Y3_RIGHT", false]
+    - [16, 17, "ROAD_TOP", false]
+    # Vertical roads.
+    - [0, 4, "ROAD_X0_Y0", false]
+    - [4, 8, "ROAD_X0_Y1", false]
+    - [8, 12, "ROAD_X0_Y2", false]
+    - [1, 5, "ROAD_X1_Y0", false]
+    - [5, 9, "ROAD_X1_Y1", false]
+    - [9, 13, "ROAD_X1_Y2", false]
+    - [13, 16, "ROAD_X1_Y3", false]
+    - [2, 6, "ROAD_X2_Y0", false]
+    - [6, 10, "ROAD_X2_Y1", false]
+    - [10, 14, "ROAD_X2_Y2", false]
+    - [14, 17, "ROAD_X2_Y3", false]
+    - [3, 7, "ROAD_X3_Y0", false]
+    - [7, 11, "ROAD_X3_Y1", false]
+    - [11, 15, "ROAD_X3_Y2", false]
+
+planning:
+  mode: shortest
+  task_tolerance_m: 0.08
+  waypoint_spacing_m: 0.35
+  curve_spacing_m: 0.025
+  minimum_turning_radius_m: 0.22
+  maximum_heading_step_deg: 8.0
+
+topics:
+  service: /arena_path_planner/plan
+  arena_path: /arena_path_planner/arena_path
+  navigation_path: /arena_path_planner/navigation_path
+  occupancy_grid: /arena_path_planner/map
+  route_input: /waypoint_navigation/route_input

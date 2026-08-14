@@ -70,6 +70,43 @@ TEST(PoseResidual, GatesPositionAndWrappedYawWithoutChangingCoordinates)
     Pose2d{1.0, 2.0, reference.yaw - 0.3}, reference, 0.3, 0.2));
 }
 
+TEST(WheelVisualConsistency, RejectsWheelMotionWhenRawVisionIsStationary)
+{
+  EXPECT_TRUE(std::isinf(fused_odometry::wheel_visual_rejection_residual(
+      0.20, 0.01, 0.025, 0.03)));
+  EXPECT_TRUE(std::isinf(fused_odometry::wheel_visual_rejection_residual(
+      0.04, 0.00, 0.025, 0.03)));
+  EXPECT_NEAR(fused_odometry::wheel_visual_rejection_residual(
+      0.20, 0.18, 0.025, 0.03), 0.02, 1e-9);
+  EXPECT_NEAR(fused_odometry::wheel_visual_rejection_residual(
+      0.02, 0.00, 0.025, 0.03), 0.02, 1e-9);
+}
+
+TEST(GlobalCorrection, VisualPoseCorrectsIndependentLocalDrift)
+{
+  const Pose2d visual_global{0.0, 0.0, 0.0};
+  const Pose2d drifted_local{0.25, -0.10, 0.20};
+  const Pose2d map_from_odom = fused_odometry::compose_pose(
+    visual_global, fused_odometry::inverse_pose(drifted_local));
+  const Pose2d corrected = fused_odometry::compose_pose(map_from_odom, drifted_local);
+
+  EXPECT_NEAR(corrected.x, visual_global.x, 1e-9);
+  EXPECT_NEAR(corrected.y, visual_global.y, 1e-9);
+  EXPECT_NEAR(corrected.yaw, visual_global.yaw, 1e-9);
+}
+
+TEST(GlobalCorrection, StationaryCommandRequiresFreshBoundedLinearAndAngularSpeed)
+{
+  EXPECT_TRUE(fused_odometry::motion_command_is_stationary(
+      0.0, 0.0, true, 0.03, 0.12));
+  EXPECT_FALSE(fused_odometry::motion_command_is_stationary(
+      0.04, 0.0, true, 0.03, 0.12));
+  EXPECT_FALSE(fused_odometry::motion_command_is_stationary(
+      0.0, 0.13, true, 0.03, 0.12));
+  EXPECT_FALSE(fused_odometry::motion_command_is_stationary(
+      0.0, 0.0, false, 0.03, 0.12));
+}
+
 TEST(DisagreementCovariance, IsBoundedAndNeverRejectsThePrimaryRateSource)
 {
   EXPECT_DOUBLE_EQ(fused_odometry::disagreement_covariance_scale(0.0, 0.2, 0.8), 1.0);

@@ -166,7 +166,7 @@ public:
     command_timeout_s_ = declare_parameter<double>("command_timeout_s", 0.4);
     rpy_timeout_s_ = declare_parameter<double>("rpy_timeout_s", 0.4);
     control_telemetry_timeout_s_ =
-      declare_parameter<double>("control_telemetry_timeout_s", 0.35);
+      declare_parameter<double>("control_telemetry_timeout_s", 0.90);
 
     connectedPublisher_ = create_publisher<std_msgs::msg::Bool>(
       "/cup_car_serial/connected", rclcpp::QoS(1).transient_local().reliable());
@@ -239,6 +239,7 @@ private:
       serial_.open(device, baud_rate_);
       active_device_ = device;
       serial_connected_ = true;
+      connection_started_ = last_connect_attempt_;
       control_telemetry_received_ = false;
       receive_buffer_.clear();
       set_connected(true);
@@ -322,7 +323,12 @@ private:
 
     if (receive_buffer_.size() > 4096) {
       RCLCPP_WARN(get_logger(), "Discarding oversized serial receive buffer");
-      receive_buffer_.clear();
+      // Keep only a possible partial line. This prevents a burst of corrupted
+      // bytes after USB reconnect from permanently desynchronizing ENC/CTL
+      // frame parsing.
+      const size_t last_newline = receive_buffer_.rfind('\n');
+      receive_buffer_ = last_newline == std::string::npos ?
+        std::string{} : receive_buffer_.substr(last_newline + 1);
     }
   }
 
@@ -398,6 +404,30 @@ private:
       RCLCPP_WARN(get_logger(), "Ignoring non-finite velocity command");
       vx = 0.0;
       az = 0.0;
+    }
+
+    // A CH340 can remain open without delivering bytes. Start the feedback
+    // deadline at open time as well as after each CTL frame so a connection
+    // that never receives its first frame cannot remain falsely healthy.
+    if (serial_connected_) {
+      const auto feedback_reference = control_telemetry_received_ ?
+        last_control_telemetry_arrival_ : connection_started_;
+      const double feedback_age = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - feedback_reference).count();
+      const double reconnect_threshold = std::max(1.0, control_telemetry_timeout_s_ * 3.0);
+      if (feedback_age > reconnect_threshold) {
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 2000,
+          "%s for %.2f s; reconnecting serial port",
+          control_telemetry_received_ ? "Serial feedback stale" : "No serial feedback received",
+          feedback_age);
+        serial_.close();
+        serial_connected_ = false;
+        active_device_.clear();
+        control_telemetry_received_ = false;
+        receive_buffer_.clear();
+        set_connected(false);
+      }
     }
 
     char frame[64];
@@ -479,6 +509,7 @@ private:
   rclcpp::Time last_command_time_{0, 0, RCL_ROS_TIME};
   rclcpp::Time last_rpy_time_{0, 0, RCL_ROS_TIME};
   std::chrono::steady_clock::time_point last_connect_attempt_{};
+  std::chrono::steady_clock::time_point connection_started_{};
   std::chrono::steady_clock::time_point last_control_telemetry_arrival_{};
   cup_car_serial::ControlTelemetryFrame latest_control_telemetry_{};
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr subscription_;

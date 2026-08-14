@@ -148,6 +148,34 @@ TEST(PathControl, CrossTrackErrorProgressivelyLimitsForwardSpeed)
     visual_navigation::CrossTrackSpeedLimit(0.05, 0.08, 0.03, 0.06, 0.08), 0.05);
 }
 
+TEST(PathControl, CurvatureLimitPreservesStraightsAndSlowsCorners)
+{
+  EXPECT_DOUBLE_EQ(
+    visual_navigation::CurvatureSpeedLimit(0.5, 0.0, 0.22), 0.5);
+  EXPECT_NEAR(
+    visual_navigation::CurvatureSpeedLimit(0.5, 4.0, 0.22),
+    std::sqrt(0.22 / 4.0), 1.0e-12);
+  EXPECT_DOUBLE_EQ(
+    visual_navigation::CurvatureSpeedLimit(
+      0.5, std::numeric_limits<double>::quiet_NaN(), 0.22), 0.0);
+}
+
+TEST(PathControl, CurvatureFeedforwardAndLateralLimitPreserveTheArcDirection)
+{
+  EXPECT_NEAR(
+    visual_navigation::CurvatureFeedforwardAngularSpeed(0.25, 4.0, 1.0),
+    1.0, 1.0e-12);
+  EXPECT_NEAR(
+    visual_navigation::CurvatureFeedforwardAngularSpeed(0.25, -4.0, 1.0),
+    -1.0, 1.0e-12);
+  EXPECT_NEAR(
+    visual_navigation::LateralAccelerationAngularLimit(0.85, 0.50, 0.22),
+    0.44, 1.0e-12);
+  EXPECT_NEAR(
+    visual_navigation::LateralAccelerationAngularLimit(0.85, 0.10, 0.22),
+    0.85, 1.0e-12);
+}
+
 TEST(PathControl, WaypointApproachDoesNotOverrideCrossTrackSpeedLimit)
 {
   EXPECT_DOUBLE_EQ(

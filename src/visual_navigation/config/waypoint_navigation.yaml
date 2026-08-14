@@ -23,7 +23,10 @@ waypoint_navigator:
     default_speed: 0.50
     max_linear_speed: 0.50
     max_angular_speed: 0.95
-    max_path_angular_speed: 0.45
+    # The instantaneous limit is also constrained by max_lateral_acceleration.
+    # This higher ceiling lets a slow, planned corner turn decisively without
+    # forcing a high-speed curve to cut inside its safety envelope.
+    max_path_angular_speed: 0.85
     min_path_angular_speed: 0.14
     path_angular_activation_error: 0.025
     path_yaw_response_threshold: 0.04
@@ -51,12 +54,23 @@ waypoint_navigator:
     turn_position_hold_gain: 0.80
     turn_position_hold_deadband: 0.015
     turn_position_hold_max_speed: 0.08
-    cross_track_gain: 1.50
+    # A 3-5 cm lateral offset in a 30 cm corridor must actively converge
+    # instead of being treated as a small heading trim.
+    cross_track_gain: 2.50
     stanley_softening_speed: 0.25
     max_cross_track_correction: 0.70
     cross_track_slowdown_start: 0.015
-    cross_track_slowdown_full: 0.06
-    cross_track_minimum_speed: 0.20
+    # The planner reserves 5 cm for tracking error outside the chassis safety
+    # envelope. Slow well before consuming it; straight, centred segments stay
+    # at 0.5 m/s.
+    cross_track_slowdown_full: 0.04
+    cross_track_minimum_speed: 0.10
+    # Limit speed from generated-path curvature, so the rectangular vehicle
+    # does not cut inside a planned corner while the controller is catching up.
+    max_lateral_acceleration: 0.22
+    # Track the planned arc proactively; PID remains responsible for residual
+    # heading and cross-track error.
+    path_curvature_feedforward_gain: 1.00
     path_pid_integral_limit: 0.20
     rotate_in_place_threshold: 0.18
     rotate_in_place_reentry_threshold: 0.44

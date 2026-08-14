@@ -109,6 +109,8 @@ public:
       positive_count("residual_recovery_samples", 10)),
     visual_vx_window_(positive("consistency_window_s", 0.75)),
     visual_wz_window_(get_parameter("consistency_window_s").as_double()),
+    raw_visual_vx_window_(get_parameter("consistency_window_s").as_double()),
+    raw_visual_wz_window_(get_parameter("consistency_window_s").as_double()),
     wheel_vx_window_(get_parameter("consistency_window_s").as_double()),
     wheel_visual_residual_window_(get_parameter("consistency_window_s").as_double()),
     wheel_imu_yaw_residual_window_(get_parameter("consistency_window_s").as_double()),
@@ -125,7 +127,6 @@ public:
       positive("angular_stall_dwell_s", 0.8),
       positive("angular_stall_recovery_dwell_s", 1.0)})
   {
-    visual_topic_ = declare_parameter<std::string>("visual_topic", "/odom");
     raw_visual_topic_ = declare_parameter<std::string>("raw_visual_topic", "/odom/orb_raw");
     tracking_topic_ = declare_parameter<std::string>("tracking_topic", "/tracking_state");
     map_change_topic_ = declare_parameter<std::string>(
@@ -145,7 +146,6 @@ public:
     diagnostics_topic_ = declare_parameter<std::string>("diagnostics_topic", "/diagnostics");
     world_frame_ = declare_parameter<std::string>("world_frame", "map");
     base_frame_ = declare_parameter<std::string>("base_frame", "base_link");
-    visual_expected_frame_ = declare_parameter<std::string>("visual_expected_frame", "map");
     visual_expected_child_frame_ = declare_parameter<std::string>(
       "visual_expected_child_frame", "base_link");
     raw_visual_expected_frame_ = declare_parameter<std::string>(
@@ -159,7 +159,6 @@ public:
     tracking_timeout_ = positive("tracking_timeout_s", 0.6);
     wheel_timeout_ = positive("wheel_timeout_s", 0.35);
     imu_timeout_ = positive("imu_timeout_s", 0.15);
-    fused_timeout_ = positive("fused_timeout_s", 0.5);
     command_timeout_ = positive("command_timeout_s", 0.4);
     raw_visual_timeout_ = positive("raw_visual_timeout_s", 0.3);
     raw_visual_max_tilt_ = positive("raw_visual_max_tilt_rad", 0.50);
@@ -173,12 +172,10 @@ public:
     max_wheel_yaw_rate_ = positive("max_wheel_yaw_rate_radps", 4.0);
     max_imu_yaw_rate_ = positive("max_imu_yaw_rate_radps", 4.0);
     wheel_soft_residual_ = positive("wheel_visual_soft_mps", 0.15);
+    visual_stationary_speed_ = positive("visual_stationary_speed_mps", 0.025);
+    stationary_wheel_reject_speed_ = positive("stationary_wheel_reject_speed_mps", 0.03);
     imu_soft_residual_ = positive("imu_visual_soft_radps", 0.20);
     imu_visual_covariance_cap_ = positive("imu_visual_covariance_cap_radps", 0.80);
-    visual_position_gate_ = positive("visual_fused_position_gate_m", 0.8);
-    visual_yaw_gate_ = positive("visual_fused_yaw_gate_rad", 0.7);
-    visual_hard_position_gate_ = positive("visual_recovery_hard_position_m", 1.5);
-    visual_hard_yaw_gate_ = positive("visual_recovery_hard_yaw_rad", 1.0);
     visual_ramp_duration_ = positive("visual_recovery_ramp_s", 0.75);
     visual_ramp_initial_scale_ = positive("visual_recovery_initial_covariance_scale", 50.0);
     wheel_imu_yaw_soft_ = positive("wheel_imu_yaw_soft_radps", 0.15);
@@ -214,6 +211,7 @@ public:
     imu_bias_estimator_ = YawBiasEstimator(imu_bias_time_constant_, imu_bias_maximum_);
     visual_xy_variance_ = positive("visual_xy_variance", 0.02);
     visual_yaw_variance_ = positive("visual_yaw_variance", 0.04);
+    visual_vx_variance_ = positive("visual_vx_variance", 0.01);
     recovery_samples_ = positive_count("visual_recovery_samples", 5);
     robust_min_samples_ = positive_count("robust_min_samples", 5);
 
@@ -229,8 +227,6 @@ public:
       tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
     }
 
-    visual_subscription_ = create_subscription<nav_msgs::msg::Odometry>(
-      visual_topic_, sensor_qos, std::bind(&FusionGateNode::visual_callback, this, std::placeholders::_1));
     raw_visual_subscription_ = create_subscription<nav_msgs::msg::Odometry>(
       raw_visual_topic_, sensor_qos,
       std::bind(&FusionGateNode::raw_visual_callback, this, std::placeholders::_1));
@@ -252,7 +248,7 @@ public:
       std::chrono::milliseconds(100), std::bind(&FusionGateNode::publish_status, this));
     RCLCPP_INFO(
       get_logger(), "Fusion gate ready: visual=%s wheel=%s imu=%s output=%s (%s/%s)",
-      visual_topic_.c_str(), wheel_topic_.c_str(), imu_topic_.c_str(), fused_topic_.c_str(),
+      raw_visual_topic_.c_str(), wheel_topic_.c_str(), imu_topic_.c_str(), fused_topic_.c_str(),
       world_frame_.c_str(), base_frame_.c_str());
   }
 
@@ -280,11 +276,6 @@ private:
     return tracking_received_ && tracking_good_ && age_seconds(tracking_received_at_) <= tracking_timeout_;
   }
 
-  bool fused_fresh() const
-  {
-    return fused_received_ && age_seconds(fused_received_at_) <= fused_timeout_;
-  }
-
   bool vision_healthy() const
   {
     return visual_accepted_ && tracking_fresh_and_good() &&
@@ -303,6 +294,14 @@ private:
   bool imu_healthy() const
   {
     return imu_received_ && age_seconds(imu_received_at_) <= imu_timeout_;
+  }
+
+  bool raw_visual_increment_healthy() const
+  {
+    return raw_visual_received_ && raw_visual_velocity_valid_ &&
+      tracking_fresh_and_good() &&
+      age_seconds(raw_visual_received_at_) <= raw_visual_timeout_ &&
+      raw_visual_vx_window_.ready(robust_min_samples_);
   }
 
   void tracking_callback(const std_msgs::msg::Int32::SharedPtr message)
@@ -331,7 +330,6 @@ private:
       visual_interrupted_ = true;
       visual_accepted_ = false;
       visual_velocity_valid_ = false;
-      last_visual_pose_valid_ = false;
       visual_forward_velocity_ = 0.0;
       visual_yaw_rate_ = 0.0;
       imu_residual_ = 0.0;
@@ -339,8 +337,12 @@ private:
       visual_yaw_disagreement_scale_ = 1.0;
       visual_vx_window_.clear();
       visual_wz_window_.clear();
+      raw_visual_vx_window_.clear();
+      raw_visual_wz_window_.clear();
       wheel_visual_residual_window_.clear();
       imu_visual_residual_window_.clear();
+      raw_visual_velocity_valid_ = false;
+      last_raw_increment_pose_valid_ = false;
       visual_recovery_count_ = 0;
       dead_reckoning_distance_ = 0.0;
       dead_reckoning_since_ = std::chrono::steady_clock::now();
@@ -374,10 +376,43 @@ private:
     }
     raw_visual_stamp_valid_ = true;
     last_raw_visual_stamp_ = stamp;
-    latest_raw_pose_ = {
+    const Pose2d current_raw_pose{
       position.x, position.y, quaternion_yaw(message->pose.pose.orientation)};
+    if (last_raw_increment_pose_valid_) {
+      const double dt = (stamp - last_raw_increment_stamp_).seconds();
+      if (dt > 0.01 && dt < 0.5) {
+        const double dx = current_raw_pose.x - last_raw_increment_pose_.x;
+        const double dy = current_raw_pose.y - last_raw_increment_pose_.y;
+        const double forward_velocity =
+          (std::cos(last_raw_increment_pose_.yaw) * dx +
+          std::sin(last_raw_increment_pose_.yaw) * dy) / dt;
+        const double yaw_rate =
+          wrap_angle(current_raw_pose.yaw - last_raw_increment_pose_.yaw) / dt;
+        raw_visual_velocity_valid_ = finite(forward_velocity) && finite(yaw_rate) &&
+          std::abs(forward_velocity) <= max_wheel_speed_ &&
+          std::abs(yaw_rate) <= max_imu_yaw_rate_;
+        if (raw_visual_velocity_valid_) {
+          const double sample_time = steady_seconds();
+          raw_visual_vx_window_.add(sample_time, forward_velocity);
+          raw_visual_wz_window_.add(sample_time, yaw_rate);
+          raw_visual_forward_velocity_ = forward_velocity;
+          raw_visual_yaw_rate_ = yaw_rate;
+        } else {
+          raw_visual_vx_window_.clear();
+          raw_visual_wz_window_.clear();
+        }
+      } else {
+        raw_visual_velocity_valid_ = false;
+        raw_visual_vx_window_.clear();
+        raw_visual_wz_window_.clear();
+      }
+    }
+    last_raw_increment_pose_ = current_raw_pose;
+    last_raw_increment_stamp_ = stamp;
+    last_raw_increment_pose_valid_ = true;
     raw_visual_received_ = true;
     raw_visual_received_at_ = std::chrono::steady_clock::now();
+    publish_raw_visual(*message, current_raw_pose);
   }
 
   void command_callback(const geometry_msgs::msg::Twist::SharedPtr message)
@@ -391,77 +426,32 @@ private:
     command_received_at_ = std::chrono::steady_clock::now();
   }
 
-  void visual_callback(const nav_msgs::msg::Odometry::SharedPtr message)
+  void publish_raw_visual(
+    const nav_msgs::msg::Odometry & message, const Pose2d & raw_pose)
   {
-    const auto & position = message->pose.pose.position;
-    const auto & orientation = message->pose.pose.orientation;
-    if (message->header.frame_id != visual_expected_frame_ ||
-      message->child_frame_id != visual_expected_child_frame_ ||
-      !finite(position.x) || !finite(position.y) || !valid_quaternion(orientation))
-    {
-      ++invalid_visual_count_;
-      RCLCPP_WARN_THROTTLE(
-        get_logger(), *get_clock(), 2000,
-        "Rejecting visual odometry with invalid value/frame (%s -> %s; expected %s -> %s)",
-        message->header.frame_id.c_str(), message->child_frame_id.c_str(),
-        visual_expected_frame_.c_str(), visual_expected_child_frame_.c_str());
-      return;
-    }
-    const rclcpp::Time message_stamp(message->header.stamp);
-    if (visual_stamp_valid_ && message_stamp <= last_visual_message_stamp_) {
-      ++invalid_visual_count_;
-      return;
-    }
-    visual_stamp_valid_ = true;
-    last_visual_message_stamp_ = message_stamp;
     if (!tracking_fresh_and_good()) {
       return;
     }
 
-    const Pose2d continuous_raw{position.x, position.y, quaternion_yaw(orientation)};
     const bool recovering = !ever_accepted_visual_ || visual_interrupted_;
     const bool map_change_grace = steady_seconds() <= map_change_grace_until_;
+    // A normal frame must have a physically plausible raw increment. On ORB
+    // loop closure MapChanged() is published before the corrected pose, so the
+    // one discontinuous observation is allowed and smoothed by map->odom.
+    if (!raw_visual_velocity_valid_ && !map_change_grace) {
+      if (!recovering) {
+        ++visual_recovery_rejected_count_;
+        mark_visual_interrupted();
+      }
+      return;
+    }
     if (recovering) {
+      if (!raw_visual_increment_healthy()) {
+        return;
+      }
       if (++visual_recovery_count_ < recovery_samples_) {
         return;
       }
-      if (!ever_accepted_visual_) {
-        aligner_.clear();
-      }
-    }
-
-    // Both ORB topics are published from the same pose with the same stamp. DDS
-    // does not preserve callback ordering across topics, so a tolerance here can
-    // pair the previous raw pose with the current continuous pose and create a
-    // zero/double yaw-rate pattern. Fall back to the continuous pose unless the
-    // latest raw sample is from this exact frame.
-    const bool raw_synchronized = raw_visual_received_ &&
-      age_seconds(raw_visual_received_at_) <= raw_visual_timeout_ &&
-      last_raw_visual_stamp_ == message_stamp;
-    Pose2d aligned = aligner_.apply(continuous_raw);
-    using_raw_visual_ = false;
-    if (raw_synchronized) {
-      if (!raw_aligner_.initialized()) {
-        raw_aligner_.align_to(latest_raw_pose_, aligned);
-      }
-      aligned = raw_aligner_.apply(latest_raw_pose_);
-      using_raw_visual_ = true;
-    }
-
-    // Preserve the established visual map transform across an outage. A plausible
-    // recovery can then correct wheel drift; an implausible jump is not disguised
-    // by moving the visual origin onto the dead-reckoned pose.
-    if (recovering && ever_accepted_visual_ && fused_fresh() && !map_change_grace &&
-      !pose_residual_within(
-        aligned, fused_pose_, visual_hard_position_gate_, visual_hard_yaw_gate_))
-    {
-      ++visual_recovery_rejected_count_;
-      RCLCPP_WARN_THROTTLE(
-        get_logger(), *get_clock(), 1000,
-        "Rejecting visual recovery inconsistent with prediction (position=%.3f m yaw=%.3f rad)",
-        std::hypot(aligned.x - fused_pose_.x, aligned.y - fused_pose_.y),
-        std::abs(wrap_angle(aligned.yaw - fused_pose_.yaw)));
-      return;
     }
 
     if (recovering) {
@@ -475,36 +465,17 @@ private:
       ++visual_realign_count_;
       RCLCPP_INFO(
         get_logger(),
-        "Visual odometry accepted after %zu healthy samples; correcting fused drift gradually",
+        "Raw visual odometry accepted after %zu coherent samples; correcting global drift",
         visual_recovery_count_);
     }
 
-    double position_residual = 0.0;
-    double yaw_residual = 0.0;
-    if (fused_fresh()) {
-      position_residual = std::hypot(aligned.x - fused_pose_.x, aligned.y - fused_pose_.y);
-      yaw_residual = std::abs(wrap_angle(aligned.yaw - fused_pose_.yaw));
-    }
-    double position_scale = std::clamp(
-      1.0 + std::pow(position_residual / visual_position_gate_, 2), 1.0, 25.0);
-    double yaw_scale = std::clamp(
-      1.0 + std::pow(yaw_residual / visual_yaw_gate_, 2), 1.0, 25.0);
+    double position_scale = 1.0;
+    double yaw_scale = 1.0;
     visual_yaw_disagreement_scale_ = 1.0;
     if (imu_healthy() && imu_visual_residual_window_.ready(robust_min_samples_)) {
       visual_yaw_disagreement_scale_ = disagreement_covariance_scale(
         imu_visual_robust_residual_, imu_soft_residual_, imu_visual_covariance_cap_);
       yaw_scale = std::max(yaw_scale, visual_yaw_disagreement_scale_);
-    }
-    if (!recovering && fused_fresh() && !map_change_grace &&
-      !pose_residual_within(
-        aligned, fused_pose_, visual_hard_position_gate_, visual_hard_yaw_gate_))
-    {
-      ++visual_recovery_rejected_count_;
-      mark_visual_interrupted();
-      RCLCPP_WARN_THROTTLE(
-        get_logger(), *get_clock(), 1000,
-        "Visual pose jumped outside the fusion gate; waiting for stable recovery");
-      return;
     }
     if (visual_ramp_active_) {
       const double progress = std::clamp(
@@ -517,13 +488,13 @@ private:
       }
     }
 
-    nav_msgs::msg::Odometry output = *message;
+    nav_msgs::msg::Odometry output = message;
     output.header.frame_id = world_frame_;
     output.child_frame_id = base_frame_;
-    output.pose.pose.position.x = aligned.x;
-    output.pose.pose.position.y = aligned.y;
+    output.pose.pose.position.x = raw_pose.x;
+    output.pose.pose.position.y = raw_pose.y;
     output.pose.pose.position.z = 0.0;
-    output.pose.pose.orientation = yaw_quaternion(aligned.yaw);
+    output.pose.pose.orientation = yaw_quaternion(raw_pose.yaw);
     output.pose.covariance.fill(0.0);
     output.pose.covariance[0] = visual_xy_variance_ * position_scale;
     output.pose.covariance[7] = visual_xy_variance_ * position_scale;
@@ -532,28 +503,20 @@ private:
     output.pose.covariance[28] = 1.0e6;
     output.pose.covariance[35] = visual_yaw_variance_ * yaw_scale;
     output.twist.covariance.fill(0.0);
+    for (std::size_t index = 0; index < 6; ++index) {
+      output.twist.covariance[index * 6 + index] = 1.0e6;
+    }
+    visual_forward_velocity_ = raw_visual_vx_window_.median();
+    visual_yaw_rate_ = raw_visual_wz_window_.median();
+    visual_velocity_valid_ = true;
+    visual_vx_window_.add(steady_seconds(), visual_forward_velocity_);
+    visual_wz_window_.add(steady_seconds(), visual_yaw_rate_);
+    output.twist.twist.linear.x = visual_forward_velocity_;
+    output.twist.twist.linear.y = 0.0;
+    output.twist.twist.linear.z = 0.0;
+    output.twist.covariance[0] = visual_vx_variance_ * position_scale;
     visual_publisher_->publish(output);
 
-    const double stamp = message_stamp.seconds();
-    if (last_visual_pose_valid_) {
-      const double dt = stamp - last_visual_stamp_;
-      if (dt > 0.01 && dt < 0.5) {
-        const double dx = aligned.x - last_visual_pose_.x;
-        const double dy = aligned.y - last_visual_pose_.y;
-        visual_forward_velocity_ =
-          (std::cos(last_visual_pose_.yaw) * dx + std::sin(last_visual_pose_.yaw) * dy) / dt;
-        visual_yaw_rate_ = wrap_angle(aligned.yaw - last_visual_pose_.yaw) / dt;
-        visual_velocity_valid_ = finite(visual_forward_velocity_) && finite(visual_yaw_rate_);
-        if (visual_velocity_valid_) {
-          const double sample_time = steady_seconds();
-          visual_vx_window_.add(sample_time, visual_forward_velocity_);
-          visual_wz_window_.add(sample_time, visual_yaw_rate_);
-        }
-      }
-    }
-    last_visual_pose_ = aligned;
-    last_visual_stamp_ = stamp;
-    last_visual_pose_valid_ = true;
     visual_accepted_ = true;
     visual_received_at_ = std::chrono::steady_clock::now();
   }
@@ -589,11 +552,21 @@ private:
 
     double residual = 0.0;
     bool compared = false;
-    if (visual_vx_window_.ready(robust_min_samples_) && vision_healthy()) {
+    const bool raw_visual_reference = raw_visual_increment_healthy();
+    const bool accepted_visual_reference =
+      visual_vx_window_.ready(robust_min_samples_) && vision_healthy();
+    if (raw_visual_reference || accepted_visual_reference) {
+      const double visual_velocity = raw_visual_reference ?
+        raw_visual_vx_window_.median() : visual_vx_window_.median();
       wheel_visual_residual_window_.add(
-        sample_time, std::abs(velocity - visual_vx_window_.median()));
+        sample_time, std::abs(velocity - visual_velocity));
       residual = wheel_visual_residual_window_.median();
-      wheel_gate_.update(residual + 1.4826 * wheel_visual_residual_window_.mad());
+      const double rejection_residual = wheel_visual_rejection_residual(
+        velocity, visual_velocity,
+        visual_stationary_speed_, stationary_wheel_reject_speed_);
+      wheel_gate_.update(std::max(
+        rejection_residual,
+        residual + 1.4826 * wheel_visual_residual_window_.mad()));
       compared = true;
     }
     wheel_yaw_excited_ = false;
@@ -642,7 +615,10 @@ private:
     wheel_received_ = true;
     wheel_received_at_ = std::chrono::steady_clock::now();
     wheel_residual_ = compared ? residual : 0.0;
-    if (wheel_gate_.rejected() || !ever_accepted_visual_ ||
+    const bool stationary_visual_conflict = raw_visual_reference &&
+      std::abs(raw_visual_vx_window_.median()) <= visual_stationary_speed_ &&
+      std::abs(velocity) > stationary_wheel_reject_speed_;
+    if (wheel_gate_.rejected() || stationary_visual_conflict || !ever_accepted_visual_ ||
       motion_fault_ != MotionFault::kNone)
     {
       return;
@@ -722,10 +698,14 @@ private:
     last_imu_message_stamp_ = message_stamp;
     const bool command_fresh = command_received_ &&
       age_seconds(command_received_at_) <= command_timeout_;
-    const bool visual_rate_ready = visual_velocity_valid_ && vision_healthy() &&
+    const bool raw_visual_rate_ready = raw_visual_increment_healthy() &&
+      raw_visual_wz_window_.ready(robust_min_samples_);
+    const bool accepted_visual_rate_ready = visual_velocity_valid_ && vision_healthy() &&
       visual_wz_window_.ready(robust_min_samples_);
+    const bool visual_rate_ready = raw_visual_rate_ready || accepted_visual_rate_ready;
     const double visual_rate_reference = visual_rate_ready ?
-      visual_wz_window_.median() : visual_yaw_rate_;
+      (raw_visual_rate_ready ? raw_visual_wz_window_.median() : visual_wz_window_.median()) :
+      visual_yaw_rate_;
     const bool learn_bias = visual_rate_ready && command_fresh &&
       std::abs(command_yaw_rate_) <= imu_bias_learning_command_rate_ &&
       std::abs(visual_rate_reference) <= imu_bias_learning_visual_rate_;
@@ -780,7 +760,6 @@ private:
     }
     fused_pose_ = current;
     fused_received_ = true;
-    fused_received_at_ = std::chrono::steady_clock::now();
     if (tf_broadcaster_) {
       geometry_msgs::msg::TransformStamped transform;
       transform.header = message->header;
@@ -803,12 +782,19 @@ private:
       age_seconds(command_received_at_) <= command_timeout_;
     const bool wheel_measurement_fresh = wheel_received_ &&
       age_seconds(wheel_received_at_) <= wheel_timeout_;
+    const bool raw_visual_motion_valid = raw_visual_increment_healthy();
+    const bool accepted_visual_motion_valid =
+      vision && visual_vx_window_.ready(robust_min_samples_);
+    const bool visual_motion_valid = raw_visual_motion_valid || accepted_visual_motion_valid;
+    const double visual_motion_velocity = raw_visual_motion_valid ?
+      raw_visual_vx_window_.median() :
+      (accepted_visual_motion_valid ? visual_vx_window_.median() : visual_forward_velocity_);
     motion_fault_ = motion_classifier_.update(
       steady_seconds(), command_velocity_,
       wheel_vx_window_.ready(robust_min_samples_) ? wheel_vx_window_.median() : latest_wheel_velocity_,
-      visual_vx_window_.ready(robust_min_samples_) ? visual_vx_window_.median() : visual_forward_velocity_,
+      visual_motion_velocity,
       command_fresh, wheel_measurement_fresh,
-      vision && visual_vx_window_.ready(robust_min_samples_));
+      visual_motion_valid);
     const bool wheel = wheel_healthy();
     const bool imu = imu_healthy();
     std::size_t angular_source_count = 0;
@@ -887,7 +873,11 @@ private:
       "wheel_vx_turn_covariance_scale", std::to_string(wheel_vx_turn_scale_)));
     item.values.push_back(value(
       "wheel_vx_zeroed", wheel_vx_zeroed_ ? "true" : "false"));
-    item.values.push_back(value("raw_visual_used", using_raw_visual_ ? "true" : "false"));
+    item.values.push_back(value(
+      "raw_visual_increment", raw_visual_increment_healthy() ? "healthy" : "unavailable"));
+    item.values.push_back(value(
+      "raw_visual_vx_mps", std::to_string(raw_visual_forward_velocity_)));
+    item.values.push_back(value("raw_visual_used", "true"));
     item.values.push_back(value("visual_realign_count", std::to_string(visual_realign_count_)));
     item.values.push_back(value(
       "visual_recovery_rejected", std::to_string(visual_recovery_rejected_count_)));
@@ -899,7 +889,6 @@ private:
     item.values.push_back(value(
       "wheel_frame_approximation",
       wheel_expected_child_frame_ == base_frame_ ? "false" : "true"));
-    item.values.push_back(value("invalid_visual", std::to_string(invalid_visual_count_)));
     item.values.push_back(value("invalid_raw_visual", std::to_string(invalid_raw_visual_count_)));
     item.values.push_back(value("invalid_wheel", std::to_string(invalid_wheel_count_)));
     item.values.push_back(value("invalid_imu", std::to_string(invalid_imu_count_)));
@@ -913,10 +902,10 @@ private:
   }
 
   ResidualGate wheel_gate_;
-  PoseAligner aligner_;
-  PoseAligner raw_aligner_;
   RobustWindow visual_vx_window_;
   RobustWindow visual_wz_window_;
+  RobustWindow raw_visual_vx_window_;
+  RobustWindow raw_visual_wz_window_;
   RobustWindow wheel_vx_window_;
   RobustWindow wheel_visual_residual_window_;
   RobustWindow wheel_imu_yaw_residual_window_;
@@ -924,7 +913,6 @@ private:
   MotionClassifier motion_classifier_;
   AngularStallDetector angular_stall_detector_;
 
-  std::string visual_topic_;
   std::string raw_visual_topic_;
   std::string tracking_topic_;
   std::string map_change_topic_;
@@ -939,7 +927,6 @@ private:
   std::string diagnostics_topic_;
   std::string world_frame_;
   std::string base_frame_;
-  std::string visual_expected_frame_;
   std::string visual_expected_child_frame_;
   std::string raw_visual_expected_frame_;
   std::string wheel_expected_child_frame_;
@@ -949,7 +936,6 @@ private:
   double tracking_timeout_{0.6};
   double wheel_timeout_{0.35};
   double imu_timeout_{0.15};
-  double fused_timeout_{0.5};
   double command_timeout_{0.4};
   double raw_visual_timeout_{0.3};
   double raw_visual_max_tilt_{0.5};
@@ -963,12 +949,10 @@ private:
   double max_wheel_yaw_rate_{4.0};
   double max_imu_yaw_rate_{4.0};
   double wheel_soft_residual_{0.15};
+  double visual_stationary_speed_{0.025};
+  double stationary_wheel_reject_speed_{0.03};
   double imu_soft_residual_{0.2};
   double imu_visual_covariance_cap_{0.8};
-  double visual_position_gate_{0.8};
-  double visual_yaw_gate_{0.7};
-  double visual_hard_position_gate_{1.5};
-  double visual_hard_yaw_gate_{1.0};
   double visual_ramp_duration_{0.75};
   double visual_ramp_initial_scale_{50.0};
   double wheel_imu_yaw_soft_{0.15};
@@ -990,6 +974,7 @@ private:
   double imu_bias_learning_visual_rate_{0.12};
   double visual_xy_variance_{0.02};
   double visual_yaw_variance_{0.04};
+  double visual_vx_variance_{0.01};
   std::size_t recovery_samples_{5};
   std::size_t robust_min_samples_{5};
 
@@ -1001,13 +986,11 @@ private:
   bool wheel_received_{false};
   bool imu_received_{false};
   bool fused_received_{false};
-  bool last_visual_pose_valid_{false};
   bool visual_velocity_valid_{false};
   bool dead_reckoning_active_{false};
   bool raw_visual_received_{false};
   bool raw_visual_stamp_valid_{false};
   bool command_received_{false};
-  bool using_raw_visual_{false};
   bool visual_ramp_active_{false};
   bool wheel_yaw_rate_finite_{false};
   bool wheel_yaw_validation_active_{false};
@@ -1016,19 +999,18 @@ private:
   bool wheel_yaw_instantly_consistent_{false};
   bool fuse_wheel_yaw_{false};
   bool wheel_vx_zeroed_{false};
+  bool raw_visual_velocity_valid_{false};
+  bool last_raw_increment_pose_valid_{false};
   bool angular_stalled_{false};
-  bool visual_stamp_valid_{false};
   bool wheel_stamp_valid_{false};
   bool imu_stamp_valid_{false};
   int tracking_state_{-1};
   std::size_t visual_recovery_count_{0};
-  std::size_t invalid_visual_count_{0};
   std::size_t invalid_wheel_count_{0};
   std::size_t invalid_imu_count_{0};
   std::size_t invalid_raw_visual_count_{0};
   std::size_t visual_realign_count_{0};
   std::size_t visual_recovery_rejected_count_{0};
-  double last_visual_stamp_{0.0};
   double visual_forward_velocity_{0.0};
   double visual_yaw_rate_{0.0};
   double wheel_residual_{0.0};
@@ -1041,6 +1023,8 @@ private:
   double latest_wheel_velocity_{0.0};
   double latest_wheel_yaw_rate_{0.0};
   double latest_imu_yaw_rate_{0.0};
+  double raw_visual_forward_velocity_{0.0};
+  double raw_visual_yaw_rate_{0.0};
   YawBiasEstimator imu_bias_estimator_{};
   double wheel_vx_turn_scale_{1.0};
   double wheel_yaw_validation_started_at_{0.0};
@@ -1049,30 +1033,27 @@ private:
   double visual_realigned_until_{0.0};
   double map_change_grace_until_{0.0};
   uint64_t map_change_sequence_{0};
-  Pose2d last_visual_pose_{};
   Pose2d fused_pose_{};
-  Pose2d latest_raw_pose_{};
+  Pose2d last_raw_increment_pose_{};
   MotionFault motion_fault_{MotionFault::kNone};
   FusionMode last_mode_{FusionMode::kFull};
   SteadyTime tracking_received_at_{};
   SteadyTime visual_received_at_{};
   SteadyTime wheel_received_at_{};
   SteadyTime imu_received_at_{};
-  SteadyTime fused_received_at_{};
   SteadyTime dead_reckoning_since_{};
   SteadyTime raw_visual_received_at_{};
   SteadyTime command_received_at_{};
-  rclcpp::Time last_visual_message_stamp_{0, 0, RCL_ROS_TIME};
   rclcpp::Time last_wheel_message_stamp_{0, 0, RCL_ROS_TIME};
   rclcpp::Time last_imu_message_stamp_{0, 0, RCL_ROS_TIME};
   rclcpp::Time last_raw_visual_stamp_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time last_raw_increment_stamp_{0, 0, RCL_ROS_TIME};
 
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr visual_publisher_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr wheel_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_publisher_;
   rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diagnostics_publisher_;
-  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr visual_subscription_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr raw_visual_subscription_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr tracking_subscription_;
   rclcpp::Subscription<std_msgs::msg::UInt64>::SharedPtr map_change_subscription_;

@@ -22,6 +22,9 @@ def generate_launch_description():
     serial_baud_rate = LaunchConfiguration("serial_baud_rate")
     serial_send_rate_hz = LaunchConfiguration("serial_send_rate_hz")
     serial_command_timeout_s = LaunchConfiguration("serial_command_timeout_s")
+    serial_control_telemetry_timeout_s = LaunchConfiguration(
+        "serial_control_telemetry_timeout_s"
+    )
 
     navigation = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -58,6 +61,9 @@ def generate_launch_description():
                 "command_timeout_s": ParameterValue(
                     serial_command_timeout_s, value_type=float
                 ),
+                "control_telemetry_timeout_s": ParameterValue(
+                    serial_control_telemetry_timeout_s, value_type=float
+                ),
             }
         ],
     )
@@ -85,6 +91,9 @@ def generate_launch_description():
             DeclareLaunchArgument("serial_baud_rate", default_value="115200"),
             DeclareLaunchArgument("serial_send_rate_hz", default_value="20.0"),
             DeclareLaunchArgument("serial_command_timeout_s", default_value="0.4"),
+            DeclareLaunchArgument(
+                "serial_control_telemetry_timeout_s", default_value="0.90"
+            ),
             navigation,
             serial_bridge,
         ]

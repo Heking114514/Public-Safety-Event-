@@ -50,7 +50,7 @@ def generate_launch_description():
             DeclareLaunchArgument("command_timeout_s", default_value="0.4"),
             DeclareLaunchArgument("rpy_timeout_s", default_value="0.4"),
             DeclareLaunchArgument(
-                "control_telemetry_timeout_s", default_value="0.35"
+                "control_telemetry_timeout_s", default_value="0.90"
             ),
             serial_node,
         ]
