@@ -993,16 +993,22 @@ private:
     const auto pathProjection = visual_navigation::ProjectOntoPathSegment(
       pathSegmentStartX_, pathSegmentStartY_, target.x, target.y,
       currentX_, currentY_);
-    const bool waypointReached = finalPositionRecoveryActive_ ?
+    const bool waypointRequiresStop = WaypointRequiresStop(pathHeading, finalWaypoint) ||
+      target.stopTime > 0.0;
+    const bool continuousWaypointPassed =
+      !finalPositionRecoveryActive_ &&
+      visual_navigation::ContinuousPathWaypointPassed(
+        finalWaypoint, waypointRequiresStop, pathProjection,
+        waypointPassLongitudinalTolerance_);
+    const bool waypointReached = continuousWaypointPassed ||
+      (finalPositionRecoveryActive_ ?
       distance <= target.tolerance :
       visual_navigation::WaypointReached(
-      distance, target.tolerance, pathProjection,
-      waypointPassLongitudinalTolerance_, waypointPassLateralTolerance_);
+        distance, target.tolerance, pathProjection,
+        waypointPassLongitudinalTolerance_, waypointPassLateralTolerance_));
     finalPositionCaptured_ = finalPositionCaptured_ ||
       (finalWaypoint && waypointReached);
 
-    const bool waypointRequiresStop = WaypointRequiresStop(pathHeading, finalWaypoint) ||
-      target.stopTime > 0.0;
     if (visual_navigation::ShouldBeginWaypointBrake(
         waypointBraking_, waypointBrakeCompleted_,
         waypointReached, waypointRequiresStop))
@@ -1170,7 +1176,8 @@ private:
       return;
     }
 
-    if (!waypointRecoveryActive_ && visual_navigation::WaypointNeedsRecovery(
+    if (waypointRequiresStop && !waypointRecoveryActive_ &&
+      visual_navigation::WaypointNeedsRecovery(
         pathProjection, waypointPassLongitudinalTolerance_,
         waypointPassLateralTolerance_))
     {

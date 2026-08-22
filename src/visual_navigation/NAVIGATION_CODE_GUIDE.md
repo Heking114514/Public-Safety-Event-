@@ -594,7 +594,9 @@ distance <= target.tolerance
 
 航点索引只向前推进，不会自动倒退，也不会在整条路线中重新搜索最近航点。
 
-这可以避免路线交叉时跳到错误路段，但也意味着车辆如果偏离路线很远，系统仍然会尝试前往当前目标航点。
+普通非停车采样点一旦被纵向越过，索引继续前进，由下一段的跟线反馈收敛横向误差，不再回头追逐车后的旧采样点。需要停车的转角和最终点仍执行严格的径向/横向到达检查。
+
+这可以避免路线交叉时跳到错误路段，也避免密集路径点触发反复回追；车辆如果偏离路线很远，系统仍只会沿当前索引之后的路线恢复，不会全局重搜最近路段。
 
 ---
 
@@ -797,10 +799,10 @@ config/waypoint_navigation.yaml
 | `rotate_in_place_threshold` | `0.18` | 超过该航向误差时禁止前进，rad |
 | `waypoint_tolerance` | `0.04` | 动态路线未填写容差时的默认值，m |
 | `waypoint_pass_longitudinal_tolerance` | `0.01` | 距终点平面的提前收点余量，m |
-| `waypoint_pass_lateral_tolerance` | `0.06` | 越过终点时允许直接收点的横向走廊，m |
-| `waypoint_recovery_speed` | `0.10` | 超出走廊后回收至航点的最高线速度，m/s |
-| `waypoint_recovery_heading_tolerance` | `0.12` | 回收时允许开始低速前进的朝向误差，rad |
-| `waypoint_recovery_max_angular_speed` | `0.60` | 航点回收的最高角速度，rad/s |
+| `waypoint_pass_lateral_tolerance` | `0.06` | 停车点或最终点越过终点时允许收点的横向走廊，m |
+| `waypoint_recovery_speed` | `0.10` | 停车点或最终点超出走廊后回收至航点的最高线速度，m/s |
+| `waypoint_recovery_heading_tolerance` | `0.12` | 停车点或最终点回收时允许开始低速前进的朝向误差，rad |
+| `waypoint_recovery_max_angular_speed` | `0.60` | 停车点或最终点回收的最高角速度，rad/s |
 | `pre_turn_stop_heading_threshold` | `0.18` | 相邻路径转角超过此值时要求先停稳，rad |
 | `pre_turn_stop_speed` | `0.03` | 判断车体停稳的纵向速度阈值，m/s |
 | `pre_turn_stop_dwell` | `0.10` | 速度连续低于阈值的确认时间，s |

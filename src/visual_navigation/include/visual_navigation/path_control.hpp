@@ -82,6 +82,21 @@ inline bool WaypointNeedsRecovery(
     std::abs(projection.cross_track) > std::max(0.0, pass_lateral_tolerance);
 }
 
+// Dense ordinary samples advance once passed longitudinally. Stop-required and
+// final waypoints keep the stricter radial/corridor arrival checks.
+inline bool ContinuousPathWaypointPassed(
+  bool final_waypoint, bool requires_stop,
+  const PathProjection & projection, double pass_longitudinal_tolerance)
+{
+  if (final_waypoint || requires_stop || !projection.valid ||
+    !std::isfinite(projection.remaining) ||
+    !std::isfinite(pass_longitudinal_tolerance))
+  {
+    return false;
+  }
+  return projection.remaining <= std::max(0.0, pass_longitudinal_tolerance);
+}
+
 inline double EndpointApproachDistance(
   double euclidean_distance, const PathProjection & projection)
 {
