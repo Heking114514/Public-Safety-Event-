@@ -57,10 +57,12 @@ install(FILES README.md DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  find_package(ament_cmake_pytest REQUIRED)
   ament_add_gtest(test_fusion_logic test/test_fusion_logic.cpp)
   target_link_libraries(test_fusion_logic fusion_logic)
   ament_add_gtest(test_fusion_health test/test_fusion_health.cpp)
   target_link_libraries(test_fusion_health fusion_logic)
+  ament_add_pytest_test(test_fusion_config test/test_fusion_config.py)
 endif()
 
 ament_export_targets(export_fusion_logic HAS_LIBRARY_TARGET)

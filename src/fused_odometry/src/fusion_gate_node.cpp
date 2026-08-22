@@ -143,8 +143,8 @@ public:
       "status_topic", "/odometry/fusion_status");
     diagnostics_topic_ = declare_parameter<std::string>("diagnostics_topic", "/diagnostics");
     world_frame_ = declare_parameter<std::string>("world_frame", "map");
-    // Wheel velocity is a local odometry observation. Keep it in odom so it
-    // cannot be mistaken for an absolute map-frame pose by robot_localization.
+    // Wheel velocity is retained for supervision and bag diagnostics only.
+    // Preserve its native frame rather than relabeling the recorded stream.
     wheel_frame_ = declare_parameter<std::string>("wheel_frame", "odom");
     base_frame_ = declare_parameter<std::string>("base_frame", "base_link");
     visual_expected_child_frame_ = declare_parameter<std::string>(

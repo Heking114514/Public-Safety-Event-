@@ -10,12 +10,6 @@
 
 ## P0
 
-### P0-01 漂移的编码器速度在正常视觉定位期间仍持续进入 EKF
-
-- 证据：`src/fused_odometry/config/fused_odometry.yaml:136-146` 将 `/fusion/input/wheel_odom` 配置为 `odom0`，并启用 `twist.linear.x`。
-- 触发：轮式里程计正常发布时持续触发，与是否进入隧道、视觉是否丢失无关。
-- 影响：编码器误差持续改变 `/odometry/local` 的速度状态，并继续影响 `/odometry/fused`；这不是隧道内短时容错，而是常态融合。
-
 ### P0-03 最近一次实车控制没有形成有效路径推进
 
 - 证据：`latest_navigation_bag/` 中路线约 `29.33 m`，实际仅推进约 `3.67 m`；运动期约 69% 处于 `PATH_LATERAL_RECOVERY`，出现约 24 次角速度方向反转，最终横向误差约 `12.6 cm`。
@@ -64,7 +58,7 @@
 
 - 证据：编码器消息没有 ROS header；`src/wheel_odometry/src/wheel_odometry_node.cpp:150-188` 使用 MCU 间隔计算速度，但以节点 `now()` 作为 odometry stamp。
 - 触发：USB 串口排队或上位机调度延迟变化。
-- 影响：当前 wheel 仍进入 EKF 和视觉残差判断，串口延迟会被混入轮速与视觉的时间差和测量差。
+- 影响：wheel 虽不再进入 EKF，但仍参与视觉残差、健康分类和失视距离预算；串口延迟会被混入这些判断的时间差和测量差。
 
 ### P1-08 导航和融合使用不同版本的 IMU 角速度
 

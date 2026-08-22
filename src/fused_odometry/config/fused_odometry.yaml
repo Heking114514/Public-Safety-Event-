@@ -13,8 +13,8 @@ fused_odometry_gate:
     diagnostics_topic: /diagnostics
 
     world_frame: map
-    # Wheel velocity is consumed by the local EKF (world_frame: odom), so
-    # preserve the odom frame instead of relabeling it as an absolute map pose.
+    # The sanitized wheel stream is diagnostics-only in the default profile.
+    # Preserve its native odom frame so recorded supervision data stays honest.
     wheel_frame: odom
     base_frame: base_link
     visual_expected_frame: map
@@ -133,7 +133,10 @@ fused_ekf:
 
     # Local odometry intentionally excludes absolute ORB pose. Loop closure
     # updates map->odom in map_odom_correction without moving odom->base_link.
-    odom0: /fusion/input/wheel_odom
+    # Encoder odometry is intentionally excluded: the current wheel scale drifts
+    # too much to modify the navigation state. Wheel data remains available to
+    # the gate for slip/stall checks and the bounded vision-outage distance.
+    odom0: /fusion/input/visual_odom
     odom0_config: [false, false, false,
                    false, false, false,
                    true, false, false,
@@ -143,23 +146,7 @@ fused_ekf:
     odom0_nodelay: true
     odom0_differential: false
     odom0_relative: false
-    odom0_twist_rejection_threshold: 4.0
-
-    # Visual pose is applied globally through map->odom, never directly to the
-    # local EKF. Only its body-frame forward velocity is fused here so a
-    # stationary visual observation can drive a stale/slipping wheel velocity
-    # back to zero without creating a map-frame feedback loop.
-    odom1: /fusion/input/visual_odom
-    odom1_config: [false, false, false,
-                   false, false, false,
-                   true, false, false,
-                   false, false, false,
-                   false, false, false]
-    odom1_queue_size: 10
-    odom1_nodelay: true
-    odom1_differential: false
-    odom1_relative: false
-    odom1_twist_rejection_threshold: 100.0
+    odom0_twist_rejection_threshold: 100.0
 
     imu0: /fusion/input/imu
     imu0_config: [false, false, false,
@@ -193,8 +180,8 @@ map_odom_correction:
     initial_map_y: 0.0
     initial_map_yaw: 0.0
     # With a healthy visual stream, navigation must follow aligned ORB pose
-    # rather than a lagging wheel/IMU prediction. The local EKF bridges only
-    # visual gaps, then is blended back without a pose jump.
+    # rather than the lagging local visual/IMU prediction. The local EKF bridges
+    # only visual gaps, then is blended back without a pose jump.
     direct_visual_tracking: true
     visual_recovery_gap_s: 0.10
     visual_recovery_time_constant_s: 0.25

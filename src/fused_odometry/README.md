@@ -16,7 +16,7 @@ Inputs:
 - `/orbslam3/map_change` (`std_msgs/UInt64`): verified ORB loop-closure or
   global-BA map correction sequence.
 - `/wheel/odom` (`nav_msgs/Odometry`): body-forward `vx`; `wz` remains available
-  for consistency diagnostics but is not fused in the current configuration.
+  for consistency diagnostics. Neither component enters the default EKF.
 - `/imu/filtered` (`sensor_msgs/Imu`): only `angular_velocity.z` is used.
 - `/cmd_vel_nav` (`geometry_msgs/Twist`): observation-only input for classifying
   slip, mechanical stall, and encoder failure; it is never forwarded or modified.
@@ -24,7 +24,7 @@ Inputs:
 Outputs:
 
 - `/odometry/local` (`nav_msgs/Odometry`): continuous local EKF estimate in
-  `odom`; wheel and IMU updates never jump on loop closure.
+  `odom`, driven by gated visual forward velocity and IMU yaw rate.
 - `/odometry/fused` (`nav_msgs/Odometry`): smoothed map-frame pose used by the
   existing navigator and route editor.
 - `/odometry/fusion_status` (`std_msgs/String`, transient local): `FULL`,
@@ -38,8 +38,9 @@ should not use those as the public odometry interface.
 
 ## Behavior
 
-`robot_localization` performs the local planar EKF from wheel forward velocity
-and IMU yaw rate. A separate correction node combines gated ORB pose with the local
+`robot_localization` performs the local planar EKF from gated visual forward
+velocity and IMU yaw rate. Encoder odometry never modifies this state. A separate
+correction node combines gated ORB pose with the local
 estimate to publish `map -> odom` and `/odometry/fused`. Normal visual drift is
 corrected with a 0.75-second time constant; a verified ORB map change uses a
 1.25-second time constant so PID control never receives a loop-closure jump.
@@ -62,21 +63,23 @@ Command, wheel, and visual motion are classified only after a configurable dwell
 wheel motion without visual motion is `WHEEL_SLIP`; commanded motion with neither
 wheel nor visual motion is `MECHANICAL_STALL`; visual motion without wheel motion
 is `ENCODER_FAILURE`. A stall publishes `FAULT_STALLED`. Slip and encoder failure
-remove wheel measurements from the EKF, leaving visual/IMU degradation where
-available. Recovery also has a separate dwell to prevent rapid state toggling.
+change health and degraded-operation authorization, but wheel measurements never
+enter the EKF. Recovery has a separate dwell to prevent rapid state toggling.
 Angular stall detection requires at least two fresh angular-rate sources and
 publishes `FAULT_STALLED` after a turn command produces no measured rotation for
 0.8 seconds.
 
-During visual loss, wheel `vx` plus IMU `wz` keep the EKF predicting in
-`DEGRADED_NO_VISION`; navigation applies a reduced speed until vision returns.
-The stricter time and distance window below applies when IMU is also absent.
+During visual loss, the local EKF receives no new translation measurement; its
+short prediction continues from the last accepted visual velocity while IMU `wz`
+keeps angular motion live. Validated wheel speed only measures the outage-distance
+budget and participates in health checks. Navigation applies a reduced speed until
+vision returns, and the configured time/distance limits bound this open-loop period.
 
 Wheel yaw validation requires sustained agreement with IMU during actual
 rotation; stationary zero-rate agreement cannot validate it. Because the latest
-bag still showed a large encoder turn-scale error, `fuse_wheel_yaw` is currently
-false and the EKF wheel input enables only `vx`. If both vision and IMU disappear,
-the fusion therefore becomes `FAULT` instead of attempting an unreliable blind
+bag showed a large encoder turn-scale error, `fuse_wheel_yaw` remains false.
+Wheel yaw is diagnostic-only in the default EKF profile. If both vision and IMU
+disappear, the fusion becomes `FAULT` instead of attempting an unreliable blind
 turn. Linear acceleration is never fused.
 
 After five good recovery frames, the gate accepts the configured raw visual
@@ -84,9 +87,9 @@ topic. An existing raw-to-fused SE(2) alignment is checked against the current
 prediction. A
 reasonable recovery enters a 0.75-second covariance ramp so correction is
 gradual. A recovery beyond 1.50 m or 1.00 rad is rejected instead of moving the
-visual origin onto the wheel prediction. The established visual map transform
-is preserved across an outage, allowing accepted visual recovery to correct
-wheel dead-reckoning drift.
+visual origin onto the open-loop local prediction. The established visual map
+transform is preserved across an outage, allowing accepted visual recovery to
+correct local prediction drift.
 
 The ROS ORB wrapper publishes `/odometry/visual_raw` as planar `x`, `y`, and yaw
 while retaining the full SE(3) map internally. `/odom/orb_raw` is its legacy
