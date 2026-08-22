@@ -199,7 +199,15 @@ TEST(FusionMode, ConservativeDegradation)
   EXPECT_EQ(
     fused_odometry::select_mode(
       true, true, false, true, false, false, false, 0.0, 0.0, 2.0, 0.3, 0.75, 0.1),
-    FusionMode::kNoWheel);
+    FusionMode::kFull);
+  EXPECT_EQ(
+    fused_odometry::select_mode(
+      true, true, true, false, false, false, false, 0.0, 0.0, 2.0, 0.3, 0.75, 0.1),
+    FusionMode::kNoImu);
+  EXPECT_EQ(
+    fused_odometry::select_mode(
+      true, true, false, false, false, false, false, 0.0, 0.0, 2.0, 0.3, 0.75, 0.1),
+    FusionMode::kNoImu);
   EXPECT_EQ(
     fused_odometry::select_mode(
       false, false, true, true, true, false, false, 0.0, 0.0, 2.0, 0.3, 0.75, 0.1),
@@ -220,6 +228,33 @@ TEST(FusionMode, PublicNamesMatchNavigationPolicy)
     fused_odometry::mode_name(FusionMode::kVisualRealigned),
     "DEGRADED_VISUAL_REALIGNED");
   EXPECT_STREQ(fused_odometry::mode_name(FusionMode::kFaultStalled), "FAULT_STALLED");
+}
+
+TEST(FusionHealthSeverity, KeepsWheelDiagnosticsVisibleWithoutDegradingFusionMode)
+{
+  using fused_odometry::HealthSeverity;
+  using fused_odometry::MotionFault;
+
+  EXPECT_EQ(
+    fused_odometry::health_severity(FusionMode::kFull, true, MotionFault::kNone),
+    HealthSeverity::kOk);
+  EXPECT_EQ(
+    fused_odometry::health_severity(FusionMode::kFull, false, MotionFault::kNone),
+    HealthSeverity::kWarning);
+  EXPECT_EQ(
+    fused_odometry::health_severity(FusionMode::kFull, false, MotionFault::kSlip),
+    HealthSeverity::kWarning);
+  EXPECT_EQ(
+    fused_odometry::health_severity(
+      FusionMode::kFull, false, MotionFault::kEncoderFailure),
+    HealthSeverity::kWarning);
+  EXPECT_EQ(
+    fused_odometry::health_severity(FusionMode::kNoImu, true, MotionFault::kNone),
+    HealthSeverity::kWarning);
+  EXPECT_EQ(
+    fused_odometry::health_severity(
+      FusionMode::kFaultStalled, false, MotionFault::kStalled),
+    HealthSeverity::kError);
 }
 
 TEST(RobustWindow, MedianRejectsOutlierAndExpiresOldSamples)

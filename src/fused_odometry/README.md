@@ -28,8 +28,7 @@ Outputs:
 - `/odometry/fused` (`nav_msgs/Odometry`): smoothed map-frame pose used by the
   existing navigator and route editor.
 - `/odometry/fusion_status` (`std_msgs/String`, transient local): `FULL`,
-  `DEGRADED_NO_VISION`, `DEGRADED_NO_WHEEL`, `DEGRADED_NO_IMU`,
-  `DEGRADED_VISION_ONLY`, `DEGRADED_WHEEL_ONLY`,
+  `DEGRADED_NO_VISION`, `DEGRADED_NO_IMU`, `DEGRADED_WHEEL_ONLY`,
   `DEGRADED_VISUAL_REALIGNED`, `FAULT_STALLED`, or `FAULT`.
 - `/diagnostics`: freshness, residuals, rejection counters and dead-reckoning limits.
 
@@ -63,8 +62,12 @@ Command, wheel, and visual motion are classified only after a configurable dwell
 wheel motion without visual motion is `WHEEL_SLIP`; commanded motion with neither
 wheel nor visual motion is `MECHANICAL_STALL`; visual motion without wheel motion
 is `ENCODER_FAILURE`. A stall publishes `FAULT_STALLED`. Slip and encoder failure
-change health and degraded-operation authorization, but wheel measurements never
-enter the EKF. Recovery has a separate dwell to prevent rapid state toggling.
+remain visible in diagnostics, but do not change `FULL` or navigation speed while
+visual odometry and IMU are healthy. A missing or residual-rejected wheel source is
+handled the same way. With healthy visual odometry but no IMU, the mode is always
+`DEGRADED_NO_IMU`, independent of wheel health. Wheel measurements never enter the
+EKF. Wheel faults and loss still set the diagnostic level to `WARN`; mechanical
+stall remains `ERROR`. Recovery has a separate dwell to prevent rapid state toggling.
 Angular stall detection requires at least two fresh angular-rate sources and
 publishes `FAULT_STALLED` after a turn command produces no measured rotation for
 0.8 seconds.

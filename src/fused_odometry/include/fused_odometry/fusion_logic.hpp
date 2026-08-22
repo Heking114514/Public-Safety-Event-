@@ -219,4 +219,14 @@ FusionMode select_mode(
   double max_wheel_only_distance);
 const char * mode_name(FusionMode mode);
 
+enum class HealthSeverity
+{
+  kOk,
+  kWarning,
+  kError
+};
+
+HealthSeverity health_severity(
+  FusionMode mode, bool wheel_healthy, MotionFault motion_fault);
+
 }  // namespace fused_odometry

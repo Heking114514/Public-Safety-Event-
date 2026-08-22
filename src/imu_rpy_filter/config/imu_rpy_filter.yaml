@@ -21,6 +21,8 @@ imu_rpy_filter:
     stationary_accel_exit: 0.35
     stationary_gyro_enter: 0.02
     stationary_gyro_exit: 0.05
+    # cmd/wheel observations are diagnostics only. They never gate IMU
+    # stationarity, bias learning, orientation, or angular velocity output.
     external_motion_timeout_seconds: 0.35
     command_linear_stationary_threshold_mps: 0.02
     command_yaw_stationary_threshold_rad_s: 0.03

@@ -14,6 +14,46 @@ inline double wrap_angle(double angle)
   return std::remainder(angle, 2.0 * kPi);
 }
 
+inline double bias_corrected_yaw_rate(double measured_yaw_rate, double bias)
+{
+  return measured_yaw_rate - bias;
+}
+
+inline double yaw_rate_variance(
+  bool imu_stationary_like, bool imu_stationary_exit_pending,
+  double stationary_variance, double moving_variance)
+{
+  return imu_stationary_like && !imu_stationary_exit_pending ?
+         stationary_variance : moving_variance;
+}
+
+// Diagnostics-only observations. This type is deliberately not an input to
+// StationaryDetector or either yaw-rate output helper above.
+struct ExternalMotionDiagnostics
+{
+  bool stationary{false};
+  bool moving{false};
+};
+
+inline ExternalMotionDiagnostics collect_external_motion_diagnostics(
+  bool command_fresh, bool wheel_fresh, double command_linear,
+  double command_yaw_rate, double wheel_linear, double wheel_yaw_rate,
+  double command_linear_stationary_threshold,
+  double command_yaw_stationary_threshold,
+  double wheel_linear_stationary_threshold,
+  double wheel_yaw_stationary_threshold)
+{
+  const bool wheel_moving = wheel_fresh &&
+    (std::abs(wheel_linear) > wheel_linear_stationary_threshold ||
+    std::abs(wheel_yaw_rate) > wheel_yaw_stationary_threshold);
+  const bool externally_stationary = command_fresh && wheel_fresh &&
+    std::abs(command_linear) <= command_linear_stationary_threshold &&
+    std::abs(command_yaw_rate) <= command_yaw_stationary_threshold &&
+    std::abs(wheel_linear) <= wheel_linear_stationary_threshold &&
+    std::abs(wheel_yaw_rate) <= wheel_yaw_stationary_threshold;
+  return {externally_stationary, wheel_moving};
+}
+
 class StationaryDetector
 {
 public:

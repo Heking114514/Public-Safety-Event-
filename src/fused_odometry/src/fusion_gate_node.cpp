@@ -807,11 +807,23 @@ private:
     diagnostic_msgs::msg::DiagnosticStatus item;
     item.name = "fused_odometry/health";
     item.hardware_id = "odometry_fusion";
-    item.level = (mode == FusionMode::kFault || mode == FusionMode::kFaultStalled) ?
-      diagnostic_msgs::msg::DiagnosticStatus::ERROR :
-      (mode == FusionMode::kFull ? diagnostic_msgs::msg::DiagnosticStatus::OK :
-      diagnostic_msgs::msg::DiagnosticStatus::WARN);
+    switch (health_severity(mode, wheel, health.motion_fault)) {
+      case HealthSeverity::kOk:
+        item.level = diagnostic_msgs::msg::DiagnosticStatus::OK;
+        break;
+      case HealthSeverity::kWarning:
+        item.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
+        break;
+      case HealthSeverity::kError:
+        item.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
+        break;
+    }
     item.message = mode_name(mode);
+    if (health.motion_fault != MotionFault::kNone) {
+      item.message += std::string(" (") + motion_fault_name(health.motion_fault) + ")";
+    } else if (!wheel) {
+      item.message += " (WHEEL_UNAVAILABLE)";
+    }
     item.values.push_back(value("vision", vision ? "healthy" : "unavailable"));
     item.values.push_back(value("wheel", wheel ? "healthy" : "unavailable"));
     item.values.push_back(value("imu", imu ? "healthy" : "unavailable"));

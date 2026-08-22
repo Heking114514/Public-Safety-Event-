@@ -15,8 +15,8 @@ Input:
 - `/odometry/visual_continuous` (`nav_msgs/msg/Odometry`): optional visual yaw
   reference when `use_yaw_reference` is enabled
 - `/cmd_vel_nav` (`geometry_msgs/msg/Twist`) and `/wheel/odom`
-  (`nav_msgs/msg/Odometry`): corroborate stationary state when both are fresh
-  and zero; IMU-only detection remains available when either topic is absent
+  (`nav_msgs/msg/Odometry`): diagnostic motion observations only; they do not
+  change IMU stationarity, bias learning, attitude, angular rate, or covariance
 
 Outputs:
 
@@ -31,6 +31,12 @@ All output data uses the `camera_link` convention: x forward, y left, z up.
 Yaw starts at zero because a D455 has no absolute heading sensor. While moving,
 Yaw can still drift slowly; leave `use_yaw_reference` disabled when feeding
 `/imu/filtered` into an odometry fusion node to avoid a feedback loop.
+Stationary detection and stationary zero-rate bias updates use only filtered
+IMU acceleration and angular velocity. The published z angular rate is always
+the filtered, bias-corrected IMU measurement; stationary detection adjusts its
+covariance but never replaces the measurement with an exact zero. When motion
+first triggers the stationary exit debounce, angular-rate covariance
+immediately returns to its moving value.
 
 ## Run
 

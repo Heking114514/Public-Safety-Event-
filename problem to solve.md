@@ -19,12 +19,6 @@
 
 ## P1
 
-### P1-01 编码器误差会间接改变 IMU 输出和融合状态
-
-- 证据：`src/fused_odometry/src/fusion_gate_node.cpp:529-683,782-834` 使用轮速参与残差、运动状态和模式判定；`src/imu_rpy_filter/src/imu_rpy_filter_node.cpp:403-428,527-544,648-651` 使用轮速参与静止判定，并可将输出 `wz` 置零。
-- 触发：轮速漂移、低速死区、车轮打滑或轮速与视觉不一致。
-- 影响：编码器不仅用于隧道短时推算，还会改变正常定位期间的 IMU 角速度和融合健康状态。
-
 ### P1-02 导航没有“持续运动但路线无进度”的判定
 
 - 证据：`src/visual_navigation/src/waypoint_navigator.cpp:1210-1470` 的跟线和航点恢复没有沿路径进度超时；精确转向和终点航向控制也没有总超时。
@@ -63,7 +57,7 @@
 
 ### P1-08 导航和融合使用不同版本的 IMU 角速度
 
-- 证据：`src/visual_navigation/src/waypoint_navigator.cpp:616-623` 直接使用 `/imu/filtered`；`src/fused_odometry/src/fusion_gate_node.cpp:686-751` 对该角速度再做视觉参考 bias 修正。
+- 证据：`src/visual_navigation/src/waypoint_navigator.cpp:616-623` 直接使用 `/imu/filtered`；`src/fused_odometry/src/fusion_gate_node.cpp:681-746` 对该角速度再做视觉参考 bias 修正。
 - 触发：视觉参考 bias 不为零。
 - 影响：导航转向阻尼使用的角速度与 `/odometry/fused` 使用的角速度不一致，同一次转弯存在两套反馈口径。
 
@@ -163,7 +157,7 @@
 
 ### P3-10 无效 IMU 时间戳会先污染滤波状态再被拒绝
 
-- 证据：`src/imu_rpy_filter/src/imu_rpy_filter_node.cpp:442-490` 先更新中值、均值滤波器和 `last_stamp_`，之后才检查无效 `dt`。
+- 证据：`src/imu_rpy_filter/src/imu_rpy_filter_node.cpp:447-493` 先更新中值、均值滤波器和 `last_stamp_`，之后才检查无效 `dt`。
 - 触发：IMU 出现未来、乱序或重复时间戳。
 - 影响：被拒绝的样本仍留在滤波历史中，并可影响后续正常样本；当前 bag 未发现该异常输入。
 
@@ -183,12 +177,12 @@
 
 ### P4-01 导航节点职责过度集中
 
-- 证据：`src/visual_navigation/src/waypoint_navigator.cpp` 仍约 1825 行、约 94 个参数；路线接收、跟线、制动、转向、恢复、任务状态和命令发布仍共享同一个节点状态。
+- 证据：`src/visual_navigation/src/waypoint_navigator.cpp` 仍约 1832 行、约 94 个参数；路线接收、跟线、制动、转向、恢复、任务状态和命令发布仍共享同一个节点状态。
 - 影响：修改某一运动阶段仍可能通过共享成员影响其他阶段，完整状态迁移难以独立测试。
 
 ### P4-02 融合门控节点职责过度集中
 
-- 证据：`src/fused_odometry/src/fusion_gate_node.cpp` 仍约 1047 行；传感器回调同时承担 frame/时间校验、视觉增量计算、IMU bias、wheel 残差和估计输入重发布，传感器适配和门控仍共用大量节点状态。
+- 证据：`src/fused_odometry/src/fusion_gate_node.cpp` 仍约 1059 行；传感器回调同时承担 frame/时间校验、视觉增量计算、IMU bias、wheel 残差和估计输入重发布，传感器适配和门控仍共用大量节点状态。
 - 影响：修改某一传感器的校验或残差逻辑仍可能改变其他输入的发布条件。
 
 ### P4-03 同一状态由多个节点分别维护

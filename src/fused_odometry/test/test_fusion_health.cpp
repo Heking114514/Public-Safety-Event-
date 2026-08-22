@@ -108,7 +108,7 @@ TEST(FusionHealthMonitor, VisualRecoveryClearsOutageState)
   EXPECT_EQ(result.mode, fused_odometry::FusionMode::kFull);
 }
 
-TEST(FusionHealthMonitor, MotionFaultAndWheelAvailabilityCannotDisagree)
+TEST(FusionHealthMonitor, WheelSlipRemainsDiagnosticDuringHealthyVisualFusion)
 {
   auto monitor = make_monitor();
   auto input = healthy_input(0.0);
@@ -122,7 +122,88 @@ TEST(FusionHealthMonitor, MotionFaultAndWheelAvailabilityCannotDisagree)
 
   EXPECT_EQ(result.motion_fault, fused_odometry::MotionFault::kSlip);
   EXPECT_FALSE(result.wheel_healthy);
-  EXPECT_EQ(result.mode, fused_odometry::FusionMode::kNoWheel);
+  EXPECT_EQ(result.mode, fused_odometry::FusionMode::kFull);
+}
+
+TEST(FusionHealthMonitor, EncoderFailureRemainsDiagnosticDuringHealthyVisualFusion)
+{
+  auto monitor = make_monitor();
+  auto input = healthy_input(0.0);
+  input.command_fresh = true;
+  input.command_velocity = 0.2;
+  input.wheel_velocity = 0.0;
+  input.visual_velocity = 0.2;
+  monitor.evaluate(input, {});
+  input.now_seconds = 0.7;
+  const auto result = monitor.evaluate(input, {});
+
+  EXPECT_EQ(result.motion_fault, fused_odometry::MotionFault::kEncoderFailure);
+  EXPECT_FALSE(result.wheel_healthy);
+  EXPECT_EQ(result.mode, fused_odometry::FusionMode::kFull);
+}
+
+TEST(FusionHealthMonitor, MissingWheelDoesNotDegradeHealthyVisualFusion)
+{
+  auto monitor = make_monitor();
+  auto input = healthy_input(1.0);
+  input.wheel_measurement_fresh = false;
+  input.wheel_available = false;
+  const auto result = monitor.evaluate(input, {});
+
+  EXPECT_EQ(result.motion_fault, fused_odometry::MotionFault::kNone);
+  EXPECT_FALSE(result.wheel_healthy);
+  EXPECT_EQ(result.mode, fused_odometry::FusionMode::kFull);
+}
+
+TEST(FusionHealthMonitor, MissingImuHasOneModeIndependentOfWheelHealth)
+{
+  auto monitor = make_monitor();
+  auto input = healthy_input(1.0);
+  input.imu = false;
+  EXPECT_EQ(
+    monitor.evaluate(input, {}).mode,
+    fused_odometry::FusionMode::kNoImu);
+
+  input.now_seconds = 1.1;
+  input.wheel_measurement_fresh = false;
+  input.wheel_available = false;
+  EXPECT_EQ(
+    monitor.evaluate(input, {}).mode,
+    fused_odometry::FusionMode::kNoImu);
+}
+
+TEST(FusionHealthMonitor, MechanicalStallStillOverridesHealthyVisualFusion)
+{
+  auto monitor = make_monitor();
+  auto input = healthy_input(0.0);
+  input.command_fresh = true;
+  input.command_velocity = 0.2;
+  input.wheel_velocity = 0.0;
+  input.visual_velocity = 0.0;
+  monitor.evaluate(input, {});
+  input.now_seconds = 0.7;
+  const auto result = monitor.evaluate(input, {});
+
+  EXPECT_EQ(result.motion_fault, fused_odometry::MotionFault::kStalled);
+  EXPECT_EQ(result.mode, fused_odometry::FusionMode::kFaultStalled);
+}
+
+TEST(FusionHealthMonitor, AngularStallStillOverridesHealthyVisualFusion)
+{
+  auto monitor = make_monitor();
+  auto input = healthy_input(0.0);
+  input.command_fresh = true;
+  input.command_yaw_rate = 0.5;
+  input.visual_yaw_valid = true;
+  input.visual_yaw_rate = 0.0;
+  input.imu_yaw_rate = 0.0;
+  monitor.evaluate(input, {});
+  input.now_seconds = 0.9;
+  const auto result = monitor.evaluate(input, {});
+
+  EXPECT_TRUE(result.angular_stalled);
+  EXPECT_EQ(result.angular_source_count, 2U);
+  EXPECT_EQ(result.mode, fused_odometry::FusionMode::kFaultStalled);
 }
 
 }  // namespace

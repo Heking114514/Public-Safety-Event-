@@ -538,16 +538,10 @@ FusionMode select_mode(
     if (visual_realigned) {
       return FusionMode::kVisualRealigned;
     }
-    if (wheel && imu) {
-      return FusionMode::kFull;
-    }
-    if (!wheel && imu) {
-      return FusionMode::kNoWheel;
-    }
-    if (wheel && !imu) {
-      return FusionMode::kNoImu;
-    }
-    return FusionMode::kVisionOnly;
+    // Wheel odometry is supervision-only while vision is healthy. Its
+    // availability and motion-fault diagnostics must not change the fusion
+    // mode or navigation speed when it does not contribute to the EKF.
+    return imu ? FusionMode::kFull : FusionMode::kNoImu;
   }
 
   // Once IMU yaw-rate is back, wheel + IMU can continue without waiting for
@@ -583,6 +577,20 @@ const char * mode_name(FusionMode mode)
     case FusionMode::kFault: return "FAULT";
   }
   return "FAULT";
+}
+
+HealthSeverity health_severity(
+  FusionMode mode, bool wheel_healthy, MotionFault motion_fault)
+{
+  if (mode == FusionMode::kFault || mode == FusionMode::kFaultStalled ||
+    motion_fault == MotionFault::kStalled)
+  {
+    return HealthSeverity::kError;
+  }
+  if (mode != FusionMode::kFull || !wheel_healthy || motion_fault != MotionFault::kNone) {
+    return HealthSeverity::kWarning;
+  }
+  return HealthSeverity::kOk;
 }
 
 }  // namespace fused_odometry
