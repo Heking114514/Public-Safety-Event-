@@ -83,6 +83,18 @@ waypoint_navigator:
     waypoint_recovery_speed: 0.10
     waypoint_recovery_heading_tolerance: 0.12
     waypoint_recovery_max_angular_speed: 0.60
+    # Braking, mission holds, localization grace and final-yaw control pause
+    # position progress. In-place turns remain safe through the displacement gate.
+    path_progress_timeout: 10.0
+    path_progress_minimum_advance: 0.05
+    path_progress_minimum_actual_displacement: 0.25
+    path_progress_max_recovery_attempts: 2
+    turn_progress_stall_timeout: 6.0
+    turn_progress_minimum_error_reduction: 0.08
+    turn_progress_base_total_timeout: 12.0
+    turn_progress_minimum_expected_yaw_rate: 0.12
+    turn_progress_max_total_timeout: 40.0
+    turn_progress_max_recovery_attempts: 2
     pre_turn_stop_heading_threshold: 0.18
     pre_turn_stop_speed: 0.03
     pre_turn_stop_dwell: 0.10

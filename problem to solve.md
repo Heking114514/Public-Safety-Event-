@@ -19,12 +19,6 @@
 
 ## P1
 
-### P1-02 导航没有“持续运动但路线无进度”的判定
-
-- 证据：`src/visual_navigation/src/waypoint_navigator.cpp:1210-1470` 的跟线和航点恢复没有沿路径进度超时；精确转向和终点航向控制也没有总超时。
-- 触发：车辆在局部区域反复纠偏、被阻挡、转向无响应或定位漂移，但仍持续产生运动量。
-- 影响：控制器不能区分“为了完成路线而暂时容错”和“已经长时间无有效推进”；最近 rosbag 的长时间恢复振荡属于这一类状态。
-
 ### P1-03 执行器健康只证明通信和模式正常，不证明命令执行正常
 
 - 证据：`src/cup_car_serial/src/cmd_vel_serial_node.cpp:279-295,352-391` 没有持续检查目标轮速与实测轮速误差、单轮失速、严重过驱或饱和。
@@ -57,7 +51,7 @@
 
 ### P1-08 导航和融合使用不同版本的 IMU 角速度
 
-- 证据：`src/visual_navigation/src/waypoint_navigator.cpp:616-623` 直接使用 `/imu/filtered`；`src/fused_odometry/src/fusion_gate_node.cpp:681-746` 对该角速度再做视觉参考 bias 修正。
+- 证据：`src/visual_navigation/src/waypoint_navigator.cpp:653-659` 直接使用 `/imu/filtered`；`src/fused_odometry/src/fusion_gate_node.cpp:681-746` 对该角速度再做视觉参考 bias 修正。
 - 触发：视觉参考 bias 不为零。
 - 影响：导航转向阻尼使用的角速度与 `/odometry/fused` 使用的角速度不一致，同一次转弯存在两套反馈口径。
 
@@ -65,7 +59,7 @@
 
 ### P2-01 到点停车超时会被当成停车完成
 
-- 证据：`src/visual_navigation/include/visual_navigation/path_control.hpp:352-370` 在 `total_stop_seconds >= timeout` 时直接返回 true；`src/visual_navigation/src/waypoint_navigator.cpp:1595-1614` 只记录警告并继续状态转换；测试也把该行为作为期望结果。
+- 证据：`src/visual_navigation/include/visual_navigation/path_control.hpp:352-370` 在 `total_stop_seconds >= timeout` 时直接返回 true；`src/visual_navigation/src/waypoint_navigator.cpp:1673-1710` 只记录警告并继续状态转换；测试也把该行为作为期望结果。
 - 触发：制动超时后实测速度仍高于阈值，或速度值无效。
 - 影响：车辆可在没有确认停稳时进入转向或下一路径段。最近 rosbag 没有运行到该状态，当前未形成实车影响证据。
 
@@ -109,7 +103,7 @@
 
 ### P3-01 导航和融合主要按消息到达时间判断新鲜度
 
-- 证据：`src/visual_navigation/src/waypoint_navigator.cpp:573-623,887-915` 与 `src/fused_odometry/src/fusion_gate_node.cpp:358-420,529-551,686-705` 没有统一检查 header stamp 的实际年龄、未来时间和完整单调性。
+- 证据：`src/visual_navigation/src/waypoint_navigator.cpp:610-659,932-955` 与 `src/fused_odometry/src/fusion_gate_node.cpp:358-420,529-551,686-705` 没有统一检查 header stamp 的实际年龄、未来时间和完整单调性。
 - 触发：跨机时钟错误、长队列延迟或 bag 回放旧消息。
 - 影响：旧测量可能在刚到达时被视为新鲜；当前本机实时运行中未发现该问题的实际证据。
 
@@ -177,7 +171,7 @@
 
 ### P4-01 导航节点职责过度集中
 
-- 证据：`src/visual_navigation/src/waypoint_navigator.cpp` 仍约 1832 行、约 94 个参数；路线接收、跟线、制动、转向、恢复、任务状态和命令发布仍共享同一个节点状态。
+- 证据：`src/visual_navigation/src/waypoint_navigator.cpp` 仍约 2029 行、104 个参数；路线接收、跟线、制动、转向、恢复、任务状态和命令发布仍共享同一个节点状态。
 - 影响：修改某一运动阶段仍可能通过共享成员影响其他阶段，完整状态迁移难以独立测试。
 
 ### P4-02 融合门控节点职责过度集中

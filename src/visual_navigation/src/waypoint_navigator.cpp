@@ -31,7 +31,9 @@
 #include "visual_navigation/fusion_health_policy.hpp"
 #include "visual_navigation/navigation_supervisor.hpp"
 #include "visual_navigation/path_control.hpp"
+#include "visual_navigation/path_progress_supervisor.hpp"
 #include "visual_navigation/rate_limiter.hpp"
+#include "visual_navigation/turn_progress_supervisor.hpp"
 
 namespace
 {
@@ -256,6 +258,38 @@ public:
     waypointRecoveryMaxAngularSpeed_ = std::min(
       maxAngularSpeed_, std::max(
         0.0, declare_parameter<double>("waypoint_recovery_max_angular_speed", 0.60)));
+    const double pathProgressTimeout = std::max(
+      0.0, declare_parameter<double>("path_progress_timeout", 10.0));
+    const double pathProgressMinimumAdvance = std::max(
+      0.0, declare_parameter<double>("path_progress_minimum_advance", 0.05));
+    const double pathProgressMinimumActualDisplacement = std::max(
+      0.0, declare_parameter<double>(
+        "path_progress_minimum_actual_displacement", 0.25));
+    const int pathProgressMaxRecoveryAttempts = std::max(
+      0, static_cast<int>(declare_parameter<int64_t>(
+        "path_progress_max_recovery_attempts", 2)));
+    pathProgressSupervisor_ = visual_navigation::PathProgressSupervisor(
+      {pathProgressTimeout, pathProgressMinimumAdvance,
+        pathProgressMinimumActualDisplacement,
+        pathProgressMaxRecoveryAttempts});
+    const double turnProgressStallTimeout = std::max(
+      0.0, declare_parameter<double>("turn_progress_stall_timeout", 6.0));
+    const double turnProgressMinimumErrorReduction = std::max(
+      0.0, declare_parameter<double>("turn_progress_minimum_error_reduction", 0.08));
+    const double turnProgressBaseTotalTimeout = std::max(
+      0.0, declare_parameter<double>("turn_progress_base_total_timeout", 12.0));
+    const double turnProgressMinimumExpectedYawRate = std::max(
+      0.001, declare_parameter<double>("turn_progress_minimum_expected_yaw_rate", 0.12));
+    const double turnProgressMaxTotalTimeout = std::max(
+      turnProgressBaseTotalTimeout,
+      declare_parameter<double>("turn_progress_max_total_timeout", 40.0));
+    const int turnProgressMaxRecoveryAttempts = std::max(
+      0, static_cast<int>(declare_parameter<int64_t>(
+        "turn_progress_max_recovery_attempts", 2)));
+    turnProgressSupervisor_ = visual_navigation::TurnProgressSupervisor(
+      {turnProgressStallTimeout, turnProgressMinimumErrorReduction,
+        turnProgressBaseTotalTimeout, turnProgressMinimumExpectedYawRate,
+        turnProgressMaxTotalTimeout, turnProgressMaxRecoveryAttempts});
     preTurnStopHeadingThreshold_ = std::max(
       0.0, declare_parameter<double>("pre_turn_stop_heading_threshold", 0.18));
     preTurnStopSpeed_ = std::max(
@@ -705,6 +739,8 @@ private:
     currentWaypointIndex_ = 0;
     finalPositionCaptured_ = false;
     navigationSupervisor_.ResetLocalizationHistory();
+    pathProgressSupervisor_.Reset();
+    turnProgressSupervisor_.Reset();
     waitAction_ = WaitAction::NONE;
     pathSegmentInitialized_ = false;
     resumePathFromCurrentPose_ = false;
@@ -763,6 +799,8 @@ private:
     finalPositionCaptured_ = false;
     navigationActive_ = true;
     navigationSupervisor_.ResetLocalizationHistory();
+    pathProgressSupervisor_.Reset();
+    turnProgressSupervisor_.Reset();
     pathSegmentInitialized_ = false;
     ResetPathPid();
     SetState(MotionHeld() ? "HELD_FOR_MISSION" : "WAITING_FOR_LOCALIZATION");
@@ -775,6 +813,8 @@ private:
     std_srvs::srv::Trigger::Response::SharedPtr response)
   {
     navigationActive_ = false;
+    pathProgressSupervisor_.Reset();
+    turnProgressSupervisor_.Reset();
     waitAction_ = WaitAction::NONE;
     finalPositionCaptured_ = false;
     pathSegmentInitialized_ = false;
@@ -816,6 +856,8 @@ private:
       {
         motionHoldStartedAt_ = now();
         motionHoldStartInitialized_ = true;
+        pathProgressSupervisor_.Reset();
+        turnProgressSupervisor_.Reset();
         pathSegmentInitialized_ = false;
         finalPositionCaptured_ = false;
         ResetPathPid();
@@ -865,6 +907,8 @@ private:
     currentWaypointIndex_ = 0;
     finalPositionCaptured_ = false;
     navigationSupervisor_.ResetLocalizationHistory();
+    pathProgressSupervisor_.Reset();
+    turnProgressSupervisor_.Reset();
     waitAction_ = WaitAction::NONE;
     pathSegmentInitialized_ = false;
     ResetPathPid();
@@ -915,6 +959,8 @@ private:
   {
     if (MotionHeld())
     {
+      pathProgressSupervisor_.Reset();
+      turnProgressSupervisor_.Reset();
       PublishStop();
       SetState("HELD_FOR_MISSION");
       return;
@@ -922,6 +968,8 @@ private:
 
     if (!navigationActive_)
     {
+      pathProgressSupervisor_.Reset();
+      turnProgressSupervisor_.Reset();
       PublishStop();
       return;
     }
@@ -930,6 +978,8 @@ private:
       CurrentNavigationInputs(), std::chrono::steady_clock::now());
     if (supervision.action != visual_navigation::NavigationRuntimeAction::DRIVE)
     {
+      pathProgressSupervisor_.Reset();
+      turnProgressSupervisor_.Reset();
       PublishStop();
       if (supervision.reset_path_control)
         ResetPathPid();
@@ -939,11 +989,20 @@ private:
       return;
     }
     auto fusionHealth = supervision.fusion_health;
+    const bool progressSupervisionAllowed =
+      supervision.state != "DEGRADED_TRANSIENT_LOCALIZATION";
+    if (!progressSupervisionAllowed)
+    {
+      pathProgressSupervisor_.Pause();
+      turnProgressSupervisor_.Pause();
+    }
     if (!supervision.state.empty())
       SetState(supervision.state);
 
     if (waitAction_ != WaitAction::NONE)
     {
+      pathProgressSupervisor_.Reset();
+      turnProgressSupervisor_.Reset();
       PublishStop();
       if (now() < waitUntil_)
       {
@@ -1013,6 +1072,8 @@ private:
         waypointBraking_, waypointBrakeCompleted_,
         waypointReached, waypointRequiresStop))
     {
+      pathProgressSupervisor_.Reset();
+      turnProgressSupervisor_.Reset();
       BeginWaypointBraking();
       PublishStop();
       SetState("BRAKING_AT_WAYPOINT");
@@ -1020,6 +1081,8 @@ private:
     }
     if (waypointBraking_)
     {
+      pathProgressSupervisor_.Reset();
+      turnProgressSupervisor_.Reset();
       PublishStop();
       if (!WaypointBrakeHasCompleted())
       {
@@ -1052,6 +1115,7 @@ private:
 
     if (finalPositionCaptured_)
     {
+      pathProgressSupervisor_.Reset();
       if (std::isfinite(target.yaw))
       {
         const double finalYawError = NormalizeAngle(target.yaw - currentYaw_);
@@ -1060,6 +1124,13 @@ private:
           std::abs(controlYawRate) > turnSettleYawRate_ || rotatingInPlace_;
         if (finalYawNeedsControl)
         {
+          if (SuperviseTurnProgress(
+              2, std::abs(finalYawError),
+              finalYawMaxAngularSpeed_ * fusionHealth.speed_scale,
+              progressSupervisionAllowed))
+          {
+            return;
+          }
           if (!rotatingInPlace_)
           {
             rotatingInPlace_ = true;
@@ -1146,6 +1217,8 @@ private:
         }
       }
 
+      turnProgressSupervisor_.Reset();
+
       if (!visual_navigation::FinalPositionCanComplete(
           finalPositionCaptured_, distance, target.tolerance))
       {
@@ -1168,7 +1241,8 @@ private:
 
     if (waypointReached)
     {
-
+      pathProgressSupervisor_.Reset();
+      turnProgressSupervisor_.Reset();
       ++currentWaypointIndex_;
       pathSegmentInitialized_ = false;
       ResetPathPid();
@@ -1208,6 +1282,24 @@ private:
         command.linear.x = std::min(
           waypointRecoverySpeed_, linearGain_ * distance) *
           std::max(0.0, std::cos(recoveryHeadingError)) * fusionHealth.speed_scale;
+      }
+      const double recoveryProgress =
+        CompletedRouteLengthBeforeCurrentSegment() +
+        Clamp(pathLength - distance, 0.0, pathLength);
+      if (SupervisePathProgress(recoveryProgress, progressSupervisionAllowed))
+        return;
+      if (std::abs(recoveryHeadingError) > waypointRecoveryHeadingTolerance_)
+      {
+        if (SuperviseTurnProgress(
+            1, std::abs(recoveryHeadingError), scaledMaxAngularSpeed,
+            progressSupervisionAllowed))
+        {
+          return;
+        }
+      }
+      else
+      {
+        turnProgressSupervisor_.Reset();
       }
       PublishMotionCommand(command);
       SetState("RECOVERING_WAYPOINT");
@@ -1261,8 +1353,21 @@ private:
       fusionHealth.speed_scale;
     geometry_msgs::msg::Twist command;
     bool brakingApproach = false;
+    const double segmentProgress = pathProjection.valid ?
+      CompletedRouteLengthBeforeCurrentSegment() +
+      Clamp(pathLength - pathProjection.remaining, 0.0, pathLength) :
+      std::numeric_limits<double>::quiet_NaN();
     if (rotatingInPlace_)
     {
+      if (SupervisePathProgress(segmentProgress, progressSupervisionAllowed))
+        return;
+      if (SuperviseTurnProgress(
+          0, std::abs(headingError),
+          turnCruiseSpeed_ * fusionHealth.speed_scale,
+          progressSupervisionAllowed))
+      {
+        return;
+      }
       if (!turnAnchorValid_)
       {
         turnAnchorX_ = currentX_;
@@ -1300,6 +1405,7 @@ private:
         if (std::abs(headingError) <= rotateInPlaceExitThreshold_)
         {
           ResetPathPid();
+          turnProgressSupervisor_.Reset();
           pathAlignmentCompleted_ = true;
           SetState("PATH_ALIGNED");
           return;
@@ -1325,6 +1431,7 @@ private:
     }
     else
     {
+      turnProgressSupervisor_.Reset();
       const double headingScale = std::max(0.0, std::cos(pathError));
       double linearSpeed = visual_navigation::CrossTrackSpeedLimit(
         requestedSpeed, std::abs(crossTrackError),
@@ -1371,6 +1478,11 @@ private:
         approachDistance <= stoppingDistance && command.linear.x > 0.0;
     }
 
+    if (!rotatingInPlace_ && SupervisePathProgress(
+        segmentProgress, !brakingApproach && progressSupervisionAllowed))
+    {
+      return;
+    }
     PublishMotionCommand(command);
     if (rotatingInPlace_)
       SetState("ROTATING_TO_PATH");
@@ -1384,6 +1496,8 @@ private:
     finalPositionCaptured_ = false;
     finalPositionRecoveryActive_ = false;
     pathSegmentInitialized_ = false;
+    pathProgressSupervisor_.Reset();
+    turnProgressSupervisor_.Reset();
     ResetPathPid();
     PublishStop();
     SetState("GOAL_REACHED");
@@ -1409,10 +1523,91 @@ private:
     ResetPathPid();
   }
 
+  bool SupervisePathProgress(
+    double measuredProgress, bool eligible)
+  {
+    const auto decision = pathProgressSupervisor_.Evaluate(
+      currentWaypointIndex_, measuredProgress, currentX_, currentY_, eligible,
+      std::chrono::steady_clock::now());
+    if (decision.action == visual_navigation::PathProgressAction::RECOVER)
+    {
+      RCLCPP_WARN(
+        get_logger(),
+        "No path progress; resetting control for waypoint %zu "
+        "(recovery %d)",
+        currentWaypointIndex_, decision.recovery_attempt);
+      PublishStop();
+      ResetPathPid();
+      SetState("RECOVERING_NO_PATH_PROGRESS");
+      return true;
+    }
+    if (decision.action == visual_navigation::PathProgressAction::FAULT)
+    {
+      RCLCPP_ERROR(
+        get_logger(),
+        "Navigation stopped: waypoint %zu made no path progress after %d recoveries",
+        currentWaypointIndex_, decision.recovery_attempt);
+      navigationActive_ = false;
+      PublishStop();
+      ResetPathPid();
+      SetState("FAULT_NO_PATH_PROGRESS");
+      return true;
+    }
+    return false;
+  }
+
+  bool SuperviseTurnProgress(
+    std::size_t phaseOffset, double absoluteYawError,
+    double expectedYawRate, bool eligible)
+  {
+    const std::size_t phaseId = currentWaypointIndex_ * 3 + phaseOffset;
+    const auto decision = turnProgressSupervisor_.Evaluate(
+      phaseId, absoluteYawError, expectedYawRate, eligible,
+      std::chrono::steady_clock::now());
+    if (decision.action == visual_navigation::TurnProgressAction::RECOVER)
+    {
+      RCLCPP_WARN(
+        get_logger(),
+        "No turn progress at waypoint %zu (recovery %d)",
+        currentWaypointIndex_, decision.recovery_attempt);
+      PublishStop();
+      ResetPathPid();
+      SetState("RECOVERING_NO_TURN_PROGRESS");
+      return true;
+    }
+    if (decision.action == visual_navigation::TurnProgressAction::FAULT)
+    {
+      RCLCPP_ERROR(
+        get_logger(),
+        "Navigation stopped: waypoint %zu made no turn progress after %d recoveries",
+        currentWaypointIndex_, decision.recovery_attempt);
+      navigationActive_ = false;
+      PublishStop();
+      ResetPathPid();
+      SetState("FAULT_NO_TURN_PROGRESS");
+      return true;
+    }
+    return false;
+  }
+
+  double CompletedRouteLengthBeforeCurrentSegment() const
+  {
+    double completedLength = 0.0;
+    const std::size_t end = std::min(currentWaypointIndex_, waypoints_.size());
+    for (std::size_t index = 1; index < end; ++index)
+    {
+      completedLength += std::hypot(
+        waypoints_[index].x - waypoints_[index - 1].x,
+        waypoints_[index].y - waypoints_[index - 1].y);
+    }
+    return completedLength;
+  }
+
   void BeginFinalPositionRecovery()
   {
     finalPositionCaptured_ = false;
     finalPositionRecoveryActive_ = true;
+    turnProgressSupervisor_.Reset();
     waypointBrakeCompleted_ = false;
     ResetPathPid();
     waypointRecoveryActive_ = true;
@@ -1737,6 +1932,8 @@ private:
   std::vector<std::string> allowedFusionStates_;
   visual_navigation::FusionHealthPolicy fusionHealthPolicy_;
   visual_navigation::NavigationSupervisor navigationSupervisor_;
+  visual_navigation::PathProgressSupervisor pathProgressSupervisor_;
+  visual_navigation::TurnProgressSupervisor turnProgressSupervisor_;
 
   std::vector<Waypoint> waypoints_;
   std::size_t currentWaypointIndex_{0};
