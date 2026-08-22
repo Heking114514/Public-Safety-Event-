@@ -38,7 +38,7 @@ imu_rpy_filter:
 
     # Keep this false when /imu/filtered will be fused back into odometry.
     use_yaw_reference: false
-    yaw_reference_topic: /odom
+    yaw_reference_topic: /odometry/visual_continuous
     tracking_topic: /tracking_state
     visual_yaw_std_degrees: 2.0
     visual_yaw_gate_degrees: 15.0

@@ -112,18 +112,22 @@ ros2 launch orbslam3 realsense_d455_stereo_inertial.launch.py
 
 | 话题 | 类型 | 说明 |
 | --- | --- | --- |
-| `/odom` | `nav_msgs/msg/Odometry` | 具有真实尺度的机体位姿和帧间速度 |
-| `/odom/orb_raw` | `nav_msgs/msg/Odometry` | 连续性对齐前的 ORB 原始机体位姿；重定位时允许跳变，不发布 TF |
+| `/odometry/visual_continuous` | `nav_msgs/msg/Odometry` | 供显示和需要连续视觉航向的消费者使用；会隐藏重定位跳变 |
+| `/odometry/visual_raw` | `nav_msgs/msg/Odometry` | 融合器使用的固定原点视觉观测；保留重定位和地图修正跳变，不发布 TF |
+| `/odom` | `nav_msgs/msg/Odometry` | `/odometry/visual_continuous` 的兼容别名 |
+| `/odom/orb_raw` | `nav_msgs/msg/Odometry` | `/odometry/visual_raw` 的兼容别名 |
 | `/pose` | `geometry_msgs/msg/PoseStamped` | 配置的地图坐标系中的机体位姿 |
 | `/path` | `nav_msgs/msg/Path` | 有长度限制的历史位姿轨迹 |
 | `/tracking_state` | `std_msgs/msg/Int32` | ORB-SLAM3 跟踪状态枚举值 |
 | `/orbslam3/map_change` | `std_msgs/msg/UInt64` | 回环或全局 BA 引起的地图修正序号 |
 | `/diagnostics` | `diagnostic_msgs/msg/DiagnosticArray` | 跟踪、IMU、同步和丢帧状态 |
-| `/tf` | `tf2_msgs/msg/TFMessage` | 从 `map_fram0e_id` 到 `body_frame_id` 的坐标变换 |
+| `/tf` | `tf2_msgs/msg/TFMessage` | 从 `map_frame_id` 到 `body_frame_id` 的坐标变换 |
 
 跟踪状态值分别为：`-1 SYSTEM_NOT_READY`、`0 NO_IMAGES_YET`、`1 NOT_INITIALIZED`、`2 OK`、`3 RECENTLY_LOST`、`4 LOST` 和 `5 OK_KLT`。仅当状态为 `OK` 或 `OK_KLT` 时才发布里程计数据；跟踪不可用时不会发布过期位姿。
 
-`/odom` 保持连续，适合直接显示和原有消费者。`/odom/orb_raw` 先使用首帧机体位姿将 ORB 光学世界系转换为与 `/odom` 相同的 ROS map 坐标，但不会在跟踪恢复时移动原点，因此仍会保留重定位跳变，供融合器判断和渐进校正。该话题输出平面化的 `x、y、yaw`，ORB 内部仍保留完整 SE(3) 地图。它使用相同的 `map_frame_id` 和 `body_frame_id`，但不会生成另一条 TF。跟踪恢复的第一帧不会跨丢失区间计算速度，其 twist 为零且协方差设为高不确定度。
+`/odometry/visual_continuous` 会在跟踪恢复时移动发布原点以保持连续，适合显示或作为可选视觉航向参考。`/odometry/visual_raw` 使用首帧机体位姿固定原点，保留重定位跳变，供融合器判断和渐进校正。该话题输出平面化的 `x、y、yaw`，ORB 内部仍保留完整 SE(3) 地图。两者使用相同的 `map_frame_id` 和 `body_frame_id`，但只有连续输出可对应节点发布的 TF。跟踪恢复的第一帧不会跨丢失区间计算速度，其 twist 为零且协方差设为高不确定度。导航的公共位姿输入是融合后的 `/odometry/fused`，不能直接用上述任一视觉话题替代。
+
+`/odom` 和 `/odom/orb_raw` 只用于兼容已有启动文件、rosbag 和消费者，消息分别与两个 `/odometry/visual_*` 话题完全相同。新接入统一使用语义明确的话题；将 `legacy_odom_topic` 或 `legacy_raw_odom_topic` 设为空字符串可关闭对应兼容别名。
 
 默认机体坐标系为 `camera_link`。在机器人上使用时，请发布从 `base_link` 到 `camera_link` 的实测静态变换，然后运行：
 

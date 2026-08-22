@@ -78,6 +78,8 @@ private:
 
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odomPublisher_;
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr rawOdomPublisher_;
+    rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr legacyOdomPublisher_;
+    rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr legacyRawOdomPublisher_;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr posePublisher_;
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pathPublisher_;
     rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr trackingStatePublisher_;

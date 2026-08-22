@@ -286,7 +286,8 @@ public:
     correction_time_ = declare_positive("tilt_correction_time", 0.5);
     transform_optical_frame_ = declare_parameter<bool>("transform_optical_frame", true);
     use_yaw_reference_ = declare_parameter<bool>("use_yaw_reference", false);
-    yaw_reference_topic_ = declare_parameter<std::string>("yaw_reference_topic", "/odom");
+    yaw_reference_topic_ = declare_parameter<std::string>(
+      "yaw_reference_topic", "/odometry/visual_continuous");
     tracking_topic_ = declare_parameter<std::string>("tracking_topic", "/tracking_state");
     command_topic_ = declare_parameter<std::string>("command_topic", "/cmd_vel_nav");
     wheel_topic_ = declare_parameter<std::string>("wheel_topic", "/wheel/odom");

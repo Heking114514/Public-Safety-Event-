@@ -1,11 +1,10 @@
 fused_odometry_gate:
   ros__parameters:
-    raw_visual_topic: /odom/orb_raw
+    raw_visual_topic: /odometry/visual_raw
     tracking_topic: /tracking_state
     map_change_topic: /orbslam3/map_change
     wheel_topic: /wheel/odom
     imu_topic: /imu/filtered
-    fused_topic: /odometry/fused
     command_topic: /cmd_vel_nav
     visual_output_topic: /fusion/input/visual_odom
     wheel_output_topic: /fusion/input/wheel_odom

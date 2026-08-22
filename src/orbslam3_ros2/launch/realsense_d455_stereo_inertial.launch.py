@@ -22,7 +22,10 @@ def generate_launch_description():
     use_slam_imu = LaunchConfiguration("use_slam_imu")
     enable_imu = LaunchConfiguration("enable_imu")
     publish_tf = LaunchConfiguration("publish_tf")
+    odom_topic = LaunchConfiguration("odom_topic")
     raw_odom_topic = LaunchConfiguration("raw_odom_topic")
+    legacy_odom_topic = LaunchConfiguration("legacy_odom_topic")
+    legacy_raw_odom_topic = LaunchConfiguration("legacy_raw_odom_topic")
 
     camera = Node(
         package="realsense2_camera",
@@ -69,7 +72,10 @@ def generate_launch_description():
                 "map_frame_id": map_frame_id,
                 "body_frame_id": body_frame_id,
                 "publish_tf": ParameterValue(publish_tf, value_type=bool),
+                "odom_topic": ParameterValue(odom_topic, value_type=str),
                 "raw_odom_topic": ParameterValue(raw_odom_topic, value_type=str),
+                "legacy_odom_topic": ParameterValue(legacy_odom_topic, value_type=str),
+                "legacy_raw_odom_topic": ParameterValue(legacy_raw_odom_topic, value_type=str),
                 "map_change_topic": "/orbslam3/map_change",
                 "publish_path": True,
                 "save_trajectory": True,
@@ -103,9 +109,24 @@ def generate_launch_description():
                 description="Publish the live map-to-body transform",
             ),
             DeclareLaunchArgument(
+                "odom_topic",
+                default_value="/odometry/visual_continuous",
+                description="Continuity-aligned visual odometry",
+            ),
+            DeclareLaunchArgument(
                 "raw_odom_topic",
+                default_value="/odometry/visual_raw",
+                description="Fixed-origin visual odometry that preserves ORB map corrections",
+            ),
+            DeclareLaunchArgument(
+                "legacy_odom_topic",
+                default_value="/odom",
+                description="Compatibility alias for continuous visual odometry; empty disables it",
+            ),
+            DeclareLaunchArgument(
+                "legacy_raw_odom_topic",
                 default_value="/odom/orb_raw",
-                description="Raw ORB body odometry before continuity alignment",
+                description="Compatibility alias for raw visual odometry; empty disables it",
             ),
             DeclareLaunchArgument("visualization", default_value="false"),
             DeclareLaunchArgument(

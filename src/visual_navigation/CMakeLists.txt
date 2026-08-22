@@ -54,6 +54,8 @@ if(BUILD_TESTING)
   target_include_directories(rate_limiter_test PRIVATE include)
   ament_add_gtest(path_control_test test/path_control_test.cpp)
   target_include_directories(path_control_test PRIVATE include)
+  ament_add_gtest(navigation_supervisor_test test/navigation_supervisor_test.cpp)
+  target_include_directories(navigation_supervisor_test PRIVATE include)
 endif()
 
 ament_package()

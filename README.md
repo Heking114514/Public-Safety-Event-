@@ -70,7 +70,9 @@ ros2 pkg list | grep -E 'orbslam3|visual_navigation|cup_car_serial|realsense2_ca
 ```text
 D455 图像和 IMU
   → ORB-SLAM3
-  → /odom、/tracking_state
+  → /odometry/visual_raw、/tracking_state
+  → 里程计融合
+  → /odometry/fused
   → waypoint_navigator
   → /cmd_vel_nav
   → 下位机桥接节点
@@ -187,12 +189,12 @@ data: 5    # OK_KLT
 ### 4.3 里程计和 TF
 
 ```bash
-ros2 topic hz /odom
-ros2 topic echo /odom --once
+ros2 topic hz /odometry/fused
+ros2 topic echo /odometry/fused --once
 ros2 run tf2_ros tf2_echo map camera_link
 ```
 
-手动移动相机时，`/odom` 中的位置和姿态应合理变化。
+手动移动相机时，`/odometry/fused` 中的位置和姿态应合理变化。
 
 ### 4.4 航点和导航状态
 
@@ -228,7 +230,7 @@ x,y,yaw,speed,tolerance,stop_time
 | `tolerance` | 到达容差 | m |
 | `stop_time` | 到达后停留时间 | s |
 
-航点和 `/odom` 必须使用同一个坐标系，当前均为 `map`。
+航点和 `/odometry/fused` 必须使用同一个坐标系，当前均为 `map`。
 
 ## 5. 启动航点任务并查看速度
 
@@ -252,7 +254,7 @@ ros2 topic hz /cmd_vel_nav
 
 ### 5.2 终端 3：开始导航
 
-确认 `/tracking_state` 为 `2` 或 `5`，且 `/odom` 正常后执行：
+确认 `/tracking_state` 为 `2` 或 `5`，且 `/odometry/fused` 正常后执行：
 
 ```bash
 cd /home/j/colcon_ws
@@ -670,8 +672,17 @@ Publisher count: 1
 
 ### 15.0 rosbag 回放诊断数据
 
-`scripts/start_visual_navigation.sh` 生成的 `latest_navigation_bag` 会同时保存
-左右红外校正图像和对应的 `camera_info`，以及 IMU、跟踪状态、融合输入/输出和控制状态。
+`scripts/start_visual_navigation.sh` 默认先增量构建 ORB-SLAM3 和本次启动所需 ROS 包，构建成功后才停止旧节点和操作相机。`--no-build` 只接受源码指纹一致、当前启动模式所需产物均可验证且哈希匹配上次成功构建的结果，否则直接退出。
+
+每次运行保存在独立的 `navigation_runs/<run-id>/` 中；`latest_navigation_run` 指向最近一次运行，`latest_navigation_bag` 兼容入口只会原子指向最近一次完整或正常中断且已生成元数据的 bag。历史目录不会被下一次启动覆盖。
+
+`run_manifest.json` 记录 commit、branch、dirty 状态、运行源码指纹、递归 submodule 状态、原始参数、有效设置、运行文件和二进制 SHA-256、bag topics、退出码，以及 `parameters/` 中从真实节点抓取的参数快照。可直接检查：
+
+```bash
+python3 -m json.tool latest_navigation_run/run_manifest.json | less
+```
+
+bag 会同时保存左右红外校正图像和对应的 `camera_info`，以及 IMU、跟踪状态、融合输入/输出和控制状态。
 回放前可确认四个原始视觉话题存在：
 
 ```bash
@@ -685,7 +696,7 @@ ros2 bag play latest_navigation_bag
 
 - [ ] 左右红外图像约 30 Hz，IMU 约 200 Hz。
 - [ ] `/tracking_state` 为 `2` 或 `5`。
-- [ ] `/odom` 持续发布并随相机运动变化。
+- [ ] `/odometry/fused` 持续发布并随小车运动变化。
 - [ ] `/waypoint_path` 正确显示 CSV 航点。
 - [ ] 调用 `start` 后状态进入 `FOLLOWING`。
 - [ ] `/cmd_vel_nav` 输出合理的 `linear.x` 和 `angular.z`。
@@ -712,7 +723,7 @@ source /opt/ros/humble/setup.bash
 source /home/j/colcon_ws/install/setup.bash
 ```
 
-### 一直没有 `/odom`
+### 一直没有 `/odometry/fused`
 
 ```bash
 ros2 topic echo /tracking_state
@@ -728,10 +739,10 @@ ros2 topic hz /camera/camera/imu
 ```bash
 ros2 topic echo /waypoint_navigation/status --once
 ros2 topic echo /tracking_state --once
-ros2 topic echo /odom --once
+ros2 topic echo /odometry/fused --once
 ```
 
-只有跟踪状态为 `2` 或 `5` 且 `/odom` 未超时，导航节点才会输出非零速度。
+只有跟踪状态为 `2` 或 `5`、融合状态允许导航且 `/odometry/fused` 未超时，导航节点才会输出非零速度。
 
 ### 手动发布后小车不动
 

@@ -1,4 +1,4 @@
-# Waypoints are expressed in the same frame as /odom, normally "map".
+# Waypoints are expressed in the same frame as /odometry/fused, normally "map".
 # x[m], y[m], yaw[rad], speed[m/s], tolerance[m], stop_time[s]
 x,y,yaw,speed,tolerance,stop_time
 0.0,0.0,0.0,0.10,0.12,0.0

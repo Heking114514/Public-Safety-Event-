@@ -42,6 +42,18 @@ Point ReadPoint(const YAML::Node & node)
   return {node[0].as<double>(), node[1].as<double>()};
 }
 
+void ReadTopic(
+  const YAML::Node & topics, const char * key, std::string & destination)
+{
+  if (!topics || !topics[key]) {
+    return;
+  }
+  destination = topics[key].as<std::string>();
+  if (destination.empty()) {
+    throw std::runtime_error(std::string("topics.") + key + " must not be empty");
+  }
+}
+
 bool Contains(const Rectangle & rectangle, const Point & point)
 {
   return point.x >= rectangle.minimum_x && point.x < rectangle.maximum_x &&
@@ -214,6 +226,12 @@ PlannerConfig ArenaPlanner::LoadConfig(const std::string & path)
   config.minimum_turning_radius = planning["minimum_turning_radius_m"].as<double>();
   config.maximum_heading_step =
     planning["maximum_heading_step_deg"].as<double>() * kPi / 180.0;
+  const YAML::Node topics = root["topics"];
+  ReadTopic(topics, "service", config.topics.service);
+  ReadTopic(topics, "arena_path", config.topics.arena_path);
+  ReadTopic(topics, "navigation_path", config.topics.navigation_path);
+  ReadTopic(topics, "occupancy_grid", config.topics.occupancy_grid);
+  ReadTopic(topics, "route_input", config.topics.route_input);
   return config;
 }
 

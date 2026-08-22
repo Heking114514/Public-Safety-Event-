@@ -28,8 +28,8 @@
 #include "std_msgs/msg/int32.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "std_srvs/srv/trigger.hpp"
-#include "visual_navigation/actuator_health_policy.hpp"
 #include "visual_navigation/fusion_health_policy.hpp"
+#include "visual_navigation/navigation_supervisor.hpp"
 #include "visual_navigation/path_control.hpp"
 #include "visual_navigation/rate_limiter.hpp"
 
@@ -285,9 +285,9 @@ public:
       0.01, declare_parameter<double>("fusion_status_timeout", 0.60));
     actuatorHealthTimeout_ = std::max(
       0.01, declare_parameter<double>("actuator_health_timeout", 0.80));
-    transientLocalizationGrace_ = std::max(
+    const double transientLocalizationGrace = std::max(
       0.0, declare_parameter<double>("transient_localization_grace", 2.00));
-    transientFaultSpeedScale_ = Clamp(
+    const double transientFaultSpeedScale = Clamp(
       declare_parameter<double>("transient_fault_speed_scale", 0.25), 0.0, 1.0);
     requireFusionStatus_ = declare_parameter<bool>("require_fusion_status", true);
     requireActuatorHealth_ = declare_parameter<bool>("require_actuator_health", false);
@@ -307,7 +307,10 @@ public:
     fusionHealthPolicy_ = visual_navigation::FusionHealthPolicy(
       allowedFusionStates_, fusionSpeedScales);
     requireTrackingState_ = declare_parameter<bool>("require_tracking_state", false);
-    abortOnTrackingLoss_ = declare_parameter<bool>("abort_on_tracking_loss", false);
+    const bool abortOnTrackingLoss =
+      declare_parameter<bool>("abort_on_tracking_loss", false);
+    navigationSupervisor_ = visual_navigation::NavigationSupervisor(
+      {transientLocalizationGrace, transientFaultSpeedScale, abortOnTrackingLoss});
     autostart_ = declare_parameter<bool>("autostart", false);
 
     cmdVelPublisher_ = create_publisher<geometry_msgs::msg::Twist>(cmdVelTopic_, 10);
@@ -687,9 +690,7 @@ private:
       // but never reset a route that is already running. After a latched fault,
       // accept a retry only once localization and the actuator are healthy again.
       if (navigationActive_ ||
-        !visual_navigation::LocalizationCanStart(
-          OdometryIsValid(), FusionHealth(), TrackingStateIsValid()) ||
-        !ActuatorHealthIsValid())
+        !visual_navigation::EvaluateNavigationStart(CurrentNavigationInputs()).ready)
       {
         PublishRoutePath();
         RCLCPP_WARN_THROTTLE(
@@ -703,7 +704,7 @@ private:
     navigationActive_ = false;
     currentWaypointIndex_ = 0;
     finalPositionCaptured_ = false;
-    localizationWasValid_ = false;
+    navigationSupervisor_.ResetLocalizationHistory();
     waitAction_ = WaitAction::NONE;
     pathSegmentInitialized_ = false;
     resumePathFromCurrentPose_ = false;
@@ -745,24 +746,14 @@ private:
       return false;
     }
 
-    const auto fusionHealth = FusionHealth();
-    if (!visual_navigation::LocalizationCanStart(
-        OdometryIsValid(), fusionHealth, TrackingStateIsValid()))
+    const auto readiness =
+      visual_navigation::EvaluateNavigationStart(CurrentNavigationInputs());
+    if (!readiness.ready)
     {
       navigationActive_ = false;
       PublishStop();
-      const std::string failureState = LocalizationFailureState(fusionHealth);
-      SetState(failureState);
-      result = "Navigation start rejected: " + failureState;
-      return false;
-    }
-    if (!ActuatorHealthIsValid())
-    {
-      navigationActive_ = false;
-      PublishStop();
-      const std::string failureState = ActuatorFailureState();
-      SetState(failureState);
-      result = "Navigation start rejected: " + failureState;
+      SetState(readiness.failure_state);
+      result = "Navigation start rejected: " + readiness.failure_state;
       return false;
     }
 
@@ -771,7 +762,7 @@ private:
     waitAction_ = WaitAction::NONE;
     finalPositionCaptured_ = false;
     navigationActive_ = true;
-    localizationWasValid_ = false;
+    navigationSupervisor_.ResetLocalizationHistory();
     pathSegmentInitialized_ = false;
     ResetPathPid();
     SetState(MotionHeld() ? "HELD_FOR_MISSION" : "WAITING_FOR_LOCALIZATION");
@@ -845,7 +836,7 @@ private:
             waitUntil_ = waitUntil_ + holdDuration;
         }
         motionHoldStartInitialized_ = false;
-        localizationWasValid_ = false;
+        navigationSupervisor_.ResetLocalizationHistory();
         pathSegmentInitialized_ = false;
         resumePathFromCurrentPose_ = true;
         finalPositionCaptured_ = false;
@@ -873,7 +864,7 @@ private:
     navigationActive_ = false;
     currentWaypointIndex_ = 0;
     finalPositionCaptured_ = false;
-    localizationWasValid_ = false;
+    navigationSupervisor_.ResetLocalizationHistory();
     waitAction_ = WaitAction::NONE;
     pathSegmentInitialized_ = false;
     ResetPathPid();
@@ -882,14 +873,6 @@ private:
     SetState("IDLE");
     response->success = true;
     response->message = "Waypoint navigation reset";
-  }
-
-  bool OdometryIsValid() const
-  {
-    if (!hasOdometry_)
-      return false;
-    return currentOdomFrameValid_ && currentOdomPoseValid_ &&
-      (now() - lastOdomArrival_).seconds() <= odomTimeout_;
   }
 
   bool ImuYawRateIsFresh() const
@@ -902,67 +885,30 @@ private:
     return ImuYawRateIsFresh() ? imuYawRate_ : 0.0;
   }
 
-  bool TrackingStateIsValid() const
+  visual_navigation::NavigationInputStatus CurrentNavigationInputs() const
   {
-    return !requireTrackingState_ ||
-      (hasTrackingState_ && (trackingState_ == 2 || trackingState_ == 5));
-  }
-
-  bool FusionStatusIsFresh() const
-  {
-    return hasFusionStatus_ &&
-      (now() - lastFusionStatusArrival_).seconds() <= fusionStatusTimeout_;
-  }
-
-  visual_navigation::FusionHealthDecision FusionHealth() const
-  {
-    if (!requireFusionStatus_)
-      return visual_navigation::FusionHealthDecision{true, false, 1.0};
-    if (!FusionStatusIsFresh())
-      return visual_navigation::FusionHealthDecision{};
-    return fusionHealthPolicy_.Evaluate(fusionStatus_);
-  }
-
-  bool ActuatorHealthIsFresh() const
-  {
-    return hasActuatorHealth_ &&
-      (now() - lastActuatorHealthArrival_).seconds() <= actuatorHealthTimeout_;
-  }
-
-  bool ActuatorHealthIsValid() const
-  {
-    return visual_navigation::ActuatorHealthIsValid(
-      requireActuatorHealth_, hasActuatorHealth_, ActuatorHealthIsFresh(),
-      actuatorConnected_);
-  }
-
-  std::string ActuatorFailureState() const
-  {
-    if (!hasActuatorHealth_ || !ActuatorHealthIsFresh())
-      return "FAULT_ACTUATOR_STALE";
-    return "FAULT_ACTUATOR_DISCONNECTED";
-  }
-
-  std::string LocalizationFailureState(
-    const visual_navigation::FusionHealthDecision &health) const
-  {
-    if (!OdometryIsValid())
-    {
-      if (hasOdometry_ && !currentOdomFrameValid_)
-        return "FAULT_ODOMETRY_FRAME";
-      if (hasOdometry_ && !currentOdomPoseValid_)
-        return "FAULT_ODOMETRY_INVALID";
-      return "WAITING_FOR_ODOMETRY";
-    }
-    if (requireFusionStatus_ && !FusionStatusIsFresh())
-      return "FAULT_FUSION_STATUS_STALE";
-    if (health.fault)
-      return "FAULT_FUSION_STATUS";
-    if (requireFusionStatus_ && !health.allowed)
-      return "WAITING_FOR_ALLOWED_FUSION_STATUS";
-    if (!TrackingStateIsValid())
-      return "FAULT_TRACKING_LOST";
-    return "WAITING_FOR_LOCALIZATION";
+    const auto currentTime = now();
+    visual_navigation::NavigationInputStatus input;
+    input.odometry_received = hasOdometry_;
+    input.odometry_frame_valid = currentOdomFrameValid_;
+    input.odometry_pose_valid = currentOdomPoseValid_;
+    input.odometry_fresh = hasOdometry_ &&
+      (currentTime - lastOdomArrival_).seconds() <= odomTimeout_;
+    input.fusion_required = requireFusionStatus_;
+    input.fusion_status_received = hasFusionStatus_;
+    input.fusion_status_fresh = hasFusionStatus_ &&
+      (currentTime - lastFusionStatusArrival_).seconds() <= fusionStatusTimeout_;
+    input.fusion_status = fusionStatus_;
+    input.fusion_health = fusionHealthPolicy_.Evaluate(fusionStatus_);
+    input.tracking_required = requireTrackingState_;
+    input.tracking_state_received = hasTrackingState_;
+    input.tracking_state = trackingState_;
+    input.actuator_required = requireActuatorHealth_;
+    input.actuator_status_received = hasActuatorHealth_;
+    input.actuator_status_fresh = hasActuatorHealth_ &&
+      (currentTime - lastActuatorHealthArrival_).seconds() <= actuatorHealthTimeout_;
+    input.actuator_connected = actuatorConnected_;
+    return input;
   }
 
   void RunControl()
@@ -980,65 +926,21 @@ private:
       return;
     }
 
-    if (visual_navigation::ShouldHoldForActuatorRecovery(
-        navigationActive_, ActuatorHealthIsValid()))
+    const auto supervision = navigationSupervisor_.Evaluate(
+      CurrentNavigationInputs(), std::chrono::steady_clock::now());
+    if (supervision.action != visual_navigation::NavigationRuntimeAction::DRIVE)
     {
       PublishStop();
-      SetState("WAITING_FOR_ACTUATOR_RECOVERY");
+      if (supervision.reset_path_control)
+        ResetPathPid();
+      if (supervision.action == visual_navigation::NavigationRuntimeAction::STOP_AND_LATCH)
+        navigationActive_ = false;
+      SetState(supervision.state);
       return;
     }
-
-    auto fusionHealth = FusionHealth();
-    const bool localizationValid =
-      OdometryIsValid() && fusionHealth.allowed && TrackingStateIsValid();
-    const auto controlTime = std::chrono::steady_clock::now();
-    if (localizationValid)
-    {
-      lastValidLocalizationTime_ = controlTime;
-      validLocalizationTimeInitialized_ = true;
-    }
-
-    const double secondsSinceValid = validLocalizationTimeInitialized_ ?
-      std::chrono::duration<double>(controlTime - lastValidLocalizationTime_).count() :
-      std::numeric_limits<double>::infinity();
-    // A fusion FAULT is never a transient condition. In particular, startup
-    // bags commonly begin with FAULT while the estimator initializes; allowing
-    // the transient-loss bridge here could reuse a stale command. Force zero
-    // velocity and latch navigation until a new route is explicitly accepted.
-    const bool hardFault = fusionHealth.fault || fusionStatus_ == "FAULT_STALLED";
-    const bool bridgeTransientLoss = !localizationValid &&
-      visual_navigation::CanBridgeTransientLocalizationLoss(
-        localizationWasValid_, hardFault, secondsSinceValid, transientLocalizationGrace_);
-
-    if (bridgeTransientLoss)
-    {
-      fusionHealth.allowed = true;
-      fusionHealth.fault = false;
-      fusionHealth.speed_scale = transientFaultSpeedScale_;
-      SetState("DEGRADED_TRANSIENT_LOCALIZATION");
-    }
-    else if (!localizationValid)
-    {
-      PublishStop();
-      ResetPathPid();
-      if (hardFault)
-      {
-        navigationActive_ = false;
-        SetState(LocalizationFailureState(fusionHealth));
-      }
-      else if (!TrackingStateIsValid() && localizationWasValid_ && abortOnTrackingLoss_)
-      {
-        navigationActive_ = false;
-        SetState("FAULT_TRACKING_LOST");
-      }
-      else
-      {
-        SetState(LocalizationFailureState(fusionHealth));
-      }
-      return;
-    }
-
-    localizationWasValid_ = true;
+    auto fusionHealth = supervision.fusion_health;
+    if (!supervision.state.empty())
+      SetState(supervision.state);
 
     if (waitAction_ != WaitAction::NONE)
     {
@@ -1821,15 +1723,13 @@ private:
   double imuTimeout_{0.15};
   double fusionStatusTimeout_{0.60};
   double actuatorHealthTimeout_{0.80};
-  double transientLocalizationGrace_{2.00};
-  double transientFaultSpeedScale_{0.25};
   bool requireFusionStatus_{true};
   bool requireActuatorHealth_{false};
   bool requireTrackingState_{false};
-  bool abortOnTrackingLoss_{false};
   bool autostart_{false};
   std::vector<std::string> allowedFusionStates_;
   visual_navigation::FusionHealthPolicy fusionHealthPolicy_;
+  visual_navigation::NavigationSupervisor navigationSupervisor_;
 
   std::vector<Waypoint> waypoints_;
   std::size_t currentWaypointIndex_{0};
@@ -1846,8 +1746,6 @@ private:
   bool hasActuatorHealth_{false};
   bool hasTrackingState_{false};
   bool trackingReferenceInitialized_{false};
-  bool localizationWasValid_{false};
-  bool validLocalizationTimeInitialized_{false};
   int trackingState_{-1};
   std::string fusionStatus_;
   bool actuatorConnected_{false};
@@ -1889,7 +1787,6 @@ private:
   rclcpp::Time motionHoldStartedAt_{0, 0, RCL_ROS_TIME};
   std::chrono::steady_clock::time_point lastPathPidTime_{};
   std::chrono::steady_clock::time_point lastMotionCommandTime_{};
-  std::chrono::steady_clock::time_point lastValidLocalizationTime_{};
   std::chrono::steady_clock::time_point turnSettleStarted_{};
   std::chrono::steady_clock::time_point waypointStopStarted_{};
   std::chrono::steady_clock::time_point waypointSpeedSettleStarted_{};

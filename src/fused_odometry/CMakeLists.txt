@@ -18,7 +18,9 @@ find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 
-add_library(fusion_logic src/fusion_logic.cpp)
+add_library(fusion_logic
+  src/fusion_logic.cpp
+  src/fusion_health.cpp)
 target_include_directories(fusion_logic PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
@@ -32,8 +34,7 @@ ament_target_dependencies(
   nav_msgs
   rclcpp
   sensor_msgs
-  std_msgs
-  tf2_ros)
+  std_msgs)
 
 add_executable(map_odom_correction_node src/map_odom_correction_node.cpp)
 target_link_libraries(map_odom_correction_node fusion_logic)
@@ -58,6 +59,8 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(test_fusion_logic test/test_fusion_logic.cpp)
   target_link_libraries(test_fusion_logic fusion_logic)
+  ament_add_gtest(test_fusion_health test/test_fusion_health.cpp)
+  target_link_libraries(test_fusion_health fusion_logic)
 endif()
 
 ament_export_targets(export_fusion_logic HAS_LIBRARY_TARGET)

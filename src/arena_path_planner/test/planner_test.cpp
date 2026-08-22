@@ -4,7 +4,10 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <cmath>
+#include <fstream>
+#include <sstream>
 #include <string>
 
 namespace arena_path_planner
@@ -35,6 +38,45 @@ TEST(ArenaPlanner, LoadsDefaultConfiguration)
   ASSERT_EQ(config.default_targets.size(), 12U);
   EXPECT_EQ(config.default_labels.front(), "1");
   EXPECT_EQ(config.default_labels.back(), "12");
+  EXPECT_EQ(config.topics.service, "/arena_path_planner/plan");
+  EXPECT_EQ(config.topics.arena_path, "/arena_path_planner/arena_path");
+  EXPECT_EQ(config.topics.navigation_path, "/arena_path_planner/navigation_path");
+  EXPECT_EQ(config.topics.occupancy_grid, "/arena_path_planner/map");
+  EXPECT_EQ(config.topics.route_input, "/waypoint_navigation/route_input");
+}
+
+TEST(ArenaPlanner, LoadsConfiguredRosInterfaces)
+{
+  std::ifstream source(ConfigPath());
+  ASSERT_TRUE(source.is_open());
+  std::ostringstream contents;
+  contents << source.rdbuf();
+  std::string yaml = contents.str();
+  const auto replace = [&yaml](const std::string & current, const std::string & replacement) {
+      const std::size_t position = yaml.find(current);
+      ASSERT_NE(position, std::string::npos);
+      yaml.replace(position, current.size(), replacement);
+    };
+  replace("/arena_path_planner/plan", "/test/plan");
+  replace("/arena_path_planner/arena_path", "/test/arena_path");
+  replace("/arena_path_planner/navigation_path", "/test/navigation_path");
+  replace("/arena_path_planner/map", "/test/map");
+  replace("/waypoint_navigation/route_input", "/test/route_input");
+
+  const std::string test_path = ::testing::TempDir() + "arena_map_topics_test.yaml";
+  {
+    std::ofstream output(test_path);
+    ASSERT_TRUE(output.is_open());
+    output << yaml;
+  }
+  const PlannerConfig config = ArenaPlanner::LoadConfig(test_path);
+  std::remove(test_path.c_str());
+
+  EXPECT_EQ(config.topics.service, "/test/plan");
+  EXPECT_EQ(config.topics.arena_path, "/test/arena_path");
+  EXPECT_EQ(config.topics.navigation_path, "/test/navigation_path");
+  EXPECT_EQ(config.topics.occupancy_grid, "/test/map");
+  EXPECT_EQ(config.topics.route_input, "/test/route_input");
 }
 
 TEST(ArenaPlanner, PlansClosedCollisionFreeDefaultRoute)

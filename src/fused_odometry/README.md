@@ -7,10 +7,11 @@ never publishes a velocity command.
 
 Inputs:
 
-- `/odom` (`nav_msgs/Odometry`): ORB pose; only planar `x`, `y`, and yaw are used.
-- `/odom/orb_raw` (`nav_msgs/Odometry`): ORB pose in the fixed first-body map
-  frame, before tracking-loss continuity correction. It is preferred for
-  checking relocalization consistency; continuous `/odom` remains the fallback.
+- `/odometry/visual_raw` (`nav_msgs/Odometry`): canonical ORB observation in
+  the fixed first-body map frame. It preserves relocalization and map-correction
+  jumps so the gate can validate them instead of silently hiding them.
+- `/odom/orb_raw` (`nav_msgs/Odometry`): compatibility alias carrying the same
+  messages as `/odometry/visual_raw`; it is not used by the default fusion profile.
 - `/tracking_state` (`std_msgs/Int32`): ORB `OK=2`, `OK_KLT=5` are healthy.
 - `/orbslam3/map_change` (`std_msgs/UInt64`): verified ORB loop-closure or
   global-BA map correction sequence.
@@ -78,19 +79,20 @@ false and the EKF wheel input enables only `vx`. If both vision and IMU disappea
 the fusion therefore becomes `FAULT` instead of attempting an unreliable blind
 turn. Linear acceleration is never fused.
 
-After five good recovery frames, the gate prefers `/odom/orb_raw`. An existing
-raw-to-fused SE(2) alignment is checked against the current prediction. A
+After five good recovery frames, the gate accepts the configured raw visual
+topic. An existing raw-to-fused SE(2) alignment is checked against the current
+prediction. A
 reasonable recovery enters a 0.75-second covariance ramp so correction is
 gradual. A recovery beyond 1.50 m or 1.00 rad is rejected instead of moving the
 visual origin onto the wheel prediction. The established visual map transform
 is preserved across an outage, allowing accepted visual recovery to correct
-wheel dead-reckoning drift. Raw and continuous ORB poses are paired only when
-their timestamps are identical; if DDS delivers the continuous topic first, the
-gate uses it for that frame rather than pairing it with an older raw pose.
+wheel dead-reckoning drift.
 
-The ROS ORB wrapper publishes `/odom/orb_raw` as planar `x`, `y`, and yaw while
-retaining the full SE(3) map internally. The gate still checks its quaternion and
-frame before using it.
+The ROS ORB wrapper publishes `/odometry/visual_raw` as planar `x`, `y`, and yaw
+while retaining the full SE(3) map internally. `/odom/orb_raw` is its legacy
+alias. The gate still checks the configured input's quaternion and frame before
+using it. `/odometry/visual_continuous` and its `/odom` alias deliberately hide
+relocalization jumps and are not odometry-fusion pose inputs.
 
 ## Frames
 

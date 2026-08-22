@@ -38,6 +38,15 @@ struct InspectionEdge
   bool tunnel{false};
 };
 
+struct PlannerTopics
+{
+  std::string service{"/arena_path_planner/plan"};
+  std::string arena_path{"/arena_path_planner/arena_path"};
+  std::string navigation_path{"/arena_path_planner/navigation_path"};
+  std::string occupancy_grid{"/arena_path_planner/map"};
+  std::string route_input{"/waypoint_navigation/route_input"};
+};
+
 struct PlannerConfig
 {
   double width{0.0};
@@ -74,6 +83,7 @@ struct PlannerConfig
   std::vector<std::string> tunnel_segment_labels;
   std::vector<Point> inspection_nodes;
   std::vector<InspectionEdge> inspection_edges;
+  PlannerTopics topics;
 };
 
 struct PlanResult

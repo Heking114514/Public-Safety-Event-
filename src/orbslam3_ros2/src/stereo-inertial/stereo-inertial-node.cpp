@@ -141,8 +141,14 @@ StereoInertialNode::StereoInertialNode(
     unavailableTwistCovarianceDiagonal_ = this->declare_parameter<std::vector<double>>(
         "unavailable_twist_covariance_diagonal", {1.0e6, 1.0e6, 1.0e6, 1.0e6, 1.0e6, 1.0e6});
 
-    const std::string odomTopic = this->declare_parameter<std::string>("odom_topic", "odom");
-    const std::string rawOdomTopic = this->declare_parameter<std::string>("raw_odom_topic", "/odom/orb_raw");
+    const std::string odomTopic = this->declare_parameter<std::string>(
+        "odom_topic", "/odometry/visual_continuous");
+    const std::string rawOdomTopic = this->declare_parameter<std::string>(
+        "raw_odom_topic", "/odometry/visual_raw");
+    const std::string legacyOdomTopic = this->declare_parameter<std::string>(
+        "legacy_odom_topic", "/odom");
+    const std::string legacyRawOdomTopic = this->declare_parameter<std::string>(
+        "legacy_raw_odom_topic", "/odom/orb_raw");
     const std::string poseTopic = this->declare_parameter<std::string>("pose_topic", "pose");
     const std::string pathTopic = this->declare_parameter<std::string>("path_topic", "path");
     const std::string stateTopic = this->declare_parameter<std::string>("tracking_state_topic", "tracking_state");
@@ -194,11 +200,24 @@ StereoInertialNode::StereoInertialNode(
 
     odomPublisher_ = this->create_publisher<nav_msgs::msg::Odometry>(odomTopic, 10);
     rawOdomPublisher_ = this->create_publisher<nav_msgs::msg::Odometry>(rawOdomTopic, 10);
+    if (!legacyOdomTopic.empty() && legacyOdomTopic != odomTopic)
+        legacyOdomPublisher_ = this->create_publisher<nav_msgs::msg::Odometry>(legacyOdomTopic, 10);
+    if (!legacyRawOdomTopic.empty() && legacyRawOdomTopic != rawOdomTopic)
+        legacyRawOdomPublisher_ = this->create_publisher<nav_msgs::msg::Odometry>(legacyRawOdomTopic, 10);
     posePublisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(poseTopic, 10);
     pathPublisher_ = this->create_publisher<nav_msgs::msg::Path>(pathTopic, 10);
     trackingStatePublisher_ = this->create_publisher<std_msgs::msg::Int32>(stateTopic, 10);
     mapChangePublisher_ = this->create_publisher<std_msgs::msg::UInt64>(mapChangeTopic, 10);
     diagnosticsPublisher_ = this->create_publisher<diagnostic_msgs::msg::DiagnosticArray>(diagnosticsTopic, 10);
+
+    RCLCPP_INFO(
+        this->get_logger(), "Visual odometry topics: continuous=%s, raw=%s",
+        odomTopic.c_str(), rawOdomTopic.c_str());
+    if (legacyOdomPublisher_ || legacyRawOdomPublisher_)
+        RCLCPP_INFO(
+            this->get_logger(), "Legacy odometry aliases: continuous=%s, raw=%s",
+            legacyOdomTopic.empty() ? "disabled" : legacyOdomTopic.c_str(),
+            legacyRawOdomTopic.empty() ? "disabled" : legacyRawOdomTopic.c_str());
 
     tfBuffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
     tfListener_ = std::make_shared<tf2_ros::TransformListener>(*tfBuffer_, this, true);
@@ -525,6 +544,8 @@ void StereoInertialNode::PublishPose(
         odometry.twist.twist.angular.z = angularVelocity.z();
     }
     odomPublisher_->publish(odometry);
+    if (legacyOdomPublisher_)
+        legacyOdomPublisher_->publish(odometry);
 
     if (publishTf_)
     {
@@ -579,6 +600,8 @@ void StereoInertialNode::PublishRawOdometry(
         SetCovarianceDiagonal(odometry.twist.covariance, unavailableTwistCovarianceDiagonal_);
     }
     rawOdomPublisher_->publish(odometry);
+    if (legacyRawOdomPublisher_)
+        legacyRawOdomPublisher_->publish(odometry);
 }
 
 void StereoInertialNode::PublishTrackingStatus(

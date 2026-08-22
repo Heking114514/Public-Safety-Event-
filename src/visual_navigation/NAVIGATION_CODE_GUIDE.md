@@ -12,7 +12,8 @@
 当前实现是一个轻量级固定航点导航系统：
 
 ```text
-ORB-SLAM3 /odom + /tracking_state
+融合里程计 /odometry/fused + /odometry/fusion_status
+ORB-SLAM3 /tracking_state
                  │
                  ▼
           waypoint_navigator
@@ -25,7 +26,7 @@ ORB-SLAM3 /odom + /tracking_state
                       下位机桥接节点
 ```
 
-系统不使用 Nav2，不执行 A*，也不进行在线避障。路线由 CSV 文件提前确定，导航节点根据视觉里程计提供的当前位置依次跟踪每个航点。
+系统不使用 Nav2，也不进行在线避障。导航节点根据融合里程计提供的当前位置依次跟踪规划器或 CSV 给出的航点。
 
 ---
 
@@ -73,7 +74,7 @@ waypoint_navigator
 该节点负责：
 
 1. 从 CSV 文件读取航点。
-2. 订阅 ORB-SLAM3 发布的里程计。
+2. 订阅融合节点发布的最终导航里程计。
 3. 订阅 ORB-SLAM3 跟踪状态。
 4. 接收启动、停止和复位服务。
 5. 按顺序选择当前目标航点。
@@ -100,7 +101,7 @@ waypoint_navigator
 
 ### 4.1 订阅话题
 
-#### `/odom`
+#### `/odometry/fused`
 
 消息类型：
 
@@ -139,7 +140,7 @@ std_msgs/msg/Int32
 
 其他状态不会输出运动命令。
 
-如果参数 `require_tracking_state` 设置为 `false`，则只检查 `/odom` 是否存在和是否超时。
+如果参数 `require_tracking_state` 设置为 `false`，仍会检查 `/odometry/fused` 是否存在和是否超时。
 
 ### 4.2 发布话题
 
@@ -364,7 +365,7 @@ map
 导航节点会比较：
 
 ```text
-/odom.header.frame_id
+/odometry/fused.header.frame_id
 route_frame
 ```
 
@@ -373,7 +374,7 @@ route_frame
 因此必须保证：
 
 ```text
-航点坐标系 == /odom 位姿坐标系
+航点坐标系 == /odometry/fused 位姿坐标系
 ```
 
 仅修改 CSV、RViz 或消息中的 `frame_id` 字符串不会真正完成坐标转换。
@@ -449,8 +450,8 @@ linear.x > 0
 
 `LocalizationIsValid()` 依次检查：
 
-1. 是否收到过 `/odom`。
-2. 最近一次 `/odom` 到达时间是否超过 `odom_timeout`。
+1. 是否收到过 `/odometry/fused`。
+2. 最近一次 `/odometry/fused` 到达时间是否超过 `odom_timeout`。
 3. 是否要求检查 `/tracking_state`。
 4. 是否收到过 `/tracking_state`。
 5. 跟踪状态是否为 `2` 或 `5`。
@@ -461,7 +462,7 @@ linear.x > 0
 now() - last_odom_arrival
 ```
 
-而不是 `/odom.header.stamp`。这样可以避免相机时间戳与 ROS 系统时间不一致造成错误超时判断。
+而不是 `/odometry/fused.header.stamp`。
 
 默认配置：
 
@@ -767,7 +768,7 @@ config/waypoint_navigation.yaml
 | --- | --- | --- |
 | `route_file` | 空 | CSV 航点文件路径，Launch 会覆盖 |
 | `route_frame` | `map` | 航点坐标系 |
-| `odom_topic` | `/odom` | 视觉里程计输入 |
+| `odom_topic` | `/odometry/fused` | 最终导航里程计输入 |
 | `tracking_state_topic` | `/tracking_state` | ORB 跟踪状态输入 |
 | `cmd_vel_topic` | `/cmd_vel_nav` | 导航速度输出 |
 | `path_topic` | `/waypoint_path` | 航点路径显示话题 |
@@ -868,10 +869,10 @@ max_angular_speed
 
 ### 15.5 经常触发里程计超时
 
-先检查 `/odom` 实际频率：
+先检查 `/odometry/fused` 实际频率：
 
 ```bash
-ros2 topic hz /odom
+ros2 topic hz /odometry/fused
 ```
 
 如果计算负载较高、偶尔超过 `0.40 s`，可以谨慎增大：
@@ -898,7 +899,7 @@ ros2 launch visual_navigation waypoint_navigation.launch.py \
 适用场景：
 
 - ORB-SLAM3 已经单独启动
-- 使用 rosbag 或模拟节点发布 `/odom`
+- 使用 rosbag 或模拟节点发布 `/odometry/fused`
 - 单独调试控制器
 
 ### 16.2 启动完整视觉导航
@@ -1006,8 +1007,8 @@ w = angular.z
 
 ```bash
 ros2 topic echo /tracking_state
-ros2 topic echo /odom
-ros2 topic hz /odom
+ros2 topic echo /odometry/fused
+ros2 topic hz /odometry/fused
 ```
 
 ### 19.2 确认路线加载

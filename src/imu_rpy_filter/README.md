@@ -12,6 +12,8 @@ robust zero-rate update continuously estimates the z-gyro bias.
 Input:
 
 - `/camera/camera/imu` (`sensor_msgs/msg/Imu`)
+- `/odometry/visual_continuous` (`nav_msgs/msg/Odometry`): optional visual yaw
+  reference when `use_yaw_reference` is enabled
 - `/cmd_vel_nav` (`geometry_msgs/msg/Twist`) and `/wheel/odom`
   (`nav_msgs/msg/Odometry`): corroborate stationary state when both are fresh
   and zero; IMU-only detection remains available when either topic is absent

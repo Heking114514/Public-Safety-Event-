@@ -10,7 +10,9 @@ KeyFrameTrajectory.txt
 *.bag.active
 *.db3
 *.mcap
-latest_navigation_bag/
+navigation_runs/
+latest_navigation_run
+latest_navigation_bag
 analysis_bags/
 
 # --- Temp files ---

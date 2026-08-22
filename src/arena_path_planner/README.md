@@ -4,13 +4,17 @@ ROS 2 C++ backend for the arena route planner. The package owns map loading,
 task ordering, collision-aware planning, path smoothing, and conversion from
 arena coordinates to the navigation frame.
 
-Interfaces:
+Interfaces are read from the `topics` section of `config/arena_map.yaml`. The
+default configuration uses:
 
 - Service: `/arena_path_planner/plan`
 - Arena path: `/arena_path_planner/arena_path`
 - Navigation path: `/arena_path_planner/navigation_path`
 - Occupancy grid: `/arena_path_planner/map`
 - Activated route: `/waypoint_navigation/route_input`
+
+Changing a value under `topics` changes the corresponding publisher or service
+when the node starts; no source edit or ROS remapping is required.
 
 The planning request accepts multiple dynamic obstacle polygons. If a complete
 blockage makes some targets unreachable, the response still contains a route

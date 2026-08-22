@@ -400,7 +400,9 @@ def parse_args():
         default=5,
         help="moving-average window in samples; 1 disables it",
     )
-    parser.add_argument("--yaw-reference-topic", default="/odom")
+    parser.add_argument(
+        "--yaw-reference-topic", default="/odometry/visual_continuous"
+    )
     parser.add_argument("--tracking-topic", default="/tracking_state")
     parser.add_argument(
         "--no-visual-yaw",

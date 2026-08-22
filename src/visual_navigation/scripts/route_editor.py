@@ -36,7 +36,7 @@ def quaternion_to_yaw(quaternion):
 class RouteEditorNode(Node):
     def __init__(self, odom_callback):
         super().__init__("waypoint_route_editor")
-        self.declare_parameter("odom_topic", "/odom")
+        self.declare_parameter("odom_topic", "/odometry/fused")
         self.declare_parameter(
             "route_input_topic", "/waypoint_navigation/route_input"
         )

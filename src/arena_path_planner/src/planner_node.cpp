@@ -73,25 +73,27 @@ public:
       throw std::runtime_error("config_file parameter is required");
     }
     planner_ = std::make_unique<ArenaPlanner>(ArenaPlanner::LoadConfig(config_file));
+    const PlannerTopics & topics = planner_->config().topics;
 
     const auto durable_qos = rclcpp::QoS(1).reliable().transient_local();
     arena_path_publisher_ = create_publisher<nav_msgs::msg::Path>(
-      "/arena_path_planner/arena_path", durable_qos);
+      topics.arena_path, durable_qos);
     navigation_path_publisher_ = create_publisher<nav_msgs::msg::Path>(
-      "/arena_path_planner/navigation_path", durable_qos);
+      topics.navigation_path, durable_qos);
     map_publisher_ = create_publisher<nav_msgs::msg::OccupancyGrid>(
-      "/arena_path_planner/map", durable_qos);
+      topics.occupancy_grid, durable_qos);
     route_publisher_ = create_publisher<nav_msgs::msg::Path>(
-      "/waypoint_navigation/route_input", rclcpp::QoS(1).reliable());
+      topics.route_input, rclcpp::QoS(1).reliable());
     service_ = create_service<srv::PlanArenaPath>(
-      "/arena_path_planner/plan",
+      topics.service,
       std::bind(&PlannerNode::HandlePlan, this, std::placeholders::_1, std::placeholders::_2));
 
     PublishMap();
     RCLCPP_INFO(
-      get_logger(), "arena planner ready: %.2f x %.2f m, %zu default targets",
+      get_logger(),
+      "arena planner ready: %.2f x %.2f m, %zu default targets, service %s",
       planner_->config().width, planner_->config().height,
-      planner_->config().default_targets.size());
+      planner_->config().default_targets.size(), topics.service.c_str());
   }
 
 private:
