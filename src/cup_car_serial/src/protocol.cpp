@@ -152,4 +152,21 @@ bool control_state_is_healthy(const ControlTelemetryFrame & frame)
 {
   return frame.mode == 1U && !frame.emergency_stop && frame.command_valid;
 }
+
+SampleSequenceDisposition classify_sample_sequence(
+  uint32_t previous_sequence, uint32_t previous_mcu_time_ms,
+  uint32_t sequence, uint32_t mcu_time_ms)
+{
+  const uint32_t advance = sequence - previous_sequence;
+  if (advance == 0U) {
+    return SampleSequenceDisposition::DUPLICATE;
+  }
+  if (advance < (uint32_t{1} << 31U)) {
+    return SampleSequenceDisposition::NEW_SAMPLE;
+  }
+  if (mcu_time_ms < previous_mcu_time_ms) {
+    return SampleSequenceDisposition::SOURCE_RESTART;
+  }
+  return SampleSequenceDisposition::OUT_OF_ORDER;
+}
 }  // namespace cup_car_serial

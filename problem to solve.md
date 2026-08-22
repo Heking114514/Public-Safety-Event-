@@ -19,12 +19,6 @@
 
 ## P1
 
-### P1-03 执行器健康只证明通信和模式正常，不证明命令执行正常
-
-- 证据：`src/cup_car_serial/src/cmd_vel_serial_node.cpp:279-295,352-391` 没有持续检查目标轮速与实测轮速误差、单轮失速、严重过驱或饱和。
-- 触发：通信和控制模式正常，但轮子长期跟不上目标、方向错误或单轮失效。
-- 影响：`actuator_healthy` 仍可为 true；最近 rosbag 中低速转向段已经出现目标与实际轮速明显不一致，但上位机健康接口不能完整表达该状态。
-
 ### P1-04 后端按点机器人规划，前端却显示完整车体已参与检查
 
 - 证据：`src/arena_path_planner/include/arena_path_planner/planner.hpp:41-61` 的车长、车宽和边距默认为零，活动配置 `src/arena_path_planner/config/arena_map.yaml` 未覆盖这些值；`scripts/arena_route_frontend.py:173-177,443-448` 默认显示 `0.217 × 0.210 m` 车体和 `0.040 m` 边距。
@@ -133,7 +127,7 @@
 
 ### P3-06 自动串口选择没有设备身份确认
 
-- 证据：`src/cup_car_serial/src/cmd_vel_serial_node.cpp:43-70` 可从通用串口设备中选择第一个匹配项。
+- 证据：`src/cup_car_serial/src/cmd_vel_serial_node.cpp:44-72` 可从通用串口设备中选择第一个匹配项。
 - 触发：上位机同时连接多个 USB 串口设备并使用 `auto`。
 - 影响：节点可能打开无关设备；固定设备路径时不触发。
 

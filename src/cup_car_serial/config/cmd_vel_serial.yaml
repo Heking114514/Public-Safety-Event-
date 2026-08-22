@@ -1,0 +1,12 @@
+cmd_vel_serial_node:
+  ros__parameters:
+    # Encoder feedback is diagnostic-only and never enters localization fusion.
+    tracking_command_deadband_mps: 0.08
+    tracking_response_floor_mps: 0.03
+    tracking_severe_absolute_error_mps: 0.15
+    tracking_severe_relative_error: 0.80
+    tracking_startup_grace_s: 1.0
+    tracking_fault_persistence_s: 1.5
+    tracking_recovery_stop_s: 0.5
+    tracking_retry_rearm_s: 3.0
+    tracking_maximum_recovery_attempts: 2

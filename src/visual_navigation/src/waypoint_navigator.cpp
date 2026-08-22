@@ -143,7 +143,7 @@ public:
     fusionStatusTopic_ = declare_parameter<std::string>(
       "fusion_status_topic", "/odometry/fusion_status");
     actuatorHealthTopic_ = declare_parameter<std::string>(
-      "actuator_health_topic", "/cup_car_serial/connected");
+      "actuator_health_topic", "/cup_car_serial/actuator_healthy");
     trackingStateTopic_ = declare_parameter<std::string>("tracking_state_topic", "/tracking_state");
     cmdVelTopic_ = declare_parameter<std::string>("cmd_vel_topic", "/cmd_vel_nav");
     pathTopic_ = declare_parameter<std::string>("path_topic", "/waypoint_path");

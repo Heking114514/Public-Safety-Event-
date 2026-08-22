@@ -1,8 +1,9 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
@@ -16,6 +17,7 @@ def generate_launch_description():
     control_telemetry_timeout_s = LaunchConfiguration(
         "control_telemetry_timeout_s"
     )
+    config_file = LaunchConfiguration("config_file")
 
     serial_node = Node(
         package="cup_car_serial",
@@ -23,6 +25,7 @@ def generate_launch_description():
         name="cmd_vel_serial_node",
         output="screen",
         parameters=[
+            config_file,
             {
                 "device": ParameterValue(device, value_type=str),
                 "baud_rate": ParameterValue(baud_rate, value_type=int),
@@ -51,6 +54,12 @@ def generate_launch_description():
             DeclareLaunchArgument("rpy_timeout_s", default_value="0.4"),
             DeclareLaunchArgument(
                 "control_telemetry_timeout_s", default_value="0.90"
+            ),
+            DeclareLaunchArgument(
+                "config_file",
+                default_value=PathJoinSubstitution(
+                    [FindPackageShare("cup_car_serial"), "config", "cmd_vel_serial.yaml"]
+                ),
             ),
             serial_node,
         ]

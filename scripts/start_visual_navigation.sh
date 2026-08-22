@@ -65,6 +65,7 @@ ROSBAG_TOPICS=(
   /cup_car_serial/encoder_ticks
   /cup_car_serial/connected
   /cup_car_serial/actuator_healthy
+  /cup_car_serial/actuator_tracking_status
   /cup_car_serial/control_telemetry
   /cup_car_serial/rx
   /diagnostics

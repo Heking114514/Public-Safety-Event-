@@ -10,6 +10,7 @@
 输出话题：/cup_car_serial/encoder_ticks
 输出话题：/cup_car_serial/control_telemetry
 输出话题：/cup_car_serial/actuator_healthy
+输出话题：/cup_car_serial/actuator_tracking_status
 串口设备：/dev/ttyUSB0
 波特率：115200，8N1
 发送频率：20 Hz
@@ -36,8 +37,38 @@ CTL,time_ms,sample_sequence,mode,estop,rx_valid,rx_age_ms,rx_vx_mmps,rx_wz_mradp
   `mission_control_interfaces/msg/ControlTelemetry`，速度整数毫单位会转换为
   `m/s` 和 `rad/s`。它保留下位机模式、急停、命令年龄、轮速目标/实测值和PWM。
 - `/cup_car_serial/actuator_healthy` 只有在控制遥测新鲜、下位机处于导航模式、
-  未急停且收到的速度命令未超时时才为 `true`。它和只表示串口文件已打开的
-  `/cup_car_serial/connected` 含义不同。
+  未急停、速度命令未超时且左右轮跟踪诊断健康时才为 `true`。它和只表示串口
+  文件已打开的 `/cup_car_serial/connected` 含义不同。
+- `/cup_car_serial/actuator_tracking_status` 给出轮速跟踪状态和故障轮，例如
+  `SUSPECT:LEFT_NO_RESPONSE+RIGHT_OK`、`RECOVERING` 或 `LATCHED:...`。
+
+轮速跟踪只用于执行器健康诊断，不参与里程计或定位融合。默认在目标轮速绝对值
+达到 `0.08 m/s` 后才检查：实测绝对值低于 `0.03 m/s` 为无响应，方向相反为
+方向错误，误差超过 `max(0.15 m/s, 0.8 * |target|)` 为严重跟踪误差。异常必须
+持续 `1.5 s` 才会令 `actuator_healthy=false`，因此启动延迟、单帧编码器漂移和
+瞬时负载变化不会停车。
+
+遥控模式、急停或下位机命令失效时不具备跟踪判定前提，状态显示
+`INACTIVE_CONTROL_STATE` 并清除本轮诊断历史；解除后从新的启动宽限开始，不会
+因急停期间残留目标轮速而锁存故障。重复或乱序 CTL 帧不累计异常时间，也不刷新
+遥测健康时间；MCU 重启会清除未完成的诊断窗口。
+
+故障停车后，目标轮速保持死区内 `0.5 s` 可进行一次自动重试；只有重新连续
+正常跟踪 `3.0 s` 才会恢复重试额度。默认最多自动重试两次，之后状态锁存为
+`LATCHED`，需重启或重连串口节点复位，避免故障与零速恢复无限振荡。参数集中在
+`config/cmd_vel_serial.yaml`：
+
+| 参数 | 默认值 | 含义 |
+|---|---:|---|
+| `tracking_command_deadband_mps` | `0.08` | 启用单轮诊断的最低目标速度 |
+| `tracking_response_floor_mps` | `0.03` | 判定轮子无响应的实测速度上限 |
+| `tracking_severe_absolute_error_mps` | `0.15` | 严重误差绝对门槛 |
+| `tracking_severe_relative_error` | `0.80` | 严重误差相对门槛 |
+| `tracking_startup_grace_s` | `1.0` | 进入可诊断状态后的启动宽限 |
+| `tracking_fault_persistence_s` | `1.5` | 异常持续到故障的时间 |
+| `tracking_recovery_stop_s` | `0.5` | 停驶后允许重试的滞回时间 |
+| `tracking_retry_rearm_s` | `3.0` | 清除历史重试次数所需的正常跟踪时间 |
+| `tracking_maximum_recovery_attempts` | `2` | 锁存前允许的自动重试次数 |
 
 单独启动：
 
@@ -88,6 +119,7 @@ ros2 topic echo /cup_car_serial/rx
 ros2 topic echo /cup_car_serial/encoder_ticks
 ros2 topic echo /cup_car_serial/control_telemetry
 ros2 topic echo /cup_car_serial/actuator_healthy
+ros2 topic echo /cup_car_serial/actuator_tracking_status
 ```
 
 连接正常时 `connected` 为 `true`。最新下位机固件每 50 ms 回传一次 `ENC`，

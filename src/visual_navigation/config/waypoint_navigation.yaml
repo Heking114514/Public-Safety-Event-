@@ -11,7 +11,7 @@ waypoint_navigator:
     tracking_point_offset_x: 0.0
     tracking_point_offset_y: 0.0
     fusion_status_topic: "/odometry/fusion_status"
-    actuator_health_topic: "/cup_car_serial/connected"
+    actuator_health_topic: "/cup_car_serial/actuator_healthy"
     tracking_state_topic: "/tracking_state"
     cmd_vel_topic: "/cmd_vel_nav"
     path_topic: "/waypoint_path"

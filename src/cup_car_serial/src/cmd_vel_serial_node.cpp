@@ -24,6 +24,7 @@
 #include "std_msgs/msg/int32_multi_array.hpp"
 #include "std_msgs/msg/string.hpp"
 
+#include "cup_car_serial/actuator_tracking_monitor.hpp"
 #include "cup_car_serial/protocol.hpp"
 
 namespace
@@ -167,6 +168,27 @@ public:
     rpy_timeout_s_ = declare_parameter<double>("rpy_timeout_s", 0.4);
     control_telemetry_timeout_s_ =
       declare_parameter<double>("control_telemetry_timeout_s", 0.90);
+    cup_car_serial::ActuatorTrackingConfig trackingConfig;
+    trackingConfig.command_deadband_mps = declare_parameter<double>(
+      "tracking_command_deadband_mps", trackingConfig.command_deadband_mps);
+    trackingConfig.response_floor_mps = declare_parameter<double>(
+      "tracking_response_floor_mps", trackingConfig.response_floor_mps);
+    trackingConfig.severe_absolute_error_mps = declare_parameter<double>(
+      "tracking_severe_absolute_error_mps", trackingConfig.severe_absolute_error_mps);
+    trackingConfig.severe_relative_error = declare_parameter<double>(
+      "tracking_severe_relative_error", trackingConfig.severe_relative_error);
+    trackingConfig.startup_grace_s = declare_parameter<double>(
+      "tracking_startup_grace_s", trackingConfig.startup_grace_s);
+    trackingConfig.fault_persistence_s = declare_parameter<double>(
+      "tracking_fault_persistence_s", trackingConfig.fault_persistence_s);
+    trackingConfig.recovery_stop_s = declare_parameter<double>(
+      "tracking_recovery_stop_s", trackingConfig.recovery_stop_s);
+    trackingConfig.retry_rearm_tracking_s = declare_parameter<double>(
+      "tracking_retry_rearm_s", trackingConfig.retry_rearm_tracking_s);
+    trackingConfig.maximum_recovery_attempts = std::max(
+      0, static_cast<int>(declare_parameter<int>(
+        "tracking_maximum_recovery_attempts", trackingConfig.maximum_recovery_attempts)));
+    trackingMonitor_ = cup_car_serial::ActuatorTrackingMonitor(trackingConfig);
 
     connectedPublisher_ = create_publisher<std_msgs::msg::Bool>(
       "/cup_car_serial/connected", rclcpp::QoS(1).transient_local().reliable());
@@ -179,6 +201,9 @@ public:
       "/cup_car_serial/control_telemetry", 20);
     actuatorHealthyPublisher_ = create_publisher<std_msgs::msg::Bool>(
       "/cup_car_serial/actuator_healthy", rclcpp::QoS(1).transient_local().reliable());
+    actuatorTrackingStatusPublisher_ = create_publisher<std_msgs::msg::String>(
+      "/cup_car_serial/actuator_tracking_status",
+      rclcpp::QoS(1).transient_local().reliable());
 
     if (send_rate_hz_ <= 0.0 || command_timeout_s_ <= 0.0 || rpy_timeout_s_ <= 0.0 ||
       control_telemetry_timeout_s_ <= 0.0)
@@ -241,8 +266,12 @@ private:
       serial_connected_ = true;
       connection_started_ = last_connect_attempt_;
       control_telemetry_received_ = false;
+      control_sample_identity_initialized_ = false;
+      trackingMonitor_.Reset();
+      latestTrackingDecision_ = {};
       receive_buffer_.clear();
       set_connected(true);
+      publish_tracking_status("WAITING_FOR_TELEMETRY");
       RCLCPP_INFO(get_logger(), "Serial port connected: %s", active_device_.c_str());
     } catch (const std::exception & error) {
       serial_connected_ = false;
@@ -264,6 +293,10 @@ private:
     connection_state_published_ = true;
     if (!connected) {
       control_telemetry_received_ = false;
+      control_sample_identity_initialized_ = false;
+      trackingMonitor_.Reset();
+      latestTrackingDecision_ = {};
+      publish_tracking_status("DISCONNECTED");
       publish_actuator_health(false);
     }
   }
@@ -284,7 +317,8 @@ private:
     const double age = std::chrono::duration<double>(
       std::chrono::steady_clock::now() - last_control_telemetry_arrival_).count();
     return age <= control_telemetry_timeout_s_ &&
-           cup_car_serial::control_state_is_healthy(latest_control_telemetry_);
+           cup_car_serial::control_state_is_healthy(latest_control_telemetry_) &&
+           latestTrackingDecision_.healthy;
   }
 
   void publish_actuator_health(bool healthy)
@@ -292,6 +326,16 @@ private:
     std_msgs::msg::Bool message;
     message.data = healthy;
     actuatorHealthyPublisher_->publish(message);
+  }
+
+  void publish_tracking_status(const std::string & status)
+  {
+    if (status == lastTrackingStatus_)
+      return;
+    std_msgs::msg::String message;
+    message.data = status;
+    actuatorTrackingStatusPublisher_->publish(message);
+    lastTrackingStatus_ = status;
   }
 
   void receive_feedback()
@@ -385,9 +429,69 @@ private:
     message.pwm_right = frame.pwm_right;
     controlTelemetryPublisher_->publish(message);
 
+    const auto arrival = std::chrono::steady_clock::now();
+    if (control_sample_identity_initialized_)
+    {
+      const auto disposition = cup_car_serial::classify_sample_sequence(
+        latest_control_sample_sequence_, latest_control_mcu_time_ms_,
+        frame.sample_sequence, frame.mcu_time_ms);
+      if (disposition == cup_car_serial::SampleSequenceDisposition::DUPLICATE ||
+        disposition == cup_car_serial::SampleSequenceDisposition::OUT_OF_ORDER)
+      {
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 2000,
+          "Ignoring %s control telemetry sample sequence %u after %u",
+          disposition == cup_car_serial::SampleSequenceDisposition::DUPLICATE ?
+          "duplicate" : "out-of-order",
+          frame.sample_sequence, latest_control_sample_sequence_);
+        return;
+      }
+      if (disposition == cup_car_serial::SampleSequenceDisposition::SOURCE_RESTART)
+      {
+        trackingMonitor_.Reset();
+        latestTrackingDecision_ = {};
+        RCLCPP_WARN(get_logger(), "Control telemetry source restarted; resetting tracking history");
+      }
+    }
+    latest_control_sample_sequence_ = frame.sample_sequence;
+    latest_control_mcu_time_ms_ = frame.mcu_time_ms;
+    control_sample_identity_initialized_ = true;
+    if (control_telemetry_received_)
+    {
+      const double gap = std::chrono::duration<double>(
+        arrival - last_control_telemetry_arrival_).count();
+      if (gap > control_telemetry_timeout_s_)
+        trackingMonitor_.Pause();
+    }
+    const auto previousTrackingState = latestTrackingDecision_.state;
+    const bool baseControlHealthy = cup_car_serial::control_state_is_healthy(frame);
+    if (baseControlHealthy)
+    {
+      latestTrackingDecision_ = trackingMonitor_.Update(
+        static_cast<double>(frame.target_left_velocity_milli) * 0.001,
+        static_cast<double>(frame.target_right_velocity_milli) * 0.001,
+        static_cast<double>(frame.measured_left_velocity_milli) * 0.001,
+        static_cast<double>(frame.measured_right_velocity_milli) * 0.001,
+        arrival);
+    }
+    else
+    {
+      trackingMonitor_.Reset();
+      latestTrackingDecision_ = {};
+    }
     latest_control_telemetry_ = frame;
-    last_control_telemetry_arrival_ = std::chrono::steady_clock::now();
+    last_control_telemetry_arrival_ = arrival;
     control_telemetry_received_ = true;
+    const std::string trackingStatus = baseControlHealthy ?
+      cup_car_serial::Describe(latestTrackingDecision_) : "INACTIVE_CONTROL_STATE";
+    publish_tracking_status(trackingStatus);
+    if (latestTrackingDecision_.state != previousTrackingState)
+    {
+      if (latestTrackingDecision_.healthy)
+        RCLCPP_INFO(get_logger(), "Actuator tracking state: %s", trackingStatus.c_str());
+      else
+        RCLCPP_WARN(get_logger(), "Actuator tracking state: %s", trackingStatus.c_str());
+    }
     publish_actuator_health(control_is_healthy());
   }
 
@@ -425,6 +529,7 @@ private:
         serial_connected_ = false;
         active_device_.clear();
         control_telemetry_received_ = false;
+        control_sample_identity_initialized_ = false;
         receive_buffer_.clear();
         set_connected(false);
       }
@@ -494,6 +599,9 @@ private:
   double command_timeout_s_{};
   double rpy_timeout_s_{};
   double control_telemetry_timeout_s_{};
+  cup_car_serial::ActuatorTrackingMonitor trackingMonitor_;
+  cup_car_serial::ActuatorTrackingDecision latestTrackingDecision_{};
+  std::string lastTrackingStatus_;
   SerialPort serial_;
   bool serial_connected_{false};
   bool connection_state_published_{false};
@@ -501,6 +609,9 @@ private:
   bool received_command_{false};
   bool received_rpy_{false};
   bool control_telemetry_received_{false};
+  bool control_sample_identity_initialized_{false};
+  uint32_t latest_control_sample_sequence_{0};
+  uint32_t latest_control_mcu_time_ms_{0};
   double vx_mps_{0.0};
   double az_radps_{0.0};
   double roll_rad_{0.0};
@@ -520,6 +631,7 @@ private:
   rclcpp::Publisher<mission_control_interfaces::msg::ControlTelemetry>::SharedPtr
     controlTelemetryPublisher_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr actuatorHealthyPublisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr actuatorTrackingStatusPublisher_;
   rclcpp::TimerBase::SharedPtr timer_;
   rclcpp::TimerBase::SharedPtr connectionHeartbeatTimer_;
 };

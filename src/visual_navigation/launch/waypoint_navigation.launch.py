@@ -77,7 +77,8 @@ def generate_launch_description():
                 "fusion_status_topic", default_value="/odometry/fusion_status"
             ),
             DeclareLaunchArgument(
-                "actuator_health_topic", default_value="/cup_car_serial/connected"
+                "actuator_health_topic",
+                default_value="/cup_car_serial/actuator_healthy",
             ),
             DeclareLaunchArgument("require_actuator_health", default_value="false"),
             DeclareLaunchArgument("actuator_health_timeout", default_value="0.8"),

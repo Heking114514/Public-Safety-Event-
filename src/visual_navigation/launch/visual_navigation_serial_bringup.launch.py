@@ -51,6 +51,13 @@ def generate_launch_description():
         name="cmd_vel_serial_node",
         output="screen",
         parameters=[
+            PathJoinSubstitution(
+                [
+                    FindPackageShare("cup_car_serial"),
+                    "config",
+                    "cmd_vel_serial.yaml",
+                ]
+            ),
             {
                 "device": ParameterValue(serial_device, value_type=str),
                 "baud_rate": ParameterValue(serial_baud_rate, value_type=int),

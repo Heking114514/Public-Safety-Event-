@@ -33,7 +33,7 @@ install(TARGETS cmd_vel_serial_node cup_car_serial_protocol
 install(DIRECTORY include/
   DESTINATION include)
 
-install(DIRECTORY launch DESTINATION share/${PROJECT_NAME})
+install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
 
 install(FILES README.md
   DESTINATION share/${PROJECT_NAME})
@@ -42,6 +42,8 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(protocol_test test/protocol_test.cpp)
   target_link_libraries(protocol_test cup_car_serial_protocol)
+  ament_add_gtest(actuator_tracking_monitor_test test/actuator_tracking_monitor_test.cpp)
+  target_include_directories(actuator_tracking_monitor_test PRIVATE include)
 endif()
 
 ament_package()

@@ -71,3 +71,31 @@ TEST(Protocol, ActuatorHealthRequiresNavigationNoEstopAndValidCommand)
   frame.command_valid = false;
   EXPECT_FALSE(cup_car_serial::control_state_is_healthy(frame));
 }
+
+TEST(Protocol, ClassifiesTelemetrySequenceWithoutTreatingDuplicatesAsFresh)
+{
+  using cup_car_serial::SampleSequenceDisposition;
+
+  EXPECT_EQ(
+    cup_car_serial::classify_sample_sequence(10U, 100U, 11U, 110U),
+    SampleSequenceDisposition::NEW_SAMPLE);
+  EXPECT_EQ(
+    cup_car_serial::classify_sample_sequence(10U, 100U, 10U, 110U),
+    SampleSequenceDisposition::DUPLICATE);
+  EXPECT_EQ(
+    cup_car_serial::classify_sample_sequence(10U, 100U, 9U, 110U),
+    SampleSequenceDisposition::OUT_OF_ORDER);
+}
+
+TEST(Protocol, AcceptsSequenceWrapAndRecognizesMcuRestart)
+{
+  using cup_car_serial::SampleSequenceDisposition;
+
+  EXPECT_EQ(
+    cup_car_serial::classify_sample_sequence(
+      std::numeric_limits<uint32_t>::max(), 500U, 0U, 510U),
+    SampleSequenceDisposition::NEW_SAMPLE);
+  EXPECT_EQ(
+    cup_car_serial::classify_sample_sequence(91679U, 916793U, 10U, 100U),
+    SampleSequenceDisposition::SOURCE_RESTART);
+}
