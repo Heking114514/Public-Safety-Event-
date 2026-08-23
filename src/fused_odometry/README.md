@@ -151,6 +151,13 @@ visual translation is rebased to that anchor, so later ORB translation
 increments remain available without accepting the 4-9 cm apparent translation
 observed during zero-linear-speed turns.
 
+Motion states are intentionally contextual rather than one shared boolean:
+map correction uses `command_stationary` only to select its correction time
+constant; navigation braking uses measured position-window speed and a dwell;
+the IMU filter's `stationary` state is its own gyro-bias/yaw-hold detector.
+These states must not be substituted for one another because they answer
+different questions and use different trustworthy sensors.
+
 ## Start
 
 First start ORB with body frame `base_link`, the IMU filter, and wheel odometry

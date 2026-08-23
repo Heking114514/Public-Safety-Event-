@@ -442,7 +442,7 @@ private:
       const double elapsed = std::max(0.0, current_time - last_update_at_);
       const bool command_fresh = command_received_ &&
         current_time - command_received_at_ <= command_timeout_;
-      const bool stationary = fused_odometry::motion_command_is_stationary(
+      const bool command_stationary = fused_odometry::motion_command_is_stationary(
         latest_command_linear_, latest_command_angular_, command_fresh,
         stationary_max_linear_speed_, stationary_max_angular_speed_);
       const bool recovery_blend = current_time <= visual_recovery_blend_until_;
@@ -454,7 +454,7 @@ private:
         map_from_odom_ = desired_map_from_odom_;
       } else {
         double time_constant = recovery_blend ?
-          visual_recovery_time_constant_ : (stationary ?
+          visual_recovery_time_constant_ : (command_stationary ?
           stationary_correction_time_constant_ : correction_time_constant_);
         if (current_time <= map_change_active_until_) {
           time_constant = loop_correction_time_constant_;
