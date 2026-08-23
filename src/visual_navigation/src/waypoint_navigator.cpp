@@ -29,6 +29,7 @@
 #include "visual_navigation/fusion_health_policy.hpp"
 #include "visual_navigation/navigation_supervisor.hpp"
 #include "visual_navigation/navigation_input_cache.hpp"
+#include "visual_navigation/navigation_turn_state.hpp"
 #include "visual_navigation/path_control.hpp"
 #include "visual_navigation/path_progress_supervisor.hpp"
 #include "visual_navigation/path_tracking_controller.hpp"
@@ -1049,7 +1050,7 @@ private:
         const double finalYawError = NormalizeAngle(target.yaw - currentYaw_);
         const bool finalYawNeedsControl =
           std::abs(finalYawError) > finalYawTolerance_ ||
-          std::abs(controlYawRate) > turnSettleYawRate_ || rotatingInPlace_;
+          std::abs(controlYawRate) > turnSettleYawRate_ || turnState_.rotating();
         if (finalYawNeedsControl)
         {
           if (SuperviseTurnProgress(
@@ -1059,20 +1060,12 @@ private:
           {
             return;
           }
-          if (!rotatingInPlace_)
+          if (!turnState_.rotating())
           {
-            rotatingInPlace_ = true;
-            turnAnchorX_ = currentX_;
-            turnAnchorY_ = currentY_;
-            turnAnchorValid_ = true;
+            turnState_.begin_rotation(currentX_, currentY_);
             turnSettleController_.reset();
           }
-          if (!turnAnchorValid_)
-          {
-            turnAnchorX_ = currentX_;
-            turnAnchorY_ = currentY_;
-            turnAnchorValid_ = true;
-          }
+          turnState_.ensure_anchor(currentX_, currentY_);
 
           geometry_msgs::msg::Twist command;
           if (std::abs(finalYawError) <= finalYawTolerance_)
@@ -1126,7 +1119,7 @@ private:
             requestedAngularSpeed, finalYawError,
             minimumTurnSpeed * fusionHealth.speed_scale, scaledMaxAngularSpeed);
           command.linear.x = visual_navigation::TurnPositionHoldSpeed(
-            currentX_, currentY_, currentYaw_, turnAnchorX_, turnAnchorY_,
+            currentX_, currentY_, currentYaw_, turnState_.anchor_x(), turnState_.anchor_y(),
             turnPositionHoldGain_, turnPositionHoldDeadband_,
             turnPositionHoldMaxSpeed_) * fusionHealth.speed_scale;
           PublishMotionCommand(command);
@@ -1168,16 +1161,16 @@ private:
       return;
     }
 
-    if (waypointRequiresStop && !waypointRecoveryActive_ &&
+    if (waypointRequiresStop && !turnState_.waypoint_recovery() &&
       visual_navigation::WaypointNeedsRecovery(
         pathProjection, waypointPassLongitudinalTolerance_,
         waypointPassLateralTolerance_))
     {
       ResetPathPid();
-      waypointRecoveryActive_ = true;
+      turnState_.begin_waypoint_recovery();
     }
 
-    if (waypointRecoveryActive_)
+    if (turnState_.waypoint_recovery())
     {
       const double recoveryHeading = std::atan2(deltaY, deltaX);
       const double recoveryHeadingError = NormalizeAngle(recoveryHeading - currentYaw_);
@@ -1245,26 +1238,23 @@ private:
       headingError, crossTrackError, crossTrackGain_, requestedSpeed,
       stanleySofteningSpeed_, maxCrossTrackCorrection_);
     const double rotationEntryThreshold = visual_navigation::RotationEntryThreshold(
-      pathAlignmentCompleted_, rotateInPlaceThreshold_, rotateInPlaceReentryThreshold_);
+      turnState_.path_alignment_completed(), rotateInPlaceThreshold_, rotateInPlaceReentryThreshold_);
     const bool shouldRotateInPlace = visual_navigation::ShouldRotateInPlace(
       false, std::abs(headingError), std::abs(controlYawRate),
       rotationEntryThreshold, rotateInPlaceExitThreshold_, turnSettleYawRate_);
 
-    if (!rotatingInPlace_ && shouldRotateInPlace)
+    if (!turnState_.rotating() && shouldRotateInPlace)
     {
       ResetPathPid();
-      rotatingInPlace_ = true;
-      turnAnchorX_ = currentX_;
-      turnAnchorY_ = currentY_;
-      turnAnchorValid_ = true;
+      turnState_.begin_rotation(currentX_, currentY_);
       turnSettleController_.reset();
     }
-    else if (!rotatingInPlace_ && !pathAlignmentCompleted_)
+    else if (!turnState_.rotating() && !turnState_.path_alignment_completed())
     {
-      pathAlignmentCompleted_ = true;
+      turnState_.mark_path_aligned();
     }
 
-    const bool allowPathIntegral = !rotatingInPlace_ &&
+    const bool allowPathIntegral = !turnState_.rotating() &&
       std::abs(headingError) < 0.30 && std::abs(crossTrackError) < 0.08;
     const double pathFeedbackAngularSpeed = UpdatePathPid(
       pathError, crossTrackError, allowPathIntegral, controlYawRate) *
@@ -1275,7 +1265,7 @@ private:
       CompletedRouteLengthBeforeCurrentSegment() +
       Clamp(pathLength - pathProjection.remaining, 0.0, pathLength) :
       std::numeric_limits<double>::quiet_NaN();
-    if (rotatingInPlace_)
+    if (turnState_.rotating())
     {
       if (SupervisePathProgress(segmentProgress, progressSupervisionAllowed))
         return;
@@ -1286,12 +1276,7 @@ private:
       {
         return;
       }
-      if (!turnAnchorValid_)
-      {
-        turnAnchorX_ = currentX_;
-        turnAnchorY_ = currentY_;
-        turnAnchorValid_ = true;
-      }
+      turnState_.ensure_anchor(currentX_, currentY_);
       if (std::abs(headingError) <= rotateInPlaceExitThreshold_)
         turnSettleController_.begin_settling();
       if (turnSettleController_.settling())
@@ -1316,7 +1301,7 @@ private:
         {
           ResetPathPid();
           turnProgressSupervisor_.Reset();
-          pathAlignmentCompleted_ = true;
+          turnState_.mark_path_aligned();
           SetState("PATH_ALIGNED");
           return;
         }
@@ -1334,7 +1319,7 @@ private:
         requestedAngularSpeed, headingError,
         minPrecisionTurnSpeed_ * fusionHealth.speed_scale, scaledMaxAngularSpeed);
       command.linear.x = visual_navigation::TurnPositionHoldSpeed(
-        currentX_, currentY_, currentYaw_, turnAnchorX_, turnAnchorY_,
+        currentX_, currentY_, currentYaw_, turnState_.anchor_x(), turnState_.anchor_y(),
         turnPositionHoldGain_, turnPositionHoldDeadband_,
         turnPositionHoldMaxSpeed_) * fusionHealth.speed_scale;
     }
@@ -1387,13 +1372,13 @@ private:
         approachDistance <= stoppingDistance && command.linear.x > 0.0;
     }
 
-    if (!rotatingInPlace_ && SupervisePathProgress(
+    if (!turnState_.rotating() && SupervisePathProgress(
         segmentProgress, !brakingApproach && progressSupervisionAllowed))
     {
       return;
     }
     PublishMotionCommand(command);
-    if (rotatingInPlace_)
+    if (turnState_.rotating())
       SetState("ROTATING_TO_PATH");
     else
       SetState(brakingApproach ? "BRAKING_APPROACH" : "FOLLOWING");
@@ -1426,7 +1411,7 @@ private:
     }
     resumePathFromCurrentPose_ = false;
     pathSegmentInitialized_ = true;
-    pathAlignmentCompleted_ = false;
+    turnState_.reset_segment();
     waypointBrakeController_.reset_segment();
     finalPositionRecoveryActive_ = false;
     ResetPathPid();
@@ -1519,7 +1504,7 @@ private:
     turnProgressSupervisor_.Reset();
     waypointBrakeController_.reset_segment();
     ResetPathPid();
-    waypointRecoveryActive_ = true;
+    turnState_.begin_waypoint_recovery();
     PublishStop();
     SetState("RECOVERING_FINAL_POSITION");
   }
@@ -1568,9 +1553,7 @@ private:
   void ResetPathPid()
   {
     pathTrackingController_.reset_pid();
-    rotatingInPlace_ = false;
-    waypointRecoveryActive_ = false;
-    turnAnchorValid_ = false;
+    turnState_.reset_control();
     turnSettleController_.reset();
     waypointBrakeController_.reset_control();
   }
@@ -1769,13 +1752,7 @@ private:
   double imuYawRate_{0.0};
   double pathSegmentStartX_{0.0};
   double pathSegmentStartY_{0.0};
-  double turnAnchorX_{0.0};
-  double turnAnchorY_{0.0};
   bool pathSegmentInitialized_{false};
-  bool pathAlignmentCompleted_{false};
-  bool rotatingInPlace_{false};
-  bool waypointRecoveryActive_{false};
-  bool turnAnchorValid_{false};
   bool finalPositionRecoveryActive_{false};
   bool finalPositionCaptured_{false};
   std::string state_;
@@ -1790,6 +1767,7 @@ private:
   visual_navigation::PathTrackingController pathTrackingController_;
   visual_navigation::WaypointBrakeController waypointBrakeController_;
   visual_navigation::TurnSettleController turnSettleController_;
+  visual_navigation::NavigationTurnState turnState_;
   geometry_msgs::msg::Twist lastMotionCommand_;
   bool motionCommandInitialized_{false};
   WaitAction waitAction_{WaitAction::NONE};
