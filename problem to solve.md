@@ -27,7 +27,7 @@
 
 ### P4-02 融合门控节点职责过度集中
 
-- 当前进展：传感器时间戳的 unset、单调性、过期和未来样本规则，以及 wheel/IMU/raw visual 的 frame 对和幅值范围校验，已抽到 `fused_odometry` 公共校验函数，并有独立单元测试。
+- 当前进展：传感器时间戳的 unset、单调性、过期和未来样本规则，以及 wheel/IMU/raw visual 的 frame、幅值、四元数和倾角校验，已抽到 `fused_odometry` 公共校验函数，并有独立单元测试。
 - 未解决：`src/fused_odometry/src/fusion_gate_node.cpp` 仍约 1122 行；传感器 frame/数值适配、视觉增量、IMU bias、wheel 残差和健康决策仍共享节点状态。
 - 影响：修改某一传感器的 frame/数值校验或残差逻辑仍可能改变其他输入的发布条件。
 

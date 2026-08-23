@@ -62,25 +62,6 @@ double quaternion_yaw(const geometry_msgs::msg::Quaternion & quaternion)
     1.0 - 2.0 * (y * y + z * z));
 }
 
-bool valid_quaternion(const geometry_msgs::msg::Quaternion & quaternion)
-{
-  const double norm_squared =
-    quaternion.x * quaternion.x + quaternion.y * quaternion.y +
-    quaternion.z * quaternion.z + quaternion.w * quaternion.w;
-  return finite(norm_squared) && norm_squared > 0.25 && norm_squared < 2.25;
-}
-
-double quaternion_tilt(const geometry_msgs::msg::Quaternion & quaternion)
-{
-  const double inverse_norm = 1.0 / std::sqrt(
-    quaternion.x * quaternion.x + quaternion.y * quaternion.y +
-    quaternion.z * quaternion.z + quaternion.w * quaternion.w);
-  const double x = quaternion.x * inverse_norm;
-  const double y = quaternion.y * inverse_norm;
-  const double body_z_in_world_z = std::clamp(1.0 - 2.0 * (x * x + y * y), -1.0, 1.0);
-  return std::acos(body_z_in_world_z);
-}
-
 geometry_msgs::msg::Quaternion yaw_quaternion(double yaw)
 {
   geometry_msgs::msg::Quaternion quaternion;
@@ -407,9 +388,9 @@ private:
   void raw_visual_callback(const nav_msgs::msg::Odometry::SharedPtr message)
   {
     const auto & position = message->pose.pose.position;
-    const bool orientation_valid = valid_quaternion(message->pose.pose.orientation);
+    const bool orientation_valid = ValidQuaternion(message->pose.pose.orientation);
     const double tilt = orientation_valid ?
-      quaternion_tilt(message->pose.pose.orientation) : std::numeric_limits<double>::infinity();
+      QuaternionTilt(message->pose.pose.orientation) : std::numeric_limits<double>::infinity();
     if (!FramePairMatches(
         message->header.frame_id, message->child_frame_id,
         raw_visual_expected_frame_, visual_expected_child_frame_) ||

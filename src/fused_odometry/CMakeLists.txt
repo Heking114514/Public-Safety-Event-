@@ -66,6 +66,7 @@ if(BUILD_TESTING)
   target_link_libraries(test_fusion_status_authority fusion_logic)
   ament_add_gtest(test_sensor_input_validation test/test_sensor_input_validation.cpp)
   target_link_libraries(test_sensor_input_validation fusion_logic)
+  ament_target_dependencies(test_sensor_input_validation geometry_msgs)
   ament_add_pytest_test(test_fusion_config test/test_fusion_config.py)
 endif()
 
