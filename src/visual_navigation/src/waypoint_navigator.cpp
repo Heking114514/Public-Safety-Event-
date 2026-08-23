@@ -35,6 +35,7 @@
 #include "visual_navigation/rate_limiter.hpp"
 #include "visual_navigation/route_manager.hpp"
 #include "visual_navigation/turn_progress_supervisor.hpp"
+#include "visual_navigation/waypoint_brake_controller.hpp"
 
 namespace
 {
@@ -290,6 +291,8 @@ public:
       0.0, declare_parameter<double>("pre_turn_minimum_stop_time", 0.20));
     preTurnBrakeTimeout_ = std::max(
       preTurnMinimumStopTime_, declare_parameter<double>("pre_turn_brake_timeout", 0.60));
+    waypointBrakeController_.configure(
+      preTurnStopSpeed_, preTurnStopDwell_, preTurnMinimumStopTime_, preTurnBrakeTimeout_);
     finalYawTolerance_ = std::max(
       0.001, declare_parameter<double>("final_yaw_tolerance", 0.060));
     finalYawMaxAngularSpeed_ = std::min(
@@ -987,7 +990,7 @@ private:
       (finalWaypoint && waypointReached);
 
     if (visual_navigation::ShouldBeginWaypointBrake(
-        waypointBraking_, waypointBrakeCompleted_,
+        waypointBrakeController_.braking(), waypointBrakeController_.completed(),
         waypointReached, waypointRequiresStop))
     {
       pathProgressSupervisor_.Reset();
@@ -997,14 +1000,14 @@ private:
       SetState("BRAKING_AT_WAYPOINT");
       return;
     }
-    if (waypointBraking_)
+    if (waypointBrakeController_.braking())
     {
       pathProgressSupervisor_.Reset();
       turnProgressSupervisor_.Reset();
       PublishStop();
       if (!WaypointBrakeHasCompleted())
       {
-        if (waypointBrakeTimedOut_)
+        if (waypointBrakeController_.timed_out())
         {
           navigationActive_ = false;
           ResetPathPid();
@@ -1017,12 +1020,9 @@ private:
         return;
       }
 
-      waypointBraking_ = false;
-      waypointBrakeCompleted_ = true;
+      waypointBrakeController_.mark_completed();
       if (finalWaypoint)
         finalPositionRecoveryActive_ = false;
-      waypointStopTimerInitialized_ = false;
-      waypointSpeedSettleTimerInitialized_ = false;
       if (!finalWaypoint)
       {
         if (target.stop_time > 0.0)
@@ -1445,7 +1445,7 @@ private:
     resumePathFromCurrentPose_ = false;
     pathSegmentInitialized_ = true;
     pathAlignmentCompleted_ = false;
-    waypointBrakeCompleted_ = false;
+    waypointBrakeController_.reset_segment();
     finalPositionRecoveryActive_ = false;
     ResetPathPid();
   }
@@ -1535,7 +1535,7 @@ private:
     finalPositionCaptured_ = false;
     finalPositionRecoveryActive_ = true;
     turnProgressSupervisor_.Reset();
-    waypointBrakeCompleted_ = false;
+    waypointBrakeController_.reset_segment();
     ResetPathPid();
     waypointRecoveryActive_ = true;
     PublishStop();
@@ -1560,11 +1560,7 @@ private:
   void BeginWaypointBraking()
   {
     ResetPathPid();
-    waypointBraking_ = true;
-    waypointBrakeTimedOut_ = false;
-    waypointStopStarted_ = std::chrono::steady_clock::now();
-    waypointStopTimerInitialized_ = true;
-    waypointSpeedSettleTimerInitialized_ = false;
+    waypointBrakeController_.begin(std::chrono::steady_clock::now());
   }
 
   void UpdateObservedLinearSpeed()
@@ -1575,48 +1571,14 @@ private:
 
   bool WaypointBrakeHasCompleted()
   {
-    const auto currentTime = std::chrono::steady_clock::now();
-    if (!waypointStopTimerInitialized_)
-    {
-      waypointStopStarted_ = currentTime;
-      waypointStopTimerInitialized_ = true;
-    }
-    const double totalStopSeconds =
-      std::chrono::duration<double>(currentTime - waypointStopStarted_).count();
-    const double absoluteSpeed = pathTrackingController_.observed_speed_valid() ?
-      pathTrackingController_.observed_speed() : std::numeric_limits<double>::quiet_NaN();
-    if (std::isfinite(absoluteSpeed) && absoluteSpeed <= preTurnStopSpeed_)
-    {
-      if (!waypointSpeedSettleTimerInitialized_)
-      {
-        waypointSpeedSettleStarted_ = currentTime;
-        waypointSpeedSettleTimerInitialized_ = true;
-      }
-    }
-    else
-    {
-      waypointSpeedSettleTimerInitialized_ = false;
-    }
-    const double settledSeconds = waypointSpeedSettleTimerInitialized_ ?
-      std::chrono::duration<double>(currentTime - waypointSpeedSettleStarted_).count() : 0.0;
-    const bool complete = visual_navigation::WaypointStopSatisfied(
-      absoluteSpeed, settledSeconds, totalStopSeconds, preTurnStopSpeed_,
-      preTurnStopDwell_, preTurnMinimumStopTime_, preTurnBrakeTimeout_);
-    if (!complete && totalStopSeconds >= preTurnBrakeTimeout_)
-    {
-      waypointBrakeTimedOut_ = true;
-      if (std::isfinite(absoluteSpeed))
-      {
-        RCLCPP_ERROR(
-          get_logger(), "Waypoint brake timed out after %.3fs (observed speed=%.3fm/s)",
-          totalStopSeconds, absoluteSpeed);
-      }
-      else
-      {
-        RCLCPP_ERROR(
-          get_logger(), "Waypoint brake timed out after %.3fs (observed speed invalid)",
-          totalStopSeconds);
-      }
+    const bool complete = waypointBrakeController_.check(
+      std::chrono::steady_clock::now(), pathTrackingController_.observed_speed_valid(),
+      pathTrackingController_.observed_speed());
+    if (waypointBrakeController_.timed_out()) {
+      RCLCPP_ERROR(
+        get_logger(), "Waypoint brake timed out (observed speed %.3fm/s)",
+        pathTrackingController_.observed_speed_valid() ?
+        pathTrackingController_.observed_speed() : std::numeric_limits<double>::quiet_NaN());
     }
     return complete;
   }
@@ -1629,9 +1591,7 @@ private:
     turnAnchorValid_ = false;
     turnSettling_ = false;
     turnSettleTimerInitialized_ = false;
-    waypointBraking_ = false;
-    waypointStopTimerInitialized_ = false;
-    waypointSpeedSettleTimerInitialized_ = false;
+    waypointBrakeController_.reset_control();
   }
 
   double UpdatePathPid(
@@ -1837,12 +1797,7 @@ private:
   bool turnAnchorValid_{false};
   bool turnSettling_{false};
   bool turnSettleTimerInitialized_{false};
-  bool waypointBraking_{false};
-  bool waypointBrakeTimedOut_{false};
-  bool waypointBrakeCompleted_{false};
   bool finalPositionRecoveryActive_{false};
-  bool waypointStopTimerInitialized_{false};
-  bool waypointSpeedSettleTimerInitialized_{false};
   bool finalPositionCaptured_{false};
   std::string state_;
   std::map<std::string, std::string> motionHolds_;
@@ -1854,9 +1809,8 @@ private:
   rclcpp::Time motionHoldStartedAt_{0, 0, RCL_ROS_TIME};
   std::chrono::steady_clock::time_point lastMotionCommandTime_{};
   std::chrono::steady_clock::time_point turnSettleStarted_{};
-  std::chrono::steady_clock::time_point waypointStopStarted_{};
-  std::chrono::steady_clock::time_point waypointSpeedSettleStarted_{};
   visual_navigation::PathTrackingController pathTrackingController_;
+  visual_navigation::WaypointBrakeController waypointBrakeController_;
   geometry_msgs::msg::Twist lastMotionCommand_;
   bool motionCommandInitialized_{false};
   WaitAction waitAction_{WaitAction::NONE};

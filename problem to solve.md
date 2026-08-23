@@ -21,7 +21,7 @@
 
 ### P4-01 导航节点职责过度集中
 
-- 当前进展：路线 CSV 解析、动态 `nav_msgs/Path` 转换、默认值校验和重复路线判定已抽到 `visual_navigation::RouteManager`；odom、IMU、fusion-status、tracking 和执行器健康的接收/新鲜度状态已抽到 `visual_navigation::NavigationInputCache`；路径 PID 和位置窗口速度估计已抽到 `visual_navigation::PathTrackingController`，并有独立单元测试。
+- 当前进展：路线 CSV 解析、动态 `nav_msgs/Path` 转换、默认值校验和重复路线判定已抽到 `visual_navigation::RouteManager`；odom、IMU、fusion-status、tracking 和执行器健康的接收/新鲜度状态已抽到 `visual_navigation::NavigationInputCache`；路径 PID、位置窗口速度估计和到点刹车监督已分别抽到独立控制类，并有独立单元测试。
 - 未解决：`src/visual_navigation/src/waypoint_navigator.cpp` 仍约 2001 行、104 个参数；路线 ROS 接收、跟线、制动、转向、恢复、任务状态和命令发布仍共享同一个节点状态。
 - 影响：修改某一运动阶段仍可能通过共享成员影响其他阶段，完整控制状态迁移仍难以独立测试。
 
