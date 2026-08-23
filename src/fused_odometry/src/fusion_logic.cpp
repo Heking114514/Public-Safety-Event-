@@ -544,17 +544,19 @@ FusionMode select_mode(
     return imu ? FusionMode::kFull : FusionMode::kNoImu;
   }
 
-  // Once IMU yaw-rate is back, wheel + IMU can continue without waiting for
-  // visual recovery. The bounded window applies only to pure wheel fallback.
-  if (wheel && imu) {
-    return FusionMode::kNoVision;
-  }
   const bool within_dead_reckoning_limit =
     seconds_without_vision <= max_seconds_without_vision &&
     distance_without_vision <= max_distance_without_vision;
   const bool within_wheel_only_limit =
     seconds_without_vision <= max_wheel_only_seconds &&
     distance_without_vision <= max_wheel_only_distance;
+
+  // Wheel + IMU is the tunnel fallback, not an unlimited navigation mode.
+  // Bound it by both elapsed outage and travelled distance so a permanent
+  // camera failure cannot silently run the remainder of a mission.
+  if (wheel && imu && within_dead_reckoning_limit) {
+    return FusionMode::kNoVision;
+  }
   if (wheel && !imu && wheel_yaw_backup &&
     within_dead_reckoning_limit && within_wheel_only_limit)
   {

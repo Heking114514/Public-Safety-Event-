@@ -20,6 +20,7 @@ from ament_index_python.packages import get_package_share_directory
 from arena_path_planner.srv import PlanArenaPath
 from geometry_msgs.msg import Point, Point32, Polygon, Pose
 from nav_msgs.msg import Odometry
+from std_msgs.msg import UInt64
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
@@ -28,6 +29,7 @@ from rclpy.qos import qos_profile_sensor_data
 SERVICE_NAME = "/arena_path_planner/plan"
 ODOMETRY_TOPIC = "/odometry/fused"
 ODOMETRY_TIMEOUT_S = 0.5
+ROUTE_ACK_TOPIC = "/waypoint_navigation/route_ack"
 BACKGROUND = "#f7f8fa"
 PANEL = "#ffffff"
 ROAD = "#f7f8fa"
@@ -62,17 +64,28 @@ class PlannerClient(Node):
         self,
         responses: queue.Queue[tuple[int, Any]],
         odometry_updates: queue.Queue[Optional[tuple[float, float, float, float]]],
+        route_acks: queue.Queue[int],
     ) -> None:
         super().__init__("arena_route_frontend")
         self.client = self.create_client(PlanArenaPath, SERVICE_NAME)
         self.responses = responses
         self.odometry_updates = odometry_updates
+        self.route_acks = route_acks
         self.lock = threading.Lock()
         self.in_flight = False
         self.pending: Optional[tuple[Any, ...]] = None
         self.odom_subscription = self.create_subscription(
             Odometry, ODOMETRY_TOPIC, self._handle_odometry, qos_profile_sensor_data
         )
+        self.route_ack_subscription = self.create_subscription(
+            UInt64, ROUTE_ACK_TOPIC, self._handle_route_ack, 10
+        )
+
+    def _handle_route_ack(self, message: UInt64) -> None:
+        try:
+            self.route_acks.put_nowait(int(message.data))
+        except queue.Full:
+            pass
 
     def _handle_odometry(self, message: Odometry) -> None:
         x = float(message.pose.pose.position.x)
@@ -199,6 +212,7 @@ class ArenaFrontend:
         self.applied_generation = -1
         self.request_count = 0
         self.activation_requests: set[int] = set()
+        self.awaiting_route_ack_stamp: Optional[int] = None
         self.last_drag_request = 0.0
         self.dragging = False
         self.playing = False
@@ -209,9 +223,10 @@ class ArenaFrontend:
         self.odometry_updates: queue.Queue[
             Optional[tuple[float, float, float, float]]
         ] = queue.Queue(maxsize=1)
+        self.route_acks: queue.Queue[int] = queue.Queue(maxsize=8)
 
         rclpy.init(args=[])
-        self.node = PlannerClient(self.responses, self.odometry_updates)
+        self.node = PlannerClient(self.responses, self.odometry_updates, self.route_acks)
         self.executor = MultiThreadedExecutor(num_threads=2)
         self.executor.add_node(self.node)
         self.spin_thread = threading.Thread(target=self.executor.spin, daemon=True)
@@ -660,7 +675,11 @@ class ArenaFrontend:
                     if edge not in self.covered_edges:
                         self.covered_edges.append(edge)
                 if activated:
-                    self.status_var.set("三层完整路线已发布并启动")
+                    stamp = response.navigation_path.header.stamp
+                    self.awaiting_route_ack_stamp = int(stamp.sec) * 1_000_000_000 + int(
+                        stamp.nanosec
+                    )
+                    self.status_var.set("三层完整路线已发布，等待导航确认")
                 elif activation_requested and incomplete:
                     self.status_var.set("路线不完整，未启动：请先处理延迟目标")
                 elif incomplete:
@@ -684,6 +703,14 @@ class ArenaFrontend:
                         )
                     else:
                         self.next_layer_button.configure(text="三阶段已完成", state=tk.DISABLED)
+        except queue.Empty:
+            pass
+        try:
+            while True:
+                route_ack = self.route_acks.get_nowait()
+                if self.awaiting_route_ack_stamp == route_ack:
+                    self.awaiting_route_ack_stamp = None
+                    self.status_var.set("三层完整路线已确认并启动")
         except queue.Empty:
             pass
         if not self.node.service_ready() and not self.node.in_flight:

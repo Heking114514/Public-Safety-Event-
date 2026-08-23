@@ -309,6 +309,18 @@ private:
       raw_visual_vx_window_.ready(robust_min_samples_);
   }
 
+  void reject_raw_visual_sample()
+  {
+    raw_visual_received_ = false;
+    raw_visual_velocity_valid_ = false;
+    last_raw_increment_pose_valid_ = false;
+    // An invalid frame is an interruption just like a tracking-state loss.
+    // This clears the recovery counter so isolated valid samples cannot
+    // accumulate across an invalid or stale interval.
+    if (ever_accepted_visual_)
+      mark_visual_interrupted();
+  }
+
   void tracking_callback(const std_msgs::msg::Int32::SharedPtr message)
   {
     tracking_received_ = true;
@@ -364,7 +376,7 @@ private:
       !finite(position.x) || !finite(position.y) ||
       !orientation_valid || tilt > raw_visual_max_tilt_)
     {
-      raw_visual_received_ = false;
+      reject_raw_visual_sample();
       ++invalid_raw_visual_count_;
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 2000,
@@ -374,6 +386,7 @@ private:
     }
     const rclcpp::Time stamp(message->header.stamp);
     if (raw_visual_stamp_valid_ && stamp <= last_raw_visual_stamp_) {
+      reject_raw_visual_sample();
       ++invalid_raw_visual_count_;
       return;
     }

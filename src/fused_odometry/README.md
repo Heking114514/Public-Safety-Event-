@@ -40,6 +40,14 @@ The gate publishes sanitized visual and wheel inputs below `/fusion/input/*`.
 The corrected control IMU is intentionally public at `/imu/control` so that
 navigation damping and EKF prediction use the same yaw-rate sample.
 
+`/odometry/fused` publishes a map-frame pose. Its position and yaw covariance
+include both the local odometry covariance and the accepted visual correction
+covariance; the local covariance is not relabeled as global covariance.
+
+Optional turn-position holding is additionally released if local odometry
+measures more than `turn_hold_max_translation_m` of translation, so a mistaken
+in-place command cannot erase real chassis motion.
+
 The map correction node pairs visual poses with local EKF poses at the visual
 measurement timestamp. Timestamps between two retained local samples use SE(2)
 interpolation, including shortest-path yaw. A visual sample newer than the

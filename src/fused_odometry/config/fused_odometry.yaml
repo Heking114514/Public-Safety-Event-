@@ -42,10 +42,11 @@ fused_odometry_gate:
     visual_recovery_ramp_s: 0.75
     visual_recovery_initial_covariance_scale: 50.0
 
-    max_dead_reckoning_time_s: 2.0
-    max_dead_reckoning_distance_m: 0.30
-    # Pure wheel fallback bridges a short simultaneous camera/IMU outage.
-    # Wheel + IMU may continue after this window without waiting for vision.
+    # The no-vision window covers the measured 0.8 m tunnel. It is still
+    # bounded so a permanent camera failure cannot run an entire mission.
+    max_dead_reckoning_time_s: 4.0
+    max_dead_reckoning_distance_m: 1.0
+    # Pure wheel fallback bridges a shorter simultaneous camera/IMU outage.
     max_wheel_only_time_s: 2.0
     max_wheel_only_distance_m: 0.30
     max_wheel_only_speed_mps: 0.30
@@ -213,6 +214,7 @@ map_odom_correction:
     # turns. Hold global XY through the turn, then preserve later visual
     # increments from the anchored position.
     turn_hold_max_linear_speed_mps: 0.03
+    turn_hold_max_translation_m: 0.04
     turn_hold_entry_angular_speed_radps: 0.55
     turn_hold_min_angular_speed_radps: 0.12
     # Release early inside the navigator's 0.30s settle window so the fast

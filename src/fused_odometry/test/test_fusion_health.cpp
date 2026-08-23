@@ -90,6 +90,23 @@ TEST(FusionHealthMonitor, WheelOnlyDistanceLimitChangesModeWithoutFusedPose)
     fused_odometry::FusionMode::kFault);
 }
 
+TEST(FusionHealthMonitor, WheelAndImuNoVisionFallbackIsBounded)
+{
+  auto monitor = make_monitor();
+  monitor.start_vision_outage(0.0);
+  auto input = healthy_input(0.0);
+  input.vision = false;
+  fused_odometry::FusionHealthLimits limits;
+  limits.max_dead_reckoning_time = 2.0;
+  limits.max_dead_reckoning_distance = 0.30;
+
+  EXPECT_EQ(monitor.evaluate(input, limits).mode,
+    fused_odometry::FusionMode::kNoVision);
+  input.now_seconds = 2.1;
+  EXPECT_EQ(monitor.evaluate(input, limits).mode,
+    fused_odometry::FusionMode::kFault);
+}
+
 TEST(FusionHealthMonitor, VisualRecoveryClearsOutageState)
 {
   auto monitor = make_monitor();

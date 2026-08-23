@@ -62,6 +62,11 @@ double steady_seconds()
     std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
+double finite_covariance(double value, double fallback)
+{
+  return std::isfinite(value) && value >= 0.0 && value < 1.0e6 ? value : fallback;
+}
+
 }  // namespace
 
 class MapOdomCorrectionNode : public rclcpp::Node
@@ -104,6 +109,7 @@ public:
     stationary_max_linear_speed_ = positive("stationary_max_linear_speed_mps", 0.03);
     stationary_max_angular_speed_ = positive("stationary_max_angular_speed_radps", 0.12);
     turn_hold_max_linear_speed_ = positive("turn_hold_max_linear_speed_mps", 0.03);
+    turn_hold_max_translation_ = positive("turn_hold_max_translation_m", 0.04);
     turn_hold_entry_angular_speed_ = positive("turn_hold_entry_angular_speed_radps", 0.55);
     turn_hold_min_angular_speed_ = positive("turn_hold_min_angular_speed_radps", 0.12);
     turn_hold_release_delay_ = positive("turn_hold_release_delay_s", 0.28);
@@ -280,6 +286,8 @@ private:
       visual_arrival - visual_received_at_ > visual_recovery_gap_;
     latest_raw_visual_ = message_pose(message);
     latest_visual_local_ = local_pose;
+    visual_xy_variance_ = finite_covariance(message.pose.covariance[0], 0.05);
+    visual_yaw_variance_ = finite_covariance(message.pose.covariance[35], 0.10);
     visual_pair_valid_ = true;
     visual_received_at_ = visual_arrival;
     if (turn_hold_active_) {
@@ -324,6 +332,13 @@ private:
     const bool low_linear_speed =
       std::abs(message->linear.x) <= turn_hold_max_linear_speed_;
     const double absolute_angular_speed = std::abs(message->angular.z);
+    if (turn_hold_motion_rejected_) {
+      if (!low_linear_speed || absolute_angular_speed < turn_hold_min_angular_speed_) {
+        turn_hold_motion_rejected_ = false;
+      } else {
+        return;
+      }
+    }
     if (turn_hold_active_) {
       if (low_linear_speed && absolute_angular_speed >= turn_hold_min_angular_speed_) {
         last_turn_command_at_ = current_time;
@@ -339,6 +354,7 @@ private:
 
     turn_anchor_global_ = fused_odometry::compose_pose(
       map_from_odom_, message_pose(latest_local_));
+    turn_anchor_local_ = message_pose(latest_local_);
     turn_hold_active_ = true;
     last_turn_command_at_ = current_time;
     desired_valid_ = false;
@@ -387,8 +403,20 @@ private:
     }
 
     if (turn_hold_active_ &&
-      current_time - last_turn_command_at_ >= turn_hold_release_delay_)
+      (current_time - last_turn_command_at_ >= turn_hold_release_delay_ ||
+      std::hypot(
+        message_pose(latest_local_).x - turn_anchor_local_.x,
+        message_pose(latest_local_).y - turn_anchor_local_.y) > turn_hold_max_translation_))
     {
+      const Pose2d current_local = message_pose(latest_local_);
+      const double translation = std::hypot(
+        current_local.x - turn_anchor_local_.x,
+        current_local.y - turn_anchor_local_.y);
+      if (translation > turn_hold_max_translation_) {
+        turn_hold_motion_rejected_ = true;
+        RCLCPP_WARN(
+          get_logger(), "Releasing turn hold after %.3f m local translation", translation);
+      }
       finish_turn_hold();
     }
 
@@ -437,6 +465,19 @@ private:
     output.pose.pose.position.y = global_pose.y;
     output.pose.pose.position.z = 0.0;
     output.pose.pose.orientation = yaw_quaternion(global_pose.yaw);
+    // The pose is in map while latest_local_ was estimated in odom. Include
+    // both state uncertainties instead of relabeling local covariance as map
+    // covariance after applying the visual correction.
+    output.pose.covariance.fill(0.0);
+    output.pose.covariance[0] = finite_covariance(latest_local_.pose.covariance[0], 0.0) +
+      visual_xy_variance_;
+    output.pose.covariance[7] = finite_covariance(latest_local_.pose.covariance[7], 0.0) +
+      visual_xy_variance_;
+    output.pose.covariance[14] = 1.0e6;
+    output.pose.covariance[21] = 1.0e6;
+    output.pose.covariance[28] = 1.0e6;
+    output.pose.covariance[35] = finite_covariance(latest_local_.pose.covariance[35], 0.0) +
+      visual_yaw_variance_;
     publisher_->publish(output);
 
     if (tf_broadcaster_) {
@@ -477,6 +518,7 @@ private:
   double stationary_max_linear_speed_{0.03};
   double stationary_max_angular_speed_{0.12};
   double turn_hold_max_linear_speed_{0.03};
+  double turn_hold_max_translation_{0.04};
   double turn_hold_entry_angular_speed_{0.55};
   double turn_hold_min_angular_speed_{0.12};
   double turn_hold_release_delay_{0.28};
@@ -488,13 +530,17 @@ private:
   Pose2d map_from_odom_;
   Pose2d latest_raw_visual_;
   Pose2d latest_visual_local_;
+  double visual_xy_variance_{0.05};
+  double visual_yaw_variance_{0.10};
   Pose2d turn_anchor_global_;
+  Pose2d turn_anchor_local_;
   fused_odometry::PoseAligner visual_pose_aligner_;
   bool local_received_{false};
   bool desired_valid_{false};
   bool correction_valid_{false};
   bool visual_pair_valid_{false};
   bool turn_hold_active_{false};
+  bool turn_hold_motion_rejected_{false};
   bool command_received_{false};
   double local_received_at_{0.0};
   double visual_received_at_{0.0};

@@ -372,7 +372,7 @@ inline bool WaypointStopSatisfied(
   if (!std::isfinite(total_stop_seconds) || !std::isfinite(timeout))
     return false;
   if (total_stop_seconds >= std::max(0.0, timeout))
-    return true;
+    return false;
   if (!std::isfinite(absolute_speed) ||
     !std::isfinite(seconds_below_threshold) ||
     !std::isfinite(speed_threshold) || !std::isfinite(settle_dwell) ||

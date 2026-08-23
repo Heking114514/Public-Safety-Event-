@@ -20,6 +20,7 @@ waypoint_navigator:
     status_topic: "/waypoint_navigation/status"
     current_waypoint_topic: "/waypoint_navigation/current_waypoint"
     motion_hold_state_topic: "/waypoint_navigation/motion_hold_state"
+    route_ack_topic: "/waypoint_navigation/route_ack"
 
     control_frequency: 30.0
     default_speed: 0.50

@@ -158,8 +158,6 @@ private:
     }
 
     const rclcpp::Time reception_time = now();
-    last_encoder_reception_ = reception_time;
-    has_received_encoder_ = true;
 
     EncoderSample sample;
     sample.mcu_time_ms = static_cast<uint32_t>(message.data[0]);
@@ -169,6 +167,15 @@ private:
     const UpdateResult result = integrator_.update(sample);
     last_update_status_ = result.status;
     last_sequence_delta_ = result.sequence_delta;
+
+    // A duplicate frame proves only that the serial stream is repeating old
+    // data. It must not keep the wheel source marked fresh while its pose is
+    // frozen. Valid integrated and baseline samples do refresh freshness;
+    // rebases remain visible as a diagnostic warning.
+    if (result.status != UpdateStatus::kDuplicate) {
+      last_encoder_reception_ = reception_time;
+      has_received_encoder_ = true;
+    }
 
     if (!result.publish) {
       if (result.status == UpdateStatus::kInitialized) {

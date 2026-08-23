@@ -283,7 +283,7 @@ TEST(PathControl, WaypointStopTimeoutCannotDeadlockNavigation)
   EXPECT_FALSE(visual_navigation::WaypointStopSatisfied(
       std::numeric_limits<double>::quiet_NaN(), 0.0, 0.59,
       0.03, 0.10, 0.20, 0.60));
-  EXPECT_TRUE(visual_navigation::WaypointStopSatisfied(
+  EXPECT_FALSE(visual_navigation::WaypointStopSatisfied(
       std::numeric_limits<double>::quiet_NaN(), 0.0, 0.60,
       0.03, 0.10, 0.20, 0.60));
 }

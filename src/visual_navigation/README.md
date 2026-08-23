@@ -21,6 +21,7 @@
 | `/cup_car_serial/actuator_healthy` | `std_msgs/msg/Bool` | 控制遥测健康状态，串口 bringup 强制启用；异常时停车等待并在恢复后续跑 |
 | `/tracking_state` | `std_msgs/msg/Int32` | 可选的旧 ORB 兼容检查，默认关闭 |
 | `/waypoint_navigation/route_input` | `nav_msgs/msg/Path` | 动态替换当前路线 |
+| `/waypoint_navigation/route_ack` | `std_msgs/msg/UInt64` | 导航器接受的路线 ID（Path 时间戳纳秒） |
 
 发布：
 

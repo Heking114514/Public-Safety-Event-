@@ -27,6 +27,7 @@
 #include "std_msgs/msg/empty.hpp"
 #include "std_msgs/msg/int32.hpp"
 #include "std_msgs/msg/string.hpp"
+#include "std_msgs/msg/u_int64.hpp"
 #include "std_srvs/srv/trigger.hpp"
 #include "visual_navigation/fusion_health_policy.hpp"
 #include "visual_navigation/navigation_supervisor.hpp"
@@ -156,6 +157,8 @@ public:
       "current_waypoint_topic", "/waypoint_navigation/current_waypoint");
     motionHoldStateTopic_ = declare_parameter<std::string>(
       "motion_hold_state_topic", "/waypoint_navigation/motion_hold_state");
+    routeAckTopic_ = declare_parameter<std::string>(
+      "route_ack_topic", "/waypoint_navigation/route_ack");
 
     controlFrequency_ = std::max(1.0, declare_parameter<double>("control_frequency", 30.0));
     defaultSpeed_ = std::max(0.0, declare_parameter<double>("default_speed", 0.50));
@@ -357,6 +360,8 @@ public:
     motionHoldStatePublisher_ =
       create_publisher<mission_control_interfaces::msg::MotionHoldState>(
       motionHoldStateTopic_, rclcpp::QoS(1).transient_local().reliable());
+    routeAckPublisher_ = create_publisher<std_msgs::msg::UInt64>(
+      routeAckTopic_, rclcpp::QoS(1).transient_local().reliable());
 
     odomSubscription_ = create_subscription<nav_msgs::msg::Odometry>(
       odomTopic_, 10,
@@ -607,6 +612,13 @@ private:
     pathPublisher_->publish(path);
   }
 
+  void PublishRouteAck(uint64_t route_id)
+  {
+    std_msgs::msg::UInt64 message;
+    message.data = route_id;
+    routeAckPublisher_->publish(message);
+  }
+
   void HandleOdometry(const nav_msgs::msg::Odometry::SharedPtr message)
   {
     currentOdomFrameValid_ = message->header.frame_id.empty() ||
@@ -694,6 +706,12 @@ private:
         message->header.frame_id.c_str(), routeFrame_.c_str());
       return;
     }
+    const uint64_t route_id = static_cast<uint64_t>(
+      rclcpp::Time(message->header.stamp).nanoseconds());
+    if (route_id == 0U) {
+      RCLCPP_ERROR(get_logger(), "Ignoring dynamic route without a non-zero route id");
+      return;
+    }
 
     std::vector<Waypoint> loadedWaypoints;
     loadedWaypoints.reserve(message->poses.size());
@@ -727,6 +745,7 @@ private:
         !visual_navigation::EvaluateNavigationStart(CurrentNavigationInputs()).ready)
       {
         PublishRoutePath();
+        PublishRouteAck(route_id);
         RCLCPP_WARN_THROTTLE(
           get_logger(), *get_clock(), 2000,
           "Ignoring duplicate route while navigation is active or unhealthy");
@@ -752,6 +771,7 @@ private:
     navigationActive_ = true;
     PublishRoutePath();
     PublishCurrentWaypoint();
+    PublishRouteAck(route_id);
     SetState(MotionHeld() ? "HELD_FOR_MISSION" : "WAITING_FOR_LOCALIZATION");
     RCLCPP_INFO(
       get_logger(), "Loaded and activated %zu dynamic waypoints",
@@ -1086,7 +1106,16 @@ private:
       PublishStop();
       if (!WaypointBrakeHasCompleted())
       {
-        SetState("BRAKING_AT_WAYPOINT");
+        if (waypointBrakeTimedOut_)
+        {
+          navigationActive_ = false;
+          ResetPathPid();
+          SetState("FAULT_WAYPOINT_BRAKE_TIMEOUT");
+        }
+        else
+        {
+          SetState("BRAKING_AT_WAYPOINT");
+        }
         return;
       }
 
@@ -1634,6 +1663,7 @@ private:
   {
     ResetPathPid();
     waypointBraking_ = true;
+    waypointBrakeTimedOut_ = false;
     waypointStopStarted_ = std::chrono::steady_clock::now();
     waypointStopTimerInitialized_ = true;
     waypointSpeedSettleTimerInitialized_ = false;
@@ -1699,18 +1729,18 @@ private:
     const bool complete = visual_navigation::WaypointStopSatisfied(
       absoluteSpeed, settledSeconds, totalStopSeconds, preTurnStopSpeed_,
       preTurnStopDwell_, preTurnMinimumStopTime_, preTurnBrakeTimeout_);
-    if (complete && totalStopSeconds >= preTurnBrakeTimeout_ &&
-      (!std::isfinite(absoluteSpeed) || absoluteSpeed > preTurnStopSpeed_))
+    if (!complete && totalStopSeconds >= preTurnBrakeTimeout_)
     {
+      waypointBrakeTimedOut_ = true;
       if (std::isfinite(absoluteSpeed))
       {
-        RCLCPP_WARN(
+        RCLCPP_ERROR(
           get_logger(), "Waypoint brake timed out after %.3fs (observed speed=%.3fm/s)",
           totalStopSeconds, absoluteSpeed);
       }
       else
       {
-        RCLCPP_WARN(
+        RCLCPP_ERROR(
           get_logger(), "Waypoint brake timed out after %.3fs (observed speed invalid)",
           totalStopSeconds);
       }
@@ -1860,6 +1890,7 @@ private:
   std::string statusTopic_;
   std::string currentWaypointTopic_;
   std::string motionHoldStateTopic_;
+  std::string routeAckTopic_;
   double controlFrequency_{30.0};
   double trackingPointOffsetX_{0.0};
   double trackingPointOffsetY_{0.0};
@@ -1976,6 +2007,7 @@ private:
   bool turnSettleTimerInitialized_{false};
   bool observedLinearVelocityValid_{false};
   bool waypointBraking_{false};
+  bool waypointBrakeTimedOut_{false};
   bool waypointBrakeCompleted_{false};
   bool finalPositionRecoveryActive_{false};
   bool waypointStopTimerInitialized_{false};
@@ -2005,6 +2037,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr currentWaypointPublisher_;
   rclcpp::Publisher<mission_control_interfaces::msg::MotionHoldState>::SharedPtr
     motionHoldStatePublisher_;
+  rclcpp::Publisher<std_msgs::msg::UInt64>::SharedPtr routeAckPublisher_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odomSubscription_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imuSubscription_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr fusionStatusSubscription_;

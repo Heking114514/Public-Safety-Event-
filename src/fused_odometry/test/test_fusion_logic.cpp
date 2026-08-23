@@ -187,7 +187,7 @@ TEST(FusionMode, ConservativeDegradation)
   EXPECT_EQ(
     fused_odometry::select_mode(
       true, false, true, true, false, false, false, 2.1, 0.2, 2.0, 0.3, 0.75, 0.1),
-    FusionMode::kNoVision);
+    FusionMode::kFault);
   EXPECT_EQ(
     fused_odometry::select_mode(
       true, false, true, false, true, false, false, 0.1, 0.01, 2.0, 0.3, 0.75, 0.1),
