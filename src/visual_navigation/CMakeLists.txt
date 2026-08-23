@@ -71,6 +71,8 @@ if(BUILD_TESTING)
   target_include_directories(path_tracking_controller_test PRIVATE include)
   ament_add_gtest(waypoint_brake_controller_test test/waypoint_brake_controller_test.cpp)
   target_include_directories(waypoint_brake_controller_test PRIVATE include)
+  ament_add_gtest(turn_settle_controller_test test/turn_settle_controller_test.cpp)
+  target_include_directories(turn_settle_controller_test PRIVATE include)
   add_launch_test(test/waypoint_navigator_launch_test.py TIMEOUT 30)
 endif()
 

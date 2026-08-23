@@ -35,6 +35,7 @@
 #include "visual_navigation/rate_limiter.hpp"
 #include "visual_navigation/route_manager.hpp"
 #include "visual_navigation/turn_progress_supervisor.hpp"
+#include "visual_navigation/turn_settle_controller.hpp"
 #include "visual_navigation/waypoint_brake_controller.hpp"
 
 namespace
@@ -1064,8 +1065,7 @@ private:
             turnAnchorX_ = currentX_;
             turnAnchorY_ = currentY_;
             turnAnchorValid_ = true;
-            turnSettling_ = false;
-            turnSettleTimerInitialized_ = false;
+            turnSettleController_.reset();
           }
           if (!turnAnchorValid_)
           {
@@ -1076,29 +1076,21 @@ private:
 
           geometry_msgs::msg::Twist command;
           if (std::abs(finalYawError) <= finalYawTolerance_)
-            turnSettling_ = true;
-          if (turnSettling_)
+            turnSettleController_.begin_settling();
+          if (turnSettleController_.settling())
           {
             PublishMotionCommand(command);
             const double turnActivity = std::max(
               std::abs(controlYawRate), std::abs(lastMotionCommand_.angular.z));
             if (turnActivity > turnSettleYawRate_)
             {
-              turnSettleTimerInitialized_ = false;
+              turnSettleController_.reset_timer();
               SetState("ALIGNING_FINAL_YAW");
               return;
             }
 
-            const auto settleTime = std::chrono::steady_clock::now();
-            if (!turnSettleTimerInitialized_)
-            {
-              turnSettleStarted_ = settleTime;
-              turnSettleTimerInitialized_ = true;
-            }
-            const double settledSeconds =
-              std::chrono::duration<double>(settleTime - turnSettleStarted_).count();
-            if (!visual_navigation::TurnHasSettled(
-                turnActivity, settledSeconds,
+            if (!turnSettleController_.update(
+                std::chrono::steady_clock::now(), turnActivity,
                 turnSettleYawRate_, turnSettleDwell_))
             {
               SetState("ALIGNING_FINAL_YAW");
@@ -1116,13 +1108,12 @@ private:
               CompleteNavigation();
               return;
             }
-            turnSettling_ = false;
-            turnSettleTimerInitialized_ = false;
+            turnSettleController_.reset();
             SetState("ALIGNING_FINAL_YAW");
             return;
           }
 
-          turnSettleTimerInitialized_ = false;
+          turnSettleController_.reset_timer();
           const double scaledMaxAngularSpeed =
             finalYawMaxAngularSpeed_ * fusionHealth.speed_scale;
           const double requestedAngularSpeed = Clamp(
@@ -1266,7 +1257,7 @@ private:
       turnAnchorX_ = currentX_;
       turnAnchorY_ = currentY_;
       turnAnchorValid_ = true;
-      turnSettling_ = false;
+      turnSettleController_.reset();
     }
     else if (!rotatingInPlace_ && !pathAlignmentCompleted_)
     {
@@ -1302,28 +1293,20 @@ private:
         turnAnchorValid_ = true;
       }
       if (std::abs(headingError) <= rotateInPlaceExitThreshold_)
-        turnSettling_ = true;
-      if (turnSettling_)
+        turnSettleController_.begin_settling();
+      if (turnSettleController_.settling())
       {
         PublishMotionCommand(command);
         const double turnActivity = std::max(
           std::abs(controlYawRate), std::abs(lastMotionCommand_.angular.z));
         if (turnActivity > turnSettleYawRate_)
         {
-          turnSettleTimerInitialized_ = false;
+          turnSettleController_.reset_timer();
           SetState("ROTATING_TO_PATH");
           return;
         }
-        const auto settleTime = std::chrono::steady_clock::now();
-        if (!turnSettleTimerInitialized_)
-        {
-          turnSettleStarted_ = settleTime;
-          turnSettleTimerInitialized_ = true;
-        }
-        const double settledSeconds =
-          std::chrono::duration<double>(settleTime - turnSettleStarted_).count();
-        if (!visual_navigation::TurnHasSettled(
-            turnActivity, settledSeconds,
+        if (!turnSettleController_.update(
+            std::chrono::steady_clock::now(), turnActivity,
             turnSettleYawRate_, turnSettleDwell_))
         {
           SetState("ROTATING_TO_PATH");
@@ -1337,13 +1320,12 @@ private:
           SetState("PATH_ALIGNED");
           return;
         }
-        turnSettling_ = false;
-        turnSettleTimerInitialized_ = false;
+        turnSettleController_.reset();
         SetState("ROTATING_TO_PATH");
         return;
       }
 
-      turnSettleTimerInitialized_ = false;
+      turnSettleController_.reset_timer();
       const double scaledMaxAngularSpeed = turnCruiseSpeed_ * fusionHealth.speed_scale;
       const double requestedAngularSpeed = Clamp(
         angularGain_ * headingError - turnYawRateDamping_ * controlYawRate,
@@ -1589,8 +1571,7 @@ private:
     rotatingInPlace_ = false;
     waypointRecoveryActive_ = false;
     turnAnchorValid_ = false;
-    turnSettling_ = false;
-    turnSettleTimerInitialized_ = false;
+    turnSettleController_.reset();
     waypointBrakeController_.reset_control();
   }
 
@@ -1795,8 +1776,6 @@ private:
   bool rotatingInPlace_{false};
   bool waypointRecoveryActive_{false};
   bool turnAnchorValid_{false};
-  bool turnSettling_{false};
-  bool turnSettleTimerInitialized_{false};
   bool finalPositionRecoveryActive_{false};
   bool finalPositionCaptured_{false};
   std::string state_;
@@ -1808,9 +1787,9 @@ private:
   rclcpp::Time waitUntil_{0, 0, RCL_ROS_TIME};
   rclcpp::Time motionHoldStartedAt_{0, 0, RCL_ROS_TIME};
   std::chrono::steady_clock::time_point lastMotionCommandTime_{};
-  std::chrono::steady_clock::time_point turnSettleStarted_{};
   visual_navigation::PathTrackingController pathTrackingController_;
   visual_navigation::WaypointBrakeController waypointBrakeController_;
+  visual_navigation::TurnSettleController turnSettleController_;
   geometry_msgs::msg::Twist lastMotionCommand_;
   bool motionCommandInitialized_{false};
   WaitAction waitAction_{WaitAction::NONE};
