@@ -11,10 +11,12 @@
 #include <stdexcept>
 
 #include "fused_odometry/fusion_logic.hpp"
+#include "fused_odometry/fusion_status_authority.hpp"
 #include "geometry_msgs/msg/transform_stamped.hpp"
 #include "geometry_msgs/msg/twist.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/string.hpp"
 #include "std_msgs/msg/u_int64.hpp"
 #include "tf2_ros/transform_broadcaster.h"
 
@@ -79,6 +81,8 @@ public:
       "visual_topic", "/fusion/input/visual_odom");
     local_topic_ = declare_parameter<std::string>("local_topic", "/odometry/local");
     command_topic_ = declare_parameter<std::string>("command_topic", "/cmd_vel_nav");
+    fusion_status_topic_ = declare_parameter<std::string>(
+      "fusion_status_topic", "/odometry/fusion_status");
     output_topic_ = declare_parameter<std::string>("output_topic", "/odometry/fused");
     map_change_topic_ = declare_parameter<std::string>(
       "map_change_topic", "/orbslam3/map_change");
@@ -106,6 +110,7 @@ public:
     local_timeout_ = positive("local_timeout_s", 0.50);
     visual_timeout_ = positive("visual_timeout_s", 0.60);
     command_timeout_ = positive("command_timeout_s", 0.40);
+    fusion_status_timeout_ = positive("fusion_status_timeout_s", 0.80);
     stationary_max_linear_speed_ = positive("stationary_max_linear_speed_mps", 0.03);
     stationary_max_angular_speed_ = positive("stationary_max_angular_speed_radps", 0.12);
     turn_hold_max_linear_speed_ = positive("turn_hold_max_linear_speed_mps", 0.03);
@@ -128,6 +133,9 @@ public:
     command_subscription_ = create_subscription<geometry_msgs::msg::Twist>(
       command_topic_, 10,
       std::bind(&MapOdomCorrectionNode::command_callback, this, std::placeholders::_1));
+    fusion_status_subscription_ = create_subscription<std_msgs::msg::String>(
+      fusion_status_topic_, rclcpp::QoS(10).reliable().transient_local(),
+      std::bind(&MapOdomCorrectionNode::fusion_status_callback, this, std::placeholders::_1));
     map_change_subscription_ = create_subscription<std_msgs::msg::UInt64>(
       map_change_topic_, 10,
       std::bind(&MapOdomCorrectionNode::map_change_callback, this, std::placeholders::_1));
@@ -363,6 +371,11 @@ private:
       turn_anchor_global_.x, turn_anchor_global_.y);
   }
 
+  void fusion_status_callback(const std_msgs::msg::String::SharedPtr message)
+  {
+    fusion_status_authority_.update(message->data);
+  }
+
   void finish_turn_hold()
   {
     if (visual_pair_valid_) {
@@ -420,8 +433,11 @@ private:
       finish_turn_hold();
     }
 
+    const auto authority_time = fused_odometry::FusionStatusAuthority::Clock::now();
     if (!turn_hold_active_ && desired_valid_ &&
-      current_time - visual_received_at_ <= visual_timeout_)
+      current_time - visual_received_at_ <= visual_timeout_ &&
+      fusion_status_authority_.visual_correction_allowed(
+        authority_time, fusion_status_timeout_))
     {
       const double elapsed = std::max(0.0, current_time - last_update_at_);
       const bool command_fresh = command_received_ &&
@@ -495,6 +511,7 @@ private:
   std::string visual_topic_;
   std::string local_topic_;
   std::string command_topic_;
+  std::string fusion_status_topic_;
   std::string output_topic_;
   std::string map_change_topic_;
   std::string map_frame_;
@@ -515,6 +532,7 @@ private:
   double local_timeout_{0.50};
   double visual_timeout_{0.60};
   double command_timeout_{0.40};
+  double fusion_status_timeout_{0.80};
   double stationary_max_linear_speed_{0.03};
   double stationary_max_angular_speed_{0.12};
   double turn_hold_max_linear_speed_{0.03};
@@ -535,6 +553,7 @@ private:
   Pose2d turn_anchor_global_;
   Pose2d turn_anchor_local_;
   fused_odometry::PoseAligner visual_pose_aligner_;
+  fused_odometry::FusionStatusAuthority fusion_status_authority_;
   bool local_received_{false};
   bool desired_valid_{false};
   bool correction_valid_{false};
@@ -560,6 +579,7 @@ private:
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr local_subscription_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr visual_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr command_subscription_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr fusion_status_subscription_;
   rclcpp::Subscription<std_msgs::msg::UInt64>::SharedPtr map_change_subscription_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr publisher_;
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;

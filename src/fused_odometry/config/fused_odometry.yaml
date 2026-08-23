@@ -173,6 +173,7 @@ map_odom_correction:
     visual_topic: /fusion/input/visual_odom
     local_topic: /odometry/local
     command_topic: /cmd_vel_nav
+    fusion_status_topic: /odometry/fusion_status
     output_topic: /odometry/fused
     map_change_topic: /orbslam3/map_change
     map_frame: map
@@ -209,6 +210,7 @@ map_odom_correction:
     local_timeout_s: 0.50
     visual_timeout_s: 0.60
     command_timeout_s: 0.40
+    fusion_status_timeout_s: 0.80
     stationary_max_linear_speed_mps: 0.03
     stationary_max_angular_speed_radps: 0.12
     # ORB reported 4-9 cm of XY motion during commanded zero-vx 90-degree

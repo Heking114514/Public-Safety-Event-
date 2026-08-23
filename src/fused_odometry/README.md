@@ -61,6 +61,13 @@ local history is held briefly until a matching local sample arrives; stale,
 out-of-order, or over-tolerance samples are rejected instead of using a
 nearest-sample scheduling approximation.
 
+Map correction also subscribes to `/odometry/fusion_status`. This latched status
+is the authoritative global permission for visual correction: `FAULT_*`,
+`DEGRADED_NO_VISION`, `DEGRADED_WHEEL_ONLY`, unknown, stale, or future-dated
+statuses block correction. The map node still checks its own visual/local pair
+freshness because that is a local timestamp-matching requirement, not a second
+global vision-health decision.
+
 ## Behavior
 
 `robot_localization` performs the local planar EKF from gated visual forward

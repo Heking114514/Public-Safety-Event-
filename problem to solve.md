@@ -31,5 +31,6 @@
 
 ### P4-03 同一状态由多个节点分别维护
 
-- 证据：视觉可用性由 ORB tracking、fusion gate 的视觉接收状态、map correction 的视觉超时和 navigator 的输入许可分别维护；静止状态由 IMU filter、map correction 和导航停车逻辑分别按不同阈值判断。
-- 影响：排查视觉恢复或停车状态时仍需对齐多个节点的独立计时和阈值，单一状态话题不能完整解释各节点行为。
+- 当前进展：视觉校正的全局许可已统一由 fusion gate 发布的 `/odometry/fusion_status` 决定，map correction 不再仅凭自身视觉超时继续校正；map correction 保留的视觉/local 配对超时仅用于本地时间匹配。
+- 未解决：静止状态仍由 IMU filter、map correction 和导航停车逻辑分别按不同阈值判断，尚无统一的静止状态定义和权威来源。
+- 影响：排查停车、转弯保持和静止误判时仍需对齐多个节点的独立计时和阈值，相关状态无法由单一状态话题完整解释。
