@@ -224,7 +224,17 @@ private:
     response->navigation_path = MakeNavigationPath(result, stamp);
     arena_path_publisher_->publish(response->arena_path);
     navigation_path_publisher_->publish(response->navigation_path);
-    if (request->activate_navigation) {
+    // A route with deferred work is a useful preview, but it is not a
+    // complete mission. Never hand it to the navigator under an activation
+    // request: the caller must explicitly replan the deferred work first.
+    const bool activation_allowed = ActivationAllowed(request->activate_navigation, result);
+    if (request->activate_navigation && !activation_allowed) {
+      response->message += "; activation refused while targets remain deferred";
+      RCLCPP_WARN(
+        get_logger(), "route preview is partial (%zu deferred); activation refused",
+        response->deferred_targets.size());
+    }
+    if (activation_allowed) {
       route_publisher_->publish(response->navigation_path);
       RCLCPP_INFO(
         get_logger(), "published %.2f m route with %zu poses to navigator",

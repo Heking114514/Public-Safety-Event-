@@ -21,6 +21,12 @@ std::string ConfigPath()
          "/config/arena_map.yaml";
 }
 
+std::string SyntheticConfigPath()
+{
+  return ament_index_cpp::get_package_share_directory("arena_path_planner") +
+         "/config/arena_map_synthetic.yaml";
+}
+
 double RouteDistance(const Point & point, const std::vector<Point> & route)
 {
   double distance = std::numeric_limits<double>::infinity();
@@ -33,11 +39,16 @@ double RouteDistance(const Point & point, const std::vector<Point> & route)
 TEST(ArenaPlanner, LoadsDefaultConfiguration)
 {
   const PlannerConfig config = ArenaPlanner::LoadConfig(ConfigPath());
-  EXPECT_DOUBLE_EQ(config.width, 3.2);
-  EXPECT_DOUBLE_EQ(config.height, 4.4);
-  ASSERT_EQ(config.default_targets.size(), 12U);
+  EXPECT_DOUBLE_EQ(config.width, 6.0);
+  EXPECT_DOUBLE_EQ(config.height, 6.0);
+  EXPECT_DOUBLE_EQ(config.resolution, 0.05);
+  EXPECT_DOUBLE_EQ(config.vehicle_length, 0.217);
+  EXPECT_DOUBLE_EQ(config.vehicle_width, 0.210);
+  EXPECT_DOUBLE_EQ(config.safety_margin, 0.015);
+  ASSERT_EQ(config.default_targets.size(), 8U);
   EXPECT_EQ(config.default_labels.front(), "1");
-  EXPECT_EQ(config.default_labels.back(), "12");
+  EXPECT_EQ(config.default_labels.back(), "8");
+  ASSERT_FALSE(config.staging_regions.empty());
   EXPECT_EQ(config.topics.service, "/arena_path_planner/plan");
   EXPECT_EQ(config.topics.arena_path, "/arena_path_planner/arena_path");
   EXPECT_EQ(config.topics.navigation_path, "/arena_path_planner/navigation_path");
@@ -116,11 +127,11 @@ TEST(ArenaPlanner, SupportsNumberedAndDynamicStartPlans)
 {
   const PlannerConfig config = ArenaPlanner::LoadConfig(ConfigPath());
   const ArenaPlanner planner(config);
-  Pose start{{1.1, 4.1}, -1.5707963267948966};
+  Pose start{{2.1, 0.75}, 0.0};
   const PlanResult result = planner.Plan(
     start, config.default_targets, config.default_labels, "numbered");
   ASSERT_TRUE(result.success) << result.message;
-  EXPECT_GE(result.visit_order.size(), 16U);
+  EXPECT_GE(result.visit_order.size(), 8U);
   EXPECT_EQ(result.visit_order.front(), "1");
   EXPECT_EQ(result.visit_order.back(), "S");
   EXPECT_NEAR(result.points.front().x, start.position.x, 1.0e-9);
@@ -140,22 +151,55 @@ TEST(ArenaPlanner, RejectsOccupiedStart)
 
 TEST(ArenaPlanner, DefersBlockedTargetsAndKeepsPlanningReachableOnes)
 {
-  PlannerConfig config = ArenaPlanner::LoadConfig(ConfigPath());
-  // Split the arena at x=1.1 except for the upper start corridor. Targets on
-  // the left become unreachable while right-side work must still be planned.
-  config.obstacles.push_back({1.0, 0.0, 1.2, 3.15});
+  PlannerConfig config;
+  config.width = 1.0;
+  config.height = 1.0;
+  config.resolution = 0.025;
+  config.free_regions.push_back({0.0, 0.0, 1.0, 1.0});
+  config.inflation_radius = 0.0;
+  config.preferred_clearance = 0.0;
+  config.vehicle_length = 0.0;
+  config.vehicle_width = 0.0;
+  config.obstacles.push_back({0.45, 0.0, 0.55, 1.0});
   const ArenaPlanner planner(config);
   const PlanResult result = planner.Plan(
-    config.default_start, config.default_targets, config.default_labels, "shortest");
+    {{0.20, 0.50}, 0.0}, {{0.30, 0.50}, {0.80, 0.50}}, {"near", "right"}, "shortest");
   ASSERT_TRUE(result.success) << result.message;
   EXPECT_FALSE(result.all_targets_reached);
   EXPECT_FALSE(result.deferred_targets.empty());
   EXPECT_NE(
-    std::find(result.visit_order.begin(), result.visit_order.end(), "12"),
+    std::find(result.visit_order.begin(), result.visit_order.end(), "near"),
     result.visit_order.end());
   EXPECT_NE(
-    std::find(result.deferred_targets.begin(), result.deferred_targets.end(), "5"),
+    std::find(result.deferred_targets.begin(), result.deferred_targets.end(), "right"),
     result.deferred_targets.end());
+}
+
+TEST(ArenaPlanner, RejectsSyntheticMapThatCannotFitVehicle)
+{
+  const PlannerConfig config = ArenaPlanner::LoadConfig(SyntheticConfigPath());
+  const ArenaPlanner planner(config);
+  const PlanResult result = planner.Plan(
+    config.default_start, config.default_targets, config.default_labels, "shortest");
+  EXPECT_FALSE(result.success);
+  EXPECT_NE(result.message.find("start"), std::string::npos);
+}
+
+TEST(ArenaPlanner, PartialPlanCannotBeActivated)
+{
+  PlanResult partial;
+  partial.success = true;
+  partial.all_targets_reached = false;
+  partial.deferred_targets = {"blocked-target"};
+  EXPECT_FALSE(ActivationAllowed(true, partial));
+  EXPECT_FALSE(ActivationAllowed(false, partial));
+
+  PlanResult complete;
+  complete.success = true;
+  complete.all_targets_reached = true;
+  EXPECT_TRUE(ActivationAllowed(true, complete));
+  complete.success = false;
+  EXPECT_FALSE(ActivationAllowed(true, complete));
 }
 
 TEST(ArenaPlanner, OccupancyDimensionsMatchConfiguration)
@@ -163,7 +207,9 @@ TEST(ArenaPlanner, OccupancyDimensionsMatchConfiguration)
   const PlannerConfig config = ArenaPlanner::LoadConfig(ConfigPath());
   const ArenaPlanner planner(config);
   const auto data = planner.OccupancyData();
-  EXPECT_EQ(data.size(), 128U * 176U);
+  EXPECT_EQ(data.size(), static_cast<std::size_t>(
+    std::ceil(config.width / config.resolution) *
+    std::ceil(config.height / config.resolution)));
   EXPECT_GT(std::count(data.begin(), data.end(), int8_t{100}), 0);
   EXPECT_GT(std::count(data.begin(), data.end(), int8_t{0}), 0);
 }
@@ -208,7 +254,7 @@ TEST(ArenaPlanner, NarrowLaneAllowsAlignedChassisButRejectsAnInPlaceTurn)
       {0.15, 0.50}, 0.0, 1.5707963267948966));
 }
 
-TEST(ArenaPlanner, CoverageVisitsEveryRoadAndAllFourTunnels)
+TEST(ArenaPlanner, CoverageVisitsEveryConfiguredRoad)
 {
   const PlannerConfig config = ArenaPlanner::LoadConfig(ConfigPath());
   const ArenaPlanner planner(config);
@@ -222,13 +268,10 @@ TEST(ArenaPlanner, CoverageVisitsEveryRoadAndAllFourTunnels)
     EXPECT_NE(
       std::find(result.visit_order.begin(), result.visit_order.end(), edge.label),
       result.visit_order.end()) << edge.label;
-    EXPECT_LE(RouteDistance(config.inspection_nodes[edge.from], result.points), 1.0e-6);
-    EXPECT_LE(RouteDistance(config.inspection_nodes[edge.to], result.points), 1.0e-6);
-  }
-  for (const std::string & tunnel : {"TUNNEL_1", "TUNNEL_2", "TUNNEL_3", "TUNNEL_4"}) {
-    EXPECT_NE(
-      std::find(result.visit_order.begin(), result.visit_order.end(), tunnel),
-      result.visit_order.end()) << tunnel;
+    EXPECT_LE(RouteDistance(config.inspection_nodes[edge.from], result.points),
+      config.resolution * 1.5);
+    EXPECT_LE(RouteDistance(config.inspection_nodes[edge.to], result.points),
+      config.resolution * 1.5);
   }
   for (std::size_t index = 1; index < result.points.size(); ++index) {
     EXPECT_TRUE(planner.SegmentIsFree(result.points[index - 1], result.points[index]));

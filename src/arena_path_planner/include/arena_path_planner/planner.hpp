@@ -99,6 +99,14 @@ struct PlanResult
   double length{0.0};
 };
 
+// Activation is a separate policy decision from producing a safe preview.
+// Partial plans may be inspected and replanned, but must never be handed to
+// the navigator as a complete mission.
+inline bool ActivationAllowed(bool requested, const PlanResult & result)
+{
+  return requested && result.success && result.all_targets_reached;
+}
+
 class ArenaPlanner
 {
 public:

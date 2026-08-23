@@ -5,7 +5,14 @@ task ordering, collision-aware planning, path smoothing, and conversion from
 arena coordinates to the navigation frame.
 
 Interfaces are read from the `topics` section of `config/arena_map.yaml`. The
-default configuration uses:
+default configuration is the measured 6 x 6 m production map exported at 5 cm
+resolution. It includes the configured 217 x 210 mm vehicle footprint, safety
+margin, and explicit staging area for the launch lane. The former 3.2 x 4.4 m
+narrow-corridor fixture is retained as `config/arena_map_synthetic.yaml` for
+collision and incompatible-map rejection tests only; it must not be used for a
+vehicle route.
+
+The default configuration uses:
 
 - Service: `/arena_path_planner/plan`
 - Arena path: `/arena_path_planner/arena_path`

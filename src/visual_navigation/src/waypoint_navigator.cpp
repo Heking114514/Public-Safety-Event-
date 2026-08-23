@@ -135,7 +135,7 @@ public:
     routeFile_ = declare_parameter<std::string>("route_file", "");
     routeFrame_ = declare_parameter<std::string>("route_frame", "map");
     odomTopic_ = declare_parameter<std::string>("odom_topic", "/odometry/fused");
-    imuTopic_ = declare_parameter<std::string>("imu_topic", "/imu/filtered");
+    imuTopic_ = declare_parameter<std::string>("imu_topic", "/imu/control");
     trackingPointOffsetX_ = declare_parameter<double>("tracking_point_offset_x", 0.0);
     trackingPointOffsetY_ = declare_parameter<double>("tracking_point_offset_y", 0.0);
     if (!std::isfinite(trackingPointOffsetX_) || !std::isfinite(trackingPointOffsetY_))

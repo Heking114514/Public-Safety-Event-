@@ -8,7 +8,9 @@ fused_odometry_gate:
     command_topic: /cmd_vel_nav
     visual_output_topic: /fusion/input/visual_odom
     wheel_output_topic: /fusion/input/wheel_odom
-    imu_output_topic: /fusion/input/imu
+    # Bias-corrected, frame-normalized gyro used by both EKF and navigation.
+    # The raw /imu/filtered stream remains a gate input only.
+    imu_output_topic: /imu/control
     status_topic: /odometry/fusion_status
     diagnostics_topic: /diagnostics
 
@@ -148,7 +150,7 @@ fused_ekf:
     odom0_relative: false
     odom0_twist_rejection_threshold: 100.0
 
-    imu0: /fusion/input/imu
+    imu0: /imu/control
     imu0_config: [false, false, false,
                   false, false, false,
                   false, false, false,
@@ -199,6 +201,8 @@ map_odom_correction:
     stationary_correction_time_constant_s: 0.08
     loop_correction_time_constant_s: 1.25
     map_change_smoothing_window_s: 2.0
+    # Pair visual and local poses by measurement time. Interior samples are
+    # interpolated; a visual sample briefly ahead of local history is queued.
     synchronization_tolerance_s: 0.12
     local_timeout_s: 0.50
     visual_timeout_s: 0.60

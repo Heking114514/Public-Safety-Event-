@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdint>
 #include <memory>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -156,7 +157,8 @@ private:
       return;
     }
 
-    last_encoder_reception_ = now();
+    const rclcpp::Time reception_time = now();
+    last_encoder_reception_ = reception_time;
     has_received_encoder_ = true;
 
     EncoderSample sample;
@@ -169,6 +171,21 @@ private:
     last_sequence_delta_ = result.sequence_delta;
 
     if (!result.publish) {
+      if (result.status == UpdateStatus::kInitialized) {
+        mcu_epoch_ms_ = sample.mcu_time_ms;
+        mcu_epoch_ros_ = reception_time;
+        mcu_epoch_valid_ = true;
+      }
+      if (result.status == UpdateStatus::kRebasedSequenceRegression ||
+        result.status == UpdateStatus::kRebasedTimeRegression ||
+        result.status == UpdateStatus::kRebasedInvalidDt ||
+        result.status == UpdateStatus::kRebasedTickJump)
+      {
+        // A reset/rebase invalidates the MCU-to-ROS epoch. Establish a new
+        // anchor on the next accepted interval instead of manufacturing a
+        // timestamp jump that could look like stale or future data upstream.
+        mcu_epoch_valid_ = false;
+      }
       if (result.status != UpdateStatus::kInitialized &&
         result.status != UpdateStatus::kDuplicate)
       {
@@ -185,7 +202,27 @@ private:
       RCLCPP_DEBUG(
         get_logger(), "Integrated across %u missing encoder samples", result.sequence_delta - 1U);
     }
-    publish_odometry(now());
+    if (!mcu_epoch_valid_) {
+      mcu_epoch_ms_ = sample.mcu_time_ms;
+      mcu_epoch_ros_ = reception_time;
+      mcu_epoch_valid_ = true;
+    }
+    const uint32_t elapsed_ms = sample.mcu_time_ms - mcu_epoch_ms_;
+    rclcpp::Time measurement_stamp = mcu_epoch_ros_ +
+      rclcpp::Duration::from_nanoseconds(static_cast<int64_t>(elapsed_ms) * 1000000LL);
+    // The initial serial delay is unknowable. Never publish a future-dated
+    // sample; health freshness continues to use reception_time below.
+    if (measurement_stamp > reception_time) {
+      measurement_stamp = reception_time;
+    }
+    if (last_measurement_stamp_.nanoseconds() != 0 &&
+      measurement_stamp <= last_measurement_stamp_)
+    {
+      ++nonmonotonic_stamp_count_;
+      return;
+    }
+    last_measurement_stamp_ = measurement_stamp;
+    publish_odometry(measurement_stamp);
   }
 
   static diagnostic_msgs::msg::KeyValue diagnostic_value(
@@ -253,6 +290,8 @@ private:
       std::to_string(statistics.accumulated_wheel_travel_m)));
     status.values.push_back(diagnostic_value(
       "accumulated_abs_turn_rad", std::to_string(statistics.accumulated_abs_turn_rad)));
+    status.values.push_back(diagnostic_value(
+      "nonmonotonic_measurement_stamps", std::to_string(nonmonotonic_stamp_count_)));
 
     diagnostic_msgs::msg::DiagnosticArray array;
     array.header.stamp = stamp;
@@ -313,6 +352,11 @@ private:
   double diagnostic_stale_timeout_s_{0.5};
   bool has_received_encoder_{false};
   rclcpp::Time last_encoder_reception_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time mcu_epoch_ros_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time last_measurement_stamp_{0, 0, RCL_ROS_TIME};
+  uint32_t mcu_epoch_ms_{0};
+  bool mcu_epoch_valid_{false};
+  uint64_t nonmonotonic_stamp_count_{0};
   UpdateStatus last_update_status_{UpdateStatus::kInitialized};
   uint32_t last_sequence_delta_{0};
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_publisher_;

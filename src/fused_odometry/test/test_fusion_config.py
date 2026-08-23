@@ -7,6 +7,7 @@ import yaml
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "fused_odometry.yaml"
 WHEEL_TOPIC = "/fusion/input/wheel_odom"
 VISUAL_TOPIC = "/fusion/input/visual_odom"
+CONTROL_IMU_TOPIC = "/imu/control"
 
 
 def load_parameters(node_name):
@@ -49,3 +50,12 @@ def test_wheel_stream_remains_available_to_supervision():
 
     assert parameters["wheel_topic"] == "/wheel/odom"
     assert parameters["wheel_output_topic"] == WHEEL_TOPIC
+
+
+def test_control_imu_is_single_corrected_feedback_topic():
+    gate = load_parameters("fused_odometry_gate")
+    ekf = load_parameters("fused_ekf")
+
+    assert gate["imu_topic"] == "/imu/filtered"
+    assert gate["imu_output_topic"] == CONTROL_IMU_TOPIC
+    assert ekf["imu0"] == CONTROL_IMU_TOPIC

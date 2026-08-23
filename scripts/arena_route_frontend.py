@@ -622,10 +622,12 @@ class ArenaFrontend:
                     continue
                 self.applied_generation = generation
                 if isinstance(response, Exception):
+                    self.activation_requests.discard(generation)
                     self.status_var.set(f"服务调用失败：{response}")
                     self.publish_button.configure(state=tk.NORMAL, text="开始导航")
                     continue
                 if not response.success:
+                    self.activation_requests.discard(generation)
                     self.route = []
                     self.status_var.set(f"规划失败：{response.message}")
                     self.publish_button.configure(state=tk.NORMAL, text="开始导航")
@@ -639,9 +641,14 @@ class ArenaFrontend:
                         1.0 - 2.0 * (orientation.y ** 2 + orientation.z ** 2),
                     )
                     self.route.append((pose.pose.position.x, pose.pose.position.y, yaw))
-                activated = generation in self.activation_requests
+                activation_requested = generation in self.activation_requests
                 self.activation_requests.discard(generation)
-                if activated:
+                # The backend deliberately refuses activation for a partial
+                # route. Keep that distinction visible instead of reporting
+                # that the complete mission started.
+                activated = activation_requested and bool(response.all_targets_reached)
+                incomplete = bool(response.deferred_targets) or not bool(response.all_targets_reached)
+                if activation_requested:
                     self.publish_button.configure(state=tk.NORMAL, text="开始导航")
                 if not activated:
                     self.layer_routes[self.layer_mode] = list(self.route)
@@ -652,7 +659,15 @@ class ArenaFrontend:
                 for edge in response.covered_edges:
                     if edge not in self.covered_edges:
                         self.covered_edges.append(edge)
-                self.status_var.set("三层导航路线已发布并启动" if activated else f"第 {self.layer_mode} 阶段规划完成")
+                if activated:
+                    self.status_var.set("三层完整路线已发布并启动")
+                elif activation_requested and incomplete:
+                    self.status_var.set("路线不完整，未启动：请先处理延迟目标")
+                elif incomplete:
+                    self.status_var.set(
+                        f"第 {self.layer_mode} 阶段部分完成：请先处理延迟目标")
+                else:
+                    self.status_var.set(f"第 {self.layer_mode} 阶段规划完成")
                 self.remaining_var.set(f"{len(self.planned_deferred_labels)} 个延迟目标")
                 self.metrics_var.set(
                     f"路径 {response.length:.2f} m    规划 {response.planning_time_ms:.0f} ms\n"
@@ -665,7 +680,7 @@ class ArenaFrontend:
                     if self.layer_mode < 3:
                         self.next_layer_button.configure(
                             text=f"进入第 {self.layer_mode + 1} 阶段",
-                            state=tk.NORMAL,
+                            state=tk.DISABLED if incomplete else tk.NORMAL,
                         )
                     else:
                         self.next_layer_button.configure(text="三阶段已完成", state=tk.DISABLED)

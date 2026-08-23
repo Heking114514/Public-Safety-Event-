@@ -17,38 +17,6 @@
 - 未闭环：当前版本只通过单元测试和旧轨迹无底盘回放；尚无当前源码、二进制和参数可追溯的新实车 bag，不能确认首弯后路线索引会持续推进、角速度不再周期性反向，且宽横向误差下不会侵占规划安全边界。
 - 影响：最近一次实车轨迹长度约 `5.59 m`，有效路线进度只有约 `3.67 m`，未完成剩余约 `25.66 m` 路线。
 
-## P1
-
-### P1-04 后端按点机器人规划，前端却显示完整车体已参与检查
-
-- 证据：`src/arena_path_planner/include/arena_path_planner/planner.hpp:41-61` 的车长、车宽和边距默认为零，活动配置 `src/arena_path_planner/config/arena_map.yaml` 未覆盖这些值；`scripts/arena_route_frontend.py:173-177,443-448` 默认显示 `0.217 × 0.210 m` 车体和 `0.040 m` 边距。
-- 触发：路线靠近障碍物、窄通道或需要原地转向。
-- 影响：界面显示的车体轮廓没有进入后端碰撞计算；`RotationIsFree()` 在零尺寸配置下也会退化为点占用检查。
-
-### P1-05 未覆盖全部目标的部分路线可按完整任务启动
-
-- 证据：`src/arena_path_planner/src/planner_node.cpp:206-229` 在 `result.success=true` 时发布路线，没有用 `all_targets_reached` 阻止激活；`scripts/arena_route_frontend.py:603-660` 未正确区分包含 `deferred_targets` 的部分路线。
-- 触发：规划成功，但部分任务点被延后。
-- 影响：车辆可执行一条未覆盖全部目标的路线，前端同时给出完整路线已经启动的错误状态。
-
-### P1-06 视觉位姿与本地里程计使用最近样本对齐，没有插值
-
-- 证据：`src/fused_odometry/src/map_odom_correction_node.cpp:192-207` 选择时间最近的 local pose，并允许最大约 `0.12 s` 时间差。
-- 触发：视觉和本地里程计异步或存在调度抖动。
-- 影响：以 `0.5 m/s` 行驶时，最大允许时间错位可形成约 `6 cm` 的位置误差，并进入 map-to-odom 校正。
-
-### P1-07 轮式里程计使用串口到达时间代替真实测量时间
-
-- 证据：编码器消息没有 ROS header；`src/wheel_odometry/src/wheel_odometry_node.cpp:150-188` 使用 MCU 间隔计算速度，但以节点 `now()` 作为 odometry stamp。
-- 触发：USB 串口排队或上位机调度延迟变化。
-- 影响：wheel 虽不再进入 EKF，但仍参与视觉残差、健康分类和失视距离预算；串口延迟会被混入这些判断的时间差和测量差。
-
-### P1-08 导航和融合使用不同版本的 IMU 角速度
-
-- 证据：`src/visual_navigation/src/waypoint_navigator.cpp:653-659` 直接使用 `/imu/filtered`；`src/fused_odometry/src/fusion_gate_node.cpp:681-746` 对该角速度再做视觉参考 bias 修正。
-- 触发：视觉参考 bias 不为零。
-- 影响：导航转向阻尼使用的角速度与 `/odometry/fused` 使用的角速度不一致，同一次转弯存在两套反馈口径。
-
 ## P2
 
 ### P2-01 到点停车超时会被当成停车完成

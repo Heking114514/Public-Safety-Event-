@@ -6,6 +6,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <stdexcept>
 
@@ -169,6 +170,12 @@ private:
       return;
     }
     const rclcpp::Time stamp(message->header.stamp);
+    if (stamp.nanoseconds() <= 0) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Rejecting local odometry with an unset measurement timestamp");
+      return;
+    }
     if (!local_history_.empty() && stamp <= local_history_.back().stamp) {
       return;
     }
@@ -179,39 +186,100 @@ private:
     latest_local_ = *message;
     local_received_ = true;
     local_received_at_ = steady_seconds();
+    if (pending_visual_) {
+      const auto pending = *pending_visual_;
+      process_visual(pending);
+    }
   }
 
   void visual_callback(const nav_msgs::msg::Odometry::SharedPtr message)
   {
-    if (message->header.frame_id != map_frame_ || message->child_frame_id != base_frame_ ||
-      !valid_pose(message->pose.pose) || local_history_.empty())
+    process_visual(*message);
+  }
+
+  bool synchronized_local_pose(
+    const rclcpp::Time & stamp, Pose2d & pose, double & delta)
+  {
+    if (local_history_.empty()) {
+      delta = std::numeric_limits<double>::infinity();
+      return false;
+    }
+    const auto upper = std::lower_bound(
+      local_history_.begin(), local_history_.end(), stamp,
+      [](const TimedLocalPose & sample, const rclcpp::Time & value) {
+        return sample.stamp < value;
+      });
+    if (upper != local_history_.end() && upper->stamp == stamp) {
+      pose = upper->pose;
+      delta = 0.0;
+      return true;
+    }
+    if (upper != local_history_.begin() && upper != local_history_.end()) {
+      const auto & before = *(upper - 1);
+      const auto & after = *upper;
+      const double span = (after.stamp - before.stamp).seconds();
+      if (!(span > 0.0) || !std::isfinite(span)) {
+        return false;
+      }
+      const double fraction = std::clamp(
+        (stamp - before.stamp).seconds() / span, 0.0, 1.0);
+      pose = fused_odometry::interpolate_pose(before.pose, after.pose, fraction);
+      delta = std::max(
+        (stamp - before.stamp).seconds(), (after.stamp - stamp).seconds());
+      return delta <= synchronization_tolerance_;
+    }
+
+    // A visual sample newer than the local history may simply have arrived
+    // first. Wait for a local sample at that timestamp rather than pairing
+    // it with an older pose. Samples older than retained history are stale
+    // and are rejected explicitly.
+    if (upper == local_history_.end()) {
+      delta = (stamp - local_history_.back().stamp).seconds();
+      return false;
+    }
+    delta = (local_history_.front().stamp - stamp).seconds();
+    return false;
+  }
+
+  void process_visual(const nav_msgs::msg::Odometry & message)
+  {
+    if (message.header.frame_id != map_frame_ || message.child_frame_id != base_frame_ ||
+      !valid_pose(message.pose.pose))
     {
       return;
     }
 
-    const rclcpp::Time visual_stamp(message->header.stamp);
-    const TimedLocalPose * closest = nullptr;
-    double closest_delta = std::numeric_limits<double>::infinity();
-    for (const auto & candidate : local_history_) {
-      const double delta = std::abs((candidate.stamp - visual_stamp).seconds());
-      if (delta < closest_delta) {
-        closest = &candidate;
-        closest_delta = delta;
-      }
-    }
-    if (closest == nullptr || closest_delta > synchronization_tolerance_) {
+    const rclcpp::Time visual_stamp(message.header.stamp);
+    if (visual_stamp.nanoseconds() <= 0) {
       ++unsynchronized_visual_count_;
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 2000,
-        "Waiting for synchronized local odometry (visual/local delta %.3f s)", closest_delta);
+        "Rejecting visual odometry with an unset measurement timestamp");
       return;
     }
+    Pose2d local_pose;
+    double local_delta = std::numeric_limits<double>::infinity();
+    if (!synchronized_local_pose(visual_stamp, local_pose, local_delta)) {
+      if (!local_history_.empty() && visual_stamp > local_history_.back().stamp &&
+        local_delta <= synchronization_tolerance_)
+      {
+        pending_visual_ = message;
+        return;
+      }
+      pending_visual_.reset();
+      ++unsynchronized_visual_count_;
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Rejecting unsynchronized visual/local pose (delta %.3f s)", local_delta);
+      return;
+    }
+    pending_visual_.reset();
 
     const double visual_arrival = steady_seconds();
     const bool visual_recovered = correction_valid_ &&
       visual_arrival - visual_received_at_ > visual_recovery_gap_;
-    latest_raw_visual_ = message_pose(*message);
-    latest_visual_local_ = closest->pose;
+    latest_raw_visual_ = message_pose(message);
+    latest_visual_local_ = local_pose;
     visual_pair_valid_ = true;
     visual_received_at_ = visual_arrival;
     if (turn_hold_active_) {
@@ -414,6 +482,7 @@ private:
   double turn_hold_release_delay_{0.28};
 
   std::deque<TimedLocalPose> local_history_;
+  std::optional<nav_msgs::msg::Odometry> pending_visual_;
   nav_msgs::msg::Odometry latest_local_;
   Pose2d desired_map_from_odom_;
   Pose2d map_from_odom_;

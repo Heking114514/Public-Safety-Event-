@@ -62,3 +62,5 @@ wheel_odometry_node:
 
     diagnostic_stale_timeout_s: 0.5
     diagnostic_period_s: 0.5
+    # /wheel/odom uses MCU measurement time mapped from the first valid
+    # sample; reception time is retained only for freshness diagnostics.

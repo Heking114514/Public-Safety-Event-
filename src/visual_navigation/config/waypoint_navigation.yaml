@@ -6,7 +6,9 @@ waypoint_navigator:
     start_topic: "/waypoint_navigation/start"
 
     odom_topic: "/odometry/fused"
-    imu_topic: "/imu/filtered"
+    # Consume the fusion gate's bias-corrected/base_link yaw rate. The raw
+    # filtered IMU is used only as the gate input and must not drive control.
+    imu_topic: "/imu/control"
     # /odometry/fused is already expressed at base_link by the measured TF.
     tracking_point_offset_x: 0.0
     tracking_point_offset_y: 0.0

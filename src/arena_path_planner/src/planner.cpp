@@ -677,13 +677,28 @@ PlanResult ArenaPlanner::PlanCoverage(
     }
     const auto append_segment = [this, &result](const Point & end) {
         const Point begin = result.points.back();
-        const double length = Distance(begin, end);
-        const int samples = std::max(
-          1, static_cast<int>(std::ceil(length / config_.waypoint_spacing)));
-        for (int sample = 1; sample <= samples; ++sample) {
-          const double ratio = static_cast<double>(sample) / samples;
-          result.points.push_back(
-            {begin.x + ratio * (end.x - begin.x), begin.y + ratio * (end.y - begin.y)});
+        if (SegmentIsFree(begin, end)) {
+          const double length = Distance(begin, end);
+          const int samples = std::max(
+            1, static_cast<int>(std::ceil(length / config_.waypoint_spacing)));
+          for (int sample = 1; sample <= samples; ++sample) {
+            const double ratio = static_cast<double>(sample) / samples;
+            result.points.push_back(
+              {begin.x + ratio * (end.x - begin.x), begin.y + ratio * (end.y - begin.y)});
+          }
+          return;
+        }
+
+        // An inspection edge may be connected through a nearby free cell even
+        // when its exported centre line clips an inflated obstacle. Reuse the
+        // same collision-free A* connector used by task planning instead of
+        // emitting an unsafe straight chord.
+        const GridPath connector = AStar(begin, end);
+        for (std::size_t cell = 1; cell < connector.cells.size(); ++cell) {
+          result.points.push_back(CellToWorld(connector.cells[cell]));
+        }
+        if (Distance(result.points.back(), end) > 1.0e-9) {
+          result.points.push_back(end);
         }
       };
     for (std::size_t index = 1; index < walk.size(); ++index) {
@@ -1058,6 +1073,18 @@ ArenaPlanner::GridPath ArenaPlanner::AStar(const Point & start, const Point & go
       {
         continue;
       }
+      // The inflated grid is only a translational lower bound. Validate
+      // diagonal grid legs with the oriented chassis before allowing them into
+      // an A* predecessor chain; this rejects shortcuts that clip a corner
+      // even when both endpoint cells are individually free. Cardinal legs
+      // are covered by the inflation bound and avoid an expensive resampling
+      // pass for every A* expansion.
+      if (column_delta != 0 && row_delta != 0 &&
+        !SegmentIsFree(
+          CellToWorld({column, row}), CellToWorld({next_column, next_row})))
+      {
+        continue;
+      }
       const int next_index = Index(next_column, next_row);
       const double clearance = clearance_[next_index];
       const double deficit = config_.preferred_clearance > 1.0e-9 ?
@@ -1274,6 +1301,15 @@ std::vector<Point> ArenaPlanner::Smooth(
     // with a quadratic curve. Bezier interpolation there doubles back over
     // the entry point and produces an artificial spike in the route.
     if (turn < config_.maximum_heading_step || turn > 2.6) {
+      append_line(corner);
+      continue;
+    }
+    // A curved transition sweeps the chassis through intermediate headings.
+    // In a narrow lane the centre-line chord may be free while that swept
+    // rectangle is not. Keep an axis-aligned corner in that case; the
+    // navigator can apply the configured in-place-turn policy at the corner.
+    if (!RotationIsFree(
+        corner, std::atan2(incoming.y, incoming.x), std::atan2(outgoing.y, outgoing.x))) {
       append_line(corner);
       continue;
     }

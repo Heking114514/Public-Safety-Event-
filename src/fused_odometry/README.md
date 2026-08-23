@@ -17,7 +17,8 @@ Inputs:
   global-BA map correction sequence.
 - `/wheel/odom` (`nav_msgs/Odometry`): body-forward `vx`; `wz` remains available
   for consistency diagnostics. Neither component enters the default EKF.
-- `/imu/filtered` (`sensor_msgs/Imu`): only `angular_velocity.z` is used.
+- `/imu/filtered` (`sensor_msgs/Imu`): raw filtered gyro input; only
+  `angular_velocity.z` is used by the gate.
 - `/cmd_vel_nav` (`geometry_msgs/Twist`): observation-only input for classifying
   slip, mechanical stall, and encoder failure; it is never forwarded or modified.
 
@@ -31,9 +32,20 @@ Outputs:
   `DEGRADED_NO_VISION`, `DEGRADED_NO_IMU`, `DEGRADED_WHEEL_ONLY`,
   `DEGRADED_VISUAL_REALIGNED`, `FAULT_STALLED`, or `FAULT`.
 - `/diagnostics`: freshness, residuals, rejection counters and dead-reckoning limits.
+- `/imu/control` (`sensor_msgs/Imu`): gate-validated, base-link-frame yaw rate
+  after the bounded visual-reference bias correction. This is the single IMU
+  feedback stream for both the local EKF and navigation control.
 
-The gate publishes private sanitized inputs below `/fusion/input/*`; consumers
-should not use those as the public odometry interface.
+The gate publishes sanitized visual and wheel inputs below `/fusion/input/*`.
+The corrected control IMU is intentionally public at `/imu/control` so that
+navigation damping and EKF prediction use the same yaw-rate sample.
+
+The map correction node pairs visual poses with local EKF poses at the visual
+measurement timestamp. Timestamps between two retained local samples use SE(2)
+interpolation, including shortest-path yaw. A visual sample newer than the
+local history is held briefly until a matching local sample arrives; stale,
+out-of-order, or over-tolerance samples are rejected instead of using a
+nearest-sample scheduling approximation.
 
 ## Behavior
 
@@ -49,7 +61,7 @@ uses median/MAD residual windows, recovery hysteresis, and adaptive measurement
 covariance. IMU yaw rate is the primary short-term rotation source: it is removed
 only for an invalid frame/value, implausible magnitude, non-monotonic timestamp,
 or timeout. IMU/visual disagreement increases visual yaw covariance instead of
-interrupting `/fusion/input/imu`, because visual angular rate can lag during a
+interrupting `/imu/control`, because visual angular rate can lag during a
 rapid turn. Wheel residuals retain hard rejection and recovery hysteresis. Wheel
 covariance supplied by the encoder node remains the lower bound before adaptive
 inflation.

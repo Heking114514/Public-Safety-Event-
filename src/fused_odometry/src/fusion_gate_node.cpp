@@ -137,8 +137,10 @@ public:
       "visual_output_topic", "/fusion/input/visual_odom");
     wheel_output_topic_ = declare_parameter<std::string>(
       "wheel_output_topic", "/fusion/input/wheel_odom");
+    // Public control feedback: both EKF and navigation must consume the same
+    // bias-corrected yaw-rate sample produced below.
     imu_output_topic_ = declare_parameter<std::string>(
-      "imu_output_topic", "/fusion/input/imu");
+      "imu_output_topic", "/imu/control");
     status_topic_ = declare_parameter<std::string>(
       "status_topic", "/odometry/fusion_status");
     diagnostics_topic_ = declare_parameter<std::string>("diagnostics_topic", "/diagnostics");
