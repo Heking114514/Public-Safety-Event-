@@ -29,6 +29,7 @@
 #include "std_srvs/srv/trigger.hpp"
 #include "visual_navigation/fusion_health_policy.hpp"
 #include "visual_navigation/navigation_supervisor.hpp"
+#include "visual_navigation/navigation_input_cache.hpp"
 #include "visual_navigation/path_control.hpp"
 #include "visual_navigation/path_progress_supervisor.hpp"
 #include "visual_navigation/rate_limiter.hpp"
@@ -516,16 +517,17 @@ private:
     if (!AcceptMeasurementStamp(
         message->header.stamp, lastOdomStamp_, odomStampValid_, odomTimeout_, "odometry"))
       return;
-    currentOdomFrameValid_ = message->header.frame_id.empty() ||
+    const bool odometryFrameValid = message->header.frame_id.empty() ||
       message->header.frame_id == routeFrame_;
-    currentOdomPoseValid_ =
+    const bool odometryPoseValid =
       std::isfinite(message->pose.pose.position.x) &&
       std::isfinite(message->pose.pose.position.y) &&
       QuaternionIsValid(message->pose.pose.orientation);
-    lastOdomArrival_ = now();
-    hasOdometry_ = true;
+    const auto odometryReceivedAt = now();
+    inputCache_.update_odometry(
+      odometryFrameValid, odometryPoseValid, false, 0.0, odometryReceivedAt);
 
-    if (!currentOdomFrameValid_)
+    if (!odometryFrameValid)
     {
       RCLCPP_ERROR_THROTTLE(
         get_logger(), *get_clock(), 5000,
@@ -533,7 +535,7 @@ private:
         message->header.frame_id.c_str(), routeFrame_.c_str());
       return;
     }
-    if (!currentOdomPoseValid_)
+    if (!odometryPoseValid)
     {
       RCLCPP_ERROR_THROTTLE(
         get_logger(), *get_clock(), 5000, "Rejecting invalid odometry pose");
@@ -552,9 +554,11 @@ private:
     currentX_ = basePosition.x;
     currentY_ = basePosition.y;
     UpdateObservedLinearSpeed();
-    currentOdomLinearVelocityValid_ = std::isfinite(message->twist.twist.linear.x);
-    if (currentOdomLinearVelocityValid_)
-      currentOdomLinearVelocity_ = message->twist.twist.linear.x;
+    const bool odometryVelocityValid = std::isfinite(message->twist.twist.linear.x);
+    const double odometryVelocity = odometryVelocityValid ? message->twist.twist.linear.x : 0.0;
+    inputCache_.update_odometry(
+      odometryFrameValid, odometryPoseValid, odometryVelocityValid,
+      odometryVelocity, odometryReceivedAt);
   }
 
   void HandleImu(const sensor_msgs::msg::Imu::SharedPtr message)
@@ -565,28 +569,22 @@ private:
     if (!std::isfinite(message->angular_velocity.z))
       return;
     imuYawRate_ = message->angular_velocity.z;
-    lastImuArrival_ = now();
-    hasImu_ = true;
+    inputCache_.update_imu(now());
   }
 
   void HandleTrackingState(const std_msgs::msg::Int32::SharedPtr message)
   {
-    trackingState_ = message->data;
-    hasTrackingState_ = true;
+    inputCache_.update_tracking(message->data);
   }
 
   void HandleFusionStatus(const std_msgs::msg::String::SharedPtr message)
   {
-    fusionStatus_ = Trim(message->data);
-    lastFusionStatusArrival_ = now();
-    hasFusionStatus_ = true;
+    inputCache_.update_fusion_status(Trim(message->data), now());
   }
 
   void HandleActuatorHealth(const std_msgs::msg::Bool::SharedPtr message)
   {
-    actuatorConnected_ = message->data;
-    lastActuatorHealthArrival_ = now();
-    hasActuatorHealth_ = true;
+    inputCache_.update_actuator(message->data, now());
   }
 
   void HandleRouteInput(const nav_msgs::msg::Path::SharedPtr message)
@@ -829,7 +827,7 @@ private:
 
   bool ImuYawRateIsFresh() const
   {
-    return hasImu_ && (now() - lastImuArrival_).seconds() <= imuTimeout_;
+    return inputCache_.imu_fresh(now(), imuTimeout_);
   }
 
   bool AcceptMeasurementStamp(
@@ -872,27 +870,10 @@ private:
 
   visual_navigation::NavigationInputStatus CurrentNavigationInputs() const
   {
-    const auto currentTime = now();
-    visual_navigation::NavigationInputStatus input;
-    input.odometry_received = hasOdometry_;
-    input.odometry_frame_valid = currentOdomFrameValid_;
-    input.odometry_pose_valid = currentOdomPoseValid_;
-    input.odometry_fresh = hasOdometry_ &&
-      (currentTime - lastOdomArrival_).seconds() <= odomTimeout_;
-    input.fusion_required = requireFusionStatus_;
-    input.fusion_status_received = hasFusionStatus_;
-    input.fusion_status_fresh = hasFusionStatus_ &&
-      (currentTime - lastFusionStatusArrival_).seconds() <= fusionStatusTimeout_;
-    input.fusion_status = fusionStatus_;
-    input.fusion_health = fusionHealthPolicy_.Evaluate(fusionStatus_);
-    input.tracking_required = requireTrackingState_;
-    input.tracking_state_received = hasTrackingState_;
-    input.tracking_state = trackingState_;
-    input.actuator_required = requireActuatorHealth_;
-    input.actuator_status_received = hasActuatorHealth_;
-    input.actuator_status_fresh = hasActuatorHealth_ &&
-      (currentTime - lastActuatorHealthArrival_).seconds() <= actuatorHealthTimeout_;
-    input.actuator_connected = actuatorConnected_;
+    auto input = inputCache_.snapshot(
+      now(), odomTimeout_, fusionStatusTimeout_, actuatorHealthTimeout_,
+      requireFusionStatus_, requireTrackingState_, requireActuatorHealth_);
+    input.fusion_health = fusionHealthPolicy_.Evaluate(inputCache_.fusion_status());
     return input;
   }
 
@@ -1395,8 +1376,8 @@ private:
         linearSpeed = visual_navigation::BrakingSpeedLimit(
           linearSpeed, approachDistance, effectiveBrakingDeceleration_,
           brakingControlDelay_, brakingSafetyMargin_);
-        const double feedbackSpeed = currentOdomLinearVelocityValid_ ?
-          std::abs(currentOdomLinearVelocity_) : std::abs(lastMotionCommand_.linear.x);
+        const double feedbackSpeed = inputCache_.odometry_velocity_valid() ?
+          std::abs(inputCache_.odometry_velocity()) : std::abs(lastMotionCommand_.linear.x);
         linearSpeed = visual_navigation::BrakingFeedbackSpeedLimit(
           linearSpeed, feedbackSpeed, approachDistance,
           effectiveBrakingDeceleration_, brakingControlDelay_,
@@ -1419,8 +1400,8 @@ private:
         minPathAngularSpeed_ * fusionHealth.speed_scale,
         lateralAngularLimit);
 
-      const double measuredSpeed = currentOdomLinearVelocityValid_ ?
-        std::abs(currentOdomLinearVelocity_) : std::abs(lastMotionCommand_.linear.x);
+      const double measuredSpeed = inputCache_.odometry_velocity_valid() ?
+        std::abs(inputCache_.odometry_velocity()) : std::abs(lastMotionCommand_.linear.x);
       const double stoppingDistance = visual_navigation::BrakingDistance(
         measuredSpeed, effectiveBrakingDeceleration_,
         brakingControlDelay_, brakingSafetyMargin_);
@@ -1883,6 +1864,7 @@ private:
   bool requireTrackingState_{false};
   bool autostart_{false};
   std::vector<std::string> allowedFusionStates_;
+  visual_navigation::NavigationInputCache inputCache_;
   visual_navigation::FusionHealthPolicy fusionHealthPolicy_;
   visual_navigation::NavigationSupervisor navigationSupervisor_;
   visual_navigation::PathProgressSupervisor pathProgressSupervisor_;
@@ -1894,22 +1876,10 @@ private:
   bool navigationActive_{false};
   bool resumePathFromCurrentPose_{false};
   bool motionHoldStartInitialized_{false};
-  bool hasOdometry_{false};
-  bool hasImu_{false};
-  bool currentOdomFrameValid_{false};
-  bool currentOdomPoseValid_{false};
-  bool currentOdomLinearVelocityValid_{false};
-  bool hasFusionStatus_{false};
-  bool hasActuatorHealth_{false};
-  bool hasTrackingState_{false};
   bool trackingReferenceInitialized_{false};
-  int trackingState_{-1};
-  std::string fusionStatus_;
-  bool actuatorConnected_{false};
   double currentX_{0.0};
   double currentY_{0.0};
   double currentYaw_{0.0};
-  double currentOdomLinearVelocity_{0.0};
   double observedLinearVelocity_{0.0};
   double trackingReferenceYaw_{0.0};
   double imuYawRate_{0.0};
@@ -1937,10 +1907,6 @@ private:
   bool finalPositionCaptured_{false};
   std::string state_;
   std::map<std::string, std::string> motionHolds_;
-  rclcpp::Time lastOdomArrival_{0, 0, RCL_ROS_TIME};
-  rclcpp::Time lastImuArrival_{0, 0, RCL_ROS_TIME};
-  rclcpp::Time lastFusionStatusArrival_{0, 0, RCL_ROS_TIME};
-  rclcpp::Time lastActuatorHealthArrival_{0, 0, RCL_ROS_TIME};
   rclcpp::Time lastOdomStamp_{0, 0, RCL_ROS_TIME};
   rclcpp::Time lastImuStamp_{0, 0, RCL_ROS_TIME};
   bool odomStampValid_{false};
