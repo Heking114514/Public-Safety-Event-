@@ -410,8 +410,9 @@ private:
     const bool orientation_valid = valid_quaternion(message->pose.pose.orientation);
     const double tilt = orientation_valid ?
       quaternion_tilt(message->pose.pose.orientation) : std::numeric_limits<double>::infinity();
-    if (message->header.frame_id != raw_visual_expected_frame_ ||
-      message->child_frame_id != visual_expected_child_frame_ ||
+    if (!FramePairMatches(
+        message->header.frame_id, message->child_frame_id,
+        raw_visual_expected_frame_, visual_expected_child_frame_) ||
       !finite(position.x) || !finite(position.y) ||
       !orientation_valid || tilt > raw_visual_max_tilt_)
     {
@@ -588,9 +589,10 @@ private:
   {
     const double velocity = message->twist.twist.linear.x;
     const double wheel_yaw_rate = message->twist.twist.angular.z;
-    if (message->header.frame_id != wheel_expected_frame_ ||
-      message->child_frame_id != wheel_expected_child_frame_ ||
-      !finite(velocity) || std::abs(velocity) > max_wheel_speed_)
+    if (!FramePairMatches(
+        message->header.frame_id, message->child_frame_id,
+        wheel_expected_frame_, wheel_expected_child_frame_) ||
+      !FiniteAndWithin(velocity, max_wheel_speed_))
     {
       ++invalid_wheel_count_;
       RCLCPP_WARN_THROTTLE(
@@ -743,8 +745,8 @@ private:
   void imu_callback(const sensor_msgs::msg::Imu::SharedPtr message)
   {
     const double yaw_rate = message->angular_velocity.z;
-    if (message->header.frame_id != imu_expected_frame_ || !finite(yaw_rate) ||
-      std::abs(yaw_rate) > max_imu_yaw_rate_)
+    if (message->header.frame_id != imu_expected_frame_ ||
+      !FiniteAndWithin(yaw_rate, max_imu_yaw_rate_))
     {
       ++invalid_imu_count_;
       RCLCPP_WARN_THROTTLE(

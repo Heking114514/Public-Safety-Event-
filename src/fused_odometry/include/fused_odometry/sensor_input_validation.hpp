@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <cmath>
+#include <string>
 
 namespace fused_odometry
 {
@@ -34,6 +35,19 @@ inline StampValidation ValidateMeasurementStamp(
   if (age_s < -future_tolerance_s)
     return StampValidation::kFuture;
   return StampValidation::kAccepted;
+}
+
+inline bool FramePairMatches(
+  const std::string & actual_parent, const std::string & actual_child,
+  const std::string & expected_parent, const std::string & expected_child)
+{
+  return actual_parent == expected_parent && actual_child == expected_child;
+}
+
+inline bool FiniteAndWithin(double value, double maximum_abs_value)
+{
+  return std::isfinite(value) && std::isfinite(maximum_abs_value) &&
+    maximum_abs_value >= 0.0 && std::abs(value) <= maximum_abs_value;
 }
 
 }  // namespace fused_odometry

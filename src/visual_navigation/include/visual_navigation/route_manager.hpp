@@ -12,6 +12,8 @@
 #include <utility>
 #include <vector>
 
+#include "nav_msgs/msg/path.hpp"
+
 namespace visual_navigation
 {
 
@@ -122,6 +124,39 @@ public:
     return true;
   }
 
+  static bool LoadPath(
+    const nav_msgs::msg::Path & path, double default_speed, double default_tolerance,
+    std::vector<RouteWaypoint> & output, std::size_t & invalid_index, std::string & error)
+  {
+    output.clear();
+    error.clear();
+    invalid_index = 0;
+    if (path.poses.empty()) {
+      error = "route is empty";
+      return false;
+    }
+    output.reserve(path.poses.size());
+    for (std::size_t index = 0; index < path.poses.size(); ++index) {
+      const auto & pose = path.poses[index].pose;
+      if (!std::isfinite(pose.position.x) || !std::isfinite(pose.position.y) ||
+        !valid_quaternion(pose.orientation))
+      {
+        invalid_index = index;
+        error = "waypoint pose is invalid";
+        output.clear();
+        return false;
+      }
+      RouteWaypoint waypoint;
+      waypoint.x = pose.position.x;
+      waypoint.y = pose.position.y;
+      waypoint.yaw = quaternion_yaw(pose.orientation);
+      waypoint.speed = default_speed;
+      waypoint.tolerance = default_tolerance;
+      output.push_back(waypoint);
+    }
+    return true;
+  }
+
 private:
   static std::string trim(const std::string & text)
   {
@@ -161,6 +196,29 @@ private:
     while (angle < -k_pi)
       angle += 2.0 * k_pi;
     return angle;
+  }
+
+  static bool valid_quaternion(const geometry_msgs::msg::Quaternion & quaternion)
+  {
+    if (!std::isfinite(quaternion.x) || !std::isfinite(quaternion.y) ||
+      !std::isfinite(quaternion.z) || !std::isfinite(quaternion.w))
+    {
+      return false;
+    }
+    const double norm_squared = quaternion.x * quaternion.x +
+      quaternion.y * quaternion.y + quaternion.z * quaternion.z + quaternion.w * quaternion.w;
+    return std::isfinite(norm_squared) && norm_squared > 1.0e-12;
+  }
+
+  static double quaternion_yaw(const geometry_msgs::msg::Quaternion & quaternion)
+  {
+    const double norm_squared =
+      quaternion.x * quaternion.x + quaternion.y * quaternion.y +
+      quaternion.z * quaternion.z + quaternion.w * quaternion.w;
+    return std::atan2(
+      2.0 * (quaternion.w * quaternion.z + quaternion.x * quaternion.y) / norm_squared,
+      1.0 - 2.0 * (quaternion.y * quaternion.y + quaternion.z * quaternion.z) /
+      norm_squared);
   }
 };
 

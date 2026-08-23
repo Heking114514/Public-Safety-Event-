@@ -21,13 +21,13 @@
 
 ### P4-01 导航节点职责过度集中
 
-- 当前进展：路线 CSV 解析、默认值校验和重复路线判定已抽到 `visual_navigation::RouteManager`，并有独立单元测试。
+- 当前进展：路线 CSV 解析、动态 `nav_msgs/Path` 转换、默认值校验和重复路线判定已抽到 `visual_navigation::RouteManager`，文件路线与动态路线共用同一套几何校验，并有独立单元测试。
 - 未解决：`src/visual_navigation/src/waypoint_navigator.cpp` 仍约 2001 行、104 个参数；路线 ROS 接收、跟线、制动、转向、恢复、任务状态和命令发布仍共享同一个节点状态。
 - 影响：修改某一运动阶段仍可能通过共享成员影响其他阶段，完整控制状态迁移仍难以独立测试。
 
 ### P4-02 融合门控节点职责过度集中
 
-- 当前进展：传感器时间戳的 unset、单调性、过期和未来样本规则已抽到 `fused_odometry::ValidateMeasurementStamp`，并有独立单元测试。
+- 当前进展：传感器时间戳的 unset、单调性、过期和未来样本规则，以及 wheel/IMU/raw visual 的 frame 对和幅值范围校验，已抽到 `fused_odometry` 公共校验函数，并有独立单元测试。
 - 未解决：`src/fused_odometry/src/fusion_gate_node.cpp` 仍约 1122 行；传感器 frame/数值适配、视觉增量、IMU bias、wheel 残差和健康决策仍共享节点状态。
 - 影响：修改某一传感器的 frame/数值校验或残差逻辑仍可能改变其他输入的发布条件。
 

@@ -612,26 +612,16 @@ private:
     }
 
     std::vector<Waypoint> loadedWaypoints;
-    loadedWaypoints.reserve(message->poses.size());
-    for (std::size_t index = 0; index < message->poses.size(); ++index)
+    std::size_t invalidWaypointIndex = 0;
+    std::string routeError;
+    if (!visual_navigation::RouteManager::LoadPath(
+        *message, defaultSpeed_, waypointTolerance_, loadedWaypoints,
+        invalidWaypointIndex, routeError))
     {
-      const auto &pose = message->poses[index].pose;
-      if (!std::isfinite(pose.position.x) || !std::isfinite(pose.position.y) ||
-        !QuaternionIsValid(pose.orientation))
-      {
-        RCLCPP_ERROR(
-          get_logger(), "Ignoring dynamic route: waypoint %zu has an invalid pose", index);
-        return;
-      }
-
-      Waypoint waypoint;
-      waypoint.x = pose.position.x;
-      waypoint.y = pose.position.y;
-      waypoint.yaw = YawFromValidQuaternion(pose.orientation);
-      waypoint.speed = defaultSpeed_;
-      waypoint.tolerance = waypointTolerance_;
-      waypoint.stop_time = 0.0;
-      loadedWaypoints.push_back(waypoint);
+      RCLCPP_ERROR(
+        get_logger(), "Ignoring dynamic route: waypoint %zu %s",
+        invalidWaypointIndex, routeError.c_str());
+      return;
     }
 
     if (routeLoaded_ && visual_navigation::RouteManager::Equivalent(waypoints_, loadedWaypoints))

@@ -20,3 +20,11 @@ TEST(SensorInputValidation, RejectsUnsetNonMonotonicStaleAndFuture)
   EXPECT_EQ(ValidateMeasurementStamp(2'000'000'000, false, 0,
     1'000'000'000, 0.2, 0.2), StampValidation::kFuture);
 }
+
+TEST(SensorInputValidation, SharesFrameAndFiniteValueRules)
+{
+  EXPECT_TRUE(fused_odometry::FramePairMatches("odom", "base_link", "odom", "base_link"));
+  EXPECT_FALSE(fused_odometry::FramePairMatches("map", "base_link", "odom", "base_link"));
+  EXPECT_TRUE(fused_odometry::FiniteAndWithin(-0.5, 1.0));
+  EXPECT_FALSE(fused_odometry::FiniteAndWithin(1.5, 1.0));
+}

@@ -35,3 +35,22 @@ TEST(RouteManager, ComparesOnlyRouteGeometryAndYaw)
   right[0].x += 0.01;
   EXPECT_FALSE(visual_navigation::RouteManager::Equivalent(left, right));
 }
+
+TEST(RouteManager, LoadsDynamicPathWithSharedValidation)
+{
+  nav_msgs::msg::Path path;
+  geometry_msgs::msg::PoseStamped pose;
+  pose.pose.position.x = 1.0;
+  pose.pose.position.y = 2.0;
+  pose.pose.orientation.w = 1.0;
+  path.poses.push_back(pose);
+
+  std::vector<visual_navigation::RouteWaypoint> route;
+  std::size_t invalid_index = 99;
+  std::string error;
+  ASSERT_TRUE(visual_navigation::RouteManager::LoadPath(
+    path, 0.4, 0.05, route, invalid_index, error)) << error;
+  ASSERT_EQ(route.size(), 1u);
+  EXPECT_DOUBLE_EQ(route[0].yaw, 0.0);
+  EXPECT_EQ(invalid_index, 0u);
+}

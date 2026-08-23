@@ -63,6 +63,7 @@ if(BUILD_TESTING)
   target_include_directories(navigation_supervisor_test PRIVATE include)
   ament_add_gtest(route_manager_test test/route_manager_test.cpp)
   target_include_directories(route_manager_test PRIVATE include)
+  ament_target_dependencies(route_manager_test nav_msgs geometry_msgs)
   add_launch_test(test/waypoint_navigator_launch_test.py TIMEOUT 30)
 endif()
 
