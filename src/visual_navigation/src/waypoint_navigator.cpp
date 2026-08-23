@@ -3,7 +3,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <functional>
 #include <limits>
 #include <map>
@@ -32,6 +31,7 @@
 #include "visual_navigation/navigation_input_cache.hpp"
 #include "visual_navigation/path_control.hpp"
 #include "visual_navigation/path_progress_supervisor.hpp"
+#include "visual_navigation/path_tracking_controller.hpp"
 #include "visual_navigation/rate_limiter.hpp"
 #include "visual_navigation/route_manager.hpp"
 #include "visual_navigation/turn_progress_supervisor.hpp"
@@ -210,6 +210,9 @@ public:
       0.0, declare_parameter<double>("path_curvature_feedforward_gain", 1.0));
     pathPidIntegralLimit_ = std::max(
       0.0, declare_parameter<double>("path_pid_integral_limit", 0.20));
+    pathTrackingController_.configure(
+      pathPidKp_, pathPidKi_, pathPidKd_, pathYawRateDamping_,
+      pathPidIntegralLimit_, maxPathAngularSpeed_);
     rotateInPlaceThreshold_ = std::max(
       0.0, declare_parameter<double>("rotate_in_place_threshold", 0.18));
     rotateInPlaceReentryThreshold_ = std::max(
@@ -428,13 +431,6 @@ public:
 
 private:
   using Waypoint = visual_navigation::RouteWaypoint;
-
-  struct PositionSample
-  {
-    std::chrono::steady_clock::time_point time;
-    double x{0.0};
-    double y{0.0};
-  };
 
   enum class WaitAction
   {
@@ -1573,33 +1569,8 @@ private:
 
   void UpdateObservedLinearSpeed()
   {
-    const auto sampleTime = std::chrono::steady_clock::now();
-    if (!positionSamples_.empty())
-    {
-      const double gap =
-        std::chrono::duration<double>(sampleTime - positionSamples_.back().time).count();
-      if (gap > std::max(0.5, 2.0 * stopMotionWindow_))
-        positionSamples_.clear();
-    }
-    positionSamples_.push_back({sampleTime, currentX_, currentY_});
-    while (positionSamples_.size() >= 2)
-    {
-      const double secondAge = std::chrono::duration<double>(
-        sampleTime - positionSamples_[1].time).count();
-      if (secondAge < stopMotionWindow_)
-        break;
-      positionSamples_.pop_front();
-    }
-    const double span = std::chrono::duration<double>(
-      sampleTime - positionSamples_.front().time).count();
-    observedLinearVelocityValid_ = span >= 0.5 * stopMotionWindow_;
-    if (observedLinearVelocityValid_)
-    {
-      observedLinearVelocity_ = std::hypot(
-        currentX_ - positionSamples_.front().x,
-        currentY_ - positionSamples_.front().y) / span;
-      observedLinearVelocityValid_ = std::isfinite(observedLinearVelocity_);
-    }
+    pathTrackingController_.update_observed_speed(
+      currentX_, currentY_, std::chrono::steady_clock::now(), stopMotionWindow_);
   }
 
   bool WaypointBrakeHasCompleted()
@@ -1612,8 +1583,8 @@ private:
     }
     const double totalStopSeconds =
       std::chrono::duration<double>(currentTime - waypointStopStarted_).count();
-    const double absoluteSpeed = observedLinearVelocityValid_ ?
-      observedLinearVelocity_ : std::numeric_limits<double>::quiet_NaN();
+    const double absoluteSpeed = pathTrackingController_.observed_speed_valid() ?
+      pathTrackingController_.observed_speed() : std::numeric_limits<double>::quiet_NaN();
     if (std::isfinite(absoluteSpeed) && absoluteSpeed <= preTurnStopSpeed_)
     {
       if (!waypointSpeedSettleTimerInitialized_)
@@ -1652,9 +1623,7 @@ private:
 
   void ResetPathPid()
   {
-    pathPidIntegral_ = 0.0;
-    previousPathError_ = 0.0;
-    pathPidInitialized_ = false;
+    pathTrackingController_.reset_pid();
     rotatingInPlace_ = false;
     waypointRecoveryActive_ = false;
     turnAnchorValid_ = false;
@@ -1668,34 +1637,9 @@ private:
   double UpdatePathPid(
     double error, double crossTrackError, bool allowIntegral, double yawRate)
   {
-    const auto currentTime = std::chrono::steady_clock::now();
-    double derivative = 0.0;
-    if (pathPidInitialized_)
-    {
-      const double dt = std::chrono::duration<double>(currentTime - lastPathPidTime_).count();
-      if (dt > 0.0 && dt <= 0.2)
-      {
-        if (allowIntegral)
-        {
-          pathPidIntegral_ = Clamp(
-            pathPidIntegral_ - crossTrackError * dt,
-            -pathPidIntegralLimit_, pathPidIntegralLimit_);
-        }
-        else
-        {
-          pathPidIntegral_ *= std::max(0.0, 1.0 - 4.0 * dt);
-        }
-        derivative = (error - previousPathError_) / dt;
-      }
-    }
-
-    previousPathError_ = error;
-    lastPathPidTime_ = currentTime;
-    pathPidInitialized_ = true;
-    return Clamp(
-      pathPidKp_ * error + pathPidKi_ * pathPidIntegral_ +
-      pathPidKd_ * derivative - pathYawRateDamping_ * yawRate,
-      -maxPathAngularSpeed_, maxPathAngularSpeed_);
+    return pathTrackingController_.update_pid(
+      error, crossTrackError, allowIntegral, yawRate,
+      std::chrono::steady_clock::now());
   }
 
   void PublishStop()
@@ -1880,24 +1824,19 @@ private:
   double currentX_{0.0};
   double currentY_{0.0};
   double currentYaw_{0.0};
-  double observedLinearVelocity_{0.0};
   double trackingReferenceYaw_{0.0};
   double imuYawRate_{0.0};
   double pathSegmentStartX_{0.0};
   double pathSegmentStartY_{0.0};
   double turnAnchorX_{0.0};
   double turnAnchorY_{0.0};
-  double pathPidIntegral_{0.0};
-  double previousPathError_{0.0};
   bool pathSegmentInitialized_{false};
   bool pathAlignmentCompleted_{false};
-  bool pathPidInitialized_{false};
   bool rotatingInPlace_{false};
   bool waypointRecoveryActive_{false};
   bool turnAnchorValid_{false};
   bool turnSettling_{false};
   bool turnSettleTimerInitialized_{false};
-  bool observedLinearVelocityValid_{false};
   bool waypointBraking_{false};
   bool waypointBrakeTimedOut_{false};
   bool waypointBrakeCompleted_{false};
@@ -1913,12 +1852,11 @@ private:
   bool imuStampValid_{false};
   rclcpp::Time waitUntil_{0, 0, RCL_ROS_TIME};
   rclcpp::Time motionHoldStartedAt_{0, 0, RCL_ROS_TIME};
-  std::chrono::steady_clock::time_point lastPathPidTime_{};
   std::chrono::steady_clock::time_point lastMotionCommandTime_{};
   std::chrono::steady_clock::time_point turnSettleStarted_{};
   std::chrono::steady_clock::time_point waypointStopStarted_{};
   std::chrono::steady_clock::time_point waypointSpeedSettleStarted_{};
-  std::deque<PositionSample> positionSamples_;
+  visual_navigation::PathTrackingController pathTrackingController_;
   geometry_msgs::msg::Twist lastMotionCommand_;
   bool motionCommandInitialized_{false};
   WaitAction waitAction_{WaitAction::NONE};

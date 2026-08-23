@@ -67,6 +67,8 @@ if(BUILD_TESTING)
   ament_add_gtest(navigation_input_cache_test test/navigation_input_cache_test.cpp)
   target_include_directories(navigation_input_cache_test PRIVATE include)
   ament_target_dependencies(navigation_input_cache_test rclcpp)
+  ament_add_gtest(path_tracking_controller_test test/path_tracking_controller_test.cpp)
+  target_include_directories(path_tracking_controller_test PRIVATE include)
   add_launch_test(test/waypoint_navigator_launch_test.py TIMEOUT 30)
 endif()
 
