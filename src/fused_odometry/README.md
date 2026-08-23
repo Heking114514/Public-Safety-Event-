@@ -40,6 +40,12 @@ The gate publishes sanitized visual and wheel inputs below `/fusion/input/*`.
 The corrected control IMU is intentionally public at `/imu/control` so that
 navigation damping and EKF prediction use the same yaw-rate sample.
 
+Wheel, IMU, and raw visual callbacks reject unset, stale, future, and
+non-monotonic measurement timestamps. All periodic status/publish timers use
+the node ROS clock, so simulated-time pause and jumps do not mix with wall-time
+control scheduling. When `use_slam_imu=true`, the bringup launch omits the
+external IMU filter to keep the D455 IMU in one estimator path.
+
 `/odometry/fused` publishes a map-frame pose. Its position and yaw covariance
 include both the local odometry covariance and the accepted visual correction
 covariance; the local covariance is not relabeled as global covariance.

@@ -9,6 +9,7 @@
 #include <sstream>
 #include <string>
 
+#include "builtin_interfaces/msg/time.hpp"
 #include "diagnostic_msgs/msg/diagnostic_array.hpp"
 #include "diagnostic_msgs/msg/diagnostic_status.hpp"
 #include "diagnostic_msgs/msg/key_value.hpp"
@@ -172,6 +173,7 @@ public:
     command_timeout_ = positive("command_timeout_s", 0.4);
     raw_visual_timeout_ = positive("raw_visual_timeout_s", 0.3);
     raw_visual_max_tilt_ = positive("raw_visual_max_tilt_rad", 0.50);
+    stamp_future_tolerance_ = nonnegative("stamp_future_tolerance_s", 0.20);
     map_change_grace_ = positive("map_change_grace_s", 1.0);
     max_dead_reckoning_time_ = positive("max_dead_reckoning_time_s", 2.0);
     max_dead_reckoning_distance_ = positive("max_dead_reckoning_distance_m", 0.30);
@@ -248,8 +250,9 @@ public:
     command_subscription_ = create_subscription<geometry_msgs::msg::Twist>(
       command_topic_, 10, std::bind(&FusionGateNode::command_callback, this, std::placeholders::_1));
 
-    status_timer_ = create_wall_timer(
-      std::chrono::milliseconds(100), std::bind(&FusionGateNode::publish_status, this));
+    status_timer_ = rclcpp::create_timer(
+      this, get_clock(), rclcpp::Duration::from_seconds(0.1),
+      std::bind(&FusionGateNode::publish_status, this));
     RCLCPP_INFO(
       get_logger(), "Fusion gate ready: visual=%s wheel=%s imu=%s (%s/%s)",
       raw_visual_topic_.c_str(), wheel_topic_.c_str(), imu_topic_.c_str(),
@@ -264,6 +267,39 @@ private:
       throw std::invalid_argument(name + " must be finite and positive");
     }
     return result;
+  }
+
+  double nonnegative(const std::string & name, double default_value)
+  {
+    const double result = declare_parameter<double>(name, default_value);
+    if (!finite(result) || result < 0.0) {
+      throw std::invalid_argument(name + " must be finite and non-negative");
+    }
+    return result;
+  }
+
+  bool accept_measurement_stamp(
+    const builtin_interfaces::msg::Time & stamp_message,
+    rclcpp::Time & last_stamp, bool & stamp_valid, double max_age,
+    const char * source)
+  {
+    const rclcpp::Time stamp(stamp_message);
+    if (stamp.nanoseconds() <= 0 || (stamp_valid && stamp <= last_stamp)) {
+      return false;
+    }
+    const rclcpp::Time current = now();
+    if (current.nanoseconds() > 0) {
+      const double age = (current - stamp).seconds();
+      if (age > max_age || age < -stamp_future_tolerance_) {
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 2000,
+          "Rejecting %s measurement with age %.3fs", source, age);
+        return false;
+      }
+    }
+    last_stamp = stamp;
+    stamp_valid = true;
+    return true;
   }
 
   std::size_t positive_count(const std::string & name, std::int64_t default_value)
@@ -336,6 +372,7 @@ private:
   {
     map_change_sequence_ = message->data;
     map_change_grace_until_ = steady_seconds() + map_change_grace_;
+    map_change_pending_ = true;
     RCLCPP_INFO(
       get_logger(), "Accepting gated ORB map correction sequence %lu",
       static_cast<unsigned long>(map_change_sequence_));
@@ -385,13 +422,13 @@ private:
       return;
     }
     const rclcpp::Time stamp(message->header.stamp);
-    if (raw_visual_stamp_valid_ && stamp <= last_raw_visual_stamp_) {
+    if (!accept_measurement_stamp(
+        message->header.stamp, last_raw_visual_stamp_, raw_visual_stamp_valid_,
+        raw_visual_timeout_, "raw visual")) {
       reject_raw_visual_sample();
       ++invalid_raw_visual_count_;
       return;
     }
-    raw_visual_stamp_valid_ = true;
-    last_raw_visual_stamp_ = stamp;
     const Pose2d current_raw_pose{
       position.x, position.y, quaternion_yaw(message->pose.pose.orientation)};
     if (last_raw_increment_pose_valid_) {
@@ -450,7 +487,12 @@ private:
     }
 
     const bool recovering = !ever_accepted_visual_ || visual_interrupted_;
-    const bool map_change_grace = steady_seconds() <= map_change_grace_until_;
+    const double current_steady = steady_seconds();
+    const bool map_change_grace = map_change_pending_ &&
+      current_steady <= map_change_grace_until_;
+    if (map_change_pending_ && !map_change_grace) {
+      map_change_pending_ = false;
+    }
     // A normal frame must have a physically plausible raw increment. On ORB
     // loop closure MapChanged() is published before the corrected pose, so the
     // one discontinuous observation is allowed and smoothed by map->odom.
@@ -460,6 +502,10 @@ private:
         mark_visual_interrupted();
       }
       return;
+    }
+    if (map_change_grace) {
+      // Consume authorization on the first post-event visual sample.
+      map_change_pending_ = false;
     }
     if (recovering) {
       if (!raw_visual_increment_healthy()) {
@@ -552,13 +598,12 @@ private:
         wheel_expected_frame_.c_str(), wheel_expected_child_frame_.c_str());
       return;
     }
-    const rclcpp::Time message_stamp(message->header.stamp);
-    if (wheel_stamp_valid_ && message_stamp <= last_wheel_message_stamp_) {
+    if (!accept_measurement_stamp(
+        message->header.stamp, last_wheel_message_stamp_, wheel_stamp_valid_,
+        wheel_timeout_, "wheel")) {
       ++invalid_wheel_count_;
       return;
     }
-    wheel_stamp_valid_ = true;
-    last_wheel_message_stamp_ = message_stamp;
 
     const double sample_time = steady_seconds();
     wheel_vx_window_.add(sample_time, velocity);
@@ -706,13 +751,12 @@ private:
         yaw_rate, message->header.frame_id.c_str(), imu_expected_frame_.c_str());
       return;
     }
-    const rclcpp::Time message_stamp(message->header.stamp);
-    if (imu_stamp_valid_ && message_stamp <= last_imu_message_stamp_) {
+    if (!accept_measurement_stamp(
+        message->header.stamp, last_imu_message_stamp_, imu_stamp_valid_,
+        imu_timeout_, "IMU")) {
       ++invalid_imu_count_;
       return;
     }
-    imu_stamp_valid_ = true;
-    last_imu_message_stamp_ = message_stamp;
     const bool command_fresh = command_received_ &&
       age_seconds(command_received_at_) <= command_timeout_;
     const bool raw_visual_rate_ready = raw_visual_increment_healthy() &&
@@ -943,6 +987,7 @@ private:
   double raw_visual_timeout_{0.3};
   double raw_visual_max_tilt_{0.5};
   double map_change_grace_{1.0};
+  double stamp_future_tolerance_{0.20};
   double max_dead_reckoning_time_{2.0};
   double max_dead_reckoning_distance_{0.3};
   double max_wheel_only_time_{2.0};
@@ -991,6 +1036,7 @@ private:
   bool visual_velocity_valid_{false};
   bool raw_visual_received_{false};
   bool raw_visual_stamp_valid_{false};
+  bool map_change_pending_{false};
   bool command_received_{false};
   bool visual_ramp_active_{false};
   bool wheel_yaw_rate_finite_{false};

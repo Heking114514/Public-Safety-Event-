@@ -38,16 +38,16 @@ geometry_msgs::msg::Quaternion QuaternionFromYaw(double yaw)
   return quaternion;
 }
 
-bool RouteHasUnsafeInPlaceTurn(const ArenaPlanner & planner, const PlanResult & result)
+bool RouteHasUnsafeInPlaceTurn(
+  const ArenaPlanner & planner, const PlanResult & result, double heading_threshold)
 {
-  constexpr double kNavigatorRotationThreshold = 0.18;
   if (result.points.size() < 3 || result.headings.size() != result.points.size()) {
     return false;
   }
   for (std::size_t index = 0; index + 2 < result.points.size(); ++index) {
     const double heading_change = std::abs(NormalizeAngle(
       result.headings[index + 1] - result.headings[index]));
-    if (heading_change < kNavigatorRotationThreshold) {
+    if (heading_change < heading_threshold) {
       continue;
     }
     // The navigator brakes at waypoint index + 1 and rotates at that centre.
@@ -200,7 +200,8 @@ private:
         start, targets, labels, mode, request->covered_edges);
     }
     if (result.success && !active_planner->config().allow_in_place_turns &&
-      RouteHasUnsafeInPlaceTurn(*active_planner, result)) {
+      RouteHasUnsafeInPlaceTurn(
+        *active_planner, result, active_planner->config().in_place_turn_heading_threshold)) {
       result.success = false;
       result.message =
         "route requires an in-place turn without clearance for the complete chassis";

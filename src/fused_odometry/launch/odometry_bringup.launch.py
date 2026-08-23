@@ -3,7 +3,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 import os
 
@@ -82,7 +82,11 @@ def generate_launch_description():
             executable="imu_rpy_filter_node",
             name="imu_rpy_filter",
             output="screen",
-            condition=IfCondition(use_imu),
+            condition=IfCondition(
+                PythonExpression([
+                    "'", use_imu, "' == 'true' and '", use_slam_imu, "' == 'false'"
+                ])
+            ),
             parameters=[imu_config, {"use_sim_time": use_sim_time}],
         ),
         Node(

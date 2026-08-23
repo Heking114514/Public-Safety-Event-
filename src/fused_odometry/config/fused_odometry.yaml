@@ -37,6 +37,7 @@ fused_odometry_gate:
     raw_visual_timeout_s: 0.30
     # Reject optical-frame or otherwise non-planar poses mislabeled as map.
     raw_visual_max_tilt_rad: 0.50
+    stamp_future_tolerance_s: 0.20
     map_change_grace_s: 1.00
     visual_recovery_samples: 5
     visual_recovery_ramp_s: 0.75

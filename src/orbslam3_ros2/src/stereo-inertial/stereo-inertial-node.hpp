@@ -65,7 +65,10 @@ private:
     cv::Mat GetImage(const ImageMsg::ConstSharedPtr &msg) const;
     void SyncWithImu();
     void PublishPose(const Sophus::SE3f &Tcw, const ImageMsg::ConstSharedPtr &msgLeft, int trackingState);
-    void PublishRawOdometry(const Sophus::SE3f &TrawMapBody, const builtin_interfaces::msg::Time &stamp);
+    void PublishRawOdometry(
+        const Sophus::SE3f &TrawMapBody,
+        const builtin_interfaces::msg::Time &stamp,
+        double covarianceScale);
     void PublishTrackingStatus(int trackingState, const builtin_interfaces::msg::Time &stamp, size_t imuCount, double stereoDelta);
     bool LookupCameraToBody(const std::string &cameraFrame, Sophus::SE3f &Tcb);
     void HandleTrackingInterruption();
@@ -107,6 +110,7 @@ private:
 
     std::string mapFrameId_;
     std::string bodyFrameId_;
+    std::string imuFrameId_;
     bool publishTf_;
     bool publishPath_;
     bool saveTrajectory_;
@@ -122,6 +126,7 @@ private:
     std::vector<double> poseCovarianceDiagonal_;
     std::vector<double> twistCovarianceDiagonal_;
     std::vector<double> unavailableTwistCovarianceDiagonal_;
+    double kltCovarianceScale_{4.0};
 
     double lastImageTimestamp_{-1.0};
     double firstStereoTimestamp_{-1.0};

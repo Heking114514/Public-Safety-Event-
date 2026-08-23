@@ -23,6 +23,10 @@
 | `/waypoint_navigation/route_input` | `nav_msgs/msg/Path` | 动态替换当前路线 |
 | `/waypoint_navigation/route_ack` | `std_msgs/msg/UInt64` | 导航器接受的路线 ID（Path 时间戳纳秒） |
 
+Odometry and IMU messages are accepted only when their ROS timestamps are
+positive, monotonic, within the configured age limit, and no farther in the
+future than `stamp_future_tolerance`.
+
 发布：
 
 | 话题 | 类型 | 用途 |

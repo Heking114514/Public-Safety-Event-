@@ -54,14 +54,21 @@ std::vector<std::string> glob_paths(const char * pattern)
   return paths;
 }
 
-std::string detect_serial_device()
+std::string detect_serial_device(bool allow_generic_devices)
 {
-  const char * patterns[] = {
-    "/dev/serial/by-id/*",
-    "/dev/ttyUSB*",
-    "/dev/ttyACM*",
-  };
+  const char * stable_pattern = "/dev/serial/by-id/*";
+  const auto stable_paths = glob_paths(stable_pattern);
+  if (stable_paths.size() == 1) {
+    return stable_paths.front();
+  }
+  if (stable_paths.size() > 1) {
+    return "";
+  }
+  if (!allow_generic_devices) {
+    return "";
+  }
 
+  const char * patterns[] = {"/dev/ttyUSB*", "/dev/ttyACM*"};
   for (const char * pattern : patterns) {
     const auto paths = glob_paths(pattern);
     if (!paths.empty()) {
@@ -160,6 +167,8 @@ public:
   : Node("cmd_vel_serial_node")
   {
     configured_device_ = declare_parameter<std::string>("device", "auto");
+    allow_generic_auto_device_ = declare_parameter<bool>(
+      "allow_generic_auto_device", false);
     baud_rate_ = declare_parameter<int>("baud_rate", 115200);
     topic_ = declare_parameter<std::string>("topic", "/cmd_vel_nav");
     rpy_topic_ = declare_parameter<std::string>("rpy_topic", "/imu/rpy");
@@ -233,11 +242,11 @@ public:
       });
 
     const auto period = std::chrono::duration<double>(1.0 / send_rate_hz_);
-    timer_ = create_wall_timer(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(period),
+    timer_ = rclcpp::create_timer(
+      this, get_clock(), rclcpp::Duration::from_seconds(period.count()),
       std::bind(&CmdVelSerialNode::send_command, this));
-    connectionHeartbeatTimer_ = create_wall_timer(
-      std::chrono::milliseconds(100),
+    connectionHeartbeatTimer_ = rclcpp::create_timer(
+      this, get_clock(), rclcpp::Duration::from_seconds(0.1),
       std::bind(&CmdVelSerialNode::publish_health_heartbeats, this));
 
     connect();
@@ -251,12 +260,13 @@ private:
   {
     last_connect_attempt_ = std::chrono::steady_clock::now();
     const std::string device = configured_device_ == "auto" ?
-      detect_serial_device() : configured_device_;
+      detect_serial_device(allow_generic_auto_device_) : configured_device_;
     if (device.empty()) {
       set_connected(false);
       RCLCPP_ERROR(
         get_logger(),
-        "No serial device found; searched /dev/serial/by-id, /dev/ttyUSB*, and /dev/ttyACM*");
+        "No uniquely identified serial device found; configure an explicit device "
+        "or set allow_generic_auto_device=true for legacy tty probing");
       return;
     }
 
@@ -591,6 +601,7 @@ private:
 
   std::string configured_device_;
   std::string active_device_;
+  bool allow_generic_auto_device_{false};
   std::string topic_;
   std::string rpy_topic_;
   std::string receive_buffer_;

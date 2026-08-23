@@ -112,6 +112,7 @@ waypoint_navigator:
     imu_timeout: 0.15
     fusion_status_timeout: 0.60
     actuator_health_timeout: 0.80
+    stamp_future_tolerance: 0.20
     transient_localization_grace: 2.00
     transient_fault_speed_scale: 0.25
     require_fusion_status: true

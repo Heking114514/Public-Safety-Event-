@@ -84,6 +84,35 @@ double vector_norm(const Vector3 & value)
     value[0] * value[0] + value[1] * value[1] + value[2] * value[2]);
 }
 
+bool finite_vector(const Vector3 & value)
+{
+  return std::all_of(value.begin(), value.end(), [](double item) {
+    return std::isfinite(item);
+  });
+}
+
+bool finite_matrix(const Matrix3 & value)
+{
+  return std::all_of(value.begin(), value.end(), [](double item) {
+    return std::isfinite(item);
+  });
+}
+
+bool accepted_imu_frame(
+  const std::string & frame, const std::string & expected_frame)
+{
+  if (frame.empty()) {
+    return false;
+  }
+  if (frame == expected_frame) {
+    return true;
+  }
+  constexpr char optical_suffix[] = "_optical_frame";
+  const std::size_t suffix_length = sizeof(optical_suffix) - 1;
+  return frame.size() >= suffix_length &&
+    frame.compare(frame.size() - suffix_length, suffix_length, optical_suffix) == 0;
+}
+
 class VectorMedianFilter
 {
 public:
@@ -293,6 +322,7 @@ public:
     filtered_imu_topic_ =
       declare_parameter<std::string>("filtered_imu_topic", "/imu/filtered");
     output_frame_ = declare_parameter<std::string>("output_frame", "camera_link");
+    input_frame_ = declare_parameter<std::string>("input_frame", "camera_link");
     correction_time_ = declare_positive("tilt_correction_time", 0.5);
     transform_optical_frame_ = declare_parameter<bool>("transform_optical_frame", true);
     use_yaw_reference_ = declare_parameter<bool>("use_yaw_reference", false);
@@ -349,8 +379,9 @@ public:
         tracking_topic_, sensor_qos,
         std::bind(&ImuRpyFilterNode::tracking_callback, this, std::placeholders::_1));
     }
-    diagnostic_timer_ = create_wall_timer(
-      std::chrono::milliseconds(500), [this]() {publish_diagnostics();});
+    diagnostic_timer_ = rclcpp::create_timer(
+      this, get_clock(), rclcpp::Duration::from_seconds(0.5),
+      [this]() {publish_diagnostics();});
 
     RCLCPP_INFO(
       get_logger(),
@@ -446,6 +477,7 @@ private:
 
   void imu_callback(const sensor_msgs::msg::Imu::SharedPtr message)
   {
+    const double stamp = rclcpp::Time(message->header.stamp).seconds();
     Vector3 gyro = {
       message->angular_velocity.x,
       message->angular_velocity.y,
@@ -457,10 +489,40 @@ private:
     Matrix3 gyro_covariance = message->angular_velocity_covariance;
     Matrix3 accel_covariance = message->linear_acceleration_covariance;
 
+    if (!std::isfinite(stamp) || stamp <= 0.0 ||
+      !accepted_imu_frame(message->header.frame_id, input_frame_) ||
+      !finite_vector(gyro) || !finite_vector(accel) ||
+      !finite_matrix(gyro_covariance) || !finite_matrix(accel_covariance))
+    {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Rejecting IMU with invalid timestamp, frame, value or covariance");
+      return;
+    }
+
+    if (initialized_) {
+      const double dt = stamp - last_stamp_;
+      if (!std::isfinite(dt) || dt <= 0.0 || dt > 0.1) {
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 2000,
+          "Rejecting IMU dt %.6f seconds without updating filter history", dt);
+        return;
+      }
+    }
+
     const bool input_is_optical = transform_optical_frame_ &&
       message->header.frame_id.size() >= 14 &&
       message->header.frame_id.compare(
       message->header.frame_id.size() - 14, 14, "_optical_frame") == 0;
+    const bool optical_frame = message->header.frame_id.size() >= 14 &&
+      message->header.frame_id.compare(
+      message->header.frame_id.size() - 14, 14, "_optical_frame") == 0;
+    if (optical_frame && !transform_optical_frame_) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Rejecting optical-frame IMU because transform_optical_frame is disabled");
+      return;
+    }
     if (input_is_optical) {
       gyro = optical_to_body(gyro);
       accel = optical_to_body(accel);
@@ -471,7 +533,6 @@ private:
     gyro = mean_gyro_.update(median_gyro_.update(gyro));
     accel = mean_accel_.update(median_accel_.update(accel));
 
-    const double stamp = rclcpp::Time(message->header.stamp).seconds();
     if (!initialized_) {
       gyro = low_pass_gyro_.update(gyro, 0.005);
       accel = low_pass_accel_.update(accel, 0.005);
@@ -487,12 +548,6 @@ private:
 
     const double dt = stamp - last_stamp_;
     last_stamp_ = stamp;
-    if (dt <= 0.0 || dt > 0.1) {
-      RCLCPP_WARN_THROTTLE(
-        get_logger(), *get_clock(), 2000, "Rejected IMU dt %.6f seconds", dt);
-      return;
-    }
-
     gyro = low_pass_gyro_.update(gyro, dt);
     accel = low_pass_accel_.update(accel, dt);
     const double accel_norm = vector_norm(accel);
@@ -727,6 +782,7 @@ private:
   std::string rpy_degrees_topic_;
   std::string filtered_imu_topic_;
   std::string output_frame_;
+  std::string input_frame_;
   std::string yaw_reference_topic_;
   std::string tracking_topic_;
   std::string command_topic_;

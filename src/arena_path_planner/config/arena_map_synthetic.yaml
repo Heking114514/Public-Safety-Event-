@@ -120,6 +120,7 @@ planning:
   curve_spacing_m: 0.025
   minimum_turning_radius_m: 0.22
   maximum_heading_step_deg: 8.0
+  in_place_turn_heading_threshold_deg: 10.3132
 
 topics:
   service: /arena_path_planner/plan

@@ -137,8 +137,8 @@ public:
       tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
     }
 
-    timer_ = create_wall_timer(
-      std::chrono::duration<double>(1.0 / publish_frequency_),
+    timer_ = rclcpp::create_timer(
+      this, get_clock(), rclcpp::Duration::from_seconds(1.0 / publish_frequency_),
       std::bind(&MapOdomCorrectionNode::publish, this));
     RCLCPP_INFO(
       get_logger(),

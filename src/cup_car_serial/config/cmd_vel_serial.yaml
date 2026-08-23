@@ -1,5 +1,8 @@
 cmd_vel_serial_node:
   ros__parameters:
+    # Auto mode accepts exactly one /dev/serial/by-id entry. Set true only
+    # when legacy ttyUSB/ttyACM probing is explicitly controlled.
+    allow_generic_auto_device: false
     # Encoder feedback is diagnostic-only and never enters localization fusion.
     tracking_command_deadband_mps: 0.08
     tracking_response_floor_mps: 0.03

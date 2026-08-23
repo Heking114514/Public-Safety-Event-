@@ -7,6 +7,7 @@ imu_rpy_filter:
     command_topic: /cmd_vel_nav
     wheel_topic: /wheel/odom
     output_frame: camera_link
+    input_frame: camera_link
     transform_optical_frame: true
 
     median_window: 5

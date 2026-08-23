@@ -71,6 +71,7 @@ def generate_launch_description():
             {
                 "map_frame_id": map_frame_id,
                 "body_frame_id": body_frame_id,
+                "imu_frame_id": "camera_link",
                 "publish_tf": ParameterValue(publish_tf, value_type=bool),
                 "odom_topic": ParameterValue(odom_topic, value_type=str),
                 "raw_odom_topic": ParameterValue(raw_odom_topic, value_type=str),

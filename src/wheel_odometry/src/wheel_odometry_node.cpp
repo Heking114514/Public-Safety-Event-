@@ -48,8 +48,8 @@ public:
       [this](const std_msgs::msg::Int32MultiArray::SharedPtr message) {
         encoder_callback(*message);
       });
-    diagnostic_timer_ = create_wall_timer(
-      std::chrono::duration<double>(diagnostic_period_s),
+    diagnostic_timer_ = rclcpp::create_timer(
+      this, get_clock(), rclcpp::Duration::from_seconds(diagnostic_period_s),
       [this]() {publish_diagnostics();});
 
     RCLCPP_INFO(

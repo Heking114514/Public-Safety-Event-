@@ -46,6 +46,7 @@ install(FILES README.md NAVIGATION_CODE_GUIDE.md
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  find_package(launch_testing_ament_cmake REQUIRED)
   ament_add_gtest(fusion_health_policy_test test/fusion_health_policy_test.cpp)
   target_include_directories(fusion_health_policy_test PRIVATE include)
   ament_add_gtest(actuator_health_policy_test test/actuator_health_policy_test.cpp)
@@ -60,6 +61,7 @@ if(BUILD_TESTING)
   target_include_directories(turn_progress_supervisor_test PRIVATE include)
   ament_add_gtest(navigation_supervisor_test test/navigation_supervisor_test.cpp)
   target_include_directories(navigation_supervisor_test PRIVATE include)
+  add_launch_test(test/waypoint_navigator_launch_test.py TIMEOUT 30)
 endif()
 
 ament_package()

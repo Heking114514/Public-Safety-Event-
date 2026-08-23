@@ -93,6 +93,31 @@ void SetCovarianceDiagonal(std::array<double, 36> &covariance, const std::vector
         covariance[index * 6 + index] = diagonal[index];
 }
 
+void SetScaledCovarianceDiagonal(
+    std::array<double, 36> &covariance, const std::vector<double> &diagonal,
+    double scale)
+{
+    SetCovarianceDiagonal(covariance, diagonal);
+    for (double &value : covariance)
+        value *= scale;
+}
+
+bool ValidImuSample(const sensor_msgs::msg::Imu & message, const std::string & expected_frame)
+{
+    const double stamp = Utility::StampToSec(message.header.stamp);
+    const bool frame_ok = message.header.frame_id == expected_frame ||
+        (message.header.frame_id.size() >= 14 &&
+        message.header.frame_id.compare(
+            message.header.frame_id.size() - 14, 14, "_optical_frame") == 0);
+    return std::isfinite(stamp) && stamp > 0.0 && frame_ok &&
+        std::isfinite(message.angular_velocity.x) &&
+        std::isfinite(message.angular_velocity.y) &&
+        std::isfinite(message.angular_velocity.z) &&
+        std::isfinite(message.linear_acceleration.x) &&
+        std::isfinite(message.linear_acceleration.y) &&
+        std::isfinite(message.linear_acceleration.z);
+}
+
 diagnostic_msgs::msg::KeyValue DiagnosticValue(const std::string &key, const std::string &value)
 {
     diagnostic_msgs::msg::KeyValue item;
@@ -118,6 +143,7 @@ StereoInertialNode::StereoInertialNode(
 
     mapFrameId_ = this->declare_parameter<std::string>("map_frame_id", "map");
     bodyFrameId_ = this->declare_parameter<std::string>("body_frame_id", "camera_link");
+    imuFrameId_ = this->declare_parameter<std::string>("imu_frame_id", bodyFrameId_);
     publishTf_ = this->declare_parameter<bool>("publish_tf", true);
     publishPath_ = this->declare_parameter<bool>("publish_path", true);
     saveTrajectory_ = this->declare_parameter<bool>("save_trajectory", true);
@@ -140,6 +166,8 @@ StereoInertialNode::StereoInertialNode(
         "twist_covariance_diagonal", {0.04, 0.04, 0.04, 0.1, 0.1, 0.1});
     unavailableTwistCovarianceDiagonal_ = this->declare_parameter<std::vector<double>>(
         "unavailable_twist_covariance_diagonal", {1.0e6, 1.0e6, 1.0e6, 1.0e6, 1.0e6, 1.0e6});
+    kltCovarianceScale_ = std::max(
+        1.0, this->declare_parameter<double>("klt_covariance_scale", 4.0));
 
     const std::string odomTopic = this->declare_parameter<std::string>(
         "odom_topic", "/odometry/visual_continuous");
@@ -262,6 +290,13 @@ void StereoInertialNode::StopProcessing()
 
 void StereoInertialNode::GrabImu(const ImuMsg::SharedPtr msg)
 {
+    if (!ValidImuSample(*msg, imuFrameId_))
+    {
+        RCLCPP_WARN_THROTTLE(
+            this->get_logger(), *this->get_clock(), 2000,
+            "Discarding IMU sample with invalid timestamp, frame or finite values");
+        return;
+    }
     const double timestamp = Utility::StampToSec(msg->header.stamp) + imuTimeOffset_;
     {
         std::lock_guard<std::mutex> lock(dataMutex_);
@@ -507,7 +542,9 @@ void StereoInertialNode::PublishPose(
     // once against the first body pose before labeling the result as ROS map.
     // The fixed origin intentionally does not move on tracking recovery.
     const Sophus::SE3f TrawMapBody = rawPoseOrigin_.Align(TworldBody);
-    PublishRawOdometry(TrawMapBody, msgLeft->header.stamp);
+    const double covarianceScale =
+        trackingState == ORB_SLAM3::Tracking::OK_KLT ? kltCovarianceScale_ : 1.0;
+    PublishRawOdometry(TrawMapBody, msgLeft->header.stamp, covarianceScale);
     const bool recoveredFromInterruption = poseContinuity_.RecoveryPending();
     const Sophus::SE3f TmapBody = poseContinuity_.Align(TworldBody);
     if (recoveredFromInterruption)
@@ -527,8 +564,10 @@ void StereoInertialNode::PublishPose(
     odometry.header = poseMessage.header;
     odometry.child_frame_id = bodyFrameId_;
     odometry.pose.pose = poseMessage.pose;
-    SetCovarianceDiagonal(odometry.pose.covariance, poseCovarianceDiagonal_);
-    SetCovarianceDiagonal(odometry.twist.covariance, twistCovarianceDiagonal_);
+    SetScaledCovarianceDiagonal(
+        odometry.pose.covariance, poseCovarianceDiagonal_, covarianceScale);
+    SetScaledCovarianceDiagonal(
+        odometry.twist.covariance, twistCovarianceDiagonal_, covarianceScale);
 
     if (lastPublishedPoseValid_ && timestamp > lastPublishedTimestamp_)
     {
@@ -572,7 +611,8 @@ void StereoInertialNode::PublishPose(
 
 void StereoInertialNode::PublishRawOdometry(
     const Sophus::SE3f &TrawMapBody,
-    const builtin_interfaces::msg::Time &stamp)
+    const builtin_interfaces::msg::Time &stamp,
+    double covarianceScale)
 {
     nav_msgs::msg::Odometry odometry;
     odometry.header.stamp = stamp;
@@ -581,7 +621,8 @@ void StereoInertialNode::PublishRawOdometry(
     // This topic is the fixed-origin planar observation consumed by the
     // navigation fusion layer. ORB keeps its full SE(3) map internally.
     odometry.pose.pose = PlanarPoseFromSE3(TrawMapBody);
-    SetCovarianceDiagonal(odometry.pose.covariance, poseCovarianceDiagonal_);
+    SetScaledCovarianceDiagonal(
+        odometry.pose.covariance, poseCovarianceDiagonal_, covarianceScale);
 
     const double timestamp = Utility::StampToSec(stamp);
     const orbslam3_ros2::PoseVelocity velocity = rawVelocityEstimator_.Observe(TrawMapBody, timestamp);
@@ -593,7 +634,8 @@ void StereoInertialNode::PublishRawOdometry(
         odometry.twist.twist.angular.x = velocity.angular.x();
         odometry.twist.twist.angular.y = velocity.angular.y();
         odometry.twist.twist.angular.z = velocity.angular.z();
-        SetCovarianceDiagonal(odometry.twist.covariance, twistCovarianceDiagonal_);
+        SetScaledCovarianceDiagonal(
+            odometry.twist.covariance, twistCovarianceDiagonal_, covarianceScale);
     }
     else
     {

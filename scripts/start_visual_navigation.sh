@@ -52,12 +52,15 @@ ROSBAG_TOPICS=(
   /fusion/input/imu
   /camera/camera/imu
   /imu/filtered
+  /imu/control
   /imu/rpy
   /tracking_state
   /odometry/fusion_status
   /cmd_vel_nav
   /waypoint_path
   /waypoint_navigation/route_input
+  /arena_path_planner/navigation_path
+  /waypoint_navigation/route_ack
   /waypoint_navigation/status
   /waypoint_navigation/current_waypoint
   /waypoint_navigation/motion_hold_state

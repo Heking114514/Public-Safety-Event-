@@ -68,6 +68,7 @@ struct PlannerConfig
   double curve_spacing{0.025};
   double minimum_turning_radius{0.22};
   double maximum_heading_step{0.14};
+  double in_place_turn_heading_threshold{0.18};
   std::string default_mode{"coverage"};
   Pose default_start;
   std::vector<Rectangle> free_regions;

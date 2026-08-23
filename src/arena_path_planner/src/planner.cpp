@@ -226,6 +226,10 @@ PlannerConfig ArenaPlanner::LoadConfig(const std::string & path)
   config.minimum_turning_radius = planning["minimum_turning_radius_m"].as<double>();
   config.maximum_heading_step =
     planning["maximum_heading_step_deg"].as<double>() * kPi / 180.0;
+  if (planning["in_place_turn_heading_threshold_deg"]) {
+    config.in_place_turn_heading_threshold =
+      planning["in_place_turn_heading_threshold_deg"].as<double>() * kPi / 180.0;
+  }
   const YAML::Node topics = root["topics"];
   ReadTopic(topics, "service", config.topics.service);
   ReadTopic(topics, "arena_path", config.topics.arena_path);

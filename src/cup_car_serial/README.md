@@ -60,6 +60,7 @@ CTL,time_ms,sample_sequence,mode,estop,rx_valid,rx_age_ms,rx_vx_mmps,rx_wz_mradp
 
 | 参数 | 默认值 | 含义 |
 |---|---:|---|
+| `allow_generic_auto_device` | `false` | `device=auto` 时是否允许无身份的 ttyUSB/ttyACM 探测；默认只接受唯一 `/dev/serial/by-id` 设备 |
 | `tracking_command_deadband_mps` | `0.08` | 启用单轮诊断的最低目标速度 |
 | `tracking_response_floor_mps` | `0.03` | 判定轮子无响应的实测速度上限 |
 | `tracking_severe_absolute_error_mps` | `0.15` | 严重误差绝对门槛 |

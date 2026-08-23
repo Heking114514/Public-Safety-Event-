@@ -15,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+#include "builtin_interfaces/msg/time.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/twist.hpp"
 #include "mission_control_interfaces/msg/motion_hold_state.hpp"
@@ -322,6 +323,8 @@ public:
       0.01, declare_parameter<double>("fusion_status_timeout", 0.60));
     actuatorHealthTimeout_ = std::max(
       0.01, declare_parameter<double>("actuator_health_timeout", 0.80));
+    stampFutureTolerance_ = std::max(
+      0.0, declare_parameter<double>("stamp_future_tolerance", 0.20));
     const double transientLocalizationGrace = std::max(
       0.0, declare_parameter<double>("transient_localization_grace", 2.00));
     const double transientFaultSpeedScale = Clamp(
@@ -414,8 +417,8 @@ public:
     }
 
     const auto period = std::chrono::duration<double>(1.0 / controlFrequency_);
-    controlTimer_ = create_wall_timer(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(period),
+    controlTimer_ = rclcpp::create_timer(
+      this, get_clock(), rclcpp::Duration::from_seconds(period.count()),
       std::bind(&WaypointNavigator::RunControl, this));
 
     if (autostart_ && routeLoaded_)
@@ -621,6 +624,9 @@ private:
 
   void HandleOdometry(const nav_msgs::msg::Odometry::SharedPtr message)
   {
+    if (!AcceptMeasurementStamp(
+        message->header.stamp, lastOdomStamp_, odomStampValid_, odomTimeout_, "odometry"))
+      return;
     currentOdomFrameValid_ = message->header.frame_id.empty() ||
       message->header.frame_id == routeFrame_;
     currentOdomPoseValid_ =
@@ -664,6 +670,9 @@ private:
 
   void HandleImu(const sensor_msgs::msg::Imu::SharedPtr message)
   {
+    if (!AcceptMeasurementStamp(
+        message->header.stamp, lastImuStamp_, imuStampValid_, imuTimeout_, "IMU"))
+      return;
     if (!std::isfinite(message->angular_velocity.z))
       return;
     imuYawRate_ = message->angular_velocity.z;
@@ -942,6 +951,39 @@ private:
   bool ImuYawRateIsFresh() const
   {
     return hasImu_ && (now() - lastImuArrival_).seconds() <= imuTimeout_;
+  }
+
+  bool AcceptMeasurementStamp(
+    const builtin_interfaces::msg::Time & stamp_message,
+    rclcpp::Time & last_stamp, bool & stamp_valid, double max_age,
+    const char * source)
+  {
+    const rclcpp::Time stamp(stamp_message);
+    if (stamp.nanoseconds() <= 0) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Rejecting %s measurement with an unset timestamp", source);
+      return false;
+    }
+    if (stamp_valid && stamp <= last_stamp) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Rejecting non-monotonic %s timestamp", source);
+      return false;
+    }
+    const rclcpp::Time current = now();
+    if (current.nanoseconds() > 0) {
+      const double age = (current - stamp).seconds();
+      if (age > max_age || age < -stampFutureTolerance_) {
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 2000,
+          "Rejecting %s timestamp with age %.3fs", source, age);
+        return false;
+      }
+    }
+    last_stamp = stamp;
+    stamp_valid = true;
+    return true;
   }
 
   double ControlYawRate() const
@@ -1956,6 +1998,7 @@ private:
   double imuTimeout_{0.15};
   double fusionStatusTimeout_{0.60};
   double actuatorHealthTimeout_{0.80};
+  double stampFutureTolerance_{0.20};
   bool requireFusionStatus_{true};
   bool requireActuatorHealth_{false};
   bool requireTrackingState_{false};
@@ -2019,6 +2062,10 @@ private:
   rclcpp::Time lastImuArrival_{0, 0, RCL_ROS_TIME};
   rclcpp::Time lastFusionStatusArrival_{0, 0, RCL_ROS_TIME};
   rclcpp::Time lastActuatorHealthArrival_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time lastOdomStamp_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time lastImuStamp_{0, 0, RCL_ROS_TIME};
+  bool odomStampValid_{false};
+  bool imuStampValid_{false};
   rclcpp::Time waitUntil_{0, 0, RCL_ROS_TIME};
   rclcpp::Time motionHoldStartedAt_{0, 0, RCL_ROS_TIME};
   std::chrono::steady_clock::time_point lastPathPidTime_{};
