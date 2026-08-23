@@ -4,13 +4,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
-#include <fstream>
 #include <functional>
 #include <limits>
 #include <map>
 #include <memory>
-#include <sstream>
-#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -35,6 +32,7 @@
 #include "visual_navigation/path_control.hpp"
 #include "visual_navigation/path_progress_supervisor.hpp"
 #include "visual_navigation/rate_limiter.hpp"
+#include "visual_navigation/route_manager.hpp"
 #include "visual_navigation/turn_progress_supervisor.hpp"
 
 namespace
@@ -108,24 +106,6 @@ std::string Trim(const std::string &text)
   return text.substr(first, last - first + 1);
 }
 
-std::vector<std::string> SplitCsv(const std::string &line)
-{
-  std::vector<std::string> fields;
-  std::stringstream stream(line);
-  std::string field;
-  while (std::getline(stream, field, ','))
-    fields.push_back(Trim(field));
-  return fields;
-}
-
-bool LooksLikeHeader(const std::vector<std::string> &fields)
-{
-  if (fields.empty())
-    return false;
-  std::string firstField = fields.front();
-  std::transform(firstField.begin(), firstField.end(), firstField.begin(), ::tolower);
-  return firstField == "x" || firstField == "x[m]" || firstField == "x_m";
-}
 }
 
 class WaypointNavigator : public rclcpp::Node
@@ -446,15 +426,7 @@ public:
   }
 
 private:
-  struct Waypoint
-  {
-    double x{0.0};
-    double y{0.0};
-    double yaw{std::numeric_limits<double>::quiet_NaN()};
-    double speed{0.0};
-    double tolerance{0.0};
-    double stopTime{0.0};
-  };
+  using Waypoint = visual_navigation::RouteWaypoint;
 
   struct PositionSample
   {
@@ -470,100 +442,17 @@ private:
     COMPLETE
   };
 
-  static bool RoutesEquivalent(
-    const std::vector<Waypoint> &left, const std::vector<Waypoint> &right)
-  {
-    if (left.size() != right.size())
-      return false;
-
-    // Route publishers commonly reconstruct poses from grid/canvas coordinates.
-    // Treat sub-millimetre and sub-milliradian serialization noise as the same
-    // route so a latched route update cannot reset an active mission to index 0.
-    constexpr double kPositionTolerance = 1e-4;
-    constexpr double kYawTolerance = 1e-3;
-    for (std::size_t index = 0; index < left.size(); ++index)
-    {
-      const bool leftYawFinite = std::isfinite(left[index].yaw);
-      const bool rightYawFinite = std::isfinite(right[index].yaw);
-      if (std::abs(left[index].x - right[index].x) > kPositionTolerance ||
-        std::abs(left[index].y - right[index].y) > kPositionTolerance ||
-        leftYawFinite != rightYawFinite ||
-        (leftYawFinite &&
-        std::abs(NormalizeAngle(left[index].yaw - right[index].yaw)) > kYawTolerance))
-      {
-        return false;
-      }
-    }
-    return true;
-  }
-
   bool LoadRoute(const std::string &routeFile)
   {
-    if (routeFile.empty())
-    {
-      RCLCPP_INFO(get_logger(), "No startup route configured; waiting for a dynamic route");
-      return false;
-    }
-
-    std::ifstream input(routeFile);
-    if (!input.is_open())
-    {
-      RCLCPP_ERROR(get_logger(), "Cannot open waypoint file: %s", routeFile.c_str());
-      return false;
-    }
-
     std::vector<Waypoint> loadedWaypoints;
-    std::string line;
-    std::size_t lineNumber = 0;
-    while (std::getline(input, line))
+    std::string error;
+    if (!visual_navigation::RouteManager::LoadCsv(
+        routeFile, defaultSpeed_, waypointTolerance_, loadedWaypoints, error))
     {
-      ++lineNumber;
-      const std::size_t commentPosition = line.find('#');
-      if (commentPosition != std::string::npos)
-        line = line.substr(0, commentPosition);
-      line = Trim(line);
-      if (line.empty())
-        continue;
-
-      const std::vector<std::string> fields = SplitCsv(line);
-      if (LooksLikeHeader(fields))
-        continue;
-      if (fields.size() < 2)
-      {
-        RCLCPP_ERROR(
-          get_logger(), "Waypoint line %zu requires at least x,y", lineNumber);
-        return false;
-      }
-
-      try
-      {
-        Waypoint waypoint;
-        waypoint.x = std::stod(fields[0]);
-        waypoint.y = std::stod(fields[1]);
-        if (fields.size() > 2 && !fields[2].empty())
-          waypoint.yaw = std::stod(fields[2]);
-        waypoint.speed = fields.size() > 3 && !fields[3].empty()
-          ? std::stod(fields[3]) : defaultSpeed_;
-        waypoint.tolerance = fields.size() > 4 && !fields[4].empty()
-          ? std::stod(fields[4]) : waypointTolerance_;
-        waypoint.stopTime = fields.size() > 5 && !fields[5].empty()
-          ? std::stod(fields[5]) : 0.0;
-
-        if (waypoint.speed < 0.0 || waypoint.tolerance <= 0.0 || waypoint.stopTime < 0.0)
-          throw std::runtime_error("speed, tolerance or stop_time is outside its valid range");
-        loadedWaypoints.push_back(waypoint);
-      }
-      catch (const std::exception &exception)
-      {
-        RCLCPP_ERROR(
-          get_logger(), "Invalid waypoint at line %zu: %s", lineNumber, exception.what());
-        return false;
-      }
-    }
-
-    if (loadedWaypoints.empty())
-    {
-      RCLCPP_ERROR(get_logger(), "Waypoint file contains no valid waypoints");
+      if (routeFile.empty())
+        RCLCPP_INFO(get_logger(), "%s; waiting for a dynamic route", error.c_str());
+      else
+        RCLCPP_ERROR(get_logger(), "%s", error.c_str());
       return false;
     }
 
@@ -741,11 +630,11 @@ private:
       waypoint.yaw = YawFromValidQuaternion(pose.orientation);
       waypoint.speed = defaultSpeed_;
       waypoint.tolerance = waypointTolerance_;
-      waypoint.stopTime = 0.0;
+      waypoint.stop_time = 0.0;
       loadedWaypoints.push_back(waypoint);
     }
 
-    if (routeLoaded_ && RoutesEquivalent(waypoints_, loadedWaypoints))
+    if (routeLoaded_ && visual_navigation::RouteManager::Equivalent(waypoints_, loadedWaypoints))
     {
       // Re-publish the accepted path so the editor receives its acknowledgement,
       // but never reset a route that is already running. After a latched fault,
@@ -1115,7 +1004,7 @@ private:
       pathSegmentStartX_, pathSegmentStartY_, target.x, target.y,
       currentX_, currentY_);
     const bool waypointRequiresStop = WaypointRequiresStop(pathHeading, finalWaypoint) ||
-      target.stopTime > 0.0;
+      target.stop_time > 0.0;
     const bool continuousWaypointPassed =
       !finalPositionRecoveryActive_ &&
       visual_navigation::ContinuousPathWaypointPassed(
@@ -1169,9 +1058,9 @@ private:
       waypointSpeedSettleTimerInitialized_ = false;
       if (!finalWaypoint)
       {
-        if (target.stopTime > 0.0)
+        if (target.stop_time > 0.0)
         {
-          waitUntil_ = now() + rclcpp::Duration::from_seconds(target.stopTime);
+          waitUntil_ = now() + rclcpp::Duration::from_seconds(target.stop_time);
           waitAction_ = WaitAction::ADVANCE;
           SetState("WAITING_AT_WAYPOINT");
           return;
@@ -1297,9 +1186,9 @@ private:
         return;
       }
 
-      if (target.stopTime > 0.0)
+      if (target.stop_time > 0.0)
       {
-        waitUntil_ = now() + rclcpp::Duration::from_seconds(target.stopTime);
+        waitUntil_ = now() + rclcpp::Duration::from_seconds(target.stop_time);
         waitAction_ = WaitAction::COMPLETE;
         PublishStop();
         SetState("WAITING_AT_WAYPOINT");

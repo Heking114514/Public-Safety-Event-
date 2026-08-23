@@ -23,6 +23,7 @@
 
 #include "fused_odometry/fusion_health.hpp"
 #include "fused_odometry/fusion_logic.hpp"
+#include "fused_odometry/sensor_input_validation.hpp"
 
 namespace fused_odometry
 {
@@ -284,18 +285,19 @@ private:
     const char * source)
   {
     const rclcpp::Time stamp(stamp_message);
-    if (stamp.nanoseconds() <= 0 || (stamp_valid && stamp <= last_stamp)) {
-      return false;
-    }
     const rclcpp::Time current = now();
-    if (current.nanoseconds() > 0) {
-      const double age = (current - stamp).seconds();
-      if (age > max_age || age < -stamp_future_tolerance_) {
+    const auto result = ValidateMeasurementStamp(
+      stamp.nanoseconds(), stamp_valid, last_stamp.nanoseconds(), current.nanoseconds(),
+      max_age, stamp_future_tolerance_);
+    if (result != StampValidation::kAccepted) {
+      if (current.nanoseconds() > 0 && stamp.nanoseconds() > 0) {
+        const double age = (current - stamp).seconds();
         RCLCPP_WARN_THROTTLE(
           get_logger(), *get_clock(), 2000,
-          "Rejecting %s measurement with age %.3fs", source, age);
-        return false;
+          "Rejecting %s measurement with age %.3fs (validation=%d)",
+          source, age, static_cast<int>(result));
       }
+      return false;
     }
     last_stamp = stamp;
     stamp_valid = true;

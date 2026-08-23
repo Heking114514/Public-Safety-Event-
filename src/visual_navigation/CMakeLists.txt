@@ -61,6 +61,8 @@ if(BUILD_TESTING)
   target_include_directories(turn_progress_supervisor_test PRIVATE include)
   ament_add_gtest(navigation_supervisor_test test/navigation_supervisor_test.cpp)
   target_include_directories(navigation_supervisor_test PRIVATE include)
+  ament_add_gtest(route_manager_test test/route_manager_test.cpp)
+  target_include_directories(route_manager_test PRIVATE include)
   add_launch_test(test/waypoint_navigator_launch_test.py TIMEOUT 30)
 endif()
 
