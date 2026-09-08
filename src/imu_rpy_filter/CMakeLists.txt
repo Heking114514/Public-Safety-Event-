@@ -17,7 +17,16 @@ find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 
-add_executable(imu_rpy_filter_node src/imu_rpy_filter_node.cpp)
+# Group the node by its actual responsibilities: initialization, sensor input,
+# filter updates and corrections, output publishing, and diagnostics.
+add_executable(imu_rpy_filter_node
+  src/imu_rpy_filter_node.cpp
+  src/node_init.cpp
+  src/inputs.cpp
+  src/update.cpp
+  src/corrections.cpp
+  src/output.cpp
+  src/diagnostics.cpp)
 target_include_directories(imu_rpy_filter_node PRIVATE include)
 ament_target_dependencies(
   imu_rpy_filter_node

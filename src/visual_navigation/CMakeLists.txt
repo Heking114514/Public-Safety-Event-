@@ -18,7 +18,19 @@ find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(mission_control_interfaces REQUIRED)
 
-add_executable(waypoint_navigator src/waypoint_navigator.cpp)
+# waypoint_navigator.cpp composes focused navigation members from src/;
+# the ROS-facing node name and interfaces are unchanged.
+add_executable(waypoint_navigator
+  src/waypoint_navigator.cpp
+  src/node_init.cpp
+  src/route.cpp
+  src/runtime.cpp
+  src/control.cpp
+  src/maneuvers.cpp
+  src/path_following.cpp
+  src/progress.cpp
+  src/navigation.cpp
+  src/output.cpp)
 target_include_directories(waypoint_navigator PRIVATE include)
 ament_target_dependencies(
   waypoint_navigator
@@ -34,7 +46,7 @@ ament_target_dependencies(
 install(TARGETS waypoint_navigator
   DESTINATION lib/${PROJECT_NAME})
 
-install(PROGRAMS ${CMAKE_CURRENT_SOURCE_DIR}/../../route_editor.py
+install(PROGRAMS scripts/route_editor.py
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY config launch routes
@@ -67,14 +79,17 @@ if(BUILD_TESTING)
   ament_add_gtest(navigation_input_cache_test test/navigation_input_cache_test.cpp)
   target_include_directories(navigation_input_cache_test PRIVATE include)
   ament_target_dependencies(navigation_input_cache_test rclcpp)
+  ament_add_gtest(odometry_input_validation_test test/odometry_input_validation_test.cpp)
+  target_include_directories(odometry_input_validation_test PRIVATE include)
+  ament_target_dependencies(odometry_input_validation_test nav_msgs)
   ament_add_gtest(path_tracking_controller_test test/path_tracking_controller_test.cpp)
   target_include_directories(path_tracking_controller_test PRIVATE include)
   ament_add_gtest(waypoint_brake_controller_test test/waypoint_brake_controller_test.cpp)
   target_include_directories(waypoint_brake_controller_test PRIVATE include)
   ament_add_gtest(turn_settle_controller_test test/turn_settle_controller_test.cpp)
   target_include_directories(turn_settle_controller_test PRIVATE include)
-  ament_add_gtest(navigation_turn_state_test test/navigation_turn_state_test.cpp)
-  target_include_directories(navigation_turn_state_test PRIVATE include)
+  ament_add_gtest(control_state_test test/control_state_test.cpp)
+  target_include_directories(control_state_test PRIVATE include)
   add_launch_test(test/waypoint_navigator_launch_test.py TIMEOUT 30)
 endif()
 

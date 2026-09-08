@@ -189,4 +189,66 @@ TEST(PathProgressSupervisor, AlternatingTurnAndDriveStillTriggers)
     PathProgressAction::RECOVER);
 }
 
+TEST(PathProgressSupervisor, CommandedMotionWithNoTranslationRecoversThenFaults)
+{
+  PathProgressSupervisor supervisor({10.0, 0.05, 0.25, 2, 0.08, 0.02, 3.0, 0.05});
+  const auto start = PathProgressSupervisor::TimePoint{};
+
+  // A stuck chassis never reaches the ordinary 0.25 m displacement gate, but
+  // the independent command/no-motion dwell still gets two recovery chances.
+  supervisor.Evaluate(3, 0.0, 0.0, 0.0, true, start, 0.10, 0.0, true);
+  EXPECT_EQ(
+      supervisor.Evaluate(3, 0.0, 0.0, 0.0, true,
+                          start + std::chrono::milliseconds(2990),
+                          0.10, 0.0, true)
+          .action,
+      PathProgressAction::MONITORING);
+  auto decision = supervisor.Evaluate(
+      3, 0.0, 0.0, 0.0, true, start + std::chrono::seconds(3), 0.10, 0.0,
+      true);
+  EXPECT_EQ(decision.action, PathProgressAction::RECOVER);
+  EXPECT_EQ(decision.recovery_attempt, 1);
+
+  supervisor.Evaluate(3, 0.0, 0.0, 0.0, true,
+                      start + std::chrono::seconds(4), 0.10, 0.0, true);
+  decision = supervisor.Evaluate(3, 0.0, 0.0, 0.0, true,
+                                 start + std::chrono::seconds(7), 0.10, 0.0,
+                                 true);
+  EXPECT_EQ(decision.action, PathProgressAction::RECOVER);
+  EXPECT_EQ(decision.recovery_attempt, 2);
+
+  supervisor.Evaluate(3, 0.0, 0.0, 0.0, true,
+                      start + std::chrono::seconds(8), 0.10, 0.0, true);
+  decision = supervisor.Evaluate(3, 0.0, 0.0, 0.0, true,
+                                 start + std::chrono::seconds(11), 0.10, 0.0,
+                                 true);
+  EXPECT_EQ(decision.action, PathProgressAction::FAULT);
+}
+
+TEST(PathProgressSupervisor, InPlaceTurnDoesNotUseLinearNoMotionRule)
+{
+  PathProgressSupervisor supervisor({1.0, 0.05, 0.25, 2, 0.08, 0.02, 3.0, 0.05});
+  const auto start = PathProgressSupervisor::TimePoint{};
+  supervisor.Evaluate(3, 0.0, 0.0, 0.0, true, start, 0.08, 0.0, true,
+                      false);
+  EXPECT_EQ(
+      supervisor.Evaluate(3, 0.0, 0.0, 0.0, true,
+                          start + std::chrono::seconds(30), 0.08, 0.0, true,
+                          false)
+          .action,
+      PathProgressAction::MONITORING);
+}
+
+TEST(PathProgressSupervisor, SmallMeasuredMotionKeepsNoMotionTimerFromFiring)
+{
+  PathProgressSupervisor supervisor({1.0, 0.05, 0.25, 2, 0.08, 0.02, 3.0, 0.05});
+  const auto start = PathProgressSupervisor::TimePoint{};
+  supervisor.Evaluate(3, 0.0, 0.0, 0.0, true, start, 0.10, 0.03, true);
+  EXPECT_EQ(
+      supervisor.Evaluate(3, 0.0, 0.06, 0.0, true,
+                          start + std::chrono::seconds(4), 0.10, 0.03, true)
+          .action,
+      PathProgressAction::MONITORING);
+}
+
 }  // namespace

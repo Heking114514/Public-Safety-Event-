@@ -52,6 +52,9 @@ TEST(FusionHealthPolicy, UnknownAndDisallowedStatesStop)
 {
   EXPECT_FALSE(kPolicy.Evaluate("DEGRADED_WHEEL_ONLY").allowed);
   EXPECT_FALSE(kPolicy.Evaluate("UNKNOWN").allowed);
+  const auto initializing = kPolicy.Evaluate("WAITING_FOR_INITIALIZATION");
+  EXPECT_FALSE(initializing.allowed);
+  EXPECT_FALSE(initializing.fault);
 }
 
 TEST(FusionHealthPolicy, FaultCannotBeAllowedByConfiguration)

@@ -28,9 +28,12 @@ Outputs:
   `odom`, driven by gated visual forward velocity and IMU yaw rate.
 - `/odometry/fused` (`nav_msgs/Odometry`): smoothed map-frame pose used by the
   existing navigator and route editor.
-- `/odometry/fusion_status` (`std_msgs/String`, transient local): `FULL`,
-  `DEGRADED_NO_VISION`, `DEGRADED_NO_IMU`, `DEGRADED_WHEEL_ONLY`,
-  `DEGRADED_VISUAL_REALIGNED`, `FAULT_STALLED`, or `FAULT`.
+- `/odometry/fusion_status` (`std_msgs/String`, transient local):
+  `WAITING_FOR_INITIALIZATION`, `FULL`,
+  `DEGRADED_NO_VISION`, `DEGRADED_NO_IMU`, `DEGRADED_NO_WHEEL`,
+  `DEGRADED_VISION_ONLY`, `DEGRADED_WHEEL_ONLY`,
+  `DEGRADED_VISUAL_REALIGNED`, `FAULT_STALLED`, `FAULT_INIT_TIMEOUT`, or
+  `FAULT`.
 - `/diagnostics`: freshness, residuals, rejection counters and dead-reckoning limits.
 - `/imu/control` (`sensor_msgs/Imu`): gate-validated, base-link-frame yaw rate
   after the bounded visual-reference bias correction. This is the single IMU
@@ -50,9 +53,10 @@ external IMU filter to keep the D455 IMU in one estimator path.
 include both the local odometry covariance and the accepted visual correction
 covariance; the local covariance is not relabeled as global covariance.
 
-Optional turn-position holding is additionally released if local odometry
-measures more than `turn_hold_max_translation_m` of translation, so a mistaken
-in-place command cannot erase real chassis motion.
+Optional turn-position holding is disabled by default (`hold_global_xy_during_turn:
+false`). When enabled, it is released if local odometry measures more than
+`turn_hold_max_translation_m` of translation, so a mistaken in-place command
+cannot silently erase real chassis motion.
 
 The map correction node pairs visual poses with local EKF poses at the visual
 measurement timestamp. Timestamps between two retained local samples use SE(2)
@@ -74,8 +78,10 @@ global vision-health decision.
 velocity and IMU yaw rate. Encoder odometry never modifies this state. A separate
 correction node combines gated ORB pose with the local
 estimate to publish `map -> odom` and `/odometry/fused`. Normal visual drift is
-corrected with a 0.75-second time constant; a verified ORB map change uses a
-1.25-second time constant so PID control never receives a loop-closure jump.
+corrected with the configured 0.15-second time constant; when a verified ORB
+map change is active, the correction uses 1.25 seconds so PID control never
+receives a loop-closure jump. Stationary correction and visual recovery use
+their separate configured time constants.
 The gate independently validates
 finite values, expected frames, monotonic timestamps and source freshness. It
 uses median/MAD residual windows, recovery hysteresis, and adaptive measurement
@@ -110,6 +116,12 @@ short prediction continues from the last accepted visual velocity while IMU `wz`
 keeps angular motion live. Validated wheel speed only measures the outage-distance
 budget and participates in health checks. Navigation applies a reduced speed until
 vision returns, and the configured time/distance limits bound this open-loop period.
+
+At startup the gate publishes `WAITING_FOR_INITIALIZATION` while ORB warms up
+and accumulates coherent visual increments. This state commands zero velocity
+but is not a latched fault. If no visual initialization arrives within
+`initialization_timeout_s` (10 s by default), the status becomes
+`FAULT_INIT_TIMEOUT`; navigation can then latch it for manual recovery.
 
 Wheel yaw validation requires sustained agreement with IMU during actual
 rotation; stationary zero-rate agreement cannot validate it. Because the latest
@@ -160,8 +172,9 @@ different questions and use different trustworthy sensors.
 
 ## Start
 
-First start ORB with body frame `base_link`, the IMU filter, and wheel odometry
-in `base_link`, with their live TF outputs disabled. Then run:
+First start ORB with body frame `base_link`, and start the external IMU filter and
+wheel odometry when those inputs are selected, with their live TF outputs
+disabled. Then run:
 
 ```bash
 source /opt/ros/humble/setup.bash

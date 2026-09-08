@@ -59,3 +59,8 @@ def test_control_imu_is_single_corrected_feedback_topic():
     assert gate["imu_topic"] == "/imu/filtered"
     assert gate["imu_output_topic"] == CONTROL_IMU_TOPIC
     assert ekf["imu0"] == CONTROL_IMU_TOPIC
+
+
+def test_visual_correction_does_not_bypass_smoothing_by_default():
+    parameters = load_parameters("map_odom_correction")
+    assert parameters["direct_visual_tracking"] is False

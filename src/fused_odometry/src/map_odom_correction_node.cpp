@@ -93,7 +93,12 @@ public:
     initial_map_y_ = declare_parameter<double>("initial_map_y", 0.0);
     initial_map_yaw_ = declare_parameter<double>("initial_map_yaw", 0.0);
     publish_tf_ = declare_parameter<bool>("publish_tf", true);
-    direct_visual_tracking_ = declare_parameter<bool>("direct_visual_tracking", true);
+    const bool deprecated_direct_visual_tracking =
+      declare_parameter<bool>("direct_visual_tracking", false);
+    if (deprecated_direct_visual_tracking) {
+      RCLCPP_WARN(
+        get_logger(), "direct_visual_tracking is deprecated; visual corrections remain smoothed");
+    }
     visual_recovery_gap_ = positive("visual_recovery_gap_s", 0.10);
     visual_recovery_time_constant_ = positive(
       "visual_recovery_time_constant_s", 0.25);
@@ -446,23 +451,18 @@ private:
         latest_command_linear_, latest_command_angular_, command_fresh,
         stationary_max_linear_speed_, stationary_max_angular_speed_);
       const bool recovery_blend = current_time <= visual_recovery_blend_until_;
-      if (direct_visual_tracking_ && !recovery_blend &&
-        current_time > map_change_active_until_)
-      {
-        // While vision is continuous, publish the aligned ORB pose directly.
-        // Wheel/IMU local odometry is retained only to bridge visual gaps.
-        map_from_odom_ = desired_map_from_odom_;
-      } else {
-        double time_constant = recovery_blend ?
-          visual_recovery_time_constant_ : (command_stationary ?
-          stationary_correction_time_constant_ : correction_time_constant_);
-        if (current_time <= map_change_active_until_) {
-          time_constant = loop_correction_time_constant_;
-        }
-        const double fraction = 1.0 - std::exp(-elapsed / time_constant);
-        map_from_odom_ = fused_odometry::interpolate_pose(
-          map_from_odom_, desired_map_from_odom_, fraction);
+      // Never publish raw visual corrections directly. Even in the legacy
+      // direct_visual_tracking mode, interpolate the map correction so
+      // keyframe and feature-tracking jitter cannot pass into fused odometry.
+      double time_constant = recovery_blend ?
+        visual_recovery_time_constant_ : (command_stationary ?
+        stationary_correction_time_constant_ : correction_time_constant_);
+      if (current_time <= map_change_active_until_) {
+        time_constant = loop_correction_time_constant_;
       }
+      const double fraction = 1.0 - std::exp(-elapsed / time_constant);
+      map_from_odom_ = fused_odometry::interpolate_pose(
+        map_from_odom_, desired_map_from_odom_, fraction);
     }
     last_update_at_ = current_time;
 
@@ -518,7 +518,6 @@ private:
   std::string odom_frame_;
   std::string base_frame_;
   bool publish_tf_{true};
-  bool direct_visual_tracking_{true};
   bool hold_global_xy_during_turn_{false};
   double publish_frequency_{30.0};
   double visual_recovery_gap_{0.10};

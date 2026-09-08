@@ -18,7 +18,14 @@ public:
     timer_initialized_ = false;
   }
 
-  void begin_settling() {settling_ = true; timer_initialized_ = false;}
+  void begin_settling()
+  {
+    // Keep the current dwell window when the control loop calls this repeatedly.
+    if (!settling_) {
+      settling_ = true;
+      timer_initialized_ = false;
+    }
+  }
   bool settling() const {return settling_;}
 
   void reset_timer() {timer_initialized_ = false;}

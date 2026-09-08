@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cmath>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <string>
 
@@ -138,6 +139,46 @@ TEST(ArenaPlanner, SupportsNumberedAndDynamicStartPlans)
   EXPECT_NEAR(result.points.back().x, start.position.x, 1.0e-9);
 }
 
+TEST(ArenaPlanner, UsesBoundedFallbackForMoreThanSixteenTargets)
+{
+  PlannerConfig config;
+  config.width = 2.0;
+  config.height = 2.0;
+  config.resolution = 0.05;
+  config.free_regions.push_back({0.0, 0.0, 2.0, 2.0});
+  config.inflation_radius = 0.0;
+  config.preferred_clearance = 0.0;
+  config.clearance_cost_weight = 0.0;
+  config.vehicle_length = 0.0;
+  config.vehicle_width = 0.0;
+  config.task_tolerance = 0.08;
+  config.waypoint_spacing = 0.20;
+  config.curve_spacing = 0.025;
+  config.minimum_turning_radius = 0.08;
+  config.maximum_heading_step = 0.30;
+
+  std::vector<Point> targets;
+  std::vector<std::string> labels;
+  for (int index = 0; index < 17; ++index) {
+    targets.push_back(
+      {0.20 + 0.20 * static_cast<double>(index % 9),
+        0.20 + 0.40 * static_cast<double>(index / 9)});
+    labels.push_back("target_" + std::to_string(index + 1));
+  }
+
+  const ArenaPlanner planner(config);
+  const PlanResult result = planner.Plan(
+    {{0.10, 0.10}, 0.0}, targets, labels, "shortest");
+  ASSERT_TRUE(result.success) << result.message;
+  EXPECT_TRUE(result.all_targets_reached);
+  EXPECT_TRUE(result.deferred_targets.empty());
+  for (const std::string & label : labels) {
+    EXPECT_NE(
+      std::find(result.visit_order.begin(), result.visit_order.end(), label),
+      result.visit_order.end());
+  }
+}
+
 TEST(ArenaPlanner, RejectsOccupiedStart)
 {
   const PlannerConfig config = ArenaPlanner::LoadConfig(ConfigPath());
@@ -147,6 +188,35 @@ TEST(ArenaPlanner, RejectsOccupiedStart)
     start, config.default_targets, config.default_labels, "shortest");
   EXPECT_FALSE(result.success);
   EXPECT_NE(result.message.find("start"), std::string::npos);
+}
+
+TEST(ArenaPlanner, RejectsNonFiniteAndExtremePlanningCoordinates)
+{
+  const PlannerConfig config = ArenaPlanner::LoadConfig(ConfigPath());
+  const ArenaPlanner planner(config);
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double infinity = std::numeric_limits<double>::infinity();
+
+  EXPECT_FALSE(planner.Plan(
+    {{nan, config.default_start.position.y}, 0.0}, config.default_targets,
+    config.default_labels, "shortest").success);
+  EXPECT_FALSE(planner.Plan(
+    config.default_start, {{infinity, 1.0}}, {"bad"}, "shortest").success);
+  EXPECT_FALSE(planner.IsFree({1.0e300, 1.0e300}));
+  EXPECT_FALSE(planner.SegmentIsFree({-1.0e300, 0.0}, {1.0e300, 0.0}));
+}
+
+TEST(ArenaPlanner, RejectsNonFiniteConfigurationBeforeBuildingGrid)
+{
+  PlannerConfig config;
+  config.width = std::numeric_limits<double>::quiet_NaN();
+  config.height = 1.0;
+  config.resolution = 0.05;
+  EXPECT_THROW((void)ArenaPlanner{config}, std::invalid_argument);
+
+  config.width = 1.0;
+  config.waypoint_spacing = std::numeric_limits<double>::infinity();
+  EXPECT_THROW((void)ArenaPlanner{config}, std::invalid_argument);
 }
 
 TEST(ArenaPlanner, DefersBlockedTargetsAndKeepsPlanningReachableOnes)
@@ -185,21 +255,48 @@ TEST(ArenaPlanner, RejectsSyntheticMapThatCannotFitVehicle)
   EXPECT_NE(result.message.find("start"), std::string::npos);
 }
 
-TEST(ArenaPlanner, PartialPlanCannotBeActivated)
+TEST(ArenaPlanner, SafePartialPlanCanBeActivatedWithoutClaimingCompletion)
 {
+  const Pose start{{0.0, 0.0}, 0.0};
+  const Pose home = start;
+  const std::vector<std::string> remaining{"new-target"};
   PlanResult partial;
   partial.success = true;
   partial.all_targets_reached = false;
   partial.deferred_targets = {"blocked-target"};
-  EXPECT_FALSE(ActivationAllowed(true, partial));
-  EXPECT_FALSE(ActivationAllowed(false, partial));
+  partial.points = {{0.0, 0.0}, {0.5, 0.0}};
+  partial.headings = {0.0, 0.0};
+  partial.visit_order = {"new-target"};
+  EXPECT_TRUE(ActivationAllowed(true, partial, start, home, {}, remaining));
+  EXPECT_FALSE(partial.all_targets_reached);
+  EXPECT_FALSE(ActivationAllowed(false, partial, start, home, {}, remaining));
+
+  partial.points = {{0.0, 0.0}};
+  partial.headings = {0.0};
+  EXPECT_FALSE(ActivationAllowed(true, partial, start, home, {}, remaining));
+
+  partial.points = {{0.0, 0.0}, {0.0, 0.0}};
+  partial.headings = {0.0, 0.0};
+  EXPECT_FALSE(ActivationAllowed(true, partial, start, home, {}, remaining));
+
+  partial.points = {{0.0, 0.0}, {0.5, 0.0}};
+  partial.headings = {0.0, std::numeric_limits<double>::quiet_NaN()};
+  EXPECT_FALSE(ActivationAllowed(true, partial, start, home, {}, remaining));
 
   PlanResult complete;
   complete.success = true;
   complete.all_targets_reached = true;
-  EXPECT_TRUE(ActivationAllowed(true, complete));
+  complete.points = {{0.0, 0.0}, {1.0, 0.0}};
+  complete.headings = {0.0, 0.0};
+  complete.covered_edges = {"ROAD"};
+  EXPECT_TRUE(ActivationAllowed(true, complete, start, home, {}, {}));
   complete.success = false;
-  EXPECT_FALSE(ActivationAllowed(true, complete));
+  EXPECT_FALSE(ActivationAllowed(true, complete, start, home, {}, {}));
+
+  complete.success = true;
+  complete.points = {{0.0, 0.0}};
+  complete.headings = {0.0};
+  EXPECT_FALSE(ActivationAllowed(true, complete, start, home, {}, {}));
 }
 
 TEST(ArenaPlanner, OccupancyDimensionsMatchConfiguration)
@@ -276,6 +373,316 @@ TEST(ArenaPlanner, CoverageVisitsEveryConfiguredRoad)
   for (std::size_t index = 1; index < result.points.size(); ++index) {
     EXPECT_TRUE(planner.SegmentIsFree(result.points[index - 1], result.points[index]));
   }
+  EXPECT_NEAR(result.points.back().x, config.default_start.position.x, 1.0e-9);
+  EXPECT_NEAR(result.points.back().y, config.default_start.position.y, 1.0e-9);
+}
+
+TEST(ArenaPlanner, LayerThreeReportsNoRouteWhenCoverageIsAlreadyComplete)
+{
+  PlannerConfig config;
+  config.width = 1.0;
+  config.height = 1.0;
+  config.resolution = 0.05;
+  config.inflation_radius = 0.0;
+  config.preferred_clearance = 0.0;
+  config.clearance_cost_weight = 0.0;
+  config.free_regions.push_back({0.0, 0.0, 1.0, 1.0});
+  config.default_start = {{0.20, 0.20}, 0.0};
+  config.inspection_nodes = {{0.20, 0.20}, {0.80, 0.20}};
+  config.inspection_edges = {{0, 1, "ROAD", false}};
+  const ArenaPlanner planner(config);
+
+  const PlanResult result = planner.Plan(
+    config.default_start, {}, {}, "layer3", {"ROAD"});
+  ASSERT_TRUE(result.success) << result.message;
+  EXPECT_TRUE(result.all_targets_reached);
+  EXPECT_TRUE(result.points.empty());
+  EXPECT_FALSE(ActivationAllowed(
+    true, result, config.default_start, config.default_start, {"ROAD"}, {}));
+  EXPECT_NE(result.message.find("no route required"), std::string::npos);
+
+  const PlanResult return_home = planner.Plan(
+    {{0.80, 0.80}, 0.0}, {}, {}, "layer3", {"ROAD"});
+  ASSERT_TRUE(return_home.success) << return_home.message;
+  ASSERT_GE(return_home.points.size(), 2U);
+  EXPECT_TRUE(return_home.all_targets_reached);
+  EXPECT_NEAR(return_home.points.front().x, 0.80, 1.0e-9);
+  EXPECT_NEAR(return_home.points.front().y, 0.80, 1.0e-9);
+  EXPECT_NEAR(return_home.points.back().x, config.default_start.position.x, 1.0e-9);
+  EXPECT_NEAR(return_home.points.back().y, config.default_start.position.y, 1.0e-9);
+  EXPECT_TRUE(ActivationAllowed(
+    true, return_home, {{0.80, 0.80}, 0.0}, config.default_start,
+    {"ROAD"}, {}));
+}
+
+TEST(ArenaPlanner, TunnelIsReportedOnlyAfterBothCheckpointsAreReached)
+{
+  PlannerConfig config;
+  config.width = 2.0;
+  config.height = 1.0;
+  config.resolution = 0.05;
+  config.inflation_radius = 0.0;
+  config.preferred_clearance = 0.0;
+  config.clearance_cost_weight = 0.0;
+  config.task_tolerance = 0.05;
+  config.free_regions = {{0.0, 0.0, 2.0, 1.0}};
+  config.obstacles = {{0.95, 0.0, 1.05, 1.0}};
+  config.default_start = {{0.20, 0.20}, 0.0};
+  config.required_tunnel_points = {{0.70, 0.50}, {1.30, 0.50}};
+  config.required_tunnel_labels = {"TUNNEL_1_ENTER", "TUNNEL_1_EXIT"};
+  const ArenaPlanner planner(config, false);
+
+  const PlanResult result = planner.Plan(
+    config.default_start, {}, {}, "layer2");
+  EXPECT_FALSE(result.success);
+  EXPECT_FALSE(result.all_targets_reached);
+  EXPECT_TRUE(result.visit_order.empty());
+  EXPECT_NE(std::find(result.deferred_targets.begin(), result.deferred_targets.end(),
+    "TUNNEL_1_ENTER"), result.deferred_targets.end());
+  EXPECT_NE(std::find(result.deferred_targets.begin(), result.deferred_targets.end(),
+    "TUNNEL_1_EXIT"), result.deferred_targets.end());
+}
+
+TEST(ArenaPlanner, BlockedTunnelDoesNotStarveAnotherCompleteTunnel)
+{
+  PlannerConfig config;
+  config.width = 2.0;
+  config.height = 2.0;
+  config.resolution = 0.05;
+  config.inflation_radius = 0.0;
+  config.preferred_clearance = 0.0;
+  config.clearance_cost_weight = 0.0;
+  config.task_tolerance = 0.05;
+  config.free_regions = {{0.0, 0.0, 2.0, 2.0}};
+  config.obstacles = {{0.95, 0.0, 1.05, 2.0}};
+  config.default_start = {{0.20, 0.20}, 0.0};
+  config.required_tunnel_points = {
+    {0.70, 0.50}, {1.30, 0.50},
+    {0.30, 1.20}, {0.80, 1.20}};
+  config.required_tunnel_labels = {
+    "TUNNEL_1_ENTER", "TUNNEL_1_EXIT",
+    "TUNNEL_2_ENTER", "TUNNEL_2_EXIT"};
+  const ArenaPlanner planner(config, false);
+
+  const PlanResult result = planner.Plan(
+    config.default_start, {}, {}, "layer2");
+  ASSERT_TRUE(result.success) << result.message;
+  EXPECT_FALSE(result.all_targets_reached);
+  EXPECT_EQ(result.visit_order, std::vector<std::string>({"TUNNEL_2"}));
+  EXPECT_NE(std::find(result.deferred_targets.begin(), result.deferred_targets.end(),
+    "TUNNEL_1_ENTER"), result.deferred_targets.end());
+  EXPECT_NE(std::find(result.deferred_targets.begin(), result.deferred_targets.end(),
+    "TUNNEL_1_EXIT"), result.deferred_targets.end());
+  for (std::size_t index = 1; index < result.points.size(); ++index) {
+    EXPECT_TRUE(planner.SegmentIsFree(result.points[index - 1], result.points[index]));
+  }
+}
+
+TEST(ArenaPlanner, DetourDoesNotClaimOrActivateUncoveredRoad)
+{
+  PlannerConfig config;
+  config.width = 2.0;
+  config.height = 1.0;
+  config.resolution = 0.05;
+  config.inflation_radius = 0.0;
+  config.preferred_clearance = 0.0;
+  config.clearance_cost_weight = 0.0;
+  config.task_tolerance = 0.05;
+  config.free_regions = {{0.0, 0.0, 2.0, 1.0}};
+  config.obstacles = {{0.95, 0.35, 1.05, 0.65}};
+  config.default_start = {{0.20, 0.20}, 0.0};
+  config.inspection_nodes = {{0.40, 0.50}, {1.60, 0.50}};
+  config.inspection_edges = {{0, 1, "ROAD", false}};
+  const ArenaPlanner planner(config, false);
+
+  const PlanResult result = planner.Plan(
+    config.default_start, {}, {}, "layer3");
+  ASSERT_TRUE(result.success) << result.message;
+  EXPECT_TRUE(result.visit_order.empty());
+  EXPECT_TRUE(result.covered_edges.empty());
+  EXPECT_NE(std::find(result.deferred_targets.begin(), result.deferred_targets.end(),
+    "ROAD"), result.deferred_targets.end());
+  EXPECT_FALSE(ActivationAllowed(
+    true, result, config.default_start, config.default_start, {}, {}));
+}
+
+TEST(ArenaPlanner, LayerThreeRejectsUnknownCoveredEdgeLabels)
+{
+  PlannerConfig config;
+  config.width = 1.0;
+  config.height = 1.0;
+  config.resolution = 0.05;
+  config.inflation_radius = 0.0;
+  config.preferred_clearance = 0.0;
+  config.clearance_cost_weight = 0.0;
+  config.free_regions.push_back({0.0, 0.0, 1.0, 1.0});
+  config.default_start = {{0.20, 0.20}, 0.0};
+  config.inspection_nodes = {{0.20, 0.20}, {0.80, 0.20}};
+  config.inspection_edges = {{0, 1, "ROAD", false}};
+  const ArenaPlanner planner(config);
+
+  const PlanResult result = planner.Plan(
+    config.default_start, {}, {}, "layer3", {"NOT_A_ROAD"});
+  EXPECT_FALSE(result.success);
+  EXPECT_FALSE(result.all_targets_reached);
+  EXPECT_NE(result.message.find("unknown label"), std::string::npos);
+  EXPECT_TRUE(result.points.empty());
+}
+
+TEST(ArenaPlanner, CoverageDefersReturnInsteadOfClaimingMissionComplete)
+{
+  PlannerConfig config;
+  config.width = 2.0;
+  config.height = 1.0;
+  config.resolution = 0.05;
+  config.inflation_radius = 0.0;
+  config.preferred_clearance = 0.0;
+  config.clearance_cost_weight = 0.0;
+  config.free_regions.push_back({0.0, 0.0, 2.0, 1.0});
+  config.obstacles.push_back({0.95, 0.0, 1.05, 1.0});
+  config.default_start = {{0.25, 0.50}, 0.0};
+  config.inspection_nodes = {{1.25, 0.40}, {1.75, 0.40}};
+  config.inspection_edges = {{0, 1, "RIGHT_ROAD", false}};
+  const ArenaPlanner planner(config);
+
+  const PlanResult result = planner.Plan(
+    {{1.25, 0.70}, 0.0}, {}, {}, "layer3");
+  ASSERT_TRUE(result.success) << result.message;
+  EXPECT_FALSE(result.all_targets_reached);
+  EXPECT_NE(std::find(result.deferred_targets.begin(), result.deferred_targets.end(),
+    "RETURN_TO_START"), result.deferred_targets.end());
+  EXPECT_NE(std::find(result.covered_edges.begin(), result.covered_edges.end(),
+    "RIGHT_ROAD"), result.covered_edges.end());
+  for (std::size_t index = 1; index < result.points.size(); ++index) {
+    EXPECT_TRUE(planner.SegmentIsFree(result.points[index - 1], result.points[index]));
+  }
+}
+
+TEST(ArenaPlanner, CoverageKeepsReachableWorkWhenFullTourDoesNotExist)
+{
+  PlannerConfig config;
+  config.width = 2.0;
+  config.height = 1.0;
+  config.resolution = 0.05;
+  config.inflation_radius = 0.0;
+  config.preferred_clearance = 0.0;
+  config.clearance_cost_weight = 0.0;
+  config.free_regions.push_back({0.0, 0.0, 2.0, 1.0});
+  config.obstacles.push_back({0.95, 0.0, 1.05, 1.0});
+  config.default_start = {{0.20, 0.50}, 0.0};
+  config.inspection_nodes = {
+    {0.20, 0.35}, {0.75, 0.35}, {1.25, 0.35}, {1.80, 0.35}};
+  config.inspection_edges = {
+    {0, 1, "LEFT_ROAD", false}, {2, 3, "RIGHT_ROAD", false}};
+  const ArenaPlanner planner(config);
+
+  const PlanResult result = planner.Plan(
+    config.default_start, {}, {}, "layer3");
+  ASSERT_TRUE(result.success) << result.message;
+  EXPECT_FALSE(result.all_targets_reached);
+  EXPECT_NE(std::find(result.visit_order.begin(), result.visit_order.end(),
+    "LEFT_ROAD"), result.visit_order.end());
+  EXPECT_NE(std::find(result.covered_edges.begin(), result.covered_edges.end(),
+    "LEFT_ROAD"), result.covered_edges.end());
+  EXPECT_NE(std::find(result.deferred_targets.begin(), result.deferred_targets.end(),
+    "RIGHT_ROAD"), result.deferred_targets.end());
+  EXPECT_NEAR(result.points.back().x, config.default_start.position.x, 1.0e-9);
+  EXPECT_NEAR(result.points.back().y, config.default_start.position.y, 1.0e-9);
+  for (std::size_t index = 1; index < result.points.size(); ++index) {
+    EXPECT_TRUE(planner.SegmentIsFree(result.points[index - 1], result.points[index]));
+  }
+}
+
+TEST(ArenaPlanner, CoverageFailsOnlyWhenNoUncoveredRoadIsReachable)
+{
+  PlannerConfig config;
+  config.width = 2.0;
+  config.height = 1.0;
+  config.resolution = 0.05;
+  config.inflation_radius = 0.0;
+  config.preferred_clearance = 0.0;
+  config.clearance_cost_weight = 0.0;
+  config.free_regions.push_back({0.0, 0.0, 2.0, 1.0});
+  config.obstacles.push_back({0.95, 0.0, 1.05, 1.0});
+  config.default_start = {{0.20, 0.50}, 0.0};
+  config.inspection_nodes = {{1.25, 0.35}, {1.80, 0.35}};
+  config.inspection_edges = {{0, 1, "RIGHT_ROAD", false}};
+  const ArenaPlanner planner(config);
+
+  const PlanResult result = planner.Plan(
+    config.default_start, {}, {}, "layer3");
+  EXPECT_FALSE(result.success);
+  EXPECT_FALSE(result.all_targets_reached);
+  EXPECT_NE(result.message.find("no uncovered road is reachable"),
+    std::string::npos);
+  EXPECT_TRUE(result.points.empty());
+}
+
+TEST(ArenaPlanner, DynamicObstacleDoesNotMoveStaticInspectionGraph)
+{
+  PlannerConfig config;
+  config.width = 1.0;
+  config.height = 1.0;
+  config.resolution = 0.05;
+  config.inflation_radius = 0.0;
+  config.preferred_clearance = 0.0;
+  config.clearance_cost_weight = 0.0;
+  config.free_regions.push_back({0.0, 0.0, 1.0, 1.0});
+  config.default_start = {{0.10, 0.10}, 0.0};
+  config.inspection_nodes = {{0.25, 0.50}, {0.75, 0.50}};
+  config.inspection_edges = {{0, 1, "BLOCKED_ROAD", false}};
+  const ArenaPlanner static_planner(config);
+
+  PlannerConfig dynamic_config = static_planner.config();
+  dynamic_config.obstacles.push_back({0.20, 0.45, 0.30, 0.55});
+  const ArenaPlanner dynamic_planner(dynamic_config, false);
+  ASSERT_EQ(dynamic_planner.config().inspection_nodes.size(), 2U);
+  EXPECT_DOUBLE_EQ(dynamic_planner.config().inspection_nodes[0].x,
+    static_planner.config().inspection_nodes[0].x);
+  EXPECT_DOUBLE_EQ(dynamic_planner.config().inspection_nodes[0].y,
+    static_planner.config().inspection_nodes[0].y);
+
+  const PlanResult result = dynamic_planner.Plan(
+    dynamic_config.default_start, {}, {}, "layer3");
+  EXPECT_FALSE(result.success);
+  EXPECT_FALSE(result.all_targets_reached);
+  EXPECT_TRUE(result.visit_order.empty());
+  EXPECT_TRUE(result.covered_edges.empty());
+  EXPECT_TRUE(result.points.empty());
+  EXPECT_NE(result.message.find("no uncovered road is reachable"),
+    std::string::npos);
+  EXPECT_NE(std::find(result.deferred_targets.begin(), result.deferred_targets.end(),
+    "BLOCKED_ROAD"), result.deferred_targets.end());
+}
+
+TEST(ArenaPlanner, LayeredPlanMergesHistoricalAndCurrentCoverage)
+{
+  PlannerConfig config;
+  config.width = 3.0;
+  config.height = 3.0;
+  config.resolution = 0.05;
+  config.inflation_radius = 0.0;
+  config.preferred_clearance = 0.0;
+  config.clearance_cost_weight = 0.0;
+  config.free_regions.push_back({0.0, 0.0, 3.0, 3.0});
+  config.default_start = {{0.20, 0.20}, 0.0};
+  config.inspection_nodes = {
+    {0.20, 2.40}, {0.50, 2.40}, {2.20, 2.40}, {2.60, 2.40}};
+  config.inspection_edges = {
+    {0, 1, "PRIOR_ROAD", false}, {2, 3, "NEW_ROAD", false}};
+  const ArenaPlanner planner(config);
+
+  const PlanResult result = planner.Plan(
+    config.default_start, {{2.50, 0.20}}, {"TASK"}, "layered",
+    {"PRIOR_ROAD"});
+  ASSERT_TRUE(result.success) << result.message;
+  EXPECT_TRUE(result.all_targets_reached);
+  EXPECT_TRUE(result.deferred_targets.empty());
+  EXPECT_NE(std::find(result.covered_edges.begin(), result.covered_edges.end(),
+    "PRIOR_ROAD"), result.covered_edges.end());
+  EXPECT_NE(std::find(result.covered_edges.begin(), result.covered_edges.end(),
+    "NEW_ROAD"), result.covered_edges.end());
+  EXPECT_GT(RouteDistance({0.35, 2.40}, result.points), config.task_tolerance);
 }
 
 TEST(ArenaPlanner, PlansIncrementalTaskTunnelAndGapFillLayers)
@@ -319,6 +726,35 @@ TEST(ArenaPlanner, PlansIncrementalTaskTunnelAndGapFillLayers)
   EXPECT_NEAR(gaps.points.back().y, config.default_start.position.y, 1.0e-9);
   for (std::size_t index = 1; index < gaps.points.size(); ++index) {
     EXPECT_TRUE(planner.SegmentIsFree(gaps.points[index - 1], gaps.points[index]));
+  }
+  std::vector<std::string> all_covered = tasks.covered_edges;
+  all_covered.insert(all_covered.end(), tunnels.covered_edges.begin(),
+    tunnels.covered_edges.end());
+  all_covered.insert(all_covered.end(), gaps.covered_edges.begin(),
+    gaps.covered_edges.end());
+  for (const InspectionEdge & edge : config.inspection_edges) {
+    EXPECT_NE(std::find(all_covered.begin(), all_covered.end(), edge.label),
+      all_covered.end()) << edge.label;
+  }
+  EXPECT_NE(std::find(all_covered.begin(), all_covered.end(), "ROAD_97_108"),
+    all_covered.end());
+  EXPECT_NE(std::find(all_covered.begin(), all_covered.end(), "ROAD_185_196"),
+    all_covered.end());
+
+  const PlanResult layered = planner.Plan(
+    config.default_start, config.default_targets, config.default_labels, "layered");
+  ASSERT_TRUE(layered.success) << layered.message;
+  EXPECT_TRUE(layered.all_targets_reached);
+  EXPECT_TRUE(layered.deferred_targets.empty());
+  for (const InspectionEdge & edge : config.inspection_edges) {
+    EXPECT_NE(std::find(layered.covered_edges.begin(), layered.covered_edges.end(),
+      edge.label), layered.covered_edges.end()) << edge.label;
+  }
+  ASSERT_GE(layered.points.size(), 2U);
+  EXPECT_NEAR(layered.points.back().x, config.default_start.position.x, 1.0e-9);
+  EXPECT_NEAR(layered.points.back().y, config.default_start.position.y, 1.0e-9);
+  for (std::size_t index = 1; index < layered.points.size(); ++index) {
+    EXPECT_TRUE(planner.SegmentIsFree(layered.points[index - 1], layered.points[index]));
   }
 }
 

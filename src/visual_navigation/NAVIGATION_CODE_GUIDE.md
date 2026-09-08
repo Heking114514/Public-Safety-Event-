@@ -42,30 +42,62 @@ visual_navigation/
 │   └── waypoint_navigation.yaml
 ├── launch/
 │   ├── waypoint_navigation.launch.py
-│   └── visual_navigation_bringup.launch.py
+│   ├── route_editor.launch.py
+│   ├── visual_navigation_bringup.launch.py
+│   └── visual_navigation_serial_bringup.launch.py
 ├── routes/
 │   └── example_route.csv
+├── include/visual_navigation/
+│   ├── waypoint_navigator.hpp
+│   ├── control_state.hpp
+│   └── 控制器、输入缓存与监督器头文件
 └── src/
-    └── waypoint_navigator.cpp
+    ├── waypoint_navigator.cpp
+    ├── node_init.cpp
+    ├── route.cpp
+    ├── runtime.cpp
+    ├── control.cpp
+    ├── maneuvers.cpp
+    ├── path_following.cpp
+    ├── progress.cpp
+    ├── navigation.cpp
+    └── output.cpp
 ```
 
 各文件作用：
 
 | 文件 | 作用 |
 | --- | --- |
-| `src/waypoint_navigator.cpp` | 航点读取、状态机、位置控制和速度发布 |
+| `include/visual_navigation/waypoint_navigator.hpp` | ROS 节点声明及节点内部共享状态 |
+| `include/visual_navigation/control_state.hpp` | 互斥控制阶段、终点父状态和状态文本映射 |
+| `src/waypoint_navigator.cpp` | 程序入口，只负责启动节点 |
+| `src/node_init.cpp` | 参数、ROS 接口和初始状态 |
+| `src/route.cpp` | CSV/动态路线加载、发布和接收 |
+| `src/runtime.cpp` | 运行时输入回调、启停复位、任务驻停和时间戳校验 |
+| `src/control.cpp` | 安全门控、周期上下文和状态机分派 |
+| `src/maneuvers.cpp` | 等待、制动、航点恢复和终点动作 |
+| `src/path_following.cpp` | 路径跟随和路径方向对齐 |
+| `src/progress.cpp` | 路径与转向进度监督 |
+| `src/navigation.cpp` | 航段、航点和控制器生命周期辅助 |
+| `src/output.cpp` | 速度、航点、任务驻停和状态发布 |
 | `config/waypoint_navigation.yaml` | 导航节点默认参数 |
 | `routes/example_route.csv` | 航点文件格式示例 |
 | `launch/waypoint_navigation.launch.py` | 只启动航点导航节点 |
-| `launch/visual_navigation_bringup.launch.py` | 同时启动 D455、ORB-SLAM3 和航点导航 |
+| `launch/route_editor.launch.py` | 启动图形路线编辑器 |
+| `launch/visual_navigation_bringup.launch.py` | 启动航点导航节点；传感器和融合由外部启动 |
+| `launch/visual_navigation_serial_bringup.launch.py` | 启动航点导航节点和串口桥接 |
+| `CMakeLists.txt` | 安装导航节点、Launch 文件、路线资源和包内的 `route_editor.py` |
 | `README.md` | 构建和快速使用说明 |
 | `NAVIGATION_CODE_GUIDE.md` | 代码设计与详细逻辑说明 |
+
+`route_editor.launch.py` 启动的是由 `CMakeLists.txt` 安装到包前缀的包内 `scripts/route_editor.py`。
+工作空间根目录的同名脚本只是源码树中的便捷启动入口，不再承载另一份实现。
 
 ---
 
 ## 3. 节点职责
 
-功能包目前只有一个 C++ 节点：
+导航核心目前是一个 C++ 节点，另有一个用于发布动态路线的 Python 图形编辑器：
 
 ```text
 waypoint_navigator
@@ -80,7 +112,7 @@ waypoint_navigator
 5. 按顺序选择当前目标航点。
 6. 根据位置误差和航向误差计算速度。
 7. 发布 `geometry_msgs/msg/Twist`。
-8. 定位失效时立即发布零速度。
+8. 定位失效且不满足短暂异常宽限条件时立即发布零速度。
 9. 发布路线、当前航点编号和导航状态。
 
 它不负责：
@@ -93,7 +125,7 @@ waypoint_navigator
 - 串口或 CAN 数据发送
 - 轮速闭环控制
 
-下位机通信应由单独的 `chassis_bridge` 节点完成。
+下位机通信由单独的 `cup_car_serial` 节点完成；后续也可以替换为 CAN 或 UDP 桥接节点。
 
 ---
 
@@ -138,9 +170,17 @@ std_msgs/msg/Int32
 | `2` | `OK` |
 | `5` | `OK_KLT` |
 
-其他状态不会输出运动命令。
+只有在参数 `require_tracking_state` 设置为 `true` 时，其他状态才会阻止运动命令。默认配置下，`/tracking_state` 作为兼容性观测，导航主要依据融合状态和融合里程计判断是否允许运动。
 
-如果参数 `require_tracking_state` 设置为 `false`，仍会检查 `/odometry/fused` 是否存在和是否超时。
+#### `/odometry/fusion_status`
+
+消息类型：
+
+```text
+std_msgs/msg/String
+```
+
+默认必须收到新鲜且位于 `allowed_fusion_states` 中的融合健康状态；`FAULT`、未知状态或状态超时会阻止运动。`WAITING_FOR_INITIALIZATION` 是 ORB 暖机期间的可恢复等待，路线保持激活但不发速度，初始化完成后自动继续。允许的 `DEGRADED_*` 状态会按各自配置降低速度；最近一次定位有效后的短暂异常在 `transient_localization_grace` 内可按 `transient_fault_speed_scale` 降速维持。
 
 ### 4.2 发布话题
 
@@ -327,7 +367,9 @@ x,y,yaw,speed,tolerance,stop_time
 
 路线只在节点构造时加载一次。
 
-如果运行期间修改 CSV 文件，节点不会自动重新加载。需要重启节点才能使用新的航点。
+如果运行期间修改 CSV 文件，节点不会自动重新加载；需要重启节点或重新启动
+Launch 才会读取新的文件。运行中也可以通过 `/waypoint_navigation/route_input`
+发布合法的 `nav_msgs/msg/Path` 动态替换路线，路线编辑器使用的就是这个接口。
 
 ### 6.3 文件校验
 
@@ -369,7 +411,10 @@ map
 route_frame
 ```
 
-如果两者不同，节点会输出警告，但不会自动查询 TF，也不会转换坐标。
+如果 `header.frame_id` 为空或与 `route_frame` 不同，或者 `child_frame_id` 为空或与
+`odom_child_frame`（默认 `base_link`）不同，节点会丢弃该样本，但不会覆盖上一条有效
+里程计或推进时间戳基线。节点不会自动查询 TF，也不会转换坐标；合法样本持续缺失超过
+`odom_timeout` 后进入 `WAITING_FOR_ODOMETRY` 并停车等待。
 
 因此必须保证：
 
@@ -438,39 +483,47 @@ linear.x > 0
                   创建控制定时器
                          │
                          ▼
-          autostart=false：进入 IDLE
+          route_file 为空：WAITING_FOR_ROUTE
+          route_file 已加载且 autostart=false：按手动启动流程等待
           autostart=true ：等待有效定位
 ```
 
 控制定时器默认运行频率为 `30 Hz`。
 
+`route_file` 成功加载且 `autostart=false` 时进入 `IDLE`，表示路线已就绪但尚未请求
+运动；只有指定文件加载失败才进入 `FAULT_ROUTE_NOT_LOADED`。调用 `start` 后再按定位、
+融合状态和执行器健康状态进行检查。
+
 ---
 
 ## 9. 定位有效性检查
 
-`LocalizationIsValid()` 依次检查：
+导航启动和运行监督依次检查：
 
 1. 是否收到过 `/odometry/fused`。
 2. 最近一次 `/odometry/fused` 到达时间是否超过 `odom_timeout`。
-3. 是否要求检查 `/tracking_state`。
-4. 是否收到过 `/tracking_state`。
-5. 跟踪状态是否为 `2` 或 `5`。
+3. 里程计坐标系、平面位姿和四元数是否有效。
+4. 是否要求融合健康状态，以及状态是否新鲜、允许且非故障。
+5. 是否显式要求检查 `/tracking_state`；若要求，是否收到状态 `2` 或 `5`。
+6. 串口 bringup 是否要求执行器健康，以及执行器遥测是否新鲜且健康。
 
-超时使用的是消息到达节点的时间：
+消息回调同时拒绝未设置、非单调、过期或未来超限的测量时间戳；输入新鲜度使用消息到达节点的时间：
 
 ```text
 now() - last_odom_arrival
 ```
 
-而不是 `/odometry/fused.header.stamp`。
+因此不能仅靠重复发布带旧时间戳的消息绕过超时。
 
 默认配置：
 
 ```yaml
 odom_timeout: 0.40
-require_tracking_state: true
-abort_on_tracking_loss: true
+require_tracking_state: false
+abort_on_tracking_loss: false
 ```
+
+默认导航以 `/odometry/fused` 和 `/odometry/fusion_status` 作为定位接口；`/tracking_state` 仅在显式启用 `require_tracking_state` 时参与放行判断。若需要在 ORB 跟踪丢失后立即锁存任务，再将 `abort_on_tracking_loss` 设为 `true`。
 
 ### 初始阶段没有定位
 
@@ -484,20 +537,49 @@ WAITING_FOR_LOCALIZATION
 
 ### 运行中定位丢失
 
-如果导航曾经获得有效定位，之后定位失效，并且：
+如果导航曾经获得有效定位，之后定位失效：
+
+- 默认 `abort_on_tracking_loss=false` 时，节点发布零速度并等待恢复；如果仍在
+  `transient_localization_grace` 内且不是硬故障，则会以 `transient_fault_speed_scale`
+  降速短时维持。
+- 只有同时显式启用跟踪状态检查，并设置：
 
 ```yaml
+require_tracking_state: true
 abort_on_tracking_loss: true
 ```
 
-节点将：
+节点才会：
 
 1. 发布零速度。
 2. 关闭当前导航任务。
 3. 进入 `FAULT_TRACKING_LOST`。
 4. 不自动恢复运动。
 
-这是安全默认行为，因为当前 ORB-SLAM3 在严重丢失后可能重新建立发布坐标原点，旧航点可能已经失效。
+如果是融合硬故障，则进入对应的 `FAULT_FUSION_STATUS` 或执行器/里程计故障状态。
+这是因为 ORB-SLAM3 严重丢失后可能重新建立发布坐标原点，旧航点可能已经失效。
+
+### 内部控制状态机
+
+任务驻停、导航未启动和输入监督属于外层安全门控，不与运动阶段混在一起。
+安全门控允许运动后，`ControlState` 保证每个周期只有一个活动阶段：
+
+```text
+FOLLOW
+  ├── ALIGN_PATH ───────────────┐
+  ├── RECOVER_WAYPOINT ── BRAKE ├── FOLLOW / WAIT
+  └── BRAKE ── ALIGN_GOAL ──────┴── GOAL_REACHED
+                    └── RECOVER_GOAL ── BRAKE ── ALIGN_GOAL
+```
+
+`GoalStage` 是终点动作的父状态，用于区分尚未到达终点、终点待停稳、已经停稳和
+最终位置回收。路径对齐、回收、制动和等待不再由可同时为真的布尔标志表达。
+本航段是否完成过路径对齐、转向锚点和等待截止时间仍作为阶段上下文保存。
+
+重置也按生命周期区分：路径反馈重置只清 PID；动作中断另外清转向稳定计时、
+制动计时和当前动作阶段；整次任务重置才清终点父状态与等待动作。
+为兼容原有控制逻辑，输入监督中断会保留终点位置恢复父状态，但把当前回收动作
+退回 `FOLLOW`，恢复输入后重新按终点距离和路径投影选择动作。
 
 ---
 
@@ -507,17 +589,40 @@ abort_on_tracking_loss: true
 
 | 状态 | 含义 |
 | --- | --- |
-| `IDLE` | 路线已加载，但导航未启动 |
+| `IDLE` | 已停止或复位，当前未执行路线 |
+| `WAITING_FOR_ROUTE` | 尚未加载路线，等待 CSV 或动态路线 |
 | `WAITING_FOR_LOCALIZATION` | 已请求启动，正在等待有效定位 |
+| `WAITING_FOR_ODOMETRY` | 等待新鲜且有效的融合里程计 |
+| `WAITING_FOR_ALLOWED_FUSION_STATUS` | 融合状态未进入允许列表 |
+| `WAITING_FOR_ACTUATOR_RECOVERY` | 执行器不健康，保持零速度并等待恢复 |
+| `RESUME_PENDING_LOCALIZATION` | 任务驻停释放后等待重新确认定位 |
+| `HELD_FOR_MISSION` | 任务驻停来源仍存在，持续发布零速度 |
+| `DEGRADED_TRANSIENT_LOCALIZATION` | 短暂定位异常，在宽限期内降速运行 |
+| `WAITING_FOR_INITIALIZATION` | ORB 暖机等待，不锁存，保持零速 |
 | `FOLLOWING` | 正在向当前航点运动 |
+| `ROTATING_TO_PATH` | 正在原地旋转以对齐当前路径 |
+| `PATH_ALIGNED` | 路径方向已对齐，准备进入路径跟随 |
 | `BRAKING_APPROACH` | 按剩余距离和实际车速执行航点接近制动 |
 | `BRAKING_AT_WAYPOINT` | 已收点，持续发零速并等待车体停稳后再转向 |
-| `RECOVERING_FINAL_POSITION` | 最终朝向调整后位置超差，正在低速回收终点位置 |
 | `WAITING_AT_WAYPOINT` | 已到达航点，按照 `stop_time` 停车等待 |
+| `RECOVERING_FINAL_POSITION` | 最终朝向调整后发现位置超差，开始终点位置回收；后续回收周期沿用 `RECOVERING_WAYPOINT` |
 | `ALIGNING_FINAL_YAW` | 已到达最终位置，正在调整最终朝向 |
+| `RECOVERING_WAYPOINT` | 航点越过或位置超差，正在低速回收 |
+| `RECOVERING_NO_PATH_PROGRESS` | 路径进度不足，正在重置路径反馈并尝试恢复 |
+| `RECOVERING_NO_TURN_PROGRESS` | 转向进度不足，正在重置转向控制并尝试恢复 |
 | `GOAL_REACHED` | 已完成全部航点 |
 | `FAULT_ROUTE_NOT_LOADED` | 航点文件加载失败 |
-| `FAULT_TRACKING_LOST` | 导航过程中定位丢失，任务已中止 |
+| `FAULT_ODOMETRY_FRAME` | 融合里程计坐标系与 `route_frame` 不一致 |
+| `FAULT_ODOMETRY_INVALID` | 融合里程计位姿或四元数无效 |
+| `FAULT_FUSION_STATUS_STALE` | 融合健康状态未收到或已超时 |
+| `FAULT_FUSION_STATUS` | 融合报告故障状态 |
+| `FAULT_INIT_TIMEOUT` | ORB 在限定时间内未完成初始化 |
+| `FAULT_TRACKING_LOST` | 启用跟踪检查且丢失后锁存任务 |
+| `FAULT_ACTUATOR_STALE` | 执行器健康消息未收到或已超时 |
+| `FAULT_ACTUATOR_DISCONNECTED` | 执行器连接或健康状态无效 |
+| `FAULT_WAYPOINT_BRAKE_TIMEOUT` | 航点制动超时，未确认停稳而停车锁存 |
+| `FAULT_NO_PATH_PROGRESS` | 路径进度恢复尝试耗尽 |
+| `FAULT_NO_TURN_PROGRESS` | 转向进度恢复尝试耗尽 |
 
 ### 典型状态转换
 
@@ -547,9 +652,12 @@ GOAL_REACHED
 
 ```text
 FOLLOWING
-  │ 定位或里程计失效
+  │ 短暂定位异常且未发生硬故障
   ▼
-FAULT_TRACKING_LOST
+DEGRADED_TRANSIENT_LOCALIZATION
+  │ 宽限期结束仍未恢复
+  ▼
+WAITING_FOR_LOCALIZATION / 对应 FAULT_* 状态
 ```
 
 ---
@@ -706,18 +814,27 @@ angular_z = clamp(angular_gain × final_yaw_error)
 ```text
 每个控制周期：
 
+  如果任务驻停有效：
+      重置进度监督器
+      发布零速度
+      状态 = HELD_FOR_MISSION
+      返回
+
   如果导航未启动：
       发布零速度
       返回
 
-  如果定位无效：
+  运行 NavigationSupervisor：
+    如果执行器、里程计或融合状态不可用：
       发布零速度
-      如果运行中发生定位丢失：
-          中止任务
-          状态 = FAULT_TRACKING_LOST
-      否则：
-          状态 = WAITING_FOR_LOCALIZATION
+      按故障类型设置 WAITING_* 或 FAULT_* 状态
       返回
+
+    如果只是短暂定位异常且仍在宽限期：
+      按 transient_fault_speed_scale 限速继续
+
+    如果融合处于允许的 DEGRADED_* 状态：
+      按对应状态的速度比例限速
 
   如果正在航点等待：
       发布零速度
@@ -746,6 +863,11 @@ angular_z = clamp(angular_gain × final_yaw_error)
   计算目标方向和航向误差
   计算角速度
 
+  如果路径或转向进度监督器判定无进展：
+      发布零速度并重置控制反馈
+      进入 RECOVERING_NO_PATH_PROGRESS 或 RECOVERING_NO_TURN_PROGRESS
+      恢复次数耗尽后进入对应的 FAULT_NO_PATH_PROGRESS 或 FAULT_NO_TURN_PROGRESS
+
   如果航向误差小：
       计算线速度
   否则：
@@ -771,11 +893,17 @@ config/waypoint_navigation.yaml
 | `route_file` | 空 | CSV 航点文件路径，Launch 会覆盖 |
 | `route_frame` | `map` | 航点坐标系 |
 | `odom_topic` | `/odometry/fused` | 最终导航里程计输入 |
+| `odom_child_frame` | `base_link` | 最终导航里程计必须声明的车体坐标系 |
+| `fusion_status_topic` | `/odometry/fusion_status` | 融合健康状态输入 |
+| `actuator_health_topic` | `/cup_car_serial/actuator_healthy` | 执行器健康输入 |
 | `tracking_state_topic` | `/tracking_state` | ORB 跟踪状态输入 |
 | `cmd_vel_topic` | `/cmd_vel_nav` | 导航速度输出 |
+| `route_input_topic` | `/waypoint_navigation/route_input` | 动态路线输入 |
 | `path_topic` | `/waypoint_path` | 航点路径显示话题 |
 | `status_topic` | `/waypoint_navigation/status` | 状态输出 |
 | `current_waypoint_topic` | `/waypoint_navigation/current_waypoint` | 航点索引输出 |
+| `motion_hold_state_topic` | `/waypoint_navigation/motion_hold_state` | 任务驻停状态输出 |
+| `route_ack_topic` | `/waypoint_navigation/route_ack` | 动态路线确认输出 |
 
 ### 14.2 控制参数
 
@@ -796,6 +924,10 @@ config/waypoint_navigation.yaml
 | `path_yaw_rate_damping` | `0.45` | 实际角速度阻尼，用于抑制横向纠偏过冲 |
 | `cross_track_gain` | `1.50` | 横向偏差到航向误差的换算增益，rad/m |
 | `path_pid_integral_limit` | `0.20` | PID 积分限幅，避免定位跳变后持续过度转向 |
+| `path_progress_command_threshold` | `0.08` | 触发完全不动检查的最小线速度命令，m/s |
+| `path_progress_stationary_speed_threshold` | `0.02` | 认定实测近似静止的速度阈值，m/s |
+| `path_progress_no_motion_timeout` | `3.0` | 持续命令但无位移时的恢复超时，s |
+| `path_progress_no_motion_displacement` | `0.05` | 无运动检查窗口内允许的最大位移，m |
 | `rotate_in_place_threshold` | `0.18` | 超过该航向误差时禁止前进，rad |
 | `waypoint_tolerance` | `0.04` | 动态路线未填写容差时的默认值，m |
 | `waypoint_pass_longitudinal_tolerance` | `0.01` | 距终点平面的提前收点余量，m |
@@ -811,16 +943,25 @@ config/waypoint_navigation.yaml
 | `pre_turn_brake_timeout` | `0.60` | 速度反馈异常时避免状态机永久卡住的上限，s |
 | `final_yaw_tolerance` | `0.06` | 最终朝向容差，rad |
 | `odom_timeout` | `0.40` | 里程计到达超时时间，s |
+| `imu_timeout` | `0.15` | 控制 IMU 到达超时时间，s |
+| `fusion_status_timeout` | `0.60` | 融合健康状态超时时间，s |
+| `actuator_health_timeout` | `0.80` | 执行器健康状态超时时间，s |
 
 ### 14.3 行为和安全参数
 
 | 参数 | 默认值 | 作用 |
 | --- | --- | --- |
-| `require_tracking_state` | `true` | 是否要求 ORB 跟踪状态有效 |
-| `abort_on_tracking_loss` | `true` | 运行中定位丢失是否立即中止任务 |
+| `require_fusion_status` | `true` | 是否要求融合健康状态有效且允许 |
+| `allowed_fusion_states` | 配置列表 | 允许导航的融合状态 |
+| `degraded_speed_scale` | `0.50` | 未单独配置的降级状态速度比例 |
+| `transient_localization_grace` | `2.00` | 短暂定位异常的降级宽限时间，s |
+| `transient_fault_speed_scale` | `0.25` | 宽限期内的速度比例 |
+| `require_actuator_health` | `false` | 是否要求执行器健康；串口 bringup 强制为 `true` |
+| `require_tracking_state` | `false` | 是否额外要求 ORB 跟踪状态为 `OK` 或 `OK_KLT` |
+| `abort_on_tracking_loss` | `false` | 在启用跟踪状态检查时，运行中跟踪丢失是否立即中止任务 |
 | `autostart` | `false` | 节点启动后是否自动请求导航 |
 
-实车调试不建议开启 `autostart`。
+该表描述节点参数。实车主入口中，无参数 `start_visual_navigation.sh` 保持其关闭并等待规划 GUI；只有显式 `--autostart` 才加载根目录 `scripts/waypoints.csv` 并开启它。
 
 ---
 
@@ -889,6 +1030,19 @@ odom_timeout
 
 ## 16. Launch 文件
 
+实车不要直接拼装下面的包级 Launch。统一入口是：
+
+```bash
+# 规划模式：终端 1 录包并等待动态路线，终端 2 启动 Python 规划 GUI
+./scripts/start_visual_navigation.sh
+./scripts/start_arena_planner.sh
+
+# 固定 CSV 模式：读取 scripts/waypoints.csv 并自动启动
+./scripts/start_visual_navigation.sh --autostart
+```
+
+两种主入口都自动录制 rosbag，并只保留最近 3 份 bag 数据。以下 Launch 用于模块开发和模拟输入，不包含该录包策略。
+
 ### 16.1 只启动导航节点
 
 ```bash
@@ -904,24 +1058,27 @@ ros2 launch visual_navigation waypoint_navigation.launch.py \
 - 使用 rosbag 或模拟节点发布 `/odometry/fused`
 - 单独调试控制器
 
-### 16.2 启动完整视觉导航
+### 16.2 启动导航节点（传感器和融合由外部启动）
 
 ```bash
 ros2 launch visual_navigation visual_navigation_bringup.launch.py \
   route_file:=/absolute/path/to/route.csv \
-  body_frame_id:=base_link \
   autostart:=false
 ```
 
 该 Launch 包含：
 
 ```text
-realsense2_camera
-ORB-SLAM3 stereo-inertial
 waypoint_navigator
 ```
 
-使用 `body_frame_id:=base_link` 前必须确保 TF 树中存在正确的相机与车体静态变换。
+相机、ORB-SLAM3 和融合定位应由外部启动，例如先运行：
+
+```bash
+ros2 launch fused_odometry odometry_bringup.launch.py
+```
+
+需要串口桥接时，改用 `visual_navigation_serial_bringup.launch.py`，它在导航节点之外再启动 `cup_car_serial` 桥接节点。
 
 ---
 
@@ -933,21 +1090,22 @@ waypoint_navigator
 /cmd_vel_nav
 ```
 
-推荐下位机桥接结构：
+当前串口桥接结构：
 
 ```text
 /cmd_vel_nav
       │
       ▼
-chassis_bridge
+cup_car_serial
       │
-      ├── 串口
-      ├── CAN
-      └── UDP
+      └── 串口
       │
       ▼
 下位机速度闭环
 ```
+
+如果后续改用 CAN 或 UDP，应新增对应桥接节点并保持 `/cmd_vel_nav` 接口，不应把
+当前 `cup_car_serial` 的能力描述为已经支持这些链路。
 
 对于差速底盘，下位机可以根据轮距 `L` 和目标速度计算左右轮速度：
 
@@ -981,14 +1139,16 @@ w = angular.z
 
 代码中的已有安全措施：
 
-1. `autostart` 默认关闭。
+1. 节点参数 `autostart` 默认关闭；统一脚本只有在显式传入 `--autostart` 时才覆盖为开启。
 2. 未启动任务时持续发布零速度。
-3. 未收到里程计时不运动。
-4. 里程计超时时不运动。
-5. ORB 跟踪状态异常时不运动。
-6. 运行中定位丢失默认中止任务。
-7. 调用停止或复位服务时立即发布零速度。
-8. 节点析构时发布零速度。
+3. 未收到有效里程计或融合健康状态时不运动。
+4. 里程计、融合状态或执行器健康超时时不运动。
+5. 坐标系、位姿、四元数和输入测量时间戳无效时不运动。
+6. 默认不强制依赖 `/tracking_state`；显式启用后可按参数选择等待恢复或锁存
+   `FAULT_TRACKING_LOST`。
+7. 融合硬故障、制动超时、路径进度耗尽或转向进度耗尽时锁存并发布零速度。
+8. 调用停止、复位或任务驻停服务时立即发布零速度。
+9. 节点析构时发布零速度。
 
 仍需要在系统其他层实现：
 
@@ -1067,9 +1227,9 @@ ros2 service call /waypoint_navigator/stop std_srvs/srv/Trigger '{}'
 
 航点坐标和里程计坐标必须完全一致。
 
-### 20.4 没有速度加速度斜坡
+### 20.4 有速度加速度斜坡
 
-输出速度受到最大值限制，但没有严格的加速度和减速度限制。下位机应先做速度斜坡或电机速度闭环，后续也可以在 ROS 层增加速度平滑器。
+输出速度同时受到最大线/角速度以及最大加速度、减速度限制；航点接近阶段还会依据制动模型提前降速。下位机仍应实现独立的速度闭环和通信看门狗，不能把 ROS 层斜坡当作唯一安全措施。
 
 ### 20.5 不支持倒车规划
 
@@ -1079,9 +1239,9 @@ ros2 service call /waypoint_navigator/stop std_srvs/srv/Trigger '{}'
 
 当前控制器逐个跟踪离散航点。航点太稀疏时可能切弯，航点太密集且容差太小时可能频繁切换或振荡。
 
-### 20.7 路线不能运行时重新加载
+### 20.7 CSV 路线不会自动热加载
 
-修改 CSV 后需要重启节点。
+启动参数中的 `route_file` 只在节点启动时读取，修改对应 CSV 后需要重启节点或重新启动该 Launch。运行中可通过 `/waypoint_navigation/route_input` 发布合法的 `nav_msgs/msg/Path` 动态替换路线，路线编辑器使用的就是这个接口。
 
 ### 20.8 单线程执行假设
 
@@ -1095,13 +1255,8 @@ ros2 service call /waypoint_navigator/stop std_srvs/srv/Trigger '{}'
 
 ### 第一阶段：下位机桥接
 
-新增：
-
-```text
-chassis_bridge
-```
-
-完成 `/cmd_vel_nav` 到串口或 CAN 协议的转换，并接收下位机状态。
+现有实现 `cup_car_serial` 已完成 `/cmd_vel_nav` 到串口协议的转换，并接收下位机
+状态。若需要 CAN 或 UDP，应新增对应桥接节点并保持相同的速度接口。
 
 ### 第二阶段：速度平滑
 
@@ -1157,7 +1312,7 @@ FollowWaypointRoute.action
 ## 22. 构建与安装
 
 ```bash
-cd ~/colcon_ws
+cd /path/to/your/workspace
 source /opt/ros/humble/setup.bash
 colcon build --symlink-install --packages-select visual_navigation
 source install/setup.bash
@@ -1179,14 +1334,14 @@ install/visual_navigation/share/visual_navigation/NAVIGATION_CODE_GUIDE.md
 ## 23. 最小运行流程
 
 ```bash
-# 1. 构建并加载环境
-cd ~/colcon_ws
-source install/setup.bash
+# 1. 终端 1：完整导航栈、运行清单和 rosbag
+./scripts/start_visual_navigation.sh
 
-# 2. 启动视觉里程计和导航节点
-ros2 launch visual_navigation visual_navigation_bringup.launch.py \
-  route_file:=/absolute/path/to/route.csv \
-  autostart:=false
+# 2. 终端 2：规划后端和 Python GUI，确认后在 GUI 点击“开始导航”
+./scripts/start_arena_planner.sh
+
+# 固定路线测试改用下面一条，并且不要启动规划 GUI：
+# ./scripts/start_visual_navigation.sh --autostart
 
 # 3. 确认 ORB-SLAM3 定位有效
 ros2 topic echo /tracking_state
@@ -1194,14 +1349,11 @@ ros2 topic echo /tracking_state
 # 4. 确认路线正确
 ros2 topic echo /waypoint_path --once
 
-# 5. 确认车辆安全后启动
-ros2 service call /waypoint_navigator/start std_srvs/srv/Trigger '{}'
-
-# 6. 观察输出
+# 5. 观察输出
 ros2 topic echo /cmd_vel_nav
 ros2 topic echo /waypoint_navigation/status
 
-# 7. 必要时停止
+# 8. 必要时停止
 ros2 service call /waypoint_navigator/stop std_srvs/srv/Trigger '{}'
 ```
 

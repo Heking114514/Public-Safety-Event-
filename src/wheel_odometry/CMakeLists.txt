@@ -18,7 +18,9 @@ find_package(std_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 
-add_library(odometry_integrator src/odometry_integrator.cpp)
+add_library(odometry_integrator
+  src/odometry_integrator.cpp
+  src/mcu_clock_mapper.cpp)
 target_include_directories(odometry_integrator PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
@@ -55,6 +57,8 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(test_odometry_integrator test/test_odometry_integrator.cpp)
   target_link_libraries(test_odometry_integrator odometry_integrator)
+  ament_add_gtest(test_mcu_clock_mapper test/test_mcu_clock_mapper.cpp)
+  target_link_libraries(test_mcu_clock_mapper odometry_integrator)
 endif()
 
 ament_export_targets(export_odometry_integrator HAS_LIBRARY_TARGET)

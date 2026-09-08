@@ -11,7 +11,7 @@
 输出话题：/cup_car_serial/control_telemetry
 输出话题：/cup_car_serial/actuator_healthy
 输出话题：/cup_car_serial/actuator_tracking_status
-串口设备：/dev/ttyUSB0
+串口设备：`auto`；默认只接受唯一的 `/dev/serial/by-id/*` 设备
 波特率：115200，8N1
 发送频率：20 Hz
 命令超时：0.4 s
@@ -81,12 +81,16 @@ ros2 launch cup_car_serial cmd_vel_serial.launch.py \
   rpy_topic:=/imu/rpy
 ```
 
+实车建议将 `device` 显式设置为实际的 `/dev/serial/by-id/...` 路径；只有在确认
+设备枚举环境受控时才启用 `allow_generic_auto_device:=true`，让 `auto` 回退探测
+`/dev/ttyUSB*` 或 `/dev/ttyACM*`。
+
 ## 使用 Python 模拟导航速度
 
 终端 1 持续发布测试速度：
 
 ```bash
-cd /home/j/colcon_ws
+cd /path/to/your/workspace
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 
@@ -100,7 +104,7 @@ python3 scripts/test_cmd_vel_nav.py \
 终端 2 启动串口节点：
 
 ```bash
-cd /home/j/colcon_ws
+cd /path/to/your/workspace
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 

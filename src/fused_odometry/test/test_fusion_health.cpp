@@ -38,6 +38,25 @@ TEST(FusionHealthMonitor, HealthySourcesProduceOneConsistentSnapshot)
   EXPECT_FALSE(result.angular_stalled);
 }
 
+TEST(FusionHealthMonitor, OrbWarmupWaitsThenTimesOutAsDistinctFault)
+{
+  auto monitor = make_monitor();
+  auto input = healthy_input(1.0);
+  input.initialized = false;
+  input.vision = false;
+
+  EXPECT_EQ(monitor.evaluate(input, {}).mode,
+            fused_odometry::FusionMode::kInitializing);
+
+  input.now_seconds = 2.0;
+  input.initialization_timed_out = true;
+  const auto result = monitor.evaluate(input, {});
+  EXPECT_EQ(result.mode, fused_odometry::FusionMode::kFaultInitTimeout);
+  EXPECT_EQ(fused_odometry::health_severity(
+                result.mode, result.wheel_healthy, result.motion_fault),
+            fused_odometry::HealthSeverity::kError);
+}
+
 TEST(FusionHealthMonitor, DeadReckoningUsesValidatedWheelSpeed)
 {
   auto monitor = make_monitor();

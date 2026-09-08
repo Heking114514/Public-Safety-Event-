@@ -10,7 +10,6 @@ import threading
 import time
 import tkinter as tk
 from pathlib import Path
-from tkinter import ttk
 from typing import Any, Optional, Sequence
 
 import yaml
@@ -20,26 +19,35 @@ from ament_index_python.packages import get_package_share_directory
 from arena_path_planner.srv import PlanArenaPath
 from geometry_msgs.msg import Point, Point32, Polygon, Pose
 from nav_msgs.msg import Odometry
-from std_msgs.msg import UInt64
+from std_msgs.msg import String, UInt64
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import (
+    DurabilityPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+    qos_profile_sensor_data,
+)
+
+from arena_view import ArenaView
+from mission_execution import (
+    AutoReplanBackoff,
+    LatestRequestQueue,
+    MissionExecutionState,
+    PLANNER_REQUEST_TIMEOUT_SECONDS,
+    RouteFailureCooldown,
+    RouteExecution,
+    valid_odometry_stamp,
+)
 
 
 SERVICE_NAME = "/arena_path_planner/plan"
 ODOMETRY_TOPIC = "/odometry/fused"
 ODOMETRY_TIMEOUT_S = 0.5
+ROUTE_ACK_TIMEOUT_MS = 1500
+ROUTE_FAILURE_COOLDOWN_S = 5.0
 ROUTE_ACK_TOPIC = "/waypoint_navigation/route_ack"
-BACKGROUND = "#f7f8fa"
-PANEL = "#ffffff"
-ROAD = "#f7f8fa"
-OBSTACLE = "#252b31"
-GRID = "#98a2b3"
-ROUTE = "#d92d20"
-ROUTE_GLOW = "#fda29b"
-CAR = "#dc2626"
-TARGET = "#f59e0b"
-GRID_METERS = 0.6
+NAVIGATION_STATUS_TOPIC = "/waypoint_navigation/status"
 
 
 def normalize_angle(angle: float) -> float:
@@ -64,42 +72,83 @@ class PlannerClient(Node):
         self,
         responses: queue.Queue[tuple[int, Any]],
         odometry_updates: queue.Queue[Optional[tuple[float, float, float, float]]],
-        route_acks: queue.Queue[int],
+        navigation_events: queue.Queue[tuple[str, Any, float]],
     ) -> None:
         super().__init__("arena_route_frontend")
         self.client = self.create_client(PlanArenaPath, SERVICE_NAME)
         self.responses = responses
         self.odometry_updates = odometry_updates
-        self.route_acks = route_acks
+        self.navigation_events = navigation_events
         self.lock = threading.Lock()
-        self.in_flight = False
-        self.pending: Optional[tuple[Any, ...]] = None
+        self.request_queue = LatestRequestQueue()
+        self.request_timeout_timer: Optional[threading.Timer] = None
+        self.request_future: Optional[Any] = None
+        self.requests_closed = False
+        self.last_odometry_stamp_ns = 0
         self.odom_subscription = self.create_subscription(
             Odometry, ODOMETRY_TOPIC, self._handle_odometry, qos_profile_sensor_data
         )
         self.route_ack_subscription = self.create_subscription(
-            UInt64, ROUTE_ACK_TOPIC, self._handle_route_ack, 10
+            UInt64,
+            ROUTE_ACK_TOPIC,
+            self._handle_route_ack,
+            QoSProfile(
+                depth=1,
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            ),
+        )
+        self.navigation_status_subscription = self.create_subscription(
+            String,
+            NAVIGATION_STATUS_TOPIC,
+            self._handle_navigation_status,
+            QoSProfile(
+                depth=1,
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            ),
         )
 
     def _handle_route_ack(self, message: UInt64) -> None:
+        self._put_navigation_event("ack", int(message.data))
+
+    def _handle_navigation_status(self, message: String) -> None:
+        self._put_navigation_event("status", str(message.data))
+
+    def _put_navigation_event(self, kind: str, value: Any) -> None:
+        event = (kind, value, time.monotonic())
         try:
-            self.route_acks.put_nowait(int(message.data))
+            self.navigation_events.put_nowait(event)
         except queue.Full:
-            pass
+            try:
+                self.navigation_events.get_nowait()
+            except queue.Empty:
+                return
+            self.navigation_events.put_nowait(event)
 
     def _handle_odometry(self, message: Odometry) -> None:
         x = float(message.pose.pose.position.x)
         y = float(message.pose.pose.position.y)
-        yaw = quaternion_to_yaw(message.pose.pose.orientation)
-        frame = message.header.frame_id
-        update = (
-            (x, y, yaw, time.monotonic())
-            if math.isfinite(x)
-            and math.isfinite(y)
-            and yaw is not None
-            and (not frame or frame == "map")
-            else None
+        z = float(message.pose.pose.position.z)
+        orientation = message.pose.pose.orientation
+        current_time_ns = self.get_clock().now().nanoseconds
+        stamp_ns = valid_odometry_stamp(
+            message.header.frame_id,
+            message.child_frame_id,
+            (x, y, z, orientation.x, orientation.y, orientation.z, orientation.w),
+            int(message.header.stamp.sec),
+            int(message.header.stamp.nanosec),
+            current_time_ns,
+            self.last_odometry_stamp_ns,
+            ODOMETRY_TIMEOUT_S,
         )
+        if stamp_ns is None:
+            return
+        yaw = quaternion_to_yaw(message.pose.pose.orientation)
+        if yaw is None:
+            return
+        self.last_odometry_stamp_ns = stamp_ns
+        update = (x, y, yaw, time.monotonic())
         try:
             self.odometry_updates.put_nowait(update)
         except queue.Full:
@@ -112,30 +161,46 @@ class PlannerClient(Node):
     def service_ready(self) -> bool:
         return self.client.service_is_ready()
 
+    @property
+    def in_flight(self) -> bool:
+        with self.lock:
+            return self.request_queue.in_flight
+
     def request(
         self, generation: int, start: Pose, mode: str, activate: bool,
         obstacles: list[tuple[float, float, float, float]],
         targets: list[tuple[str, float, float]],
         covered_edges: list[str],
+        remaining_visits: list[str],
     ) -> None:
-        item = (generation, start, mode, activate, obstacles, targets, covered_edges)
+        item = (
+            generation, start, mode, activate, obstacles, targets,
+            covered_edges, remaining_visits,
+        )
         if not self.client.service_is_ready():
             self.responses.put((generation, RuntimeError("规划后端未启动")))
             return
         with self.lock:
-            if self.in_flight:
-                self.pending = item
+            if self.requests_closed:
                 return
-            self.in_flight = True
-        self._send(item)
+            dispatch = self.request_queue.submit(item)
+        if dispatch is not None:
+            self._send(*dispatch)
 
-    def _send(self, item: tuple[Any, ...]) -> None:
-        generation, start, mode, activate, obstacles, targets, covered_edges = item
+    def _send(self, token: int, item: tuple[Any, ...]) -> None:
+        with self.lock:
+            if self.requests_closed or self.request_queue.active_token != token:
+                return
+        (
+            generation, start, mode, activate, obstacles, targets,
+            covered_edges, remaining_visits,
+        ) = item
         request = PlanArenaPath.Request()
         request.start = start
         request.mode = mode
         request.activate_navigation = activate
         request.covered_edges = covered_edges
+        request.remaining_visits = remaining_visits
         for label, x, y in targets:
             request.targets.append(Point(x=x, y=y))
             request.labels.append(label)
@@ -151,29 +216,108 @@ class PlannerClient(Node):
         try:
             future = self.client.call_async(request)
         except Exception as exception:
-            self.responses.put((generation, exception))
-            with self.lock:
-                next_item = self.pending
-                self.pending = None
-                if next_item is None:
-                    self.in_flight = False
-            if next_item is not None:
-                self._send(next_item)
+            self._finish_failed_send(token, generation, exception)
             return
-        future.add_done_callback(lambda completed: self._complete(generation, completed))
+        timeout_timer = threading.Timer(
+            PLANNER_REQUEST_TIMEOUT_SECONDS,
+            self._request_timed_out,
+            args=(token, generation, future),
+        )
+        timeout_timer.daemon = True
+        with self.lock:
+            if self.requests_closed or self.request_queue.active_token != token:
+                cancel_immediately = True
+            else:
+                self.request_future = future
+                self.request_timeout_timer = timeout_timer
+                cancel_immediately = False
+        if cancel_immediately:
+            try:
+                future.cancel()
+            except Exception:
+                pass
+            return
+        future.add_done_callback(
+            lambda completed: self._complete_request(token, generation, completed)
+        )
+        timeout_timer.start()
 
-    def _complete(self, generation: int, future: Any) -> None:
+    def _claim_request_completion(
+        self, token: int
+    ) -> Optional[tuple[Optional[threading.Timer], Optional[Any], Optional[tuple[int, Any]]]]:
+        with self.lock:
+            accepted, next_dispatch = self.request_queue.complete(token)
+            if not accepted:
+                return None
+            timeout_timer = self.request_timeout_timer
+            future = self.request_future
+            self.request_timeout_timer = None
+            self.request_future = None
+        return timeout_timer, future, next_dispatch
+
+    def _continue_with_latest(self, next_dispatch: Optional[tuple[int, Any]]) -> None:
+        if next_dispatch is not None:
+            self._send(*next_dispatch)
+
+    def _finish_failed_send(
+        self, token: int, generation: int, exception: Exception
+    ) -> None:
+        claimed = self._claim_request_completion(token)
+        if claimed is None:
+            return
+        timeout_timer, _future, next_dispatch = claimed
+        if timeout_timer is not None:
+            timeout_timer.cancel()
+        self.responses.put((generation, exception))
+        self._continue_with_latest(next_dispatch)
+
+    def _complete_request(self, token: int, generation: int, future: Any) -> None:
+        claimed = self._claim_request_completion(token)
+        if claimed is None:
+            return
+        timeout_timer, _active_future, next_dispatch = claimed
+        if timeout_timer is not None:
+            timeout_timer.cancel()
         try:
             self.responses.put((generation, future.result()))
         except Exception as exception:  # rclpy propagates transport failures here.
             self.responses.put((generation, exception))
+        self._continue_with_latest(next_dispatch)
+
+    def _request_timed_out(self, token: int, generation: int, future: Any) -> None:
+        claimed = self._claim_request_completion(token)
+        if claimed is None:
+            return
+        _timeout_timer, _active_future, next_dispatch = claimed
+        try:
+            future.cancel()
+        except Exception:
+            pass
+        self.responses.put(
+            (
+                generation,
+                TimeoutError(
+                    f"规划服务 {PLANNER_REQUEST_TIMEOUT_SECONDS:.0f} 秒未响应"
+                ),
+            )
+        )
+        self._continue_with_latest(next_dispatch)
+
+    def cancel_requests(self) -> None:
         with self.lock:
-            next_item = self.pending
-            self.pending = None
-            if next_item is None:
-                self.in_flight = False
-        if next_item is not None:
-            self._send(next_item)
+            self.requests_closed = True
+            self.request_queue.cancel()
+            timeout_timer = self.request_timeout_timer
+            future = self.request_future
+            self.request_timeout_timer = None
+            self.request_future = None
+        if timeout_timer is not None:
+            timeout_timer.cancel()
+        if future is not None:
+            try:
+                future.cancel()
+            except Exception:
+                pass
 
 
 class ArenaFrontend:
@@ -207,12 +351,33 @@ class ArenaFrontend:
         self.planned_deferred_labels: list[str] = []
         self.retry_pending = False
         self.retry_used = False
+        self.preview_covered_edges: list[str] = []
         self.covered_edges: list[str] = []
+        graph_edges = config.get("inspection_graph", {}).get("edges", [])
+        road_labels = [str(edge[2]) for edge in graph_edges if len(edge) >= 3]
+        self.mission = MissionExecutionState(
+            [str(label) for label, _position in self.tasks],
+            list(config.get("tunnels", {}).keys()),
+            road_labels,
+        )
+        self.mission_running = False
+        self.auto_waiting = False
+        self.auto_wait_mode = "layered"
+        self.auto_replan_backoff = AutoReplanBackoff()
         self.generation = 0
         self.applied_generation = -1
         self.request_count = 0
-        self.activation_requests: set[int] = set()
+        self.activation_requests: dict[int, tuple[str, float]] = {}
+        self.mission_probe_requests: dict[int, str] = {}
         self.awaiting_route_ack_stamp: Optional[int] = None
+        self.received_route_acks: dict[int, float] = {}
+        self.expired_route_ids: set[int] = set()
+        self.recent_navigation_statuses: list[tuple[str, float]] = []
+        self.replan_after_id: Optional[str] = None
+        self.ack_watchdog_after_id: Optional[str] = None
+        self.route_failure_cooldown = RouteFailureCooldown(
+            ROUTE_FAILURE_COOLDOWN_S
+        )
         self.last_drag_request = 0.0
         self.dragging = False
         self.playing = False
@@ -223,10 +388,14 @@ class ArenaFrontend:
         self.odometry_updates: queue.Queue[
             Optional[tuple[float, float, float, float]]
         ] = queue.Queue(maxsize=1)
-        self.route_acks: queue.Queue[int] = queue.Queue(maxsize=8)
+        self.navigation_events: queue.Queue[tuple[str, Any, float]] = queue.Queue(
+            maxsize=64
+        )
 
         rclpy.init(args=[])
-        self.node = PlannerClient(self.responses, self.odometry_updates, self.route_acks)
+        self.node = PlannerClient(
+            self.responses, self.odometry_updates, self.navigation_events
+        )
         self.executor = MultiThreadedExecutor(num_threads=2)
         self.executor.add_node(self.node)
         self.spin_thread = threading.Thread(target=self.executor.spin, daemon=True)
@@ -236,256 +405,18 @@ class ArenaFrontend:
         self.order_var = tk.StringVar(value="shortest")
         self.status_var = tk.StringVar(value="等待规划后端")
         self.metrics_var = tk.StringVar(value="路径 -- m    规划 -- ms    重规划 0")
-        self._build_ui()
+        self.view = ArenaView(self.root, self, self.width_m, self.height_m)
         self.root.after(50, self._poll)
         self.root.after(200, self._request_initial_plan)
 
-    def _build_ui(self) -> None:
-        self.root.title("赛场闭环路径规划器")
-        self.root.geometry("1040x790")
-        self.root.minsize(900, 700)
-        self.root.configure(bg=BACKGROUND)
-        self.root.protocol("WM_DELETE_WINDOW", self.close)
-        style = ttk.Style(self.root)
-        try:
-            style.theme_use("clam")
-        except tk.TclError:
-            pass
-        style.configure("Simulation.Status.TLabel", foreground="#166534")
-        style.configure("NoOdom.Status.TLabel", foreground="#991b1b")
-        style.configure("OdomReady.Status.TLabel", foreground="#15803d")
-        style.configure(
-            "Navigation.TButton",
-            background="#15803d",
-            foreground="#ffffff",
-            font=("Sans", 10, "bold"),
-            padding=(12, 6),
-        )
-        style.map(
-            "Navigation.TButton",
-            background=[("active", "#166534"), ("disabled", "#9ca3af")],
-            foreground=[("disabled", "#f3f4f6")],
-        )
-        toolbar = ttk.Frame(self.root, padding=(10, 8))
-        toolbar.pack(fill=tk.X)
-        self.publish_button = ttk.Button(
-            toolbar,
-            text="开始导航",
-            command=self.publish_navigation,
-            style="Navigation.TButton",
-        )
-        self.publish_button.pack(side=tk.RIGHT, padx=(10, 0))
-        self.status_label = ttk.Label(
-            toolbar, text="SIMULATION", style="Simulation.Status.TLabel"
-        )
-        self.status_label.pack(side=tk.LEFT, padx=(0, 12))
-        ttk.Label(toolbar, text="模式").pack(side=tk.LEFT, padx=(0, 4))
-        self.mode_box = ttk.Combobox(toolbar, textvariable=self.mode_var,
-                                    values=("simulation", "vehicle"), width=11,
-                                    state="readonly")
-        self.mode_box.pack(side=tk.LEFT)
-        self.mode_box.bind("<<ComboboxSelected>>", lambda _event: self._mode_changed())
-        ttk.Label(toolbar, text="顺序").pack(side=tk.LEFT, padx=(14, 4))
-        self.order_box = ttk.Combobox(toolbar, textvariable=self.order_var,
-                                    values=("shortest", "numbered"), width=11,
-                                    state="readonly")
-        self.order_box.pack(side=tk.LEFT)
-        self.order_box.bind("<<ComboboxSelected>>", lambda _event: self._request_initial_plan())
-        self.start_button = ttk.Button(toolbar, text="开始规划", command=self._request_initial_plan)
-        self.start_button.pack(side=tk.LEFT, padx=(14, 4))
-        self.next_layer_button = ttk.Button(
-            toolbar, text="进入第二阶段", command=self.advance_layer,
-            state=tk.DISABLED,
-        )
-        self.next_layer_button.pack(side=tk.LEFT, padx=3)
-        self.reset_button = ttk.Button(toolbar, text="重置", command=self.reset_vehicle)
-        self.reset_button.pack(side=tk.LEFT, padx=3)
-        self.play_button = ttk.Button(toolbar, text="播放", command=self.toggle_playback)
-        self.play_button.pack(side=tk.LEFT, padx=3)
-        self.clear_button = ttk.Button(toolbar, text="清除障碍", command=self.clear_obstacles)
-        self.clear_button.pack(side=tk.LEFT, padx=3)
-
-        body = ttk.Frame(self.root, padding=(10, 0, 10, 10))
-        body.pack(fill=tk.BOTH, expand=True)
-        self.canvas = tk.Canvas(body, bg="#20252b", highlightthickness=1,
-                                highlightbackground="#667085", cursor="crosshair")
-        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        panel = ttk.Frame(body, width=270, padding=(14, 8))
-        panel.pack(side=tk.RIGHT, fill=tk.Y)
-        panel.pack_propagate(False)
-        self._panel_row(panel, "规划状态", self.status_var)
-        self._panel_row(panel, "路径指标", self.metrics_var)
-        self.remaining_var = tk.StringVar(value=f"{len(self.remaining_labels)} 个")
-        self._panel_row(panel, "剩余目标", self.remaining_var)
-        ttk.Separator(panel).pack(fill=tk.X, pady=12)
-        self._panel_row(panel, "模拟车辆", tk.StringVar(value="拖动地图中的红色车辆"))
-        self._panel_row(panel, "动态障碍", tk.StringVar(value="Ctrl+左键添加，右键删除"))
-        ttk.Separator(panel).pack(fill=tk.X, pady=12)
-        ttk.Label(panel, text="shortest：最短闭环\nnumbered：按标签顺序",
-                justify=tk.LEFT, wraplength=240).pack(anchor=tk.W)
-
-        self.canvas.bind("<Configure>", lambda _event: self.draw())
-        self.canvas.bind("<ButtonPress-1>", self._drag_start)
-        self.canvas.bind("<B1-Motion>", self._drag_motion)
-        self.canvas.bind("<ButtonRelease-1>", self._drag_end)
-        self.canvas.bind("<Control-Button-1>", self._add_obstacle)
-        self.canvas.bind("<Control-Button-3>", self._remove_obstacle)
-        self.canvas.bind("<B3-Motion>", self._rotate_motion)
-        self.canvas.bind("<MouseWheel>", self._wheel_rotate)
-
-    def _panel_row(self, parent: Any, title: str, variable: Any) -> None:
-        ttk.Label(parent, text=title).pack(anchor=tk.W, pady=(4, 1))
-        ttk.Label(parent, textvariable=variable, wraplength=240,
-                justify=tk.LEFT).pack(anchor=tk.W)
-
-    def _transform(self) -> tuple[float, float, float]:
-        width = max(1, self.canvas.winfo_width())
-        height = max(1, self.canvas.winfo_height())
-        padding = 24.0
-        scale = min((width - 2 * padding) / self.width_m,
-                    (height - 2 * padding) / self.height_m)
-        return scale, (width - self.width_m * scale) * 0.5, (height - self.height_m * scale) * 0.5
-
     def _to_canvas(self, x: float, y: float) -> tuple[float, float]:
-        scale, origin_x, origin_y = self._transform()
-        return origin_x + x * scale, self.canvas.winfo_height() - origin_y - y * scale
+        return self.view.to_canvas(x, y)
 
     def _to_world(self, x: float, y: float) -> tuple[float, float]:
-        scale, origin_x, origin_y = self._transform()
-        return (x - origin_x) / scale, (self.canvas.winfo_height() - origin_y - y) / scale
+        return self.view.to_world(x, y)
 
     def draw(self) -> None:
-        self.canvas.delete("all")
-        scale, offset_x, offset_y = self._transform()
-        for index in range(int(self.width_m / GRID_METERS) + 1):
-            x0, y0 = self._to_canvas(index * GRID_METERS, 0.0)
-            _, y1 = self._to_canvas(index * GRID_METERS, self.height_m)
-            self.canvas.create_line(x0, y0, x0, y1, fill=GRID, dash=(2, 5))
-        for index in range(int(self.height_m / GRID_METERS) + 1):
-            x0, y0 = self._to_canvas(0.0, index * GRID_METERS)
-            x1, _ = self._to_canvas(self.width_m, index * GRID_METERS)
-            self.canvas.create_line(x0, y0, x1, y0, fill=GRID, dash=(2, 5))
-        for region in self.arena["free_regions"]:
-            x0, y0 = self._to_canvas(float(region[0]), float(region[1]))
-            x1, y1 = self._to_canvas(float(region[2]), float(region[3]))
-            self.canvas.create_rectangle(x0, y0, x1, y1, fill=ROAD, outline=ROAD)
-        for obstacle in self.arena["obstacles"]:
-            x0, y0 = self._to_canvas(float(obstacle[0]), float(obstacle[1]))
-            x1, y1 = self._to_canvas(float(obstacle[2]), float(obstacle[3]))
-            self.canvas.create_rectangle(x0, y0, x1, y1, fill=OBSTACLE, outline="#68717d")
-        # Tunnels are mandatory inspection bands. Draw their diagonal hatch
-        # explicitly so the visual map matches the competition diagram.
-        for label, tunnel in self.config.get("tunnels", {}).items():
-            if not isinstance(tunnel, dict):
-                continue
-            entry = tuple(map(float, tunnel["entry"]))
-            exit_point = tuple(map(float, tunnel["exit"]))
-            ex, ey = self._to_canvas(*entry)
-            xx, xy = self._to_canvas(*exit_point)
-            self.canvas.create_line(ex, ey, xx, xy, fill="#f5d0a9", width=18)
-            self.canvas.create_line(ex, ey, xx, xy, fill="#b45309", width=2)
-            for fraction in (0.2, 0.4, 0.6, 0.8):
-                cx = ex + fraction * (xx - ex)
-                cy = ey + fraction * (xy - ey)
-                self.canvas.create_line(cx - 8, cy - 8, cx + 8, cy + 8, fill="#92400e", width=1)
-            self.canvas.create_text(
-                (ex + xx) * 0.5, (ey + xy) * 0.5 - 12,
-                text=label, fill="#78350f", font=("Sans", 8, "bold"),
-            )
-        for obstacle in self.dynamic_obstacles:
-            x0, y0 = self._to_canvas(obstacle[0], obstacle[1])
-            x1, y1 = self._to_canvas(obstacle[2], obstacle[3])
-            self.canvas.create_rectangle(
-                x0, y0, x1, y1, fill="#ef4444", outline="#fecaca", width=2,
-            )
-        grid_step = 0.6
-        for index in range(int(self.width_m / grid_step) + 1):
-            x = index * grid_step
-            x0, y0 = self._to_canvas(x, 0.0)
-            _, y1 = self._to_canvas(x, self.height_m)
-            self.canvas.create_line(x0, y0, x0, y1, fill=GRID, dash=(2, 5), width=1)
-        for index in range(int(self.height_m / grid_step) + 1):
-            y = index * grid_step
-            x0, y0 = self._to_canvas(0.0, y)
-            x1, _ = self._to_canvas(self.width_m, y)
-            self.canvas.create_line(x0, y0, x1, y0, fill=GRID, dash=(2, 5), width=1)
-
-        layer_colours = {1: ("#2563eb", "#93c5fd"), 2: ("#16a34a", "#86efac"), 3: ("#9333ea", "#d8b4fe")}
-        layer_route = self.layer_routes.get(self.visible_layer, [])
-        segments = self.layer_display_segments.get(self.visible_layer)
-        if not segments and len(layer_route) >= 2:
-            segments = [layer_route]
-        # Keep navigation connectors visible in stage 3.  They are required
-        # travel legs, but only the newly inspected road portions are purple.
-        if self.visible_layer == 3 and len(layer_route) >= 2:
-            connector_coordinates = [
-                coordinate for point in layer_route
-                for coordinate in self._to_canvas(point[0], point[1])]
-            self.canvas.create_line(
-                *connector_coordinates, fill="#64748b", width=2, dash=(5, 4))
-        if segments:
-            colour, glow = layer_colours[self.visible_layer]
-            for segment in segments:
-                if len(segment) < 2:
-                    continue
-                coordinates = [coordinate for point in segment for coordinate in self._to_canvas(point[0], point[1])]
-                self.canvas.create_line(*coordinates, fill=glow, width=7)
-                self.canvas.create_line(*coordinates, fill=colour, width=3)
-                for index in range(0, len(segment), max(1, len(segment) // 12)):
-                    cx, cy = self._to_canvas(segment[index][0], segment[index][1])
-                    self.canvas.create_oval(cx - 2, cy - 2, cx + 2, cy + 2, fill=colour, outline="")
-
-        if self.mode_var.get() == "vehicle" and len(self.odom_trace) >= 2:
-            trace_coordinates = [
-                coordinate
-                for point in self.odom_trace
-                for coordinate in self._to_canvas(point[0], point[1])
-            ]
-            self.canvas.create_line(
-                *trace_coordinates, fill="#0891b2", width=2, smooth=True
-            )
-
-        radius = max(5.0, min(10.0, scale * 0.035))
-        for label, position in self.tasks:
-            cx, cy = self._to_canvas(float(position[0]), float(position[1]))
-            self.canvas.create_oval(cx - radius, cy - radius, cx + radius, cy + radius,
-                                    fill=TARGET, outline="#7c2d12", width=1)
-            self.canvas.create_text(cx, cy, text=str(label), fill="#171717", font=("Sans", 8, "bold"))
-        self._draw_vehicle(scale)
-
-    def _draw_vehicle(self, scale: float) -> None:
-        cx, cy = self._to_canvas(self.vehicle_x, self.vehicle_y)
-        length = self.vehicle_length_m * scale
-        width = self.vehicle_width_m * scale
-        direction = -self.vehicle_yaw
-        forward = (math.cos(direction), math.sin(direction))
-        side = (-forward[1], forward[0])
-        collision_radius = 0.5 * math.hypot(length, width) + self.safety_margin_m * scale
-        self.canvas.create_oval(
-            cx - collision_radius, cy - collision_radius,
-            cx + collision_radius, cy + collision_radius,
-            outline="#fca5a5", dash=(3, 3), width=1,
-        )
-        points = [
-            (cx + forward[0] * length * 0.5 + side[0] * width * 0.5,
-            cy + forward[1] * length * 0.5 + side[1] * width * 0.5),
-            (cx + forward[0] * length * 0.5 - side[0] * width * 0.5,
-            cy + forward[1] * length * 0.5 - side[1] * width * 0.5),
-            (cx - forward[0] * length * 0.5 - side[0] * width * 0.5,
-            cy - forward[1] * length * 0.5 - side[1] * width * 0.5),
-            (cx - forward[0] * length * 0.5 + side[0] * width * 0.5,
-            cy - forward[1] * length * 0.5 + side[1] * width * 0.5),
-        ]
-        flattened = [coordinate for point in points for coordinate in point]
-        self.canvas.create_polygon(*flattened, fill=CAR, outline="white", width=2)
-        self.canvas.create_line(
-            cx + forward[0] * length * 0.5 - side[0] * width * 0.5,
-            cy + forward[1] * length * 0.5 - side[1] * width * 0.5,
-            cx + forward[0] * length * 0.5 + side[0] * width * 0.5,
-            cy + forward[1] * length * 0.5 + side[1] * width * 0.5,
-            fill="white", width=3,
-        )
-        self.canvas.create_oval(cx - 3, cy - 3, cx + 3, cy + 3, fill="white", outline="")
+        self.view.draw()
 
     def _pose(self, values: Optional[tuple[float, float, float]] = None) -> Pose:
         x, y, yaw = values or (self.vehicle_x, self.vehicle_y, self.vehicle_yaw)
@@ -549,22 +480,27 @@ class ArenaFrontend:
         if ready != self.odom_ready:
             self.odom_ready = ready
             if self.mode_var.get() == "vehicle":
-                self.status_label.configure(
+                self.view.status_label.configure(
                     text="ODOM READY" if ready else "NO ODOM",
                     style="OdomReady.Status.TLabel" if ready else "NoOdom.Status.TLabel",
                 )
                 self.draw()
 
     def request_plan(self, activate: bool = False) -> None:
+        if self.mission_running:
+            self.status_var.set("自动任务运行中，忽略预览规划请求")
+            return
         if activate and self.mode_var.get() != "vehicle":
             self.status_var.set("模拟模式禁止发布导航命令")
             return
+        mode = {1: "layer1", 2: "layer2", 3: "layer3"}.get(
+            self.layer_mode, "layer1"
+        )
         self.generation += 1
         self.request_count += 1
         if activate:
-            self.activation_requests.add(self.generation)
+            self.activation_requests[self.generation] = (mode, time.monotonic())
         self.status_var.set("正在规划..." if self.node.service_ready() else "规划后端未就绪")
-        mode = {1: "layer1", 2: "layer2", 3: "layer3"}.get(self.layer_mode, "layer1")
         self.node.request(
             self.generation, self._pose(self.layer_start), mode, activate,
             list(self.dynamic_obstacles),
@@ -573,22 +509,26 @@ class ArenaFrontend:
                 for label, position in self.tasks
                 if str(label) in self.remaining_labels
             ],
-            list(self.covered_edges),
+            list(self.preview_covered_edges),
+            [],
         )
 
     def _request_initial_plan(self) -> None:
+        if self.mission_running:
+            self.status_var.set("自动任务运行中，不能替换当前路线")
+            return
         self.layer_mode = 1
         self.visible_layer = 1
         self.layer_routes.clear()
         self.layer_display_segments.clear()
-        self.covered_edges.clear()
+        self.preview_covered_edges.clear()
         self.layer_start = (self.vehicle_x, self.vehicle_y, self.vehicle_yaw)
-        self.next_layer_button.configure(text="进入第二阶段", state=tk.DISABLED)
+        self.view.next_layer_button.configure(text="进入第二阶段", state=tk.DISABLED)
         self.request_plan()
 
     def advance_layer(self) -> None:
         """Start the next inspection phase only after operator confirmation."""
-        if self.layer_mode >= 3 or self.node.in_flight:
+        if self.mission_running or self.layer_mode >= 3 or self.node.in_flight:
             return
         current_route = self.layer_routes.get(self.layer_mode, [])
         if len(current_route) < 2:
@@ -597,11 +537,14 @@ class ArenaFrontend:
         self.layer_start = current_route[-1]
         self.layer_mode += 1
         self.visible_layer = self.layer_mode
-        self.next_layer_button.configure(state=tk.DISABLED)
+        self.view.next_layer_button.configure(state=tk.DISABLED)
         self.status_var.set(f"正在规划第 {self.layer_mode} 阶段...")
         self.request_plan()
 
     def publish_navigation(self) -> None:
+        if self.mission_running:
+            self.status_var.set("自动任务已经在运行")
+            return
         if self.mode_var.get() != "vehicle":
             self.status_var.set("当前是模拟模式：请先切换到 vehicle 再开始导航")
             return
@@ -611,17 +554,390 @@ class ArenaFrontend:
         if not self._odometry_is_ready():
             self.status_var.set("无法开始导航：融合里程计未就绪或已超时")
             return
+        if not self.mission_running:
+            self.mission.reset()
+            self.covered_edges.clear()
+            self.expired_route_ids.clear()
+            self.route_failure_cooldown.clear()
+            self.remaining_labels = [str(label) for label, _position in self.tasks]
+            self.planned_deferred_labels.clear()
+        self.mission_running = True
+        self.auto_waiting = False
+        self.auto_replan_backoff.reset()
+        self._set_mission_controls(True)
+        self._request_mission_plan("layered")
+
+    def _set_mission_controls(self, running: bool) -> None:
+        self.view.publish_button.configure(
+            state=tk.DISABLED if running else tk.NORMAL,
+            text="自动任务运行中" if running else "开始导航",
+        )
+        self.view.mode_box.configure(state=tk.DISABLED if running else "readonly")
+        self.view.order_box.configure(state=tk.DISABLED if running else "readonly")
+        for control in (
+            self.view.start_button,
+            self.view.next_layer_button,
+            self.view.reset_button,
+            self.view.clear_button,
+        ):
+            control.configure(state=tk.DISABLED if running else tk.NORMAL)
+
+    def _request_mission_plan(self, mode: str, probe: bool = False) -> None:
+        if self.closing or not self.mission_running:
+            return
+        if not self.node.service_ready() or self.node.in_flight:
+            if probe or self.auto_waiting:
+                self._schedule_auto_wait_probe(mode, "等待规划后端后自动重试")
+            else:
+                self._schedule_mission_replan(mode, "等待规划后端后自动重试")
+            return
+        if not self._odometry_is_ready():
+            if probe or self.auto_waiting:
+                self._schedule_auto_wait_probe(mode, "等待新鲜里程计后自动续规划")
+            else:
+                self._schedule_mission_replan(mode, "等待新鲜里程计后自动续规划")
+            return
+
+        remaining_tasks = set(self.mission.remaining_tasks())
+        targets = [
+            (str(label), float(position[0]), float(position[1]))
+            for label, position in self.tasks
+            if str(label) in remaining_tasks
+        ] if mode in {"layered", "layer1"} else []
         self.generation += 1
         self.request_count += 1
-        self.activation_requests.add(self.generation)
-        self.publish_button.configure(state=tk.DISABLED, text="正在启动...")
-        self.status_var.set("正在发布三层完整路线...")
-        self.node.request(
-            self.generation, self._pose(), "layered", True,
-            list(self.dynamic_obstacles),
-            [(str(label), float(position[0]), float(position[1])) for label, position in self.tasks],
-            list(self.covered_edges),
+        if probe:
+            self.mission_probe_requests[self.generation] = mode
+        else:
+            self.activation_requests[self.generation] = (mode, time.monotonic())
+        self.status_var.set(
+            "正在规划完整任务..." if mode == "layered" else f"正在自动续规划 {mode}..."
         )
+        self.node.request(
+            self.generation, self._pose(), mode, not probe,
+            list(self.dynamic_obstacles),
+            targets,
+            self.mission.covered_roads(),
+            self.mission.remaining_tasks() + self.mission.remaining_tunnels(),
+        )
+
+    def _schedule_mission_replan(
+        self, mode: str, reason: str, delay_ms: int = 750
+    ) -> None:
+        if self.closing or not self.mission_running:
+            return
+        self.status_var.set(reason)
+        if self.replan_after_id is not None:
+            return
+
+        def retry() -> None:
+            self.replan_after_id = None
+            self._request_mission_plan(mode)
+
+        self.replan_after_id = self.root.after(delay_ms, retry)
+
+    def _schedule_auto_wait_probe(self, mode: str, reason: str) -> None:
+        if self.closing or not self.mission_running:
+            return
+        self.auto_waiting = True
+        self.auto_wait_mode = mode
+        delay = self.auto_replan_backoff.next_delay()
+        self.status_var.set(f"AUTO_WAIT_REPLAN：{reason}，{delay:.1f} 秒后自动重规划")
+        if self.replan_after_id is not None:
+            return
+
+        def probe() -> None:
+            self.replan_after_id = None
+            self._request_mission_plan(self.auto_wait_mode, probe=True)
+
+        self.replan_after_id = self.root.after(int(delay * 1000), probe)
+
+    def _finish_mission(self) -> None:
+        self.mission_running = False
+        self.auto_waiting = False
+        self._cancel_ack_watchdog()
+        self.awaiting_route_ack_stamp = None
+        self.planned_deferred_labels.clear()
+        self.view.remaining_var.set("0 个延迟目标")
+        self._set_mission_controls(False)
+        self.view.publish_button.configure(text="重新执行")
+        self.view.next_layer_button.configure(state=tk.DISABLED)
+        self.status_var.set("全部任务已实际执行完成")
+
+    def _read_route(self, response: Any) -> None:
+        self.route = []
+        for pose in response.arena_path.poses:
+            orientation = pose.pose.orientation
+            yaw = math.atan2(
+                2.0 * (orientation.w * orientation.z + orientation.x * orientation.y),
+                1.0 - 2.0 * (orientation.y ** 2 + orientation.z ** 2),
+            )
+            self.route.append((pose.pose.position.x, pose.pose.position.y, yaw))
+
+    def _handle_preview_response(self, response: Any) -> None:
+        incomplete = bool(response.deferred_targets) or not bool(
+            response.all_targets_reached
+        )
+        self.layer_routes[self.layer_mode] = list(self.route)
+        self.layer_display_segments[self.layer_mode] = self._display_segments(
+            self.layer_mode, self.route, list(response.visit_order)
+        )
+        self.visible_layer = self.layer_mode
+        self.planned_deferred_labels = list(response.deferred_targets)
+        for edge in response.covered_edges:
+            if edge not in self.preview_covered_edges:
+                self.preview_covered_edges.append(edge)
+        self.status_var.set(
+            f"第 {self.layer_mode} 阶段可达部分已规划，实车将自动续规划"
+            if incomplete
+            else f"第 {self.layer_mode} 阶段规划完成"
+        )
+        if self.layer_mode < 3:
+            self.view.next_layer_button.configure(
+                text=f"进入第 {self.layer_mode + 1} 阶段",
+                state=tk.DISABLED if incomplete else tk.NORMAL,
+            )
+        else:
+            self.view.next_layer_button.configure(text="三阶段已完成", state=tk.DISABLED)
+
+    def _accept_route_ack(self, route_id: int, received_at: float) -> None:
+        if route_id in self.expired_route_ids:
+            return
+        if not self.mission.acknowledge(route_id, received_at):
+            return
+        self._cancel_ack_watchdog()
+        self.received_route_acks.pop(route_id, None)
+        self.awaiting_route_ack_stamp = None
+        active = self.mission.active
+        deferred_count = len(active.deferred_targets) if active is not None else 0
+        self.status_var.set(
+            "阶段路线已确认并启动"
+            + (f"，后续仍有 {deferred_count} 项待重规划" if deferred_count else "")
+        )
+        for status, status_at in self.recent_navigation_statuses:
+            if active is not None and status_at >= active.activation_requested_at:
+                self._observe_active_route_status(status, status_at)
+
+    def _observe_active_route_status(self, status: str, received_at: float) -> None:
+        interrupted = self.mission.abort_for_status(status, received_at)
+        if interrupted is not None:
+            if status.startswith("FAULT_"):
+                self.route_failure_cooldown.record(
+                    status,
+                    interrupted.mode,
+                    interrupted.route_signature,
+                    received_at,
+                )
+                reason = f"导航报告 {status}，本轮不记进度并自动重规划"
+            else:
+                reason = f"导航进入 {status}，当前路线已丢失并自动重新下发"
+            self._schedule_auto_wait_probe(interrupted.mode, reason)
+            return
+        execution = self.mission.observe_status(status, received_at)
+        if execution is None:
+            return
+        self.covered_edges = self.mission.covered_roads()
+        self.remaining_labels = self.mission.remaining_tasks()
+        self.planned_deferred_labels = list(execution.deferred_targets)
+        if self.mission.mission_complete(execution):
+            self._finish_mission()
+            return
+        mode = self.mission.continuation_mode(execution) or "layer3"
+        if execution.new_progress_count == 0:
+            self._schedule_auto_wait_probe(
+                mode, "上一条路线没有新增任务，不再重复执行原路线"
+            )
+            return
+        else:
+            self.auto_replan_backoff.reset()
+            self.route_failure_cooldown.clear()
+        remaining_count = (
+            len(self.mission.remaining_tasks())
+            + len(self.mission.remaining_tunnels())
+            + len(self.mission.remaining_roads())
+        )
+        self.view.remaining_var.set(f"{remaining_count} 项待自动续规划")
+        self._schedule_mission_replan(
+            mode, "阶段路线已跑完，正在自动规划下一段", delay_ms=100
+        )
+
+    def _handle_navigation_event(
+        self, kind: str, value: Any, received_at: float
+    ) -> None:
+        if kind == "ack":
+            route_id = int(value)
+            self.received_route_acks[route_id] = received_at
+            if len(self.received_route_acks) > 32:
+                oldest = min(self.received_route_acks, key=self.received_route_acks.get)
+                self.received_route_acks.pop(oldest, None)
+            self._accept_route_ack(route_id, received_at)
+            return
+        status = str(value)
+        self.recent_navigation_statuses.append((status, received_at))
+        self.recent_navigation_statuses = self.recent_navigation_statuses[-64:]
+        self._observe_active_route_status(status, received_at)
+        if (
+            status != "GOAL_REACHED"
+            and self.mission_running
+            and self.mission.active is not None
+        ):
+            self.status_var.set(f"阶段导航状态：{status}")
+
+    def _handle_plan_response(self, generation: int, response: Any) -> None:
+        activation = self.activation_requests.pop(generation, None)
+        activation_mode = activation[0] if activation is not None else None
+        activation_requested_at = activation[1] if activation is not None else 0.0
+        probe_mode = self.mission_probe_requests.pop(generation, None)
+        mission_mode = activation_mode or probe_mode
+        if generation < self.applied_generation or generation < self.generation:
+            return
+        self.applied_generation = generation
+        if isinstance(response, Exception):
+            if mission_mode is not None and self.mission_running:
+                self._schedule_auto_wait_probe(
+                    mission_mode, f"服务调用失败，自动重试：{response}"
+                )
+            else:
+                self.status_var.set(f"服务调用失败：{response}")
+                self.view.publish_button.configure(state=tk.NORMAL, text="开始导航")
+            return
+        if not response.success:
+            if mission_mode is not None and self.mission_running:
+                self._schedule_auto_wait_probe(
+                    mission_mode, f"暂无安全路线，自动重试：{response.message}"
+                )
+            else:
+                self.route = []
+                self.status_var.set(f"规划失败：{response.message}")
+                self.view.publish_button.configure(state=tk.NORMAL, text="开始导航")
+                self.draw()
+            return
+
+        self._read_route(response)
+        self.planned_deferred_labels = list(response.deferred_targets)
+        self.view.remaining_var.set(
+            f"{len(self.planned_deferred_labels)} 个延迟目标"
+        )
+        self.metrics_var.set(
+            f"路径 {response.length:.2f} m    规划 {response.planning_time_ms:.0f} ms\n"
+            f"点数 {len(self.route)}    重规划 {self.request_count}\n"
+            f"延迟目标 {', '.join(response.deferred_targets) or '无'}"
+        )
+        self.play_distance = 0.0
+        self.draw()
+        if mission_mode is None:
+            self._handle_preview_response(response)
+            return
+
+        stamp = response.navigation_path.header.stamp
+        route_id = int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+        route_has_motion = any(
+            math.hypot(right[0] - left[0], right[1] - left[1]) > 1.0e-6
+            for left, right in zip(self.route, self.route[1:])
+        )
+        candidate = RouteExecution(
+            route_id=max(1, route_id),
+            mode=mission_mode,
+            visit_order=tuple(map(str, response.visit_order)),
+            covered_edges=tuple(map(str, response.covered_edges)),
+            deferred_targets=tuple(map(str, response.deferred_targets)),
+            all_targets_reached=bool(response.all_targets_reached),
+            activation_requested_at=activation_requested_at,
+            route_signature=tuple(
+                (round(point[0] * 20), round(point[1] * 20))
+                for point in self.route
+            ),
+        )
+        if probe_mode is not None:
+            if (
+                self.mission.probe_may_activate(candidate, route_has_motion)
+                and not self.route_failure_cooldown.blocked(
+                    candidate.mode, candidate.route_signature, time.monotonic()
+                )
+            ):
+                self.auto_waiting = False
+                self._schedule_mission_replan(
+                    probe_mode, "发现新的可执行进展，正在下发路线", delay_ms=50
+                )
+            else:
+                self._schedule_auto_wait_probe(
+                    probe_mode, "仍无新的可执行进展，保持自动等待"
+                )
+            return
+
+        if not route_has_motion or route_id <= 0:
+            no_work_left = (
+                activation_mode in {"layered", "layer3"}
+                and
+                response.all_targets_reached
+                and not response.deferred_targets
+                and not self.mission.remaining_tasks()
+                and not self.mission.remaining_tunnels()
+                and not self.mission.remaining_roads()
+            )
+            if no_work_left:
+                self._finish_mission()
+            else:
+                next_mode = self.mission.continuation_mode(candidate)
+                if next_mode is not None and next_mode != activation_mode:
+                    self._schedule_mission_replan(
+                        next_mode, "当前阶段无需行驶，自动进入下一阶段", delay_ms=50
+                    )
+                else:
+                    self._schedule_auto_wait_probe(
+                        activation_mode, "本轮没有可执行路线，继续自动重试"
+                    )
+            return
+
+        execution = candidate
+        execution.route_id = route_id
+        if not bool(response.navigation_activated):
+            self._schedule_auto_wait_probe(
+                activation_mode,
+                "规划结果没有新的可执行任务，继续自动重规划",
+            )
+            return
+        if self.mission.pending is not None or self.mission.active is not None:
+            self.status_var.set("当前阶段路线仍在执行，忽略重复规划结果")
+            return
+        self.mission.begin_route(execution)
+        self.awaiting_route_ack_stamp = route_id
+        self._start_ack_watchdog(execution)
+        self.status_var.set(
+            "安全阶段路线已发布，等待导航确认"
+            if execution.deferred_targets or not execution.all_targets_reached
+            else "完整路线已发布，等待导航确认"
+        )
+        cached_ack = self.received_route_acks.pop(route_id, None)
+        if cached_ack is not None:
+            self._accept_route_ack(route_id, cached_ack)
+
+    def _cancel_ack_watchdog(self) -> None:
+        if self.ack_watchdog_after_id is None:
+            return
+        try:
+            self.root.after_cancel(self.ack_watchdog_after_id)
+        except tk.TclError:
+            pass
+        self.ack_watchdog_after_id = None
+
+    def _start_ack_watchdog(self, execution: RouteExecution) -> None:
+        self._cancel_ack_watchdog()
+
+        def expired() -> None:
+            self.ack_watchdog_after_id = None
+            discarded = self.mission.discard_pending(execution.route_id)
+            if discarded is None:
+                return
+            self.expired_route_ids.add(execution.route_id)
+            if len(self.expired_route_ids) > 64:
+                self.expired_route_ids.pop()
+            self.awaiting_route_ack_stamp = None
+            self._schedule_auto_wait_probe(
+                execution.mode, "路线确认超时，忽略迟到确认并自动重新请求"
+            )
+
+        self.ack_watchdog_after_id = self.root.after(ROUTE_ACK_TIMEOUT_MS, expired)
 
     def _poll(self) -> None:
         if self.closing or not rclpy.ok():
@@ -630,112 +946,52 @@ class ArenaFrontend:
         try:
             while True:
                 generation, response = self.responses.get_nowait()
-                if generation < self.applied_generation or generation < self.generation:
-                    if generation in self.activation_requests:
-                        self.activation_requests.discard(generation)
-                        self.publish_button.configure(state=tk.NORMAL, text="开始导航")
-                    continue
-                self.applied_generation = generation
-                if isinstance(response, Exception):
-                    self.activation_requests.discard(generation)
-                    self.status_var.set(f"服务调用失败：{response}")
-                    self.publish_button.configure(state=tk.NORMAL, text="开始导航")
-                    continue
-                if not response.success:
-                    self.activation_requests.discard(generation)
-                    self.route = []
-                    self.status_var.set(f"规划失败：{response.message}")
-                    self.publish_button.configure(state=tk.NORMAL, text="开始导航")
-                    self.draw()
-                    continue
-                self.route = []
-                for pose in response.arena_path.poses:
-                    orientation = pose.pose.orientation
-                    yaw = math.atan2(
-                        2.0 * (orientation.w * orientation.z + orientation.x * orientation.y),
-                        1.0 - 2.0 * (orientation.y ** 2 + orientation.z ** 2),
-                    )
-                    self.route.append((pose.pose.position.x, pose.pose.position.y, yaw))
-                activation_requested = generation in self.activation_requests
-                self.activation_requests.discard(generation)
-                # The backend deliberately refuses activation for a partial
-                # route. Keep that distinction visible instead of reporting
-                # that the complete mission started.
-                activated = activation_requested and bool(response.all_targets_reached)
-                incomplete = bool(response.deferred_targets) or not bool(response.all_targets_reached)
-                if activation_requested:
-                    self.publish_button.configure(state=tk.NORMAL, text="开始导航")
-                if not activated:
-                    self.layer_routes[self.layer_mode] = list(self.route)
-                    self.layer_display_segments[self.layer_mode] = self._display_segments(
-                        self.layer_mode, self.route, list(response.visit_order))
-                    self.visible_layer = self.layer_mode
-                self.planned_deferred_labels = list(response.deferred_targets)
-                for edge in response.covered_edges:
-                    if edge not in self.covered_edges:
-                        self.covered_edges.append(edge)
-                if activated:
-                    stamp = response.navigation_path.header.stamp
-                    self.awaiting_route_ack_stamp = int(stamp.sec) * 1_000_000_000 + int(
-                        stamp.nanosec
-                    )
-                    self.status_var.set("三层完整路线已发布，等待导航确认")
-                elif activation_requested and incomplete:
-                    self.status_var.set("路线不完整，未启动：请先处理延迟目标")
-                elif incomplete:
-                    self.status_var.set(
-                        f"第 {self.layer_mode} 阶段部分完成：请先处理延迟目标")
-                else:
-                    self.status_var.set(f"第 {self.layer_mode} 阶段规划完成")
-                self.remaining_var.set(f"{len(self.planned_deferred_labels)} 个延迟目标")
-                self.metrics_var.set(
-                    f"路径 {response.length:.2f} m    规划 {response.planning_time_ms:.0f} ms\n"
-                    f"点数 {len(self.route)}    重规划 {self.request_count}\n"
-                    f"延迟目标 {', '.join(response.deferred_targets) or '无'}"
-                )
-                self.play_distance = 0.0
-                self.draw()
-                if not activated:
-                    if self.layer_mode < 3:
-                        self.next_layer_button.configure(
-                            text=f"进入第 {self.layer_mode + 1} 阶段",
-                            state=tk.DISABLED if incomplete else tk.NORMAL,
-                        )
-                    else:
-                        self.next_layer_button.configure(text="三阶段已完成", state=tk.DISABLED)
+                self._handle_plan_response(generation, response)
         except queue.Empty:
             pass
+        events: list[tuple[str, Any, float]] = []
         try:
             while True:
-                route_ack = self.route_acks.get_nowait()
-                if self.awaiting_route_ack_stamp == route_ack:
-                    self.awaiting_route_ack_stamp = None
-                    self.status_var.set("三层完整路线已确认并启动")
+                events.append(self.navigation_events.get_nowait())
         except queue.Empty:
             pass
-        if not self.node.service_ready() and not self.node.in_flight:
+        for event in sorted(events, key=lambda item: item[2]):
+            self._handle_navigation_event(*event)
+        if (
+            not self.node.service_ready()
+            and not self.node.in_flight
+            and not self.mission_running
+        ):
             self.status_var.set("规划后端未启动")
         if self.playing:
             self._advance_playback()
         self.root.after(35, self._poll)
 
     def _mode_changed(self) -> None:
+        if self.mission_running:
+            self.mode_var.set("vehicle")
+            self.status_var.set("自动任务尚未完成，不能切换模式")
+            return
         simulation = self.mode_var.get() == "simulation"
         if simulation:
-            self.status_label.configure(text="SIMULATION", style="Simulation.Status.TLabel")
+            self.view.status_label.configure(
+                text="SIMULATION", style="Simulation.Status.TLabel"
+            )
         else:
             self._apply_current_odometry(force_draw=True)
             ready = self._odometry_is_ready()
             self.odom_ready = ready
-            self.status_label.configure(
+            self.view.status_label.configure(
                 text="ODOM READY" if ready else "NO ODOM",
                 style="OdomReady.Status.TLabel" if ready else "NoOdom.Status.TLabel",
             )
-        self.play_button.configure(state=tk.NORMAL if simulation else tk.DISABLED)
-        self.publish_button.configure(state=tk.NORMAL, text="开始导航")
+        self.view.play_button.configure(
+            state=tk.NORMAL if simulation else tk.DISABLED
+        )
+        self.view.publish_button.configure(state=tk.NORMAL, text="开始导航")
         if not simulation:
             self.playing = False
-            self.play_button.configure(text="播放")
+            self.view.play_button.configure(text="播放")
         self.status_var.set(
             "模拟模式"
             if simulation
@@ -802,7 +1058,7 @@ class ArenaFrontend:
         self.dragging = math.hypot(event.x - cx, event.y - cy) <= 28.0
         if self.dragging:
             self.playing = False
-            self.play_button.configure(text="播放")
+            self.view.play_button.configure(text="播放")
 
     def _drag_motion(self, event: tk.Event) -> None:
         if not self.dragging:
@@ -840,13 +1096,16 @@ class ArenaFrontend:
         self._request_initial_plan()
 
     def reset_vehicle(self) -> None:
+        if self.mission_running:
+            self.status_var.set("自动任务尚未完成，不能重置任务状态")
+            return
         self.odom_trace.clear()
         if self.mode_var.get() == "vehicle" and self._odometry_is_ready():
             self._apply_current_odometry()
         else:
             self.vehicle_x, self.vehicle_y, self.vehicle_yaw = self.default_pose
         self.playing = False
-        self.play_button.configure(text="播放")
+        self.view.play_button.configure(text="播放")
         self.remaining_labels = [str(label) for label, _position in self.tasks]
         self.planned_deferred_labels = []
         self.retry_pending = False
@@ -857,12 +1116,12 @@ class ArenaFrontend:
         self.layer_mode = 1
         self.visible_layer = 1
         self.layer_start = self.default_pose
-        self.next_layer_button.configure(text="进入第二阶段", state=tk.DISABLED)
+        self.view.next_layer_button.configure(text="进入第二阶段", state=tk.DISABLED)
         self._request_initial_plan()
         self.draw()
 
     def _add_obstacle(self, event: tk.Event) -> None:
-        if self.mode_var.get() != "simulation":
+        if self.mission_running or self.mode_var.get() != "simulation":
             return
         x, y = self._to_world(event.x, event.y)
         half_width = 0.11
@@ -874,7 +1133,10 @@ class ArenaFrontend:
         self.draw()
 
     def _remove_obstacle(self, event: tk.Event) -> None:
-        if self.mode_var.get() != "simulation" or not self.dynamic_obstacles:
+        if (
+            self.mission_running or self.mode_var.get() != "simulation"
+            or not self.dynamic_obstacles
+        ):
             return
         x, y = self._to_world(event.x, event.y)
         selected = min(
@@ -889,6 +1151,9 @@ class ArenaFrontend:
         self.draw()
 
     def clear_obstacles(self) -> None:
+        if self.mission_running:
+            self.status_var.set("自动任务尚未完成，不能改写当前规划环境")
+            return
         self.dynamic_obstacles.clear()
         self._request_initial_plan()
         self.draw()
@@ -898,7 +1163,7 @@ class ArenaFrontend:
             return
         self.playing = not self.playing
         self.play_last_time = time.monotonic()
-        self.play_button.configure(text="暂停" if self.playing else "播放")
+        self.view.play_button.configure(text="暂停" if self.playing else "播放")
 
     def _advance_playback(self) -> None:
         if len(self.route) < 2:
@@ -920,7 +1185,7 @@ class ArenaFrontend:
             remaining -= segment
         self.vehicle_x, self.vehicle_y, self.vehicle_yaw = self.route[-1]
         self.playing = False
-        self.play_button.configure(text="播放")
+        self.view.play_button.configure(text="播放")
         self.remaining_labels = list(self.planned_deferred_labels)
         self.retry_pending = bool(self.remaining_labels) and not self.retry_used
         self.draw()
@@ -934,6 +1199,7 @@ class ArenaFrontend:
             return
         self.closing = True
         self.playing = False
+        self.node.cancel_requests()
         self.executor.shutdown(timeout_sec=1.0)
         self.node.destroy_node()
         if rclpy.ok():

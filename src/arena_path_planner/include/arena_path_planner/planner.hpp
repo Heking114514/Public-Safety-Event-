@@ -1,6 +1,8 @@
 #ifndef ARENA_PATH_PLANNER__PLANNER_HPP_
 #define ARENA_PATH_PLANNER__PLANNER_HPP_
 
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -100,18 +102,81 @@ struct PlanResult
   double length{0.0};
 };
 
-// Activation is a separate policy decision from producing a safe preview.
-// Partial plans may be inspected and replanned, but must never be handed to
-// the navigator as a complete mission.
-inline bool ActivationAllowed(bool requested, const PlanResult & result)
+// Activation is a separate policy decision from mission completion. A safe
+// partial route is useful work and may be executed, while all_targets_reached
+// remains false so the caller knows it must plan another stage afterwards.
+inline bool ActivationAllowed(
+  bool requested, const PlanResult & result, const Pose & request_start,
+  const Pose & home, const std::vector<std::string> & previously_covered,
+  const std::vector<std::string> & remaining_visits)
 {
-  return requested && result.success && result.all_targets_reached;
+  if (!requested || !result.success || result.points.size() < 2 ||
+    result.headings.size() != result.points.size())
+  {
+    return false;
+  }
+
+  bool has_motion = false;
+  for (std::size_t index = 0; index < result.points.size(); ++index) {
+    if (!std::isfinite(result.points[index].x) ||
+      !std::isfinite(result.points[index].y) ||
+      !std::isfinite(result.headings[index]))
+    {
+      return false;
+    }
+    if (index > 0 &&
+      std::hypot(
+        result.points[index].x - result.points[index - 1].x,
+        result.points[index].y - result.points[index - 1].y) > 1.0e-6)
+    {
+      has_motion = true;
+    }
+  }
+  if (!has_motion ||
+    std::hypot(
+      result.points.front().x - request_start.position.x,
+      result.points.front().y - request_start.position.y) > 1.0e-6)
+  {
+    return false;
+  }
+
+  const bool has_new_visit = std::any_of(
+    result.visit_order.begin(), result.visit_order.end(),
+    [&remaining_visits](const std::string & label) {
+      return std::find(remaining_visits.begin(), remaining_visits.end(), label) !=
+             remaining_visits.end();
+    });
+  const bool has_new_coverage = std::any_of(
+    result.covered_edges.begin(), result.covered_edges.end(),
+    [&previously_covered](const std::string & label) {
+      return std::find(
+        previously_covered.begin(), previously_covered.end(), label) ==
+             previously_covered.end();
+    });
+  if (has_new_visit || has_new_coverage) {
+    return true;
+  }
+
+  constexpr double home_tolerance = 1.0e-6;
+  const bool starts_away_from_home =
+    std::hypot(
+      request_start.position.x - home.position.x,
+      request_start.position.y - home.position.y) > home_tolerance;
+  const bool ends_at_home =
+    std::hypot(
+      result.points.back().x - home.position.x,
+      result.points.back().y - home.position.y) <= home_tolerance;
+  return starts_away_from_home && ends_at_home;
 }
 
 class ArenaPlanner
 {
 public:
-  explicit ArenaPlanner(PlannerConfig config);
+  // Static maps may snap stale exported graph nodes onto nearby free cells.
+  // A planner rebuilt for temporary obstacles must preserve those already
+  // calibrated graph coordinates so an obstacle blocks/defer the road instead
+  // of silently moving it.
+  explicit ArenaPlanner(PlannerConfig config, bool snap_inspection_nodes = true);
 
   static PlannerConfig LoadConfig(const std::string & path);
   PlanResult Plan(
@@ -143,7 +208,9 @@ private:
   Cell WorldToCell(const Point & point) const;
   Point CellToWorld(const Cell & cell) const;
   GridPath AStar(const Point & start, const Point & goal) const;
-  std::vector<Point> Simplify(const std::vector<Point> & points) const;
+  std::vector<Point> Simplify(
+    const std::vector<Point> & points,
+    const std::vector<Point> & required_targets = {}) const;
   std::vector<Point> Smooth(
     const std::vector<Point> & points,
     const std::vector<Point> & required_targets) const;

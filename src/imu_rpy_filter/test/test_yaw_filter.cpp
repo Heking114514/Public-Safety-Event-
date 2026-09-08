@@ -1,7 +1,9 @@
 #include <cmath>
+#include <limits>
 
 #include "gtest/gtest.h"
 
+#include "imu_rpy_filter/imu_time.hpp"
 #include "imu_rpy_filter/yaw_filter.hpp"
 
 namespace imu_rpy_filter
@@ -123,6 +125,55 @@ TEST(YawRateOutput, StationaryNoiseIsBiasCorrectedRatherThanHardZeroed)
   EXPECT_NEAR(bias_corrected_yaw_rate(0.008, 0.006), 0.002, 1e-12);
   EXPECT_NE(bias_corrected_yaw_rate(0.008, 0.006), 0.0);
   EXPECT_DOUBLE_EQ(yaw_rate_variance(true, false, 0.01, 0.25), 0.01);
+}
+
+TEST(ImuTimestamp, DroppedFrameRebasesSoTheNextFrameCanRecover)
+{
+  double last_stamp = 10.0;
+  double dt = 0.0;
+
+  // This sample represents a dropped/late IMU interval and is discarded.
+  EXPECT_FALSE(update_imu_time_baseline(10.20, last_stamp, dt));
+  EXPECT_NEAR(dt, 0.20, 1e-12);
+  EXPECT_DOUBLE_EQ(last_stamp, 10.20);
+
+  // The next normal-rate sample is measured from the new baseline and is
+  // accepted; subsequent samples continue to be accepted as well.
+  EXPECT_TRUE(update_imu_time_baseline(10.205, last_stamp, dt));
+  EXPECT_NEAR(dt, 0.005, 1e-12);
+  EXPECT_TRUE(update_imu_time_baseline(10.210, last_stamp, dt));
+  EXPECT_NEAR(dt, 0.005, 1e-12);
+}
+
+TEST(ImuTimestamp, InvalidStampDoesNotPoisonTheBaseline)
+{
+  double last_stamp = 3.0;
+  double dt = 0.0;
+
+  EXPECT_FALSE(update_imu_time_baseline(
+      std::numeric_limits<double>::quiet_NaN(), last_stamp, dt));
+  EXPECT_DOUBLE_EQ(last_stamp, 3.0);
+  EXPECT_TRUE(update_imu_time_baseline(3.005, last_stamp, dt));
+  EXPECT_NEAR(dt, 0.005, 1e-12);
+}
+
+TEST(ImuTimestamp, InvalidRosTimeFieldsAreRejectedBeforeConstruction)
+{
+  EXPECT_TRUE(valid_ros_time_representation(1, 999999999U));
+  EXPECT_TRUE(valid_ros_time_representation(0, 0U));
+  EXPECT_FALSE(valid_ros_time_representation(-1, 0U));
+  EXPECT_FALSE(valid_ros_time_representation(1, 1000000000U));
+}
+
+TEST(ImuTimestamp, OutOfOrderStampDoesNotMoveTheBaselineBackwards)
+{
+  double last_stamp = 3.0;
+  double dt = 0.0;
+
+  EXPECT_FALSE(update_imu_time_baseline(2.9, last_stamp, dt));
+  EXPECT_DOUBLE_EQ(last_stamp, 3.0);
+  EXPECT_TRUE(update_imu_time_baseline(3.005, last_stamp, dt));
+  EXPECT_NEAR(dt, 0.005, 1e-12);
 }
 
 }  // namespace

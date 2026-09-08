@@ -208,7 +208,11 @@ enum class FusionMode
   kWheelOnly,
   kVisualRealigned,
   kFaultStalled,
-  kFault
+  kFault,
+  // ORB has not produced enough coherent samples to establish a visual map.
+  // This is a startup wait, not a confirmed runtime fault.
+  kInitializing,
+  kFaultInitTimeout
 };
 
 FusionMode select_mode(

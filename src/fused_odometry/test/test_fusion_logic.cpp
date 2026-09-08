@@ -178,6 +178,10 @@ TEST(FusionMode, ConservativeDegradation)
 {
   EXPECT_EQ(
     fused_odometry::select_mode(
+      false, false, false, false, false, false, false, 0.0, 0.0, 2.0, 0.3, 0.75, 0.1),
+    FusionMode::kInitializing);
+  EXPECT_EQ(
+    fused_odometry::select_mode(
       true, true, true, true, false, false, false, 0.0, 0.0, 2.0, 0.3, 0.75, 0.1),
     FusionMode::kFull);
   EXPECT_EQ(
@@ -209,9 +213,11 @@ TEST(FusionMode, ConservativeDegradation)
       true, true, false, false, false, false, false, 0.0, 0.0, 2.0, 0.3, 0.75, 0.1),
     FusionMode::kNoImu);
   EXPECT_EQ(
-    fused_odometry::select_mode(
-      false, false, true, true, true, false, false, 0.0, 0.0, 2.0, 0.3, 0.75, 0.1),
-    FusionMode::kFault);
+    fused_odometry::mode_name(FusionMode::kInitializing),
+    std::string("WAITING_FOR_INITIALIZATION"));
+  EXPECT_EQ(
+    fused_odometry::mode_name(FusionMode::kFaultInitTimeout),
+    std::string("FAULT_INIT_TIMEOUT"));
   EXPECT_EQ(
     fused_odometry::select_mode(
       true, true, true, true, false, true, false, 0.0, 0.0, 2.0, 0.3, 0.75, 0.1),

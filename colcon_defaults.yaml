@@ -1,0 +1,8 @@
+build:
+  packages-ignore:
+    - ORB_SLAM3
+    - pangolin
+test:
+  packages-ignore:
+    - ORB_SLAM3
+    - pangolin

@@ -6,8 +6,10 @@ import tkinter as tk
 from tkinter import messagebox
 
 import rclpy
-from nav_msgs.msg import Odometry, Path
 from geometry_msgs.msg import PoseStamped
+from mission_control_interfaces.msg import MotionHoldState
+from mission_control_interfaces.srv import SetMotionHold
+from nav_msgs.msg import Odometry, Path
 from rclpy.node import Node
 from rclpy.qos import (
     DurabilityPolicy,
@@ -21,7 +23,7 @@ GRID_METERS = 0.6
 PIXELS_PER_METER = 100.0
 POINT_HIT_RADIUS = 13.0
 
-1
+
 def quaternion_to_yaw(quaternion):
     values = (quaternion.x, quaternion.y, quaternion.z, quaternion.w)
     if not all(math.isfinite(value) for value in values):
@@ -33,6 +35,22 @@ def quaternion_to_yaw(quaternion):
     return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
 
 
+def path_fingerprint(path):
+    result = []
+    for stamped_pose in path.poses:
+        yaw = quaternion_to_yaw(stamped_pose.pose.orientation)
+        if yaw is None:
+            return None
+        result.append(
+            (
+                round(stamped_pose.pose.position.x, 6),
+                round(stamped_pose.pose.position.y, 6),
+                round(yaw, 6),
+            )
+        )
+    return tuple(result)
+
+
 class RouteEditorNode(Node):
     def __init__(self, odom_callback):
         super().__init__("waypoint_route_editor")
@@ -40,25 +58,68 @@ class RouteEditorNode(Node):
         self.declare_parameter(
             "route_input_topic", "/waypoint_navigation/route_input"
         )
+        self.declare_parameter("route_feedback_topic", "/waypoint_path")
+        self.declare_parameter(
+            "motion_hold_service", "/waypoint_navigator/set_motion_hold"
+        )
+        self.declare_parameter(
+            "motion_hold_state_topic", "/waypoint_navigation/motion_hold_state"
+        )
         self.declare_parameter("route_frame", "map")
         self.declare_parameter("odom_timeout", 0.5)
+        self.declare_parameter("activation_timeout", 3.0)
 
         self.odom_topic = self.get_parameter("odom_topic").value
         self.route_input_topic = self.get_parameter("route_input_topic").value
+        self.route_feedback_topic = self.get_parameter("route_feedback_topic").value
+        self.motion_hold_service = self.get_parameter("motion_hold_service").value
+        self.motion_hold_state_topic = self.get_parameter(
+            "motion_hold_state_topic"
+        ).value
         self.route_frame = self.get_parameter("route_frame").value
         self.odom_timeout = max(0.05, float(self.get_parameter("odom_timeout").value))
+        self.activation_timeout = max(
+            0.5, float(self.get_parameter("activation_timeout").value)
+        )
         self._odom_callback = odom_callback
+        self._activation_phase = "IDLE"
+        self._activation_deadline = 0.0
+        self._pending_fingerprint = None
+        self._pending_stamp_ns = 0
+        self._activation_result = None
+        self._motion_hold_future = None
+        self._motion_hold_result = None
+        self.motion_hold_state_received = False
+        self.motion_held = False
+        self.active_hold_sources = ()
 
-        route_qos = QoSProfile(
+        route_input_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.VOLATILE,
+        )
+        route_feedback_qos = QoSProfile(
             depth=1,
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
         self.route_publisher = self.create_publisher(
-            Path, self.route_input_topic, route_qos
+            Path, self.route_input_topic, route_input_qos
+        )
+        self.route_feedback_subscription = self.create_subscription(
+            Path, self.route_feedback_topic, self._handle_route_feedback, route_feedback_qos
         )
         self.odom_subscription = self.create_subscription(
             Odometry, self.odom_topic, self._handle_odom, qos_profile_sensor_data
+        )
+        self.motion_hold_subscription = self.create_subscription(
+            MotionHoldState,
+            self.motion_hold_state_topic,
+            self._handle_motion_hold_state,
+            route_feedback_qos,
+        )
+        self.motion_hold_client = self.create_client(
+            SetMotionHold, self.motion_hold_service
         )
 
     def _handle_odom(self, message):
@@ -72,7 +133,13 @@ class RouteEditorNode(Node):
             return
         self._odom_callback((x, y, yaw, time.monotonic()))
 
-    def publish_route(self, waypoints):
+    @property
+    def activation_busy(self):
+        return self._activation_phase not in ("IDLE", "SUCCEEDED", "FAILED")
+
+    def publish_and_activate(self, waypoints):
+        if self.activation_busy:
+            raise RuntimeError("路线正在启用，请等待当前操作结束")
         path = Path()
         path.header.stamp = self.get_clock().now().to_msg()
         path.header.frame_id = self.route_frame
@@ -86,7 +153,86 @@ class RouteEditorNode(Node):
             pose.pose.orientation.z = math.sin(yaw * 0.5)
             pose.pose.orientation.w = math.cos(yaw * 0.5)
             path.poses.append(pose)
+
+        self._pending_fingerprint = path_fingerprint(path)
+        self._pending_stamp_ns = (
+            path.header.stamp.sec * 1_000_000_000 + path.header.stamp.nanosec
+        )
+        self._activation_deadline = time.monotonic() + self.activation_timeout
+        self._activation_phase = "WAIT_ACK"
+        self._activation_result = None
         self.route_publisher.publish(path)
+
+    def _handle_route_feedback(self, path):
+        if self._activation_phase != "WAIT_ACK":
+            return
+        stamp_ns = path.header.stamp.sec * 1_000_000_000 + path.header.stamp.nanosec
+        if stamp_ns < self._pending_stamp_ns:
+            return
+        if path.header.frame_id and path.header.frame_id != self.route_frame:
+            return
+        if path_fingerprint(path) != self._pending_fingerprint:
+            return
+        self._finish_activation(True, "路线已发布并由导航器启用")
+
+    def poll_activation(self):
+        if not self.activation_busy:
+            return
+        if time.monotonic() > self._activation_deadline:
+            self._finish_activation(False, "导航器未及时确认路线")
+
+    def _finish_activation(self, success, message):
+        self._activation_phase = "SUCCEEDED" if success else "FAILED"
+        self._activation_result = (success, message)
+        self._pending_fingerprint = None
+
+    def take_activation_result(self):
+        result = self._activation_result
+        self._activation_result = None
+        return result
+
+    @property
+    def motion_hold_busy(self):
+        return self._motion_hold_future is not None
+
+    @property
+    def motion_hold_service_ready(self):
+        return self.motion_hold_client.service_is_ready()
+
+    def _handle_motion_hold_state(self, message):
+        self.motion_hold_state_received = True
+        self.motion_held = bool(message.held)
+        self.active_hold_sources = tuple(message.active_sources)
+
+    def request_motion_hold(self, hold, reason=""):
+        if self.motion_hold_busy:
+            raise RuntimeError("驻停请求正在处理中")
+        if not self.motion_hold_service_ready:
+            raise RuntimeError("导航驻停服务尚未就绪")
+        request = SetMotionHold.Request()
+        request.source = "route_editor"
+        request.hold = bool(hold)
+        request.reason = reason
+        self._motion_hold_future = self.motion_hold_client.call_async(request)
+
+    def poll_motion_hold_request(self):
+        if self._motion_hold_future is None or not self._motion_hold_future.done():
+            return
+        try:
+            response = self._motion_hold_future.result()
+            self.motion_hold_state_received = True
+            self.motion_held = bool(response.motion_held)
+            self.active_hold_sources = tuple(response.active_sources)
+            self._motion_hold_result = (bool(response.success), response.message)
+        except Exception as exception:  # rclpy transports service errors as exceptions.
+            self._motion_hold_result = (False, str(exception))
+        finally:
+            self._motion_hold_future = None
+
+    def take_motion_hold_result(self):
+        result = self._motion_hold_result
+        self._motion_hold_result = None
+        return result
 
 
 class RouteEditorWindow:
@@ -124,6 +270,20 @@ class RouteEditorWindow:
             pady=4,
         )
         self.publish_button.pack(side=tk.RIGHT)
+        self.motion_hold_button = tk.Button(
+            toolbar,
+            text="暂停小车",
+            command=self.toggle_motion_hold,
+            state=tk.DISABLED,
+            padx=12,
+            pady=4,
+            takefocus=False,
+        )
+        self.motion_hold_button.pack(side=tk.RIGHT, padx=(0, 8))
+        self.motion_hold_label = tk.Label(
+            toolbar, text="驻停服务未就绪", fg="#991b1b", bg="#f3f4f6"
+        )
+        self.motion_hold_label.pack(side=tk.LEFT, padx=(0, 12))
 
         self.canvas = tk.Canvas(root, bg="#ffffff", highlightthickness=0)
         self.canvas.pack(fill=tk.BOTH, expand=True)
@@ -134,6 +294,8 @@ class RouteEditorWindow:
         self.canvas.bind("<Button-3>", self.on_right_click)
 
         self.node = RouteEditorNode(self.on_odometry)
+        self.root.bind("<space>", self.toggle_motion_hold)
+        self.root.bind("<Escape>", self.pause_motion)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self.root.after(20, self.spin_ros)
         self.root.after(100, self.refresh_status)
@@ -164,6 +326,25 @@ class RouteEditorWindow:
         self.redraw()
 
     def refresh_status(self):
+        self.node.poll_activation()
+        self.node.poll_motion_hold_request()
+        activation_result = self.node.take_activation_result()
+        if activation_result is not None:
+            success, message = activation_result
+            if success:
+                self.publish_label.configure(text="路线已启用", fg="#166534")
+            else:
+                self.publish_label.configure(text="启用失败", fg="#991b1b")
+                messagebox.showerror("路线启用失败", message)
+            self.update_publish_button()
+
+        hold_result = self.node.take_motion_hold_result()
+        if hold_result is not None:
+            success, message = hold_result
+            if not success:
+                messagebox.showerror("驻停操作失败", message)
+        self.update_motion_hold_controls()
+
         ready = (
             self.current_pose is not None
             and time.monotonic() - self.current_pose[3] <= self.node.odom_timeout
@@ -178,8 +359,72 @@ class RouteEditorWindow:
             self.redraw()
         self.root.after(100, self.refresh_status)
 
+    def update_motion_hold_controls(self):
+        own_hold = "route_editor" in self.node.active_hold_sources
+        if self.node.motion_hold_busy:
+            text = "处理中..."
+        else:
+            text = "继续行驶" if own_hold else "暂停小车"
+        state = (
+            tk.NORMAL
+            if self.node.motion_hold_service_ready
+            and self.node.motion_hold_state_received
+            and not self.node.motion_hold_busy
+            else tk.DISABLED
+        )
+        self.motion_hold_button.configure(text=text, state=state)
+
+        if not self.node.motion_hold_service_ready:
+            label, color = "驻停服务未就绪", "#991b1b"
+        elif not self.node.motion_hold_state_received:
+            label, color = "等待驻停状态", "#92400e"
+        elif self.node.motion_held:
+            sources = list(self.node.active_hold_sources)
+            visible = ", ".join(sources[:2])
+            if len(sources) > 2:
+                visible += f" +{len(sources) - 2}"
+            label, color = f"已驻停: {visible}", "#991b1b"
+        else:
+            label, color = "允许行驶", "#166534"
+        self.motion_hold_label.configure(text=label, fg=color)
+
+    def toggle_motion_hold(self, _event=None):
+        if (
+            not self.node.motion_hold_service_ready
+            or not self.node.motion_hold_state_received
+            or self.node.motion_hold_busy
+        ):
+            return "break"
+        own_hold = "route_editor" in self.node.active_hold_sources
+        try:
+            self.node.request_motion_hold(
+                not own_hold, "route editor operator pause" if not own_hold else ""
+            )
+        except RuntimeError as exception:
+            messagebox.showerror("驻停操作失败", str(exception))
+        self.update_motion_hold_controls()
+        return "break"
+
+    def pause_motion(self, _event=None):
+        if (
+            self.node.motion_hold_service_ready
+            and self.node.motion_hold_state_received
+            and not self.node.motion_hold_busy
+            and "route_editor" not in self.node.active_hold_sources
+        ):
+            try:
+                self.node.request_motion_hold(True, "route editor escape key")
+            except RuntimeError as exception:
+                messagebox.showerror("驻停操作失败", str(exception))
+            self.update_motion_hold_controls()
+        return "break"
+
     def update_publish_button(self):
-        state = tk.NORMAL if self.odom_ready and self.waypoints else tk.DISABLED
+        state = (
+            tk.NORMAL
+            if self.odom_ready and self.waypoints and not self.node.activation_busy
+            else tk.DISABLED
+        )
         self.publish_button.configure(state=state)
 
     def nearest_waypoint(self, canvas_x, canvas_y):
@@ -194,17 +439,19 @@ class RouteEditorWindow:
         return best_index
 
     def on_left_press(self, event):
+        if self.node.activation_busy:
+            return
         self.drag_index = self.nearest_waypoint(event.x, event.y)
         if self.drag_index is None:
             x, y = self.canvas_to_world(event.x, event.y)
             self.waypoints.append([x, y, 0.0])
             self.drag_index = len(self.waypoints) - 1
-            self.publish_label.configure(text="未发布")
+            self.publish_label.configure(text="未发布", fg="#4b5563")
             self.update_publish_button()
             self.redraw()
 
     def on_left_drag(self, event):
-        if self.drag_index is None:
+        if self.drag_index is None or self.node.activation_busy:
             return
         point = self.waypoints[self.drag_index]
         cursor_x, cursor_y = self.canvas_to_world(event.x, event.y)
@@ -212,17 +459,17 @@ class RouteEditorWindow:
         delta_y = cursor_y - point[1]
         if math.hypot(delta_x, delta_y) > 0.03:
             point[2] = math.atan2(delta_y, delta_x)
-            self.publish_label.configure(text="未发布")
+            self.publish_label.configure(text="未发布", fg="#4b5563")
             self.redraw()
 
     def on_left_release(self, _event):
         self.drag_index = None
 
     def on_right_click(self, _event):
-        if self.waypoints:
+        if self.waypoints and not self.node.activation_busy:
             self.waypoints.pop()
             self.drag_index = None
-            self.publish_label.configure(text="未发布")
+            self.publish_label.configure(text="未发布", fg="#4b5563")
             self.update_publish_button()
             self.redraw()
 
@@ -234,11 +481,14 @@ class RouteEditorWindow:
             messagebox.showwarning("NO ODOM", "里程计就绪后才能启用路线。")
             return
         try:
-            self.node.publish_route(self.waypoints)
-        except ValueError as exception:
+            self.node.publish_and_activate(self.waypoints)
+        except (RuntimeError, ValueError) as exception:
             messagebox.showerror("路线无效", str(exception))
             return
-        self.publish_label.configure(text=f"已发布 {len(self.waypoints)} 点")
+        self.publish_label.configure(
+            text=f"正在启用 {len(self.waypoints)} 点...", fg="#92400e"
+        )
+        self.update_publish_button()
 
     def draw_arrow(self, x, y, yaw, color, width=3, length=34):
         start_x, start_y = self.world_to_canvas(x, y)

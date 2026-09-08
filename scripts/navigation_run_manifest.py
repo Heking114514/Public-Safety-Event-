@@ -8,8 +8,20 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import tempfile
-import uuid
+
+from navigation_bags import (
+    BagError,
+    atomic_symlink,
+    atomic_write_json,
+    bag_has_metadata,
+    bag_has_payload,
+    load_json,
+    preserve_legacy_bag,
+    prune_bags,
+    recover_abandoned_runs,
+    unique_path,
+    utc_now,
+)
 
 
 SCHEMA_VERSION = 1
@@ -46,10 +58,6 @@ def run_git(root, *args, check=True):
 
 def git_text(root, *args, check=True):
     return run_git(root, *args, check=check).stdout.decode("utf-8", "replace").strip()
-
-
-def utc_now():
-    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="microseconds")
 
 
 def sha256_file(path):
@@ -210,35 +218,6 @@ def repository_info(workspace):
     return payload
 
 
-def atomic_write_json(path, data):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
-    )
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump(data, stream, indent=2, sort_keys=True, ensure_ascii=True)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-    except Exception:
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
-        raise
-
-
-def load_json(path):
-    try:
-        with open(path, "r", encoding="utf-8") as stream:
-            return json.load(stream)
-    except (OSError, json.JSONDecodeError) as error:
-        raise ManifestError(f"cannot read manifest {path}: {error}") from error
-
-
 def parse_named_paths(values):
     parsed = []
     names = set()
@@ -333,78 +312,6 @@ def command_verify_build(args):
     print(identifier)
 
 
-def unique_path(parent, stem):
-    candidate = parent / stem
-    sequence = 0
-    while candidate.exists() or candidate.is_symlink():
-        sequence += 1
-        candidate = parent / f"{stem}_{sequence}"
-    return candidate
-
-
-def atomic_symlink(target, link_path):
-    link_path = Path(link_path)
-    if not target.exists():
-        raise ManifestError(f"refusing to link to a missing target: {target}")
-    if link_path.exists() and not link_path.is_symlink():
-        raise ManifestError(f"refusing to replace non-symlink path: {link_path}")
-    link_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = link_path.parent / f".{link_path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
-    relative_target = os.path.relpath(target, link_path.parent)
-    os.symlink(relative_target, temporary)
-    try:
-        os.replace(temporary, link_path)
-    finally:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
-
-
-def preserve_legacy_bag(latest_bag, runs_root):
-    latest_bag = Path(latest_bag)
-    if latest_bag.is_symlink() or not latest_bag.exists():
-        return
-    if not latest_bag.is_dir():
-        raise ManifestError(f"refusing to replace non-directory compatibility path: {latest_bag}")
-    timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
-    legacy_run = unique_path(runs_root, f"legacy_{timestamp}")
-    legacy_run.mkdir()
-    destination = legacy_run / "bag"
-    legacy_manifest = {
-        "schema_version": SCHEMA_VERSION,
-        "run_id": legacy_run.name,
-        "status": "legacy_imported",
-        "imported_at": utc_now(),
-        "bag": {"path": str(destination)},
-        "legacy_source": str(latest_bag),
-    }
-    atomic_write_json(legacy_run / "run_manifest.json", legacy_manifest)
-    temporary_link = latest_bag.parent / (
-        f".{latest_bag.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
-    )
-    os.symlink(os.path.relpath(destination, latest_bag.parent), temporary_link)
-    moved = False
-    try:
-        os.replace(latest_bag, destination)
-        moved = True
-        os.replace(temporary_link, latest_bag)
-    except Exception:
-        try:
-            temporary_link.unlink()
-        except FileNotFoundError:
-            pass
-        if moved and destination.exists() and not latest_bag.exists():
-            os.replace(destination, latest_bag)
-        if not destination.exists():
-            try:
-                (legacy_run / "run_manifest.json").unlink()
-                legacy_run.rmdir()
-            except OSError:
-                pass
-        raise
-
-
 def parse_settings(values):
     settings = {}
     for setting in values:
@@ -437,6 +344,7 @@ def command_create_run(args):
 
     runs_root.mkdir(parents=True, exist_ok=True)
     preserve_legacy_bag(latest_bag, runs_root)
+    recover_abandoned_runs(runs_root)
     timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     run_dir = unique_path(runs_root, f"{timestamp}_{source['short_commit']}")
     run_dir.mkdir()
@@ -477,6 +385,7 @@ def command_create_run(args):
             "topics": list(args.topic),
             "metadata_present": False,
             "latest_link_updated": False,
+            "present": False,
         },
         "parameters": {},
         "parameter_snapshots_complete": None,
@@ -524,7 +433,7 @@ def command_finalize_run(args):
     manifest_path = run_dir / "run_manifest.json"
     manifest = load_json(manifest_path)
     bag_path = Path(manifest["bag"]["path"])
-    metadata_present = bag_path.is_dir() and (bag_path / "metadata.yaml").is_file()
+    metadata_present = bag_has_metadata(bag_path)
     parameter_complete = args.parameter_snapshots_complete == "true"
     exit_code = int(args.exit_code)
     if exit_code in (130, 143):
@@ -540,6 +449,7 @@ def command_finalize_run(args):
         "parameter_snapshots_complete": parameter_complete,
     })
     manifest["bag"]["metadata_present"] = metadata_present
+    manifest["bag"]["present"] = bag_has_payload(bag_path)
     atomic_write_json(manifest_path, manifest)
 
     if metadata_present and status in {"completed", "interrupted"}:
@@ -547,6 +457,10 @@ def command_finalize_run(args):
         manifest = load_json(manifest_path)
         manifest["bag"]["latest_link_updated"] = True
         atomic_write_json(manifest_path, manifest)
+
+    prune_bags(
+        run_dir.parent, Path(args.latest_bag).absolute(), run_dir, args.retain_bags
+    )
 
 
 def build_parser():
@@ -611,6 +525,7 @@ def build_parser():
     finalize.add_argument(
         "--parameter-snapshots-complete", choices=("true", "false"), required=True
     )
+    finalize.add_argument("--retain-bags", type=int, default=3)
     finalize.set_defaults(handler=command_finalize_run)
     return parser
 
@@ -620,7 +535,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         args.handler(args)
-    except (ManifestError, OSError, ValueError) as error:
+    except (BagError, ManifestError, OSError, ValueError) as error:
         print(f"navigation manifest error: {error}", file=sys.stderr)
         return 1
     return 0

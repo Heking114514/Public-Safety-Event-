@@ -18,6 +18,7 @@
 #include "tf2_ros/transform_broadcaster.h"
 
 #include "wheel_odometry/odometry_integrator.hpp"
+#include "wheel_odometry/mcu_clock_mapper.hpp"
 
 namespace wheel_odometry
 {
@@ -179,9 +180,7 @@ private:
 
     if (!result.publish) {
       if (result.status == UpdateStatus::kInitialized) {
-        mcu_epoch_ms_ = sample.mcu_time_ms;
-        mcu_epoch_ros_ = reception_time;
-        mcu_epoch_valid_ = true;
+        clock_mapper_.reset();
       }
       if (result.status == UpdateStatus::kRebasedSequenceRegression ||
         result.status == UpdateStatus::kRebasedTimeRegression ||
@@ -191,7 +190,7 @@ private:
         // A reset/rebase invalidates the MCU-to-ROS epoch. Establish a new
         // anchor on the next accepted interval instead of manufacturing a
         // timestamp jump that could look like stale or future data upstream.
-        mcu_epoch_valid_ = false;
+        clock_mapper_.reset();
       }
       if (result.status != UpdateStatus::kInitialized &&
         result.status != UpdateStatus::kDuplicate)
@@ -209,14 +208,9 @@ private:
       RCLCPP_DEBUG(
         get_logger(), "Integrated across %u missing encoder samples", result.sequence_delta - 1U);
     }
-    if (!mcu_epoch_valid_) {
-      mcu_epoch_ms_ = sample.mcu_time_ms;
-      mcu_epoch_ros_ = reception_time;
-      mcu_epoch_valid_ = true;
-    }
-    const uint32_t elapsed_ms = sample.mcu_time_ms - mcu_epoch_ms_;
-    rclcpp::Time measurement_stamp = mcu_epoch_ros_ +
-      rclcpp::Duration::from_nanoseconds(static_cast<int64_t>(elapsed_ms) * 1000000LL);
+    rclcpp::Time measurement_stamp(
+      clock_mapper_.map(sample.mcu_time_ms, reception_time.nanoseconds()),
+      RCL_ROS_TIME);
     // The initial serial delay is unknowable. Never publish a future-dated
     // sample; health freshness continues to use reception_time below.
     if (measurement_stamp > reception_time) {
@@ -359,10 +353,8 @@ private:
   double diagnostic_stale_timeout_s_{0.5};
   bool has_received_encoder_{false};
   rclcpp::Time last_encoder_reception_{0, 0, RCL_ROS_TIME};
-  rclcpp::Time mcu_epoch_ros_{0, 0, RCL_ROS_TIME};
   rclcpp::Time last_measurement_stamp_{0, 0, RCL_ROS_TIME};
-  uint32_t mcu_epoch_ms_{0};
-  bool mcu_epoch_valid_{false};
+  McuClockMapper clock_mapper_;
   uint64_t nonmonotonic_stamp_count_{0};
   UpdateStatus last_update_status_{UpdateStatus::kInitialized};
   uint32_t last_sequence_delta_{0};

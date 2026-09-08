@@ -1,8 +1,25 @@
-# --- Colcon workspace artifacts ---
-build/
-install/
-log/
-CMakeFiles/
+# --- Colcon / CMake build artifacts ---
+**/build/
+**/install/
+**/log/
+**/CMakeFiles/
+**/cmake-build-*/
+CMakeCache.txt
+cmake_install.cmake
+install_manifest.txt
+CTestTestfile.cmake
+compile_commands.json
+**/Makefile
+*.o
+*.obj
+*.so
+*.so.*
+*.a
+*.la
+*.lo
+*.dylib
+*.dll
+*.exe
 
 # --- Runtime output ---
 KeyFrameTrajectory.txt
@@ -16,14 +33,28 @@ latest_navigation_bag
 analysis_bags/
 
 # --- Temp files ---
+.workspace-build.lock
 *~
 *.swp
 *.swo
 __pycache__/
 *.py[cod]
+.pytest_cache/
 scripts/arena_generated/
 .DS_Store
 Thumbs.db
+
+# --- Additional native build metadata ---
+**/build.ninja
+**/.ninja_deps
+**/.ninja_log
+
+# --- Generated dependency install prefix ---
+# Populated locally by arm_build.sh / x86_build.sh.
+src/orb_slam3/deps/*
+!src/orb_slam3/deps/COLCON_IGNORE
+# Legacy prefix from the pre-orb_slam3 directory layout.
+src/deps/*
 
 # --- IDE ---
 .vscode/

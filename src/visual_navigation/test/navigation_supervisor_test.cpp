@@ -117,6 +117,33 @@ TEST(NavigationSupervisor, FusionFaultStopsAndLatchesImmediately)
   EXPECT_EQ(decision.state, "FAULT_FUSION_STATUS");
 }
 
+TEST(NavigationSupervisor, OrbWarmupWaitsWithoutLatching)
+{
+  NavigationSupervisor supervisor({2.0, 0.25, false});
+  const auto start = NavigationSupervisor::TimePoint{};
+  auto input = HealthyInput();
+  input.fusion_status = "WAITING_FOR_INITIALIZATION";
+  input.fusion_health = {};
+
+  const auto decision = supervisor.Evaluate(input, start);
+  EXPECT_EQ(decision.action, NavigationRuntimeAction::STOP_AND_WAIT);
+  EXPECT_EQ(decision.state, "WAITING_FOR_INITIALIZATION");
+  EXPECT_FALSE(decision.reset_path_control);
+}
+
+TEST(NavigationSupervisor, InitializationTimeoutIsLatched)
+{
+  NavigationSupervisor supervisor({2.0, 0.25, false});
+  const auto start = NavigationSupervisor::TimePoint{};
+  auto input = HealthyInput();
+  input.fusion_status = "FAULT_INIT_TIMEOUT";
+  input.fusion_health = {false, true, 0.0};
+
+  const auto decision = supervisor.Evaluate(input, start);
+  EXPECT_EQ(decision.action, NavigationRuntimeAction::STOP_AND_LATCH);
+  EXPECT_EQ(decision.state, "FAULT_FUSION_STATUS");
+}
+
 TEST(NavigationSupervisor, TrackingLossOnlyLatchesWhenConfiguredAfterValidRun)
 {
   const auto start = NavigationSupervisor::TimePoint{};

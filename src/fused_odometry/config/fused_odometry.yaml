@@ -38,6 +38,9 @@ fused_odometry_gate:
     # Reject optical-frame or otherwise non-planar poses mislabeled as map.
     raw_visual_max_tilt_rad: 0.50
     stamp_future_tolerance_s: 0.20
+    # ORB warm-up is a recoverable wait. Only after this bound is exceeded does
+    # the gate publish FAULT_INIT_TIMEOUT and allow navigation to latch.
+    initialization_timeout_s: 10.0
     map_change_grace_s: 1.00
     visual_recovery_samples: 5
     visual_recovery_ramp_s: 0.75
@@ -184,10 +187,9 @@ map_odom_correction:
     initial_map_x: 0.0
     initial_map_y: 0.0
     initial_map_yaw: 0.0
-    # With a healthy visual stream, navigation must follow aligned ORB pose
-    # rather than the lagging local visual/IMU prediction. The local EKF bridges
-    # only visual gaps, then is blended back without a pose jump.
-    direct_visual_tracking: true
+    # Deprecated compatibility parameter. Visual corrections are always
+    # smoothed before they update map->odom; true no longer bypasses filtering.
+    direct_visual_tracking: false
     visual_recovery_gap_s: 0.10
     visual_recovery_time_constant_s: 0.25
     visual_recovery_blend_duration_s: 0.80

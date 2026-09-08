@@ -1,0 +1,18 @@
+# Defaults for the unified navigation entry point. Relevant command-line
+# options override these values. Navigation mode is intentionally not
+# configurable here: no arguments always means GUI mode, while -a/--autostart
+# always means scripts/waypoints.csv (or the path below).
+navigation_startup:
+  serial_device: auto
+  serial_baud_rate: 115200
+  use_serial: true
+  camera_serial: ""
+  use_imu: true
+  use_slam_imu: false
+  equalize: true
+  visualization: false
+  build_if_needed: true
+  check_camera: true
+  force_camera_reset: false
+  build_jobs: 2
+  default_autostart_route: scripts/waypoints.csv

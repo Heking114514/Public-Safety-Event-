@@ -87,12 +87,17 @@ FusionHealthSnapshot FusionHealthMonitor::evaluate(
     std::max(0.0, input.now_seconds - vision_outage_started_at_) : 0.0;
   result.dead_reckoning_distance = dead_reckoning_distance_;
   result.mode = select_mode(
-    input.initialized, input.vision, result.wheel_healthy, input.imu,
-    input.wheel_yaw_backup, input.visual_realigned,
-    result.motion_fault == MotionFault::kStalled || result.angular_stalled,
-    result.vision_outage_seconds, result.dead_reckoning_distance,
-    limits.max_dead_reckoning_time, limits.max_dead_reckoning_distance,
-    limits.max_wheel_only_time, limits.max_wheel_only_distance);
+      input.initialized, input.vision, result.wheel_healthy, input.imu,
+      input.wheel_yaw_backup, input.visual_realigned,
+      result.motion_fault == MotionFault::kStalled || result.angular_stalled,
+      result.vision_outage_seconds, result.dead_reckoning_distance,
+      limits.max_dead_reckoning_time, limits.max_dead_reckoning_distance,
+      limits.max_wheel_only_time, limits.max_wheel_only_distance);
+  if (!input.initialized && input.initialization_timed_out) {
+    // A startup timeout is distinct from a normal no-vision outage. It is the
+    // only point at which the pre-initialization wait becomes a latched fault.
+    result.mode = FusionMode::kFaultInitTimeout;
+  }
   return result;
 }
 

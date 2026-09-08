@@ -89,6 +89,19 @@ class NavigationRunManifestTest(unittest.TestCase):
             arguments.append(f"--argv={token}")
         return Path(self.helper(*arguments).stdout.strip())
 
+    def finalize_run(self, run, exit_code=0, metadata=True):
+        bag = run / "bag"
+        bag.mkdir()
+        (bag / "data.db3").write_bytes(b"recorded data")
+        if metadata:
+            (bag / "metadata.yaml").write_text("valid: true\n")
+        self.helper(
+            "finalize-run", "--run-dir", run,
+            "--latest-bag", self.root / "latest_navigation_bag",
+            "--exit-code", str(exit_code),
+            "--parameter-snapshots-complete", "true",
+        )
+
     def test_tracked_and_runtime_untracked_changes_affect_fingerprint(self):
         initial = self.fingerprint()
         (self.root / "src" / "main.cpp").write_text("int main() { return 1; }\n")
@@ -261,6 +274,13 @@ class NavigationRunManifestTest(unittest.TestCase):
         previous = self.root / "navigation_runs" / "previous" / "bag"
         previous.mkdir(parents=True)
         (previous / "metadata.yaml").write_text("valid: true\n")
+        (previous.parent / "run_manifest.json").write_text(json.dumps({
+            "schema_version": 1,
+            "run_id": previous.parent.name,
+            "status": "completed",
+            "end_time": "2020-01-01T00:00:00+00:00",
+            "bag": {"path": str(previous), "present": True},
+        }))
         latest = self.root / "latest_navigation_bag"
         latest.symlink_to(previous)
 
@@ -280,6 +300,133 @@ class NavigationRunManifestTest(unittest.TestCase):
         self.assertEqual("failed", manifest["status"])
         self.assertTrue(manifest["bag"]["metadata_present"])
         self.assertFalse(manifest["bag"]["latest_link_updated"])
+
+    def test_retention_keeps_only_three_latest_completed_bags(self):
+        build_id = self.record_build()
+        runs = []
+        for _ in range(5):
+            run = self.create_run(build_id)
+            self.finalize_run(run)
+            runs.append(run)
+
+        self.assertEqual(
+            [False, False, True, True, True],
+            [(run / "bag").is_dir() for run in runs],
+        )
+        self.assertEqual(
+            runs[-1] / "bag",
+            (self.root / "latest_navigation_bag").resolve(),
+        )
+        for run in runs[:2]:
+            manifest = json.loads((run / "run_manifest.json").read_text())
+            self.assertFalse(manifest["bag"]["present"])
+            self.assertTrue(manifest["bag"]["pruned_at"])
+            self.assertEqual("retention_limit_3", manifest["bag"]["pruned_reason"])
+
+    def test_retention_is_strictly_the_three_most_recent_runs(self):
+        build_id = self.record_build()
+        completed = self.create_run(build_id)
+        self.finalize_run(completed)
+        failed = []
+        for _ in range(3):
+            run = self.create_run(build_id)
+            self.finalize_run(run, exit_code=37)
+            failed.append(run)
+
+        latest = self.root / "latest_navigation_bag"
+        self.assertFalse(latest.exists())
+        self.assertFalse(latest.is_symlink())
+        self.assertFalse((completed / "bag").exists())
+        self.assertTrue(all((run / "bag").is_dir() for run in failed))
+
+    def test_legacy_bag_counts_toward_retention_and_ages_out(self):
+        build_id = self.record_build()
+        latest = self.root / "latest_navigation_bag"
+        latest.mkdir()
+        (latest / "metadata.yaml").write_text("valid: true\n")
+        (latest / "legacy.db3").write_bytes(b"legacy")
+
+        runs = []
+        for _ in range(3):
+            run = self.create_run(build_id)
+            self.finalize_run(run)
+            runs.append(run)
+
+        legacy_runs = [
+            path for path in (self.root / "navigation_runs").iterdir()
+            if path.name.startswith("legacy_")
+        ]
+        self.assertEqual(1, len(legacy_runs))
+        legacy_manifest = json.loads(
+            (legacy_runs[0] / "run_manifest.json").read_text()
+        )
+        self.assertFalse((legacy_runs[0] / "bag").exists())
+        self.assertFalse(legacy_manifest["bag"]["present"])
+        self.assertEqual(runs[-1] / "bag", latest.resolve())
+
+    def test_retention_ignores_external_and_symlink_bag_paths(self):
+        build_id = self.record_build()
+        runs_root = self.root / "navigation_runs"
+        runs_root.mkdir()
+        outside = self.root / "outside_bag"
+        outside.mkdir()
+        (outside / "metadata.yaml").write_text("valid: true\n")
+        (outside / "outside.db3").write_bytes(b"must survive")
+
+        external_run = runs_root / "external"
+        external_run.mkdir()
+        (external_run / "run_manifest.json").write_text(json.dumps({
+            "schema_version": 1,
+            "run_id": external_run.name,
+            "status": "failed",
+            "end_time": "2020-01-01T00:00:00+00:00",
+            "bag": {"path": str(outside)},
+        }))
+        symlink_run = runs_root / "symlink"
+        symlink_run.mkdir()
+        (symlink_run / "bag").symlink_to(outside, target_is_directory=True)
+        (symlink_run / "run_manifest.json").write_text(json.dumps({
+            "schema_version": 1,
+            "run_id": symlink_run.name,
+            "status": "failed",
+            "end_time": "2020-01-02T00:00:00+00:00",
+            "bag": {"path": str(symlink_run / "bag")},
+        }))
+
+        for _ in range(4):
+            run = self.create_run(build_id)
+            self.finalize_run(run)
+
+        self.assertEqual(b"must survive", (outside / "outside.db3").read_bytes())
+        self.assertTrue((symlink_run / "bag").is_symlink())
+        self.assertTrue(external_run.is_dir())
+
+    def test_create_run_marks_old_active_run_abandoned_and_retains_it_normally(self):
+        build_id = self.record_build()
+        runs_root = self.root / "navigation_runs"
+        old_run = runs_root / "old_running"
+        (old_run / "bag").mkdir(parents=True)
+        (old_run / "bag" / "partial.db3").write_bytes(b"partial")
+        (old_run / "run_manifest.json").write_text(json.dumps({
+            "schema_version": 1,
+            "run_id": old_run.name,
+            "status": "running",
+            "start_time": "2020-01-01T00:00:00+00:00",
+            "bag": {"path": str(old_run / "bag")},
+        }))
+
+        runs = []
+        for _ in range(3):
+            run = self.create_run(build_id)
+            self.finalize_run(run)
+            runs.append(run)
+
+        manifest = json.loads((old_run / "run_manifest.json").read_text())
+        self.assertEqual("abandoned", manifest["status"])
+        self.assertEqual("superseded_by_new_run", manifest["abandoned_reason"])
+        self.assertFalse((old_run / "bag").exists())
+        self.assertFalse(manifest["bag"]["present"])
+        self.assertTrue(all((run / "bag").is_dir() for run in runs))
 
 
 if __name__ == "__main__":

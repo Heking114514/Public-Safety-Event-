@@ -2,6 +2,9 @@ waypoint_navigator:
   ros__parameters:
     route_file: ""
     route_frame: "map"
+    # /odometry/fused must carry the explicit map -> base_link frame pair;
+    # navigation has no TF conversion fallback for ambiguous frame names.
+    odom_child_frame: "base_link"
     route_input_topic: "/waypoint_navigation/route_input"
     start_topic: "/waypoint_navigation/start"
 
@@ -92,6 +95,12 @@ waypoint_navigator:
     path_progress_minimum_advance: 0.05
     path_progress_minimum_actual_displacement: 0.25
     path_progress_max_recovery_attempts: 2
+    # Independent low-motion stall check. It only arms while a meaningful
+    # forward command is active and is paused during turns, braking and holds.
+    path_progress_command_threshold: 0.08
+    path_progress_stationary_speed_threshold: 0.02
+    path_progress_no_motion_timeout: 3.0
+    path_progress_no_motion_displacement: 0.05
     turn_progress_stall_timeout: 6.0
     turn_progress_minimum_error_reduction: 0.08
     turn_progress_base_total_timeout: 12.0

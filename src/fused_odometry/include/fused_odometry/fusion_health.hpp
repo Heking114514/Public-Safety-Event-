@@ -38,6 +38,10 @@ struct FusionHealthInput
   double imu_yaw_rate{0.0};
   double wheel_yaw_rate{0.0};
   bool wheel_yaw_valid{false};
+  // Set by the node only after the bounded startup wait has expired. Keeping
+  // this separate from initialized lets the gate publish a recoverable wait
+  // state while ORB warms up.
+  bool initialization_timed_out{false};
 };
 
 struct FusionHealthSnapshot

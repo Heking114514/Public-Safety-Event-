@@ -177,11 +177,27 @@ exit 2
         failed_manifest = json.loads((first_failed_run / "run_manifest.json").read_text())
         self.assertEqual(37, failed_manifest["exit_code"])
         self.assertEqual("failed", failed_manifest["status"])
+        self.assertEqual("planner", failed_manifest["effective_settings"]["route_mode"])
+        self.assertEqual("", failed_manifest["effective_settings"]["route_file"])
+        self.assertEqual(
+            "planner:/waypoint_navigation/route_input",
+            failed_manifest["effective_settings"]["route_source"],
+        )
         self.assertEqual(
             self.arguments()[1:], failed_manifest["raw_argv"]
         )
         self.assertEqual(
             "038122250473", failed_manifest["effective_settings"]["camera_serial"]
+        )
+        self.assertEqual("3", failed_manifest["effective_settings"]["bag_retention"])
+        runtime_inputs = failed_manifest["runtime_inputs"]
+        self.assertEqual(
+            str(WORKSPACE / "config" / "navigation_startup.yaml"),
+            runtime_inputs["startup_config"]["path"],
+        )
+        self.assertEqual(
+            str(WORKSPACE / "config" / "navigation_recording.yaml"),
+            runtime_inputs["recording_config"]["path"],
         )
         self.assertEqual("success", failed_manifest["parameters"]["/fused_ekf"]["status"])
         fused_snapshot = Path(failed_manifest["parameters"]["/fused_ekf"]["path"])
@@ -198,6 +214,12 @@ exit 2
             if event.startswith("pgrep ") or event.startswith("ros2 ")
         )
         self.assertLess(first_last_build, first_runtime)
+        navigation_launch = next(
+            event for event in first_events
+            if event.startswith("ros2 launch visual_navigation ")
+        )
+        self.assertIn("autostart:=false", navigation_launch)
+        self.assertNotIn("route_file:=", navigation_launch)
 
         second_event_start = len(first_events)
         second_failed = subprocess.run(
@@ -311,6 +333,73 @@ exit 2
         no_build_events = self.events.read_text().splitlines()[no_build_event_start:]
         self.assertFalse(any(event.startswith("cmake ") for event in no_build_events))
         self.assertFalse(any(event.startswith("colcon ") for event in no_build_events))
+
+    def test_autostart_loads_the_script_csv_and_records_the_mode(self):
+        arguments = self.arguments() + ["--autostart"]
+        result = subprocess.run(
+            arguments,
+            env=self.environment(MOCK_BAG_EXIT="37"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(37, result.returncode, result.stderr)
+
+        run = self.latest_run.resolve()
+        manifest = json.loads((run / "run_manifest.json").read_text())
+        expected_route = WORKSPACE / "scripts" / "waypoints.csv"
+        settings = manifest["effective_settings"]
+        self.assertEqual("csv", settings["route_mode"])
+        self.assertEqual(str(expected_route), settings["route_file"])
+        self.assertEqual(f"csv:{expected_route}", settings["route_source"])
+        self.assertEqual(
+            str(expected_route), manifest["runtime_inputs"]["route_file"]["path"]
+        )
+
+        events = self.events.read_text().splitlines()
+        navigation_launch = next(
+            event for event in events
+            if event.startswith("ros2 launch visual_navigation ")
+        )
+        self.assertIn("autostart:=true", navigation_launch)
+        self.assertIn(f"route_file:={expected_route}", navigation_launch)
+        bag_record = next(event for event in events if event.startswith("ros2 bag record "))
+        self.assertIn("/camera/camera/infra1/image_rect_raw", bag_record)
+        self.assertIn("/parameter_events", bag_record)
+        self.assertIn("/rosout", bag_record)
+        self.assertNotIn("/fusion/input/imu", bag_record)
+
+    def test_navigation_entry_records_explicit_actuator_gate(self):
+        result = subprocess.run(
+            self.arguments(),
+            env=self.environment(MOCK_BAG_EXIT="37"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(37, result.returncode, result.stderr)
+        manifest = self.latest_manifest()
+        self.assertFalse(
+            manifest["effective_settings"]["require_actuator_health"]
+        )
+        launch_event = next(
+            event
+            for event in self.events.read_text().splitlines()
+            if event.startswith("ros2 launch visual_navigation ")
+        )
+        self.assertIn("require_actuator_health:=false", launch_event)
+
+    def test_serial_bringup_hardcodes_actuator_gate(self):
+        launch = (
+            WORKSPACE
+            / "src"
+            / "visual_navigation"
+            / "launch"
+            / "visual_navigation_serial_bringup.launch.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"require_actuator_health": "true"', launch)
 
 
 if __name__ == "__main__":

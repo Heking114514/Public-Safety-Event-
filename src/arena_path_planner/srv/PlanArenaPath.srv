@@ -3,10 +3,12 @@ geometry_msgs/Point[] targets
 string[] labels
 geometry_msgs/Polygon[] dynamic_obstacles
 string[] covered_edges
+string[] remaining_visits
 string mode
 bool activate_navigation
 ---
 bool success
+bool navigation_activated
 string message
 nav_msgs/Path arena_path
 nav_msgs/Path navigation_path

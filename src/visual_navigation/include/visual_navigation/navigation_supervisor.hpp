@@ -80,6 +80,10 @@ inline std::string LocalizationFailureState(
   {
     return "FAULT_FUSION_STATUS_STALE";
   }
+  // ORB warm-up is an expected startup wait. It must not be reported as a
+  // runtime fusion fault, and it must leave an autostarted route resumable.
+  if (input.fusion_status == "WAITING_FOR_INITIALIZATION")
+    return "WAITING_FOR_INITIALIZATION";
   if (health.fault)
     return "FAULT_FUSION_STATUS";
   if (input.fusion_required && !health.allowed)
@@ -199,10 +203,12 @@ public:
     {
       const bool latch = hard_fault ||
         (!tracking_valid && localization_was_valid_ && config_.abort_on_tracking_loss);
+      const bool initialization_wait =
+        input.fusion_status == "WAITING_FOR_INITIALIZATION" && !health.fault;
       return {
         latch ? NavigationRuntimeAction::STOP_AND_LATCH :
         NavigationRuntimeAction::STOP_AND_WAIT,
-        health, LocalizationFailureState(input, health), true};
+        health, LocalizationFailureState(input, health), !initialization_wait};
     }
 
     localization_was_valid_ = true;

@@ -6,10 +6,18 @@ ORIGINAL_ARGV=("$@")
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 ROS_DISTRO_NAME="${ROS_DISTRO:-humble}"
-ROS_SETUP="/opt/ros/${ROS_DISTRO_NAME}/setup.bash"
-ORB_ROOT="${WORKSPACE_ROOT}/src/ORB_SLAM3"
-DEPS_ROOT="${WORKSPACE_ROOT}/src/deps"
+ROS_SETUP="${NAVIGATION_ROS_SETUP:-${ROS_SETUP:-/opt/ros/${ROS_DISTRO_NAME}/setup.bash}}"
+ORB_ROOT="${WORKSPACE_ROOT}/src/orb_slam3/ORB_SLAM3"
+DEPS_ROOT="${NAVIGATION_DEPS_ROOT:-${WORKSPACE_ROOT}/src/orb_slam3/deps}"
 RUN_MANIFEST_HELPER="${SCRIPT_DIR}/navigation_run_manifest.py"
+NAVIGATION_BAGS_HELPER="${SCRIPT_DIR}/navigation_bags.py"
+PROCESS_HELPER="${SCRIPT_DIR}/navigation_processes.sh"
+BUILD_LOCK_HELPER="${SCRIPT_DIR}/build_lock.sh"
+CONFIG_HELPER="${SCRIPT_DIR}/navigation_config.py"
+CONFIG_SHELL_HELPER="${SCRIPT_DIR}/navigation_config.sh"
+STARTUP_CONFIG="${NAVIGATION_STARTUP_CONFIG:-${WORKSPACE_ROOT}/config/navigation_startup.yaml}"
+RECORDING_CONFIG="${NAVIGATION_RECORDING_CONFIG:-${WORKSPACE_ROOT}/config/navigation_recording.yaml}"
+DEFAULT_AUTOSTART_ROUTE="${SCRIPT_DIR}/waypoints.csv"
 BUILD_MANIFEST="${NAVIGATION_BUILD_MANIFEST:-${WORKSPACE_ROOT}/build/navigation_runtime_manifest.json}"
 RUNS_ROOT="${NAVIGATION_RUNS_ROOT:-${WORKSPACE_ROOT}/navigation_runs}"
 LATEST_RUN="${NAVIGATION_LATEST_RUN:-${WORKSPACE_ROOT}/latest_navigation_run}"
@@ -19,7 +27,7 @@ PGREP_COMMAND="${NAVIGATION_PGREP_COMMAND:-pgrep}"
 CMAKE_COMMAND="${NAVIGATION_CMAKE_COMMAND:-cmake}"
 COLCON_COMMAND="${NAVIGATION_COLCON_COMMAND:-colcon}"
 
-SERIAL_DEVICE="/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
+SERIAL_DEVICE="auto"
 SERIAL_BAUD_RATE="115200"
 USE_SERIAL="true"
 CAMERA_SERIAL=""
@@ -28,53 +36,17 @@ USE_SLAM_IMU="false"
 EQUALIZE="true"
 VISUALIZATION="false"
 AUTOSTART="false"
+ROUTE_MODE="planner"
+ROUTE_FILE=""
+ROUTE_SOURCE="planner:/waypoint_navigation/route_input"
 BUILD_IF_NEEDED="true"
 CHECK_CAMERA="true"
 FORCE_CAMERA_RESET="false"
 CAMERA_INITIAL_RESET="false"
 BUILD_JOBS="2"
+RETAIN_BAGS="3"
 ROSBAG_OUTPUT=""
-ROSBAG_TOPICS=(
-  # Raw stereo streams are required to diagnose ORB-SLAM quality, sync and
-  # calibration during replay. Keep both image and camera_info topics.
-  /camera/camera/infra1/image_rect_raw
-  /camera/camera/infra1/camera_info
-  /camera/camera/infra2/image_rect_raw
-  /camera/camera/infra2/camera_info
-  /odometry/visual_continuous
-  /odometry/visual_raw
-  /orbslam3/map_change
-  /wheel/odom
-  /odometry/local
-  /odometry/fused
-  /fusion/input/visual_odom
-  /fusion/input/wheel_odom
-  /fusion/input/imu
-  /camera/camera/imu
-  /imu/filtered
-  /imu/control
-  /imu/rpy
-  /tracking_state
-  /odometry/fusion_status
-  /cmd_vel_nav
-  /waypoint_path
-  /waypoint_navigation/route_input
-  /arena_path_planner/navigation_path
-  /waypoint_navigation/route_ack
-  /waypoint_navigation/status
-  /waypoint_navigation/current_waypoint
-  /waypoint_navigation/motion_hold_state
-  /waypoint_navigation/start
-  /cup_car_serial/encoder_ticks
-  /cup_car_serial/connected
-  /cup_car_serial/actuator_healthy
-  /cup_car_serial/actuator_tracking_status
-  /cup_car_serial/control_telemetry
-  /cup_car_serial/rx
-  /diagnostics
-  /tf
-  /tf_static
-)
+ROSBAG_TOPICS=()
 
 log() {
   printf '[visual-navigation] %s\n' "$*"
@@ -85,20 +57,25 @@ fail() {
   exit 1
 }
 
+# shellcheck disable=SC1090
+[[ -f "${CONFIG_SHELL_HELPER}" ]] || fail "navigation config shell helper is missing: ${CONFIG_SHELL_HELPER}"
+source "${CONFIG_SHELL_HELPER}"
+load_navigation_config
+
 usage() {
   cat <<'EOF'
 Usage: scripts/start_visual_navigation.sh [options]
 
 Options:
   --camera-serial SERIAL    D455 serial number; auto-detected by default
-  --serial-device DEVICE    Controller serial device (default: CH340 stable path)
+  --serial-device DEVICE    Controller serial device (default: auto)
   --serial-baud RATE        Controller baud rate (default: 115200)
   --no-serial               Run upper-computer algorithms without the controller
   --no-imu                  Disable the D455 IMU and IMU filter
   --slam-imu                Fuse raw D455 IMU measurements inside ORB-SLAM3
   --no-equalize             Disable CLAHE image enhancement before ORB-SLAM3
   --visualization           Enable the Pangolin window
-  --autostart               Start waypoint motion immediately (disabled by default)
+  -a, --autostart           Load the configured CSV and start automatically
   --no-build                Use only a build verified against current source
   --skip-camera-check       Launch without checking for a connected D455
   --reset-camera            Force a D455 firmware reset before opening streams
@@ -106,8 +83,8 @@ Options:
   --jobs COUNT              Parallel build jobs
   -h, --help                Show this help
 
-No CSV route is loaded at startup. Run route_editor.py, click the route, then
-press its publish button to load and start the route immediately.
+With no options the stack waits for the planning GUI. In a second terminal run
+scripts/start_arena_planner.sh and click its start-navigation button.
 EOF
 }
 
@@ -149,8 +126,10 @@ while (($# > 0)); do
       VISUALIZATION="true"
       shift
       ;;
-    --autostart)
+    -a|--autostart)
       AUTOSTART="true"
+      ROUTE_MODE="csv"
+      ROUTE_FILE="${DEFAULT_AUTOSTART_ROUTE}"
       shift
       ;;
     --no-build)
@@ -187,11 +166,23 @@ done
 [[ -f "${ROS_SETUP}" ]] || fail "ROS 2 setup not found: ${ROS_SETUP}"
 [[ -x "${RUN_MANIFEST_HELPER}" ]] ||
   fail "run manifest helper is missing or not executable: ${RUN_MANIFEST_HELPER}"
+[[ -f "${NAVIGATION_BAGS_HELPER}" ]] ||
+  fail "navigation bag helper is missing: ${NAVIGATION_BAGS_HELPER}"
+[[ -f "${PROCESS_HELPER}" ]] ||
+  fail "process helper is missing: ${PROCESS_HELPER}"
+[[ -f "${BUILD_LOCK_HELPER}" ]] ||
+  fail "build lock helper is missing: ${BUILD_LOCK_HELPER}"
 [[ "${BUILD_JOBS}" =~ ^[1-9][0-9]*$ ]] || fail "--jobs must be a positive integer"
 [[ "${SERIAL_BAUD_RATE}" =~ ^[0-9]+$ ]] || fail "--serial-baud must be an integer"
 [[ -f "${ORB_ROOT}/CMakeLists.txt" ]] || fail "ORB_SLAM3 submodule is missing; run: git submodule update --init --recursive"
 [[ "${USE_SLAM_IMU}" == "false" || "${USE_IMU}" == "true" ]] ||
   fail "--slam-imu requires D455 IMU; remove --no-imu"
+if [[ "${ROUTE_MODE}" == "csv" ]]; then
+  [[ -f "${ROUTE_FILE}" ]] || fail "autostart route is missing: ${ROUTE_FILE}"
+  ROUTE_FILE="$(readlink -f -- "${ROUTE_FILE}")" ||
+    fail "could not resolve autostart route: ${ROUTE_FILE}"
+  ROUTE_SOURCE="csv:${ROUTE_FILE}"
+fi
 
 # shellcheck disable=SC1090
 set +u
@@ -201,82 +192,10 @@ set -u
 [[ -x "/opt/ros/${ROS_DISTRO_NAME}/lib/robot_localization/ekf_node" ]] ||
   fail "robot_localization is missing; install ros-${ROS_DISTRO_NAME}-robot-localization"
 
-find_ros_processes() {
-  local pattern
-  pattern="/opt/ros/${ROS_DISTRO_NAME}/bin/ros2([[:space:]]|$)"
-  pattern+="|/opt/ros/${ROS_DISTRO_NAME}/lib/[^[:space:]]+/[^[:space:]]+"
-  pattern+="|${WORKSPACE_ROOT}/install/[^[:space:]]+/lib/[^[:space:]]+/[^[:space:]]+"
-  "${PGREP_COMMAND}" -f "${pattern}" 2>/dev/null || true
-}
-
-is_arena_planner_pid() {
-  local pid="$1"
-  ps -p "${pid}" -o args= 2>/dev/null | grep -Eq 'arena_path_planner|start_arena_planner\.sh'
-}
-
-stop_existing_ros_nodes() {
-  local -a pids=()
-  local -a remaining=()
-  local attempt
-
-  mapfile -t pids < <(find_ros_processes)
-  # The arena planner is a separate service used by route_frontend.py. Do not
-  # terminate it when refreshing the camera/odometry/navigation stack.
-  local -a kept_pids=()
-  for pid in "${pids[@]}"; do
-    if [[ -n "${pid}" ]] && is_arena_planner_pid "${pid}"; then
-      kept_pids+=("${pid}")
-    fi
-  done
-  if ((${#kept_pids[@]} > 0)); then
-    local -a filtered_pids=()
-    for pid in "${pids[@]}"; do
-      [[ " ${kept_pids[*]} " == *" ${pid} "* ]] || filtered_pids+=("${pid}")
-    done
-    pids=("${filtered_pids[@]}")
-    log "Keeping ${#kept_pids[@]} arena planner process(es)"
-  fi
-  if ((${#pids[@]} == 0)); then
-    log "No existing ROS 2 nodes found"
-  else
-    log "Stopping ${#pids[@]} existing ROS 2 processes"
-    kill -INT "${pids[@]}" 2>/dev/null || true
-
-    for attempt in {1..40}; do
-      remaining=()
-      for pid in "${pids[@]}"; do
-        kill -0 "${pid}" 2>/dev/null && remaining+=("${pid}")
-      done
-      ((${#remaining[@]} == 0)) && break
-      sleep 0.2
-    done
-
-    if ((${#remaining[@]} > 0)); then
-      log "Forcing ${#remaining[@]} ROS 2 processes to exit"
-      kill -TERM "${remaining[@]}" 2>/dev/null || true
-      for attempt in {1..20}; do
-        pids=()
-        for pid in "${remaining[@]}"; do
-          kill -0 "${pid}" 2>/dev/null && pids+=("${pid}")
-        done
-        ((${#pids[@]} == 0)) && break
-        sleep 0.1
-      done
-      ((${#pids[@]} == 0)) || kill -KILL "${pids[@]}" 2>/dev/null || true
-    fi
-  fi
-
-  "${ROS2_COMMAND}" daemon stop >/dev/null 2>&1 || true
-
-  mapfile -t remaining < <(find_ros_processes)
-  local -a unexpected_remaining=()
-  for pid in "${remaining[@]}"; do
-    [[ -n "${pid}" ]] || continue
-    is_arena_planner_pid "${pid}" || unexpected_remaining+=("${pid}")
-  done
-  ((${#unexpected_remaining[@]} == 0)) ||
-    fail "could not stop all existing ROS 2 processes: ${unexpected_remaining[*]}"
-}
+# shellcheck disable=SC1090
+source "${PROCESS_HELPER}"
+# shellcheck disable=SC1090
+source "${BUILD_LOCK_HELPER}"
 
 detect_camera_serial() {
   command -v rs-enumerate-devices >/dev/null 2>&1 ||
@@ -438,6 +357,8 @@ runtime_artifacts() {
 }
 
 runtime_artifacts
+log "Waiting for exclusive workspace build access"
+acquire_workspace_build_lock || fail "could not acquire the workspace build lock"
 SOURCE_FINGERPRINT_BEFORE="$(${RUN_MANIFEST_HELPER} fingerprint --workspace "${WORKSPACE_ROOT}")" ||
   fail "could not compute the runtime source fingerprint"
 
@@ -471,6 +392,13 @@ else
     fail "--no-build verification failed; rerun without --no-build"
   SOURCE_FINGERPRINT="${SOURCE_FINGERPRINT_BEFORE}"
 fi
+release_workspace_build_lock
+
+command -v flock >/dev/null 2>&1 || fail "flock is required for navigation run locking"
+mkdir -p -- "${RUNS_ROOT}"
+exec {RUN_LOCK_FD}>"${RUNS_ROOT}/.navigation.lock"
+flock -n "${RUN_LOCK_FD}" ||
+  fail "another navigation startup owns ${RUNS_ROOT}/.navigation.lock"
 
 stop_existing_ros_nodes
 
@@ -492,15 +420,24 @@ set -u
 export LD_LIBRARY_PATH="${ORB_ROOT}/lib:${DEPS_ROOT}/lib:${LD_LIBRARY_PATH:-}"
 
 log "Starting decoupled odometry and navigation stacks"
-log "Route: waiting for /waypoint_navigation/route_input from route_editor.py"
+if [[ "${ROUTE_MODE}" == "csv" ]]; then
+  log "Route mode: CSV autostart (${ROUTE_FILE})"
+else
+  log "Route mode: planner GUI; run scripts/start_arena_planner.sh in terminal 2"
+fi
 log "IMU filter: ${USE_IMU}; SLAM IMU fusion: ${USE_SLAM_IMU}; CLAHE: ${EQUALIZE}; visualization: ${VISUALIZATION}; autostart: ${AUTOSTART}"
 if [[ "${USE_SERIAL}" == "true" ]]; then
   log "Controller serial: ${SERIAL_DEVICE} at ${SERIAL_BAUD_RATE} baud"
   LAUNCH_FILE="visual_navigation_serial_bringup.launch.py"
+  # The serial/competition path must not rely only on a launch-file default:
+  # make the actuator gate explicit in the recorded command line as well.
+  REQUIRE_ACTUATOR_HEALTH="true"
 else
   log "Controller serial: disabled (upper-computer only)"
   LAUNCH_FILE="visual_navigation_bringup.launch.py"
+  REQUIRE_ACTUATOR_HEALTH="false"
 fi
+log "Actuator health gate: require_actuator_health=${REQUIRE_ACTUATOR_HEALTH}"
 
 ODOMETRY_LAUNCH_ARGS=(
   "serial_no:=_${CAMERA_SERIAL}"
@@ -517,8 +454,12 @@ NAVIGATION_LAUNCH_ARGS=(
   "odom_topic:=/odometry/fused"
   "fusion_status_topic:=/odometry/fusion_status"
   "cmd_vel_topic:=/cmd_vel_nav"
+  "require_actuator_health:=${REQUIRE_ACTUATOR_HEALTH}"
   "autostart:=${AUTOSTART}"
 )
+if [[ -n "${ROUTE_FILE}" ]]; then
+  NAVIGATION_LAUNCH_ARGS+=("route_file:=${ROUTE_FILE}")
+fi
 
 if [[ "${USE_SERIAL}" == "true" ]]; then
   NAVIGATION_LAUNCH_ARGS+=(
@@ -529,7 +470,14 @@ fi
 
 declare -a RUN_INPUT_FILES=(
   "startup_script=${SCRIPT_DIR}/start_visual_navigation.sh"
+  "startup_config=${STARTUP_CONFIG}"
+  "recording_config=${RECORDING_CONFIG}"
+  "config_helper=${CONFIG_HELPER}"
+  "config_shell_helper=${CONFIG_SHELL_HELPER}"
+  "process_helper=${PROCESS_HELPER}"
   "manifest_helper=${RUN_MANIFEST_HELPER}"
+  "bag_helper=${NAVIGATION_BAGS_HELPER}"
+  "build_lock_helper=${BUILD_LOCK_HELPER}"
   "odometry_launch=${WORKSPACE_ROOT}/install/fused_odometry/share/fused_odometry/launch/odometry_bringup.launch.py"
   "fusion_launch=${WORKSPACE_ROOT}/install/fused_odometry/share/fused_odometry/launch/fused_odometry.launch.py"
   "fusion_config=${WORKSPACE_ROOT}/install/fused_odometry/share/fused_odometry/config/fused_odometry.yaml"
@@ -540,6 +488,9 @@ declare -a RUN_INPUT_FILES=(
   "waypoint_launch=${WORKSPACE_ROOT}/install/visual_navigation/share/visual_navigation/launch/waypoint_navigation.launch.py"
   "navigation_config=${WORKSPACE_ROOT}/install/visual_navigation/share/visual_navigation/config/waypoint_navigation.yaml"
 )
+if [[ -n "${ROUTE_FILE}" ]]; then
+  RUN_INPUT_FILES+=("route_file=${ROUTE_FILE}")
+fi
 if [[ "${USE_IMU}" == "true" ]]; then
   RUN_INPUT_FILES+=(
     "imu_config=${WORKSPACE_ROOT}/install/imu_rpy_filter/share/imu_rpy_filter/config/imu_rpy_filter.yaml"
@@ -569,15 +520,19 @@ declare -a CREATE_RUN_ARGUMENTS=(
   --setting "serial_device=${SERIAL_DEVICE}"
   --setting "serial_baud_rate=${SERIAL_BAUD_RATE}"
   --setting "use_serial=${USE_SERIAL}"
+  --setting "require_actuator_health=${REQUIRE_ACTUATOR_HEALTH}"
   --setting "use_imu=${USE_IMU}"
   --setting "use_slam_imu=${USE_SLAM_IMU}"
   --setting "equalize=${EQUALIZE}"
   --setting "visualization=${VISUALIZATION}"
   --setting "autostart=${AUTOSTART}"
+  --setting "route_mode=${ROUTE_MODE}"
+  --setting "route_file=${ROUTE_FILE}"
   --setting "build_enabled=${BUILD_IF_NEEDED}"
   --setting "build_jobs=${BUILD_JOBS}"
+  --setting "bag_retention=${RETAIN_BAGS}"
   --setting "launch_file=${LAUNCH_FILE}"
-  --setting "route_source=dynamic:/waypoint_navigation/route_input"
+  --setting "route_source=${ROUTE_SOURCE}"
 )
 for argument in "${ORIGINAL_ARGV[@]}"; do
   CREATE_RUN_ARGUMENTS+=("--argv=${argument}")
@@ -757,6 +712,7 @@ cleanup() {
     "${RUN_MANIFEST_HELPER}" finalize-run \
       --run-dir "${RUN_DIR}" \
       --latest-bag "${LATEST_BAG}" \
+      --retain-bags "${RETAIN_BAGS}" \
       --exit-code "${original_status}" \
       --parameter-snapshots-complete "${PARAMETER_SNAPSHOTS_COMPLETE}"
     local finalize_status=$?
@@ -774,15 +730,16 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 "${ROS2_COMMAND}" launch fused_odometry odometry_bringup.launch.py \
-  "${ODOMETRY_LAUNCH_ARGS[@]}" &
+  "${ODOMETRY_LAUNCH_ARGS[@]}" {RUN_LOCK_FD}>&- &
 STACK_PIDS+=("$!")
 
 "${ROS2_COMMAND}" launch visual_navigation "${LAUNCH_FILE}" \
-  "${NAVIGATION_LAUNCH_ARGS[@]}" &
+  "${NAVIGATION_LAUNCH_ARGS[@]}" {RUN_LOCK_FD}>&- &
 STACK_PIDS+=("$!")
 
 log "Recording latest navigation data: ${ROSBAG_OUTPUT}"
-"${ROS2_COMMAND}" bag record --output "${ROSBAG_OUTPUT}" "${ROSBAG_TOPICS[@]}" &
+"${ROS2_COMMAND}" bag record --output "${ROSBAG_OUTPUT}" \
+  "${ROSBAG_TOPICS[@]}" {RUN_LOCK_FD}>&- &
 STACK_PIDS+=("$!")
 "${RUN_MANIFEST_HELPER}" mark-running --run-dir "${RUN_DIR}" ||
   fail "could not mark the navigation run as started"

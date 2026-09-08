@@ -529,7 +529,7 @@ FusionMode select_mode(
   double max_wheel_only_distance)
 {
   if (!initialized) {
-    return FusionMode::kFault;
+    return FusionMode::kInitializing;
   }
   if (stalled) {
     return FusionMode::kFaultStalled;
@@ -569,6 +569,7 @@ const char * mode_name(FusionMode mode)
 {
   switch (mode) {
     case FusionMode::kFull: return "FULL";
+    case FusionMode::kInitializing: return "WAITING_FOR_INITIALIZATION";
     case FusionMode::kNoVision: return "DEGRADED_NO_VISION";
     case FusionMode::kNoWheel: return "DEGRADED_NO_WHEEL";
     case FusionMode::kNoImu: return "DEGRADED_NO_IMU";
@@ -576,6 +577,7 @@ const char * mode_name(FusionMode mode)
     case FusionMode::kWheelOnly: return "DEGRADED_WHEEL_ONLY";
     case FusionMode::kVisualRealigned: return "DEGRADED_VISUAL_REALIGNED";
     case FusionMode::kFaultStalled: return "FAULT_STALLED";
+    case FusionMode::kFaultInitTimeout: return "FAULT_INIT_TIMEOUT";
     case FusionMode::kFault: return "FAULT";
   }
   return "FAULT";
@@ -585,6 +587,7 @@ HealthSeverity health_severity(
   FusionMode mode, bool wheel_healthy, MotionFault motion_fault)
 {
   if (mode == FusionMode::kFault || mode == FusionMode::kFaultStalled ||
+    mode == FusionMode::kFaultInitTimeout ||
     motion_fault == MotionFault::kStalled)
   {
     return HealthSeverity::kError;

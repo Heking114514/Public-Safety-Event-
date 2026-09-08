@@ -25,7 +25,15 @@ target_include_directories(fusion_logic PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
 
-add_executable(fusion_gate_node src/fusion_gate_node.cpp)
+# Keep the gate implementation grouped by input source and output responsibility.
+add_executable(fusion_gate_node
+  src/fusion_gate_node.cpp
+  src/node_init.cpp
+  src/inputs.cpp
+  src/visual.cpp
+  src/wheel.cpp
+  src/imu.cpp
+  src/health.cpp)
 target_link_libraries(fusion_gate_node fusion_logic)
 ament_target_dependencies(
   fusion_gate_node
