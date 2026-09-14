@@ -36,7 +36,7 @@ WaypointNavigator::ControlFrame WaypointNavigator::BuildControlFrame(
       currentX_, currentY_);
   frame.waypoint_requires_stop =
       WaypointRequiresStop(frame.path_heading, frame.final_waypoint) ||
-      frame.target.stop_time > 0.0;
+      frame.target.stop_time > 0.0 || reverseSegmentActive_;
   const bool continuousWaypointPassed =
       !controlState_.recovering_goal() &&
       visual_navigation::ContinuousPathWaypointPassed(
@@ -78,8 +78,14 @@ void WaypointNavigator::RunControl() {
     if (supervision.reset_path_control)
       ResetManeuver();
     if (supervision.action ==
-        visual_navigation::NavigationRuntimeAction::STOP_AND_LATCH)
+        visual_navigation::NavigationRuntimeAction::STOP_AND_LATCH) {
       navigationActive_ = false;
+      if (pendingFrontObstacle_ || !obstacleRecoveryController_.idle()) {
+        pendingFrontObstacle_ = false;
+        obstacleBrakeController_.reset();
+        obstacleRecoveryController_.require_route_takeover();
+      }
+    }
     SetState(supervision.state);
     return;
   }
@@ -93,6 +99,39 @@ void WaypointNavigator::RunControl() {
   }
   if (!supervision.state.empty())
     SetState(supervision.state);
+
+  const auto currentTime = std::chrono::steady_clock::now();
+  const bool obstacleInputFresh =
+      frontObstacleReceived_ &&
+      std::chrono::duration<double>(currentTime - lastFrontObstacleArrival_)
+              .count() <= frontObstacleTimeout_;
+  if (frontObstacleReceived_ && !obstacleInputFresh) {
+    // No publisher is a normal configuration. A producer that disappears is
+    // also treated as "not blocked" until a new true sample arrives.
+    frontObstacleReported_ = false;
+    frontObstacleReceived_ = false;
+    frontObstacleEventHandled_ = false;
+    frontObstacleRangeReceived_ = false;
+    ClearPendingObstacleSignal("front obstacle heartbeat expired");
+  }
+  if (pendingFrontObstacle_) {
+    const double classificationWait =
+        std::chrono::duration<double>(currentTime - pendingObstacleStartedAt_)
+            .count();
+    if (classificationWait >= frontObstacleClassificationWait_)
+      ClassifyPendingObstacle();
+    if (pendingFrontObstacle_) {
+      PublishStop();
+      SetState("OBSTACLE_BRAKING");
+      return;
+    }
+  }
+  if (!obstacleRecoveryController_.idle()) {
+    RunObstacleRecovery(fusionHealth);
+    return;
+  }
+
+  RecordExecutedPose();
 
   if (controlState_.waiting() && RunWait() == ControlStep::DONE)
     return;
@@ -109,6 +148,24 @@ void WaypointNavigator::RunControl() {
 
   if (frame.final_waypoint && frame.waypoint_reached)
     controlState_.capture_goal();
+
+  // A planned route starts at the request pose. By activation time its first
+  // point can be a few millimetres away and imply an arbitrary short heading.
+  if (visual_navigation::SatisfiedRouteStartMayAdvance(
+          currentWaypointIndex_, frame.final_waypoint, frame.target.stop_time,
+          frame.distance, frame.target.tolerance)) {
+    pathProgressSupervisor_.Reset();
+    turnProgressSupervisor_.Reset();
+    if (routeStartTurnAuthorized_ && frame.target.turn_junction) {
+      if (!controlState_.in(visual_navigation::ControlPhase::BRAKE))
+        BeginWaypointBraking();
+      RunBrake(frame);
+      return;
+    }
+    AdvanceWaypoint();
+    routeStartTurnAuthorized_ = false;
+    return;
+  }
 
   const bool stopAlreadyCompleted =
       frame.final_waypoint && controlState_.goal_stopped();
@@ -137,7 +194,10 @@ void WaypointNavigator::RunControl() {
   if (frame.waypoint_reached) {
     pathProgressSupervisor_.Reset();
     turnProgressSupervisor_.Reset();
-    AdvanceWaypoint();
+    // This is a pass-through point on the same continuous path. Keeping the
+    // path PID history avoids injecting a new steering transient at every
+    // planner sample. Stop/turn/recovery paths still use the resetting form.
+    AdvanceWaypoint(controlState_.in(visual_navigation::ControlPhase::FOLLOW));
     return;
   }
 
@@ -158,6 +218,11 @@ void WaypointNavigator::RunControl() {
   if (controlState_.in(visual_navigation::ControlPhase::RECOVER_WAYPOINT) ||
       controlState_.in(visual_navigation::ControlPhase::RECOVER_GOAL)) {
     RunRecovery(frame);
+    return;
+  }
+
+  if (reverseSegmentActive_) {
+    RunRecovery(frame, true);
     return;
   }
 

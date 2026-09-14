@@ -18,6 +18,7 @@ find_package(yaml_cpp_vendor REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/RoadInterval.msg"
   "srv/PlanArenaPath.srv"
   DEPENDENCIES geometry_msgs nav_msgs
 )
@@ -27,6 +28,8 @@ add_library(arena_planner_core
   src/geometry.cpp
   src/grid.cpp
   src/path.cpp
+  src/road_intervals.cpp
+  src/road_coverage.cpp
   src/coverage.cpp
   src/planner.cpp)
 target_include_directories(arena_planner_core PUBLIC
@@ -53,12 +56,21 @@ install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
 if(BUILD_TESTING)
   find_package(ament_index_cpp REQUIRED)
   find_package(ament_cmake_gtest REQUIRED)
-  ament_add_gtest(arena_planner_test test/planner_test.cpp)
+  # The executable includes several full 2 cm official-map routes. Their
+  # aggregate runtime exceeds CTest's 60 s default even though each planning
+  # request stays within the frontend's request budget.
+  ament_add_gtest(arena_planner_test test/planner_test.cpp TIMEOUT 180)
   target_link_libraries(arena_planner_test arena_planner_core)
   ament_target_dependencies(arena_planner_test ament_index_cpp)
   ament_add_gtest(dynamic_obstacle_test test/dynamic_obstacle_test.cpp)
   target_include_directories(dynamic_obstacle_test PRIVATE include)
   target_link_libraries(dynamic_obstacle_test arena_planner_core)
+  ament_add_gtest(road_intervals_test test/road_intervals_test.cpp)
+  target_include_directories(road_intervals_test PRIVATE include)
+  target_link_libraries(road_intervals_test arena_planner_core)
+  ament_add_gtest(start_projection_test test/start_projection_test.cpp)
+  target_link_libraries(start_projection_test arena_planner_core)
+  ament_target_dependencies(start_projection_test ament_index_cpp)
   ament_add_gtest(request_validation_test test/request_validation_test.cpp)
   target_include_directories(request_validation_test PRIVATE include)
 endif()

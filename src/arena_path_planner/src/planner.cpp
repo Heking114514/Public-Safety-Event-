@@ -1,6 +1,7 @@
 #include "arena_path_planner/planner_internal.hpp"
 #include <algorithm>
 #include <cmath>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 
@@ -9,13 +10,19 @@ namespace arena_path_planner
 PlanResult ArenaPlanner::Plan(
   const Pose & start, const std::vector<Point> & targets,
   const std::vector<std::string> & labels, const std::string & mode,
-  const std::vector<std::string> & covered_edges) const
+  const std::vector<std::string> & covered_edges,
+  const std::vector<RoadInterval> & covered_intervals) const
 {
   const auto failed = [](const std::string & message) {
       PlanResult result;
       result.message = message;
       return result;
     };
+  if (mode == "layered") {
+    return failed(
+      "layered mode is disabled because concatenating stages can create an "
+      "unexecutable reversal; execute layer1, layer2, and layer3 sequentially");
+  }
   if (!IsFinite(start)) {
     return failed("start pose must contain finite coordinates and yaw");
   }
@@ -24,24 +31,13 @@ PlanResult ArenaPlanner::Plan(
       return failed("target coordinates must be finite");
     }
   }
-  for (const std::string & covered : covered_edges) {
-    const bool known = std::any_of(
-      config_.inspection_edges.begin(), config_.inspection_edges.end(),
-      [&covered](const InspectionEdge & edge) {return edge.label == covered;});
-    if (!known) {
-      return failed("covered_edges contains unknown label: " + covered);
-    }
+  std::vector<RoadInterval> historical_coverage;
+  try {
+    historical_coverage = NormalizeRoadIntervals(
+      config_, covered_edges, covered_intervals);
+  } catch (const std::exception & exception) {
+    return failed(exception.what());
   }
-  const auto append_unique = [](std::vector<std::string> & destination,
-      const std::vector<std::string> & source) {
-      for (const std::string & value : source) {
-        if (std::find(destination.begin(), destination.end(), value) ==
-          destination.end())
-        {
-          destination.push_back(value);
-        }
-      }
-    };
   const auto route_is_free = [this](const std::vector<Point> & points) {
       for (std::size_t index = 1; index < points.size(); ++index) {
         if (!SegmentIsFree(points[index - 1], points[index])) {
@@ -49,163 +45,35 @@ PlanResult ArenaPlanner::Plan(
         }
       }
       return true;
-  };
-  if (mode == "layered") {
-    PlanResult combined;
-    std::vector<std::string> covered = covered_edges;
-    Pose stage_start = start;
-    bool all_stages_complete = true;
-    std::vector<std::string> stage_failures;
-    const auto append_route = [&combined](const PlanResult & part) {
-        for (const Point & point : part.points) {
-          if (combined.points.empty() ||
-            Distance(combined.points.back(), point) > 1.0e-6)
-          {
-            combined.points.push_back(point);
-          }
-        }
-      };
-    const auto keep_success = [&append_unique, &append_route, &combined,
-        &covered, &stage_start, &all_stages_complete](const PlanResult & part) {
-        append_route(part);
-        combined.visit_order.insert(
-          combined.visit_order.end(), part.visit_order.begin(), part.visit_order.end());
-        append_unique(combined.deferred_targets, part.deferred_targets);
-        append_unique(covered, part.covered_edges);
-        all_stages_complete = all_stages_complete && part.all_targets_reached;
-        if (!part.points.empty() && part.headings.size() == part.points.size()) {
-          stage_start = {part.points.back(), part.headings.back()};
-        }
-      };
-    const auto keep_failure = [&append_unique, &combined, &all_stages_complete,
-        &stage_failures](const std::string & stage, const PlanResult & part,
-        const std::vector<std::string> & expected) {
-        all_stages_complete = false;
-        append_unique(combined.deferred_targets, part.deferred_targets);
-        append_unique(combined.deferred_targets, expected);
-        stage_failures.push_back(stage + ": " + part.message);
-      };
-
-    const PlanResult layer1 = Plan(
-      stage_start, targets, labels, "layer1", covered);
-    if (layer1.success) {
-      keep_success(layer1);
-    } else {
-      keep_failure("task stage failed", layer1, labels);
-    }
-
-    const PlanResult layer2 = Plan(stage_start, {}, {}, "layer2", covered);
-    if (layer2.success) {
-      keep_success(layer2);
-    } else {
-      const std::vector<std::string> & tunnel_labels =
-        config_.tunnel_segment_labels.empty() ?
-        config_.required_tunnel_labels : config_.tunnel_segment_labels;
-      keep_failure("tunnel stage failed", layer2, tunnel_labels);
-    }
-
-    const PlanResult layer3 = Plan(stage_start, {}, {}, "layer3", covered);
-    if (layer3.success) {
-      keep_success(layer3);
-    } else {
-      std::vector<std::string> road_labels;
-      for (const InspectionEdge & edge : config_.inspection_edges) {
-        if (!edge.tunnel &&
-          std::find(covered.begin(), covered.end(), edge.label) == covered.end())
+    };
+  const double turn_priority =
+    std::max(0.5, 4.0 * config_.minimum_turning_radius);
+  const auto path_score = [turn_priority](const GridPath & path) {
+      return turn_priority * static_cast<double>(path.turn_count) + path.cost;
+    };
+  const auto first_blocked_reversal = [this](const std::vector<Point> & points) {
+      constexpr double near_reversal_threshold = 2.6;
+      for (std::size_t index = 1; index + 1 < points.size(); ++index) {
+        const double incoming = std::atan2(
+          points[index].y - points[index - 1].y,
+          points[index].x - points[index - 1].x);
+        const double outgoing = std::atan2(
+          points[index + 1].y - points[index].y,
+          points[index + 1].x - points[index].x);
+        if (std::abs(NormalizeAngle(outgoing - incoming)) >
+          near_reversal_threshold)
         {
-          road_labels.push_back(edge.label);
+          return index;
         }
       }
-      keep_failure("road stage failed", layer3, road_labels);
-    }
-
-    // Smooth across layer boundaries as well. Each layer is planned from the
-    // previous endpoint, but independently smoothing them can leave a sharp
-    // reverse turn at that shared boundary. Required checkpoints are retained
-    // so this pass only rounds free-space connectors.
-    std::vector<Point> required;
-    required.reserve(targets.size() + config_.required_tunnel_points.size() +
-      config_.inspection_nodes.size());
-    required.insert(required.end(), targets.begin(), targets.end());
-    required.insert(required.end(), config_.required_tunnel_points.begin(),
-      config_.required_tunnel_points.end());
-    required.insert(required.end(), config_.inspection_nodes.begin(),
-      config_.inspection_nodes.end());
-    const std::vector<Point> unsmoothed = combined.points;
-    combined.points = Smooth(unsmoothed, required);
-    if (!route_is_free(combined.points)) {
-      combined.points = unsmoothed;
-    }
-    if (!route_is_free(combined.points)) {
-      combined.points.clear();
-      combined.message =
-        "successful stages could not be combined into a collision-free route";
-      return combined;
-    }
-    // Recompute coverage from the route that will actually be published.  A
-    // layer reporting success is not enough if smoothing or a connector left
-    // one of the configured inspection strokes untouched.
-    const std::vector<std::string> current_coverage =
-      CoveredInspectionEdges(config_, combined.points);
-    combined.covered_edges = covered_edges;
-    append_unique(combined.covered_edges, current_coverage);
-    for (const InspectionEdge & edge : config_.inspection_edges) {
-      if (std::find(combined.covered_edges.begin(), combined.covered_edges.end(),
-          edge.label) == combined.covered_edges.end() &&
-        std::find(combined.deferred_targets.begin(), combined.deferred_targets.end(),
-          edge.label) == combined.deferred_targets.end())
-      {
-        combined.deferred_targets.push_back(edge.label);
-      }
-    }
-    combined.headings.reserve(combined.points.size());
-    for (std::size_t index = 0; index < combined.points.size(); ++index) {
-      if (index + 1 < combined.points.size()) {
-        combined.headings.push_back(std::atan2(
-            combined.points[index + 1].y - combined.points[index].y,
-            combined.points[index + 1].x - combined.points[index].x));
-      } else {
-        combined.headings.push_back(combined.headings.empty() ? start.yaw : combined.headings.back());
-      }
-    }
-    combined.length = PolylineLength(combined.points);
-    const bool has_visit_progress = std::any_of(
-      combined.visit_order.begin(), combined.visit_order.end(),
-      [](const std::string & label) {
-        return !label.empty() && label != "S" && label != "RETURN_TO_START";
-      });
-    const bool has_coverage_progress = std::any_of(
-      combined.covered_edges.begin(), combined.covered_edges.end(),
-      [&covered_edges](const std::string & label) {
-        return std::find(covered_edges.begin(), covered_edges.end(), label) ==
-               covered_edges.end();
-      });
-    if (combined.length <= 1.0e-6 && !has_visit_progress &&
-      !has_coverage_progress)
-    {
-      combined.points.clear();
-      combined.headings.clear();
-      combined.success = false;
-      combined.all_targets_reached = false;
-      combined.message = "no layered stage produced executable work";
-    } else {
-      combined.success = true;
-      combined.all_targets_reached =
-        all_stages_complete && combined.deferred_targets.empty();
-      combined.message = combined.all_targets_reached ?
-        "three-layer route planned" :
-        "partial three-layer route planned; unavailable work deferred";
-    }
-    for (const std::string & failure : stage_failures) {
-      combined.message += "; " + failure;
-    }
-    return combined;
-  }
+      return points.size();
+    };
   if (mode == "coverage") {
-    return PlanCoverage(start, covered_edges);
+    return PlanCoverage(start, covered_edges, historical_coverage);
   }
   if (mode == "layer3") {
-    return PlanCoverage(start, covered_edges, false, true);
+    return PlanCoverage(
+      start, covered_edges, historical_coverage, false, true);
   }
   PlanResult result;
   try {
@@ -216,6 +84,9 @@ PlanResult ArenaPlanner::Plan(
       result.points = {start.position, start.position};
       result.headings = {start.yaw, start.yaw};
       result.length = 0.0;
+      result.covered_intervals = historical_coverage;
+      result.covered_edges = FullyCoveredInspectionEdges(
+        config_, result.covered_intervals);
       result.success = true;
       result.all_targets_reached = true;
       result.message = "no tunnels configured; stage skipped";
@@ -289,96 +160,229 @@ PlanResult ArenaPlanner::Plan(
     std::vector<int> order{0};
     std::vector<GridPath> selected_paths;
     int current_node = 0;
+    double current_heading = start.yaw;
     int forced_tunnel_exit = -1;
     bool retry_pass = false;
     bool optimized_open_route = false;
-    // For the first stage, solve the open Hamiltonian path exactly.  The
-    // previous nearest-neighbour loop was fast but could add several metres
-    // of avoidable backtracking on the arena's narrow grid.
-    if (mode == "layer1" && remaining.size() <= 16 &&
+    // The first-stage distance optimum can contain a physically impossible
+    // reversal at a task point. Retain the incoming target in the DP state and
+    // reject transitions whose actual A* endpoint directions require a
+    // near-U-turn. Larger requests use the bounded greedy fallback after each
+    // candidate has been checked against the current approach heading.
+    if (mode == "layer1" && remaining.size() <= 10 &&
       config_.inspection_nodes.size() <= 100) {
       const std::size_t count = remaining.size();
       const std::size_t state_count = std::size_t{1} << count;
-      std::vector<double> costs(state_count * count, std::numeric_limits<double>::infinity());
-      std::vector<int> parents(state_count * count, -1);
+      const std::size_t first_followup_node = nodes.size();
+      nodes.insert(nodes.end(), config_.required_tunnel_points.begin(),
+        config_.required_tunnel_points.end());
       std::vector<std::vector<GridPath>> pair_paths(
         nodes.size(), std::vector<GridPath>(nodes.size()));
       std::vector<std::vector<bool>> attempted(
         nodes.size(), std::vector<bool>(nodes.size(), false));
       std::vector<std::vector<bool>> reachable(
         nodes.size(), std::vector<bool>(nodes.size(), false));
+      const auto ensure_path = [this, &nodes, &pair_paths, &attempted, &reachable](
+          int from, int to) {
+          if (!attempted[from][to]) {
+            attempted[from][to] = true;
+            try {
+              pair_paths[from][to] = AStar(nodes[from], nodes[to]);
+              reachable[from][to] = true;
+            } catch (const std::runtime_error &) {
+              reachable[from][to] = false;
+            }
+          }
+          return reachable[from][to];
+        };
+      const std::size_t pair_count = nodes.size();
+      std::vector<int8_t> endpoint_status(pair_count * pair_count, -1);
+      std::vector<double> departure_yaws(pair_count * pair_count, 0.0);
+      std::vector<double> arrival_yaws(pair_count * pair_count, 0.0);
+      const auto endpoint_yaws = [this, &nodes, &pair_paths, &ensure_path,
+          pair_count, &endpoint_status, &departure_yaws, &arrival_yaws](
+          int from, int to, double & departure, double & arrival) {
+          const std::size_t pair_index =
+            static_cast<std::size_t>(from) * pair_count + static_cast<std::size_t>(to);
+          if (endpoint_status[pair_index] >= 0) {
+            departure = departure_yaws[pair_index];
+            arrival = arrival_yaws[pair_index];
+            return endpoint_status[pair_index] != 0;
+          }
+          if (!ensure_path(from, to)) {
+            endpoint_status[pair_index] = 0;
+            return false;
+          }
+          std::vector<Point> raw;
+          try {
+            raw = MaterializeGridPath(
+              pair_paths[from][to], nodes[from], nodes[to]);
+          } catch (const std::runtime_error &) {
+            endpoint_status[pair_index] = 0;
+            return false;
+          }
+          if (raw.size() < 2) {
+            endpoint_status[pair_index] = 0;
+            return false;
+          }
+          // Exact task points often sit on a cell boundary, so the first grid
+          // centre can create a meaningless 1 cm diagonal. Use a short sample
+          // of the actual A* leg to recover its local direction at each end.
+          const double probe_distance = std::max(0.12, 6.0 * config_.resolution);
+          std::size_t departure_index = 1;
+          while (departure_index + 1 < raw.size() &&
+            Distance(raw.front(), raw[departure_index]) < probe_distance)
+          {
+            ++departure_index;
+          }
+          std::size_t arrival_index = raw.size() - 2;
+          while (arrival_index > 0 &&
+            Distance(raw.back(), raw[arrival_index]) < probe_distance)
+          {
+            --arrival_index;
+          }
+          departure = std::atan2(
+            raw[departure_index].y - raw.front().y,
+            raw[departure_index].x - raw.front().x);
+          arrival = std::atan2(
+            raw.back().y - raw[arrival_index].y,
+            raw.back().x - raw[arrival_index].x);
+          departure_yaws[pair_index] = departure;
+          arrival_yaws[pair_index] = arrival;
+          endpoint_status[pair_index] = 1;
+          return true;
+        };
+      constexpr double near_reversal_threshold = 2.6;
+      const auto blocked_turn = [this, &nodes, &endpoint_yaws](
+          int before, int pivot, int after) {
+          double unused_departure = 0.0;
+          double incoming = 0.0;
+          double outgoing = 0.0;
+          double unused_arrival = 0.0;
+          return endpoint_yaws(before, pivot, unused_departure, incoming) &&
+                 endpoint_yaws(pivot, after, outgoing, unused_arrival) &&
+                 std::abs(NormalizeAngle(outgoing - incoming)) >
+                   near_reversal_threshold;
+        };
+      const auto followup_node = [&ensure_path, &pair_paths, &path_score,
+          first_followup_node, &nodes](int from) {
+          int selected = -1;
+          double best = std::numeric_limits<double>::infinity();
+          for (std::size_t candidate = first_followup_node;
+            candidate < nodes.size(); ++candidate)
+          {
+            if (ensure_path(from, static_cast<int>(candidate)) &&
+              path_score(pair_paths[from][candidate]) < best)
+            {
+              selected = static_cast<int>(candidate);
+              best = path_score(pair_paths[from][candidate]);
+            }
+          }
+          return selected;
+        };
+
+      const std::size_t start_slot = count;
+      const std::size_t previous_count = count + 1;
+      const auto state_index = [count, previous_count](
+          std::size_t mask, std::size_t last, std::size_t previous) {
+          return (mask * count + last) * previous_count + previous;
+        };
+      const std::size_t table_size = state_count * count * previous_count;
+      std::vector<double> costs(table_size, std::numeric_limits<double>::infinity());
+      std::vector<int> parent_previous(table_size, -1);
+      std::vector<int8_t> transition_allowed(previous_count * count * count, -1);
+      const auto transition_index = [count](
+          std::size_t previous, std::size_t last, std::size_t next) {
+          return (previous * count + last) * count + next;
+        };
+      const auto turn_is_allowed = [&remaining, start_slot, &transition_allowed,
+          &transition_index, &blocked_turn](
+          std::size_t previous, std::size_t last, std::size_t next) {
+          int8_t & cached = transition_allowed[transition_index(previous, last, next)];
+          if (cached < 0) {
+            const int before = previous == start_slot ? 0 : remaining[previous];
+            cached = blocked_turn(before, remaining[last], remaining[next]) ? 0 : 1;
+          }
+          return cached != 0;
+        };
+
       for (std::size_t target = 0; target < count; ++target) {
-        attempted[0][target + 1] = true;
-        try {
-          pair_paths[0][target + 1] = AStar(nodes[0], nodes[target + 1]);
-          reachable[0][target + 1] = true;
-          costs[(std::size_t{1} << target) * count + target] =
-            pair_paths[0][target + 1].cost;
-        } catch (const std::runtime_error &) {
-          continue;
+        const int node = remaining[target];
+        if (ensure_path(0, node)) {
+          costs[state_index(std::size_t{1} << target, target, start_slot)] =
+            path_score(pair_paths[0][node]);
         }
       }
       for (std::size_t mask = 1; mask < state_count; ++mask) {
         for (std::size_t last = 0; last < count; ++last) {
           if (!(mask & (std::size_t{1} << last))) continue;
-          const double current_cost = costs[mask * count + last];
-          if (!std::isfinite(current_cost)) continue;
-          for (std::size_t next = 0; next < count; ++next) {
-            if (mask & (std::size_t{1} << next)) continue;
-            const int from = static_cast<int>(remaining[last] + 0);
-            const int to = static_cast<int>(remaining[next] + 0);
-            if (!attempted[from][to]) {
-              attempted[from][to] = true;
-              try {
-                pair_paths[from][to] = AStar(nodes[from], nodes[to]);
-                reachable[from][to] = true;
-              } catch (const std::runtime_error &) {
-                reachable[from][to] = false;
+          for (std::size_t previous = 0; previous < previous_count; ++previous) {
+            const double current_cost = costs[state_index(mask, last, previous)];
+            if (!std::isfinite(current_cost)) continue;
+            for (std::size_t next = 0; next < count; ++next) {
+              if (mask & (std::size_t{1} << next)) continue;
+              const int from = remaining[last];
+              const int to = remaining[next];
+              if (!ensure_path(from, to) || !turn_is_allowed(previous, last, next)) continue;
+              const std::size_t next_mask = mask | (std::size_t{1} << next);
+              const double candidate = current_cost + path_score(pair_paths[from][to]);
+              const std::size_t destination = state_index(next_mask, next, last);
+              if (candidate < costs[destination]) {
+                costs[destination] = candidate;
+                parent_previous[destination] = static_cast<int>(previous);
               }
-            }
-            if (!reachable[from][to]) continue;
-            const std::size_t next_mask = mask | (std::size_t{1} << next);
-            const double candidate = current_cost + pair_paths[from][to].cost;
-            double & destination = costs[next_mask * count + next];
-            if (candidate < destination) {
-              destination = candidate;
-              parents[next_mask * count + next] = static_cast<int>(last);
             }
           }
         }
       }
+
+      std::vector<int> accepted_sequence;
       const std::size_t full_mask = state_count - 1;
       int last = -1;
+      int previous = -1;
       double best = std::numeric_limits<double>::infinity();
       for (std::size_t candidate = 0; candidate < count; ++candidate) {
-        if (costs[full_mask * count + candidate] < best) {
-          best = costs[full_mask * count + candidate];
-          last = static_cast<int>(candidate);
+        const int pivot = remaining[candidate];
+        const int after = followup_node(pivot);
+        for (std::size_t candidate_previous = 0;
+          candidate_previous < previous_count; ++candidate_previous)
+        {
+          const double candidate_cost = costs[state_index(
+              full_mask, candidate, candidate_previous)];
+          if (!std::isfinite(candidate_cost)) continue;
+          const int before = candidate_previous == start_slot ? 0 :
+            remaining[candidate_previous];
+          if (after >= 0 && blocked_turn(before, pivot, after)) continue;
+          if (candidate_cost < best) {
+            best = candidate_cost;
+            last = static_cast<int>(candidate);
+            previous = static_cast<int>(candidate_previous);
+          }
         }
       }
       if (last >= 0) {
-        std::vector<int> sequence(count);
+        accepted_sequence.resize(count);
         std::size_t mask = full_mask;
         for (std::size_t position = count; position-- > 0;) {
-          sequence[position] = last;
-          const int previous = parents[mask * count + static_cast<std::size_t>(last)];
+          accepted_sequence[position] = remaining[static_cast<std::size_t>(last)];
+          if (position == 0) break;
+          const int before_previous = parent_previous[state_index(
+              mask, static_cast<std::size_t>(last), static_cast<std::size_t>(previous))];
           mask ^= std::size_t{1} << static_cast<std::size_t>(last);
           last = previous;
-          if (position > 0 && last < 0) break;
+          previous = before_previous;
         }
+      }
+      if (!accepted_sequence.empty()) {
         bool complete = true;
-        for (std::size_t position = 0; position < count; ++position) {
-          const int node = remaining[static_cast<std::size_t>(sequence[position])];
-          const int previous_node = position == 0 ? 0 :
-            remaining[static_cast<std::size_t>(sequence[position - 1])];
-          if (position == 0) {
-            selected_paths.push_back(pair_paths[0][node]);
-          } else if (reachable[previous_node][node]) {
-            selected_paths.push_back(pair_paths[previous_node][node]);
-          } else {
+        for (std::size_t position = 0; position < accepted_sequence.size(); ++position) {
+          const int node = accepted_sequence[position];
+          const int previous_node = position == 0 ? 0 : accepted_sequence[position - 1];
+          if (!reachable[previous_node][node]) {
             complete = false;
             break;
           }
+          selected_paths.push_back(pair_paths[previous_node][node]);
           order.push_back(node);
         }
         if (complete) {
@@ -413,11 +417,33 @@ PlanResult ArenaPlanner::Plan(
             }
             path.cost = Distance(nodes[current_node], nodes[candidate_node]);
           } else {
-            path = AStar(nodes[current_node], nodes[candidate_node]);
+            path = config_.turns_at_junctions_only ?
+              AStar(nodes[current_node], nodes[candidate_node], current_heading) :
+              AStar(nodes[current_node], nodes[candidate_node]);
           }
-          if (planning_mode == "numbered" || path.cost < selected_cost) {
+          if (config_.turns_at_junctions_only && !path.cells.empty()) {
+            const std::vector<Point> preview = MaterializeGridPath(
+              path, nodes[current_node], nodes[candidate_node]);
+            if (preview.size() >= 2) {
+              std::size_t departure_index = 1;
+              while (departure_index + 1 < preview.size() &&
+                Distance(preview.front(), preview[departure_index]) < 0.08)
+              {
+                ++departure_index;
+              }
+              const double departure = std::atan2(
+                preview[departure_index].y - preview[0].y,
+                preview[departure_index].x - preview[0].x);
+              if (std::abs(NormalizeAngle(departure - current_heading)) > 2.6 ||
+                first_blocked_reversal(preview) < preview.size())
+              {
+                continue;
+              }
+            }
+          }
+          if (planning_mode == "numbered" || path_score(path) < selected_cost) {
             selected_position = static_cast<int>(position);
-            selected_cost = path.cost;
+            selected_cost = path_score(path);
             selected_path = std::move(path);
           }
           if (planning_mode == "numbered") {
@@ -436,7 +462,30 @@ PlanResult ArenaPlanner::Plan(
         }
         break;
       }
-      current_node = remaining[static_cast<std::size_t>(selected_position)];
+      const int previous_node = current_node;
+      const int selected_node = remaining[static_cast<std::size_t>(selected_position)];
+      if (selected_path.cells.empty()) {
+        current_heading = std::atan2(
+          nodes[selected_node].y - nodes[previous_node].y,
+          nodes[selected_node].x - nodes[previous_node].x);
+      } else {
+        const std::vector<Point> selected_points = MaterializeGridPath(
+          selected_path, nodes[previous_node], nodes[selected_node]);
+        if (selected_points.size() >= 2) {
+          std::size_t arrival_index = selected_points.size() - 2;
+          while (arrival_index > 0 &&
+            Distance(selected_points.back(), selected_points[arrival_index]) < 0.08)
+          {
+            --arrival_index;
+          }
+          current_heading = std::atan2(
+            selected_points.back().y -
+            selected_points[arrival_index].y,
+            selected_points.back().x -
+            selected_points[arrival_index].x);
+        }
+      }
+      current_node = selected_node;
       order.push_back(current_node);
       selected_paths.push_back(std::move(selected_path));
       remaining.erase(remaining.begin() + selected_position);
@@ -485,16 +534,44 @@ PlanResult ArenaPlanner::Plan(
       }
     }
     std::vector<Point> anchors{start.position};
+    double arrival_heading = start.yaw;
     for (std::size_t leg = 1; leg < order.size(); ++leg) {
       const int left = order[leg - 1];
       const int right = order[leg];
-      std::vector<Point> raw{nodes[left]};
       const auto & cells = selected_paths[leg - 1].cells;
-      for (std::size_t index = 1; index + 1 < cells.size(); ++index) {
-        raw.push_back(CellToWorld(cells[index]));
+      std::vector<Point> raw{anchors.back()};
+      if (cells.empty()) {
+        // A forced tunnel traversal is represented by its exact two portals.
+        // The preceding A* leg can end at a nearby grid centre, so reconnect
+        // to the entrance explicitly before crossing the tunnel centreline.
+        if (Distance(raw.back(), nodes[left]) > 1.0e-9) {
+          if (!SegmentIsFree(raw.back(), nodes[left])) {
+            throw std::runtime_error("cannot safely reach the tunnel entrance");
+          }
+          raw.push_back(nodes[left]);
+        }
+        if (!SegmentIsFree(raw.back(), nodes[right])) {
+          throw std::runtime_error("configured tunnel traversal is not collision-free");
+        }
+        raw.push_back(nodes[right]);
+      } else {
+        const GridPath heading_aware = AStar(
+          raw.back(), nodes[right], arrival_heading);
+        raw = MaterializeGridPath(
+          heading_aware, anchors.back(), nodes[right]);
       }
-      raw.push_back(nodes[right]);
       std::vector<Point> simplified = Simplify(raw);
+      if (simplified.size() >= 2) {
+        std::size_t arrival_index = simplified.size() - 2;
+        while (arrival_index > 0 &&
+          Distance(simplified.back(), simplified[arrival_index]) < 0.08)
+        {
+          --arrival_index;
+        }
+        arrival_heading = std::atan2(
+          simplified.back().y - simplified[arrival_index].y,
+          simplified.back().x - simplified[arrival_index].x);
+      }
       anchors.insert(anchors.end(), simplified.begin() + 1, simplified.end());
       result.visit_order.push_back(right == 0 ? "S" : planning_labels[right - 1]);
     }
@@ -504,9 +581,88 @@ PlanResult ArenaPlanner::Plan(
         reached_targets.push_back(nodes[order[index]]);
       }
     }
-    result.points = Smooth(anchors, reached_targets);
+    std::vector<Point> semantic_points = reached_targets;
+    semantic_points.insert(
+      semantic_points.end(), config_.inspection_nodes.begin(),
+      config_.inspection_nodes.end());
+    semantic_points.insert(
+      semantic_points.end(), config_.turn_junctions.begin(),
+      config_.turn_junctions.end());
+    semantic_points.insert(semantic_points.end(), anchors.begin(), anchors.end());
+    result.points = Smooth(anchors, semantic_points);
     if (!route_is_free(result.points)) {
-      throw std::runtime_error("planned route contains a segment that is not collision-free");
+      for (std::size_t index = 1; index < result.points.size(); ++index) {
+        if (SegmentIsFree(result.points[index - 1], result.points[index])) {
+          continue;
+        }
+        std::ostringstream message;
+        message << "planned route segment " << index - 1 << " -> " << index
+                << " is not collision-free: (" << result.points[index - 1].x
+                << ", " << result.points[index - 1].y << ") -> ("
+                << result.points[index].x << ", " << result.points[index].y << ")";
+        throw std::runtime_error(message.str());
+      }
+    }
+    if (!RouteTurnsAreAllowed(result.points)) {
+      constexpr double near_reversal_threshold = 2.6;
+      constexpr double major_turn_threshold = 1.0;
+      const double consecutive_turn_distance =
+        std::max(0.35, config_.minimum_turning_radius + 2.0 * config_.resolution);
+      std::size_t previous_major_turn = result.points.size();
+      for (std::size_t index = 1; index + 1 < result.points.size(); ++index) {
+        const double incoming = std::atan2(
+          result.points[index].y - result.points[index - 1].y,
+          result.points[index].x - result.points[index - 1].x);
+        const double outgoing = std::atan2(
+          result.points[index + 1].y - result.points[index].y,
+          result.points[index + 1].x - result.points[index].x);
+        const double heading_change = std::abs(NormalizeAngle(outgoing - incoming));
+        if (heading_change >= near_reversal_threshold) {
+          std::ostringstream message;
+          message << "task route requires a 180 degree U-turn at route index "
+                  << index << " (" << result.points[index].x << ", "
+                  << result.points[index].y << "), previous ("
+                  << result.points[index - 1].x << ", "
+                  << result.points[index - 1].y << "), next ("
+                  << result.points[index + 1].x << ", "
+                  << result.points[index + 1].y
+                  << "); recover to a junction before replanning";
+          throw std::runtime_error(message.str());
+        }
+        if (heading_change >= config_.in_place_turn_heading_threshold &&
+          !IsTurnJunction(
+            result.points[index], kTurnJunctionOperatingTolerance))
+        {
+          std::ostringstream message;
+          message << "task route turns outside the road junctions at route index "
+                  << index << " (" << result.points[index].x << ", "
+                  << result.points[index].y << "), previous ("
+                  << result.points[index - 1].x << ", "
+                  << result.points[index - 1].y << "), next ("
+                  << result.points[index + 1].x << ", "
+                  << result.points[index + 1].y << "), turn "
+                  << heading_change * 180.0 / std::acos(-1.0) << " deg";
+          throw std::runtime_error(message.str());
+        }
+        if (heading_change >= major_turn_threshold) {
+          if (previous_major_turn + 1 == index &&
+            Distance(result.points[previous_major_turn], result.points[index]) <=
+            consecutive_turn_distance)
+          {
+            std::ostringstream message;
+            message << "task route requires consecutive tight 90 degree turns "
+                    << "at route indices " << previous_major_turn << " and "
+                    << index << ", middle distance "
+                    << Distance(result.points[previous_major_turn], result.points[index])
+                    << " m; recover to a junction before replanning";
+            throw std::runtime_error(message.str());
+          }
+          previous_major_turn = index;
+        }
+      }
+      throw std::runtime_error(
+              "task route requires a U-turn or consecutive tight turns; "
+              "recover to a junction before replanning");
     }
     for (const Point & target : reached_targets) {
       double minimum = std::numeric_limits<double>::infinity();
@@ -528,11 +684,24 @@ PlanResult ArenaPlanner::Plan(
         result.headings.push_back(result.headings.empty() ? start.yaw : result.headings.back());
       }
     }
+    if (mode == "layer1" || layer2) {
+      const std::size_t blocked = first_blocked_reversal(result.points);
+      if (blocked < result.points.size()) {
+        std::ostringstream message;
+        message << (layer2 ? "tunnel route" : "task route")
+                << " contains a blocked near-U-turn at ("
+                << result.points[blocked].x << ", " << result.points[blocked].y
+                << "), route index " << blocked;
+        throw std::runtime_error(message.str());
+      }
+    }
     result.length = PolylineLength(result.points);
-    const std::vector<std::string> current_coverage =
-      CoveredInspectionEdges(config_, result.points);
-    result.covered_edges = covered_edges;
-    append_unique(result.covered_edges, current_coverage);
+    result.covered_intervals = historical_coverage;
+    result.planned_intervals = CoveredInspectionIntervals(config_, result.points);
+    const std::vector<RoadInterval> prospective_coverage = MergeRoadIntervals(
+      config_, historical_coverage, result.planned_intervals);
+    result.covered_edges = FullyCoveredInspectionEdges(
+      config_, prospective_coverage);
     if (layer2) {
       const std::vector<std::string> checkpoints = result.visit_order;
       result.visit_order.clear();
@@ -568,6 +737,10 @@ PlanResult ArenaPlanner::Plan(
     result.points.clear();
     result.headings.clear();
     result.visit_order.clear();
+    result.covered_intervals.clear();
+    result.planned_intervals.clear();
+    result.blocked_intervals.clear();
+    result.deferred_intervals.clear();
   }
   return result;
 }

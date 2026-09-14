@@ -14,6 +14,8 @@ def generate_launch_description():
     actuator_health_topic = LaunchConfiguration("actuator_health_topic")
     require_actuator_health = LaunchConfiguration("require_actuator_health")
     actuator_health_timeout = LaunchConfiguration("actuator_health_timeout")
+    front_obstacle_topic = LaunchConfiguration("front_obstacle_topic")
+    front_obstacle_range_topic = LaunchConfiguration("front_obstacle_range_topic")
     cmd_vel_topic = LaunchConfiguration("cmd_vel_topic")
     route_input_topic = LaunchConfiguration("route_input_topic")
     autostart = LaunchConfiguration("autostart")
@@ -32,6 +34,8 @@ def generate_launch_description():
             "actuator_health_topic": actuator_health_topic,
             "require_actuator_health": require_actuator_health,
             "actuator_health_timeout": actuator_health_timeout,
+            "front_obstacle_topic": front_obstacle_topic,
+            "front_obstacle_range_topic": front_obstacle_range_topic,
             "cmd_vel_topic": cmd_vel_topic,
             "route_input_topic": route_input_topic,
             "autostart": autostart,
@@ -52,6 +56,12 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument("require_actuator_health", default_value="false"),
             DeclareLaunchArgument("actuator_health_timeout", default_value="0.8"),
+            DeclareLaunchArgument(
+                "front_obstacle_topic", default_value="/obstacle/front_blocked"
+            ),
+            DeclareLaunchArgument(
+                "front_obstacle_range_topic", default_value="/obstacle/front_range"
+            ),
             DeclareLaunchArgument("cmd_vel_topic", default_value="/cmd_vel_nav"),
             DeclareLaunchArgument(
                 "route_input_topic",

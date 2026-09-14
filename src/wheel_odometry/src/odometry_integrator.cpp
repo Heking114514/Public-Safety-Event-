@@ -18,7 +18,9 @@ constexpr uint32_t kWrapLowWatermark = 0x0fffffffU;
 OdometryIntegrator::OdometryIntegrator(const IntegratorConfig & config)
 : config_(config)
 {
-  if (!(config_.wheel_radius_m > 0.0) || !(config_.ticks_per_revolution > 0.0) ||
+  if (!(config_.wheel_radius_m > 0.0) ||
+    !(config_.left_encoder_counts_per_revolution > 0.0) ||
+    !(config_.right_encoder_counts_per_revolution > 0.0) ||
     !(config_.wheel_track_m > 0.0) || !(config_.left_distance_scale > 0.0) ||
     !(config_.right_distance_scale > 0.0) || !(config_.yaw_slip_scale > 0.0) ||
     !(config_.max_wheel_speed_mps > 0.0) ||
@@ -97,11 +99,12 @@ UpdateResult OdometryIntegrator::update(const EncoderSample & sample)
     previous_.left_total_ticks, sample.left_total_ticks);
   const int64_t right_delta_ticks = wrapped_int32_delta(
     previous_.right_total_ticks, sample.right_total_ticks);
-  const double meters_per_tick = kTwoPi * config_.wheel_radius_m /
-    config_.ticks_per_revolution;
-  const double left_distance_m = static_cast<double>(left_delta_ticks) * meters_per_tick *
+  const double wheel_circumference_m = kTwoPi * config_.wheel_radius_m;
+  const double left_distance_m = static_cast<double>(left_delta_ticks) *
+    wheel_circumference_m / config_.left_encoder_counts_per_revolution *
     config_.left_distance_scale;
-  const double right_distance_m = static_cast<double>(right_delta_ticks) * meters_per_tick *
+  const double right_distance_m = static_cast<double>(right_delta_ticks) *
+    wheel_circumference_m / config_.right_encoder_counts_per_revolution *
     config_.right_distance_scale;
 
   const double max_distance_m = config_.max_wheel_speed_mps * dt_s;

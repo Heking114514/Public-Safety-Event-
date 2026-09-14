@@ -12,12 +12,28 @@ namespace
 {
 constexpr double kPi = 3.14159265358979323846;
 
+TEST(OdometryIntegratorConfig, DefaultsMatchMeasuredChassis)
+{
+  const IntegratorConfig config;
+  EXPECT_DOUBLE_EQ(config.wheel_radius_m, 0.0238);
+  EXPECT_DOUBLE_EQ(config.wheel_track_m, 0.1247);
+  EXPECT_DOUBLE_EQ(config.left_encoder_counts_per_revolution, 1060.1667);
+  EXPECT_DOUBLE_EQ(config.right_encoder_counts_per_revolution, 1060.9333);
+}
+
 IntegratorConfig test_config()
 {
+  // Deliberately simple fixture values make the integration math exact.
   IntegratorConfig config;
+  config.wheel_radius_m = 0.0325;
+  config.left_encoder_counts_per_revolution = 1925.0;
+  config.right_encoder_counts_per_revolution = 1925.0;
+  config.wheel_track_m = 0.254;
   config.left_distance_scale = 1.0;
   config.right_distance_scale = 1.0;
   config.max_wheel_speed_mps = 10.0;
+  config.nominal_sample_period_s = 0.02;
+  config.nominal_sequence_increment = 1;
   return config;
 }
 
@@ -39,6 +55,21 @@ TEST(OdometryIntegrator, InitializesThenIntegratesStraightMotion)
   EXPECT_NEAR(integrator.state().y_m, 0.0, 1.0e-12);
   EXPECT_NEAR(integrator.state().yaw_rad, 0.0, 1.0e-12);
   EXPECT_NEAR(integrator.state().linear_velocity_mps, expected_distance, 1.0e-12);
+}
+
+TEST(OdometryIntegrator, UsesIndependentEncoderCountsPerRevolution)
+{
+  IntegratorConfig config = test_config();
+  config.wheel_radius_m = 0.05;
+  config.left_encoder_counts_per_revolution = 1000.0;
+  config.right_encoder_counts_per_revolution = 2000.0;
+  OdometryIntegrator integrator(config);
+  integrator.update(sample(0, 1, 0, 0));
+
+  ASSERT_TRUE(integrator.update(sample(1000, 2, 1000, 2000)).publish);
+  EXPECT_NEAR(integrator.state().x_m, 2.0 * kPi * 0.05, 1.0e-12);
+  EXPECT_NEAR(integrator.state().y_m, 0.0, 1.0e-12);
+  EXPECT_NEAR(integrator.state().yaw_rad, 0.0, 1.0e-12);
 }
 
 TEST(OdometryIntegrator, UsesMidpointHeadingForArc)

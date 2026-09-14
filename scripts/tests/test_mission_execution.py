@@ -13,6 +13,7 @@ from mission_execution import (  # noqa: E402
     LatestRequestQueue,
     MissionExecutionState,
     PLANNER_REQUEST_TIMEOUT_SECONDS,
+    PreviewSequenceState,
     RouteFailureCooldown,
     RouteExecution,
     valid_odometry_stamp,
@@ -98,7 +99,7 @@ class MissionExecutionStateTest(unittest.TestCase):
         self.assertEqual([], self.state.covered_roads())
 
     def test_route_lost_status_aborts_without_committing_predictions(self):
-        for status in ("IDLE", "WAITING_FOR_ROUTE"):
+        for status in ("IDLE", "WAITING_FOR_ROUTE", "OBSTACLE_REPLAN_REQUIRED"):
             with self.subTest(status=status):
                 self.state.reset()
                 self.state.begin_route(route(activation_requested_at=10.0))
@@ -170,6 +171,62 @@ class MissionExecutionStateTest(unittest.TestCase):
         )
         self.assertTrue(self.state.probe_may_activate(return_home, route_has_motion=True))
 
+    def test_partial_interval_is_useful_and_observed_roads_can_be_committed(self):
+        partial = route(mode="layer3", visits=(), roads=(), deferred=("ROAD_A",))
+        partial.predicted_interval_progress = True
+        self.assertTrue(self.state.probe_may_activate(partial, route_has_motion=True))
+        self.assertEqual(1, self.state.commit_observed_roads(["ROAD_A", "UNKNOWN"]))
+        self.assertEqual(["ROAD_A"], self.state.covered_roads())
+
+    def test_blocked_road_can_be_exempted_without_claiming_it_was_covered(self):
+        self.assertEqual(1, self.state.commit_exempted_roads(["ROAD_A", "UNKNOWN"]))
+        self.assertEqual([], self.state.covered_roads())
+        self.assertEqual(["ROAD_B"], self.state.remaining_roads())
+
+        self.assertEqual(1, self.state.commit_observed_roads(["ROAD_A"]))
+        self.assertEqual(["ROAD_A"], self.state.covered_roads())
+        self.assertEqual(set(), self.state.exempted_roads)
+
+    def test_static_obstacle_exemptions_are_monotonic_during_a_mission(self):
+        self.state.commit_exempted_roads(["ROAD_A"])
+
+        self.state.commit_exempted_roads([])
+        self.state.commit_exempted_roads(["ROAD_B"])
+
+        self.assertEqual({"ROAD_A", "ROAD_B"}, self.state.exempted_roads)
+        self.assertEqual([], self.state.covered_roads())
+        self.assertEqual([], self.state.remaining_roads())
+
+    def test_zero_motion_probe_finishes_after_blocked_road_is_accounted(self):
+        self.state.completed_tasks.update(("1", "2"))
+        self.state.completed_tunnels.add("TUNNEL_1")
+        self.state.commit_exempted_roads(["ROAD_A", "ROAD_B"])
+        probe = route(
+            mode="layer3", visits=(), roads=(), deferred=(), complete=True
+        )
+
+        self.assertTrue(self.state.mission_complete(probe))
+        self.assertIsNone(self.state.no_motion_continuation_mode(probe))
+
+    def test_zero_motion_result_advances_to_the_next_unfinished_stage(self):
+        self.state.completed_tasks.update(("1", "2"))
+        empty_layer_one = route(
+            mode="layer1", visits=(), roads=(), deferred=(), complete=True
+        )
+
+        self.assertEqual(
+            "layer2", self.state.no_motion_continuation_mode(empty_layer_one)
+        )
+
+    def test_zero_motion_result_waits_when_current_stage_still_has_work(self):
+        empty_layer_one = route(
+            mode="layer1", visits=(), roads=(), deferred=("1",), complete=False
+        )
+
+        self.assertEqual(
+            "layer1", self.state.no_motion_continuation_mode(empty_layer_one)
+        )
+
     def test_auto_wait_backoff_keeps_retrying_and_is_bounded(self):
         backoff = AutoReplanBackoff(2.0, 5.0)
         self.assertEqual(
@@ -207,7 +264,15 @@ class MissionExecutionStateTest(unittest.TestCase):
             ("map", "base_link", pose, 8, 0, now, accepted),
             ("map", "base_link", pose, -1, 0, now, accepted),
             ("map", "base_link", pose, 9, 1_000_000_000, now, accepted),
-            ("map", "base_link", (*pose[:2], float("nan"), *pose[3:]), 9, 900_000_000, now, accepted),
+            (
+                "map",
+                "base_link",
+                (*pose[:2], float("nan"), *pose[3:]),
+                9,
+                900_000_000,
+                now,
+                accepted,
+            ),
             ("map", "base_link", (*pose[:3], 0.0, 0.0, 0.0, 0.0), 9, 900_000_000, now, accepted),
         ):
             with self.subTest(arguments=arguments):
@@ -281,6 +346,43 @@ class LatestRequestQueueTest(unittest.TestCase):
 
     def test_planner_timeout_budget_is_long_enough_for_normal_planning(self):
         self.assertEqual(30.0, PLANNER_REQUEST_TIMEOUT_SECONDS)
+
+
+class PreviewSequenceStateTest(unittest.TestCase):
+    def test_one_start_chains_all_three_preview_stages(self):
+        preview = PreviewSequenceState()
+
+        preview.start(1)
+        self.assertEqual(2, preview.finish_stage(1))
+        self.assertTrue(preview.waiting_for_plan)
+        self.assertTrue(preview.plan_ready(2))
+        self.assertEqual(3, preview.finish_stage(2))
+        self.assertTrue(preview.plan_ready(3))
+        self.assertIsNone(preview.finish_stage(3))
+
+        self.assertTrue(preview.complete)
+        self.assertFalse(preview.active)
+
+    def test_pausing_while_next_stage_plans_prevents_autoplay(self):
+        preview = PreviewSequenceState()
+        preview.start(1)
+        self.assertEqual(2, preview.finish_stage(1))
+
+        preview.pause()
+
+        self.assertFalse(preview.plan_ready(2))
+        self.assertFalse(preview.complete)
+
+    def test_preview_state_does_not_commit_real_mission_progress(self):
+        mission = MissionExecutionState(["1"], ["TUNNEL_1"], ["ROAD_A"])
+        preview = PreviewSequenceState()
+
+        preview.start(1)
+        preview.finish_stage(1)
+
+        self.assertEqual(["1"], mission.remaining_tasks())
+        self.assertEqual(["TUNNEL_1"], mission.remaining_tunnels())
+        self.assertEqual(["ROAD_A"], mission.remaining_roads())
 
 
 if __name__ == "__main__":

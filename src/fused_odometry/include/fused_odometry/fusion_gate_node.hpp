@@ -282,6 +282,7 @@ private:
   double wheel_soft_residual_{0.15};
   double visual_stationary_speed_{0.025};
   double stationary_wheel_reject_speed_{0.03};
+  double stationary_command_yaw_speed_{0.12};
   double imu_soft_residual_{0.2};
   double imu_visual_covariance_cap_{0.8};
   double visual_ramp_duration_{0.75};

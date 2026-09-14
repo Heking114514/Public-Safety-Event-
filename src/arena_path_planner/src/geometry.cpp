@@ -60,6 +60,7 @@ void ValidatePlannerConfig(const PlannerConfig &config) {
   require_nonnegative(config.vehicle_width, "vehicle_width");
   require_nonnegative(config.safety_margin, "safety_margin");
   require_nonnegative(config.tracking_margin, "tracking_margin");
+  require_nonnegative(config.obstacle_stop_buffer, "obstacle_stop_buffer");
   require_nonnegative(config.task_tolerance, "task_tolerance");
   require_positive(config.waypoint_spacing, "waypoint_spacing");
   require_positive(config.curve_spacing, "curve_spacing");
@@ -79,6 +80,7 @@ void ValidatePlannerConfig(const PlannerConfig &config) {
       config.vehicle_width > maximum_physical_scale ||
       config.safety_margin > maximum_physical_scale ||
       config.tracking_margin > maximum_physical_scale ||
+      config.obstacle_stop_buffer > maximum_physical_scale ||
       config.minimum_turning_radius > maximum_physical_scale) {
     throw std::invalid_argument(
         "planner config physical dimensions are unreasonable for the arena");
@@ -129,6 +131,7 @@ void ValidatePlannerConfig(const PlannerConfig &config) {
   check_points(config.default_targets, "default targets");
   check_points(config.required_tunnel_points, "tunnel points");
   check_points(config.inspection_nodes, "inspection nodes");
+  check_points(config.turn_junctions, "turn junctions");
   if (config.default_targets.size() != config.default_labels.size()) {
     throw std::invalid_argument(
         "planner config default targets and labels must have equal length");

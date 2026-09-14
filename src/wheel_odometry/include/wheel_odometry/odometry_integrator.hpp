@@ -8,16 +8,17 @@ namespace wheel_odometry
 
 struct IntegratorConfig
 {
-  double wheel_radius_m{0.0325};
-  double ticks_per_revolution{1925.0};
-  double wheel_track_m{0.254};
+  double wheel_radius_m{0.0238};
+  double left_encoder_counts_per_revolution{1060.1667};
+  double right_encoder_counts_per_revolution{1060.9333};
+  double wheel_track_m{0.1247};
   double left_distance_scale{1.000};
-  double right_distance_scale{1.010};
+  double right_distance_scale{1.000};
   double yaw_slip_scale{1.0};
-  double max_wheel_speed_mps{2.0};
+  double max_wheel_speed_mps{1.0};
   double min_dt_s{1.0e-4};
-  double nominal_sample_period_s{0.02};
-  uint32_t nominal_sequence_increment{1};
+  double nominal_sample_period_s{0.05};
+  uint32_t nominal_sequence_increment{5};
 
   // Variances grow with motion because wheel scale and slip errors accumulate.
   double pose_xy_variance{0.02};

@@ -143,13 +143,15 @@ FusionGateNode::FusionGateNode()
   max_wheel_only_time_ = positive("max_wheel_only_time_s", 2.0);
   max_wheel_only_distance_ = positive("max_wheel_only_distance_m", 0.30);
   max_wheel_only_speed_ = positive("max_wheel_only_speed_mps", 0.30);
-  max_wheel_speed_ = positive("max_wheel_speed_mps", 1.5);
+  max_wheel_speed_ = positive("max_wheel_speed_mps", 1.0);
   max_wheel_yaw_rate_ = positive("max_wheel_yaw_rate_radps", 4.0);
   max_imu_yaw_rate_ = positive("max_imu_yaw_rate_radps", 4.0);
   wheel_soft_residual_ = positive("wheel_visual_soft_mps", 0.15);
   visual_stationary_speed_ = positive("visual_stationary_speed_mps", 0.025);
   stationary_wheel_reject_speed_ =
       positive("stationary_wheel_reject_speed_mps", 0.03);
+  stationary_command_yaw_speed_ =
+      positive("stationary_command_yaw_speed_radps", 0.12);
   imu_soft_residual_ = positive("imu_visual_soft_radps", 0.20);
   imu_visual_covariance_cap_ =
       positive("imu_visual_covariance_cap_radps", 0.80);

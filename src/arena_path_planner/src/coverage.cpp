@@ -3,6 +3,7 @@
 #include <cmath>
 #include <functional>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 
@@ -10,42 +11,14 @@ namespace arena_path_planner {
 std::vector<std::string>
 CoveredInspectionEdges(const PlannerConfig &config,
                        const std::vector<Point> &route) {
-  std::vector<std::string> covered;
-  const auto distance_to_route = [&route](const Point &point) {
-    double minimum = std::numeric_limits<double>::infinity();
-    for (std::size_t index = 1; index < route.size(); ++index) {
-      minimum = std::min(
-          minimum, DistanceToSegment(point, route[index - 1], route[index]));
-    }
-    return minimum;
-  };
-  for (const InspectionEdge &edge : config.inspection_edges) {
-    const Point &from =
-        config.inspection_nodes[static_cast<std::size_t>(edge.from)];
-    const Point &to =
-        config.inspection_nodes[static_cast<std::size_t>(edge.to)];
-    const double sample_spacing = std::max(
-        0.005, std::min(config.resolution, config.task_tolerance * 0.5));
-    const int samples = std::max(
-        1, static_cast<int>(std::ceil(Distance(from, to) / sample_spacing)));
-    bool fully_covered = true;
-    for (int sample = 0; sample <= samples && fully_covered; ++sample) {
-      const double ratio = static_cast<double>(sample) / samples;
-      const Point point{from.x + ratio * (to.x - from.x),
-                        from.y + ratio * (to.y - from.y)};
-      fully_covered =
-          distance_to_route(point) <= config.task_tolerance + 1.0e-9;
-    }
-    if (fully_covered) {
-      covered.push_back(edge.label);
-    }
-  }
-  return covered;
+  return FullyCoveredInspectionEdges(
+    config, CoveredInspectionIntervals(config, route));
 }
 
 PlanResult
 ArenaPlanner::PlanCoverage(const Pose &start,
                            const std::vector<std::string> &covered_edges,
+                           const std::vector<RoadInterval> &covered_intervals,
                            bool tunnels_only, bool non_tunnels_only) const {
   PlanResult result;
   try {
@@ -56,6 +29,15 @@ ArenaPlanner::PlanCoverage(const Pose &start,
       throw std::runtime_error("start lies outside collision-free space");
     }
     const std::size_t node_count = config_.inspection_nodes.size();
+    const double turn_priority =
+      std::max(0.5, 4.0 * config_.minimum_turning_radius);
+    const auto path_score = [turn_priority](const GridPath & path) {
+        return turn_priority * static_cast<double>(path.turn_count) + path.cost;
+      };
+    const std::vector<RoadInterval> historical_coverage =
+      NormalizeRoadIntervals(config_, covered_edges, covered_intervals);
+    const std::vector<std::string> historically_complete =
+      FullyCoveredInspectionEdges(config_, historical_coverage);
     std::vector<std::string> known_edges;
     known_edges.reserve(config_.inspection_edges.size());
     for (const InspectionEdge &edge : config_.inspection_edges) {
@@ -70,9 +52,10 @@ ArenaPlanner::PlanCoverage(const Pose &start,
     }
     std::vector<std::vector<std::pair<int, int>>> adjacency(node_count);
     std::vector<bool> usable(config_.inspection_edges.size(), false);
-    const auto already_covered = [&covered_edges](const std::string &label) {
-      return std::find(covered_edges.begin(), covered_edges.end(), label) !=
-             covered_edges.end();
+    const auto already_covered = [&historically_complete](const std::string &label) {
+      return std::find(
+        historically_complete.begin(), historically_complete.end(), label) !=
+             historically_complete.end();
     };
     for (std::size_t index = 0; index < config_.inspection_edges.size();
          ++index) {
@@ -107,12 +90,6 @@ ArenaPlanner::PlanCoverage(const Pose &start,
         result.deferred_targets.push_back(edge.label);
       }
     }
-    const auto selected_edge = [tunnels_only, non_tunnels_only](
-                                   const InspectionEdge &edge) {
-        return (!tunnels_only && !non_tunnels_only) ||
-               (tunnels_only && edge.tunnel) ||
-               (non_tunnels_only && !edge.tunnel);
-      };
     const auto defer_once = [&result](const std::string &label) {
         if (std::find(result.deferred_targets.begin(),
                       result.deferred_targets.end(), label) ==
@@ -120,8 +97,8 @@ ArenaPlanner::PlanCoverage(const Pose &start,
           result.deferred_targets.push_back(label);
         }
       };
-    const auto finish_route = [this, &result, &covered_edges, &already_covered,
-                               &selected_edge, &defer_once]() {
+    const auto finish_route = [this, &result, &historical_coverage,
+                               &defer_once, tunnels_only, non_tunnels_only]() {
         for (const Point &point : result.points) {
           if (!IsFinite(point)) {
             throw std::runtime_error("coverage route contains a non-finite point");
@@ -129,12 +106,27 @@ ArenaPlanner::PlanCoverage(const Pose &start,
         }
         for (std::size_t index = 1; index < result.points.size(); ++index) {
           if (!SegmentIsFree(result.points[index - 1], result.points[index])) {
-            throw std::runtime_error(
-                    "coverage route contains a segment that is not collision-free");
+            std::ostringstream message;
+            message << "coverage route segment " << index - 1 << " -> " << index
+                    << " is not collision-free: (" << result.points[index - 1].x
+                    << ", " << result.points[index - 1].y << ") -> ("
+                    << result.points[index].x << ", " << result.points[index].y << ")";
+            throw std::runtime_error(message.str());
           }
         }
+        if (!RouteTurnsAreAllowed(result.points)) {
+          throw std::runtime_error(
+                  "coverage route requires a U-turn or consecutive tight turns; "
+                  "recover to a junction before replanning");
+        }
+        const std::vector<RoadInterval> current_intervals =
+          CoveredInspectionIntervals(config_, result.points);
+        const std::vector<RoadInterval> prospective_coverage = MergeRoadIntervals(
+          config_, historical_coverage, current_intervals);
+        result.covered_intervals = historical_coverage;
+        result.planned_intervals = current_intervals;
         const std::vector<std::string> current_coverage =
-            CoveredInspectionEdges(config_, result.points);
+          FullyCoveredInspectionEdges(config_, current_intervals);
         result.visit_order.erase(
           std::remove_if(
             result.visit_order.begin(), result.visit_order.end(),
@@ -144,29 +136,15 @@ ArenaPlanner::PlanCoverage(const Pose &start,
                      current_coverage.end();
             }),
           result.visit_order.end());
-        result.covered_edges.clear();
-        const auto append_covered = [&result](const std::string &label) {
-            if (std::find(result.covered_edges.begin(), result.covered_edges.end(),
-                          label) == result.covered_edges.end()) {
-              result.covered_edges.push_back(label);
-            }
-          };
-        for (const std::string &label : covered_edges) {
-          append_covered(label);
+        result.covered_edges = FullyCoveredInspectionEdges(
+          config_, prospective_coverage);
+        result.deferred_intervals = UncoveredRoadIntervals(
+          config_, prospective_coverage, tunnels_only, non_tunnels_only);
+        for (const RoadInterval & interval : result.deferred_intervals) {
+          defer_once(interval.edge_label);
         }
-        for (const std::string &label : current_coverage) {
-          append_covered(label);
-        }
-        for (const InspectionEdge &edge : config_.inspection_edges) {
-          if (!selected_edge(edge) || already_covered(edge.label)) {
-            continue;
-          }
-          if (std::find(result.covered_edges.begin(), result.covered_edges.end(),
-                        edge.label) == result.covered_edges.end()) {
-            defer_once(edge.label);
-          }
-        }
-        result.all_targets_reached = result.deferred_targets.empty();
+        result.all_targets_reached =
+          result.deferred_targets.empty() && result.deferred_intervals.empty();
       };
     const auto set_headings = [&result, &start]() {
         result.headings.clear();
@@ -180,6 +158,26 @@ ArenaPlanner::PlanCoverage(const Pose &start,
                                              : result.headings.back()));
         }
       };
+
+    if (non_tunnels_only) {
+      const bool has_partial_history = std::any_of(
+        historical_coverage.begin(), historical_coverage.end(),
+        [](const RoadInterval & interval) {
+          return interval.start_fraction > 1.0e-9 ||
+                 interval.end_fraction < 1.0 - 1.0e-9;
+        });
+      const bool has_split_road = std::any_of(
+        config_.inspection_edges.begin(), config_.inspection_edges.end(),
+        [this, &already_covered](const InspectionEdge & edge) {
+          return !edge.tunnel && !already_covered(edge.label) &&
+                 !SegmentIsFree(
+            config_.inspection_nodes[edge.from],
+            config_.inspection_nodes[edge.to]);
+        });
+      if (has_partial_history || has_split_road) {
+        return PlanRoadIntervals(start, historical_coverage);
+      }
+    }
 
     // Gap-fill is deliberately incremental.  The old graph DFS walked every
     // edge reachable from the entry node and only filtered the labels.  As a
@@ -199,19 +197,59 @@ ArenaPlanner::PlanCoverage(const Pose &start,
 
       result.points.push_back(start.position);
       Point current = start.position;
-      std::vector<Point> required_coverage_points;
-      const auto append_grid_path = [this, &result](const GridPath &path) {
-        for (std::size_t cell = 1; cell + 1 < path.cells.size(); ++cell) {
-          result.points.push_back(CellToWorld(path.cells[cell]));
+      std::vector<Point> required_coverage_points = config_.inspection_nodes;
+      const auto append_grid_path_safely = [this, &result](
+          const GridPath &path, const Point &exact_end) {
+        std::vector<Point> grid_points;
+        grid_points.reserve(path.cells.size());
+        for (const Cell &cell : path.cells) {
+          grid_points.push_back(CellToWorld(cell));
         }
-        if (path.cells.size() > 1) {
-          result.points.push_back(CellToWorld(path.cells.back()));
+
+        std::size_t first = 0;
+        while (first < grid_points.size() &&
+               !SegmentIsFree(result.points.back(), grid_points[first])) {
+          ++first;
+        }
+        if (first == grid_points.size()) {
+          throw std::runtime_error(
+              "A* gap-fill path cannot safely leave the exact start point");
+        }
+
+        std::size_t last = grid_points.size() - 1;
+        bool reaches_exact_end = false;
+        for (std::size_t candidate = grid_points.size(); candidate-- > first;) {
+          if (SegmentIsFree(grid_points[candidate], exact_end)) {
+            last = candidate;
+            reaches_exact_end = true;
+            break;
+          }
+        }
+        if (!reaches_exact_end &&
+            Distance(grid_points.back(), exact_end) >
+                config_.task_tolerance + 1.0e-9) {
+          throw std::runtime_error(
+              "A* gap-fill path cannot reach the end-point tolerance");
+        }
+        if (!reaches_exact_end) {
+          last = grid_points.size() - 1;
+        }
+        for (std::size_t index = first; index <= last; ++index) {
+          if (Distance(result.points.back(), grid_points[index]) > 1.0e-9) {
+            result.points.push_back(grid_points[index]);
+          }
+        }
+        if (reaches_exact_end &&
+            Distance(result.points.back(), exact_end) > 1.0e-9) {
+          result.points.push_back(exact_end);
         }
       };
-      const auto append_segment = [this, &result](const Point &end) {
+      const auto append_segment = [this, &result, &append_grid_path_safely](
+          const Point &end) {
         const Point begin = result.points.back();
         if (!SegmentIsFree(begin, end)) {
-          throw std::runtime_error("no collision-free connector to coverage point");
+          append_grid_path_safely(AStar(begin, end), end);
+          return;
         }
         const double length = Distance(begin, end);
         const int samples = std::max(
@@ -220,17 +258,6 @@ ArenaPlanner::PlanCoverage(const Pose &start,
           const double ratio = static_cast<double>(sample) / samples;
           result.points.push_back({begin.x + ratio * (end.x - begin.x),
                                    begin.y + ratio * (end.y - begin.y)});
-        }
-      };
-      const auto append_safe = [this, &result, &append_grid_path,
-                                &append_segment](const Point &end) {
-        if (SegmentIsFree(result.points.back(), end)) {
-          append_segment(end);
-          return;
-        }
-        append_grid_path(AStar(result.points.back(), end));
-        if (Distance(result.points.back(), end) > 1.0e-9) {
-          append_segment(end);
         }
       };
 
@@ -253,7 +280,7 @@ ArenaPlanner::PlanCoverage(const Pose &start,
                   "no uncovered road is reachable from the current start");
         }
         if (Distance(start.position, config_.default_start.position) > 1.0e-6) {
-          append_safe(config_.default_start.position);
+          append_segment(config_.default_start.position);
           result.points = Smooth(result.points, {});
           set_headings();
           result.length = PolylineLength(result.points);
@@ -327,20 +354,18 @@ ArenaPlanner::PlanCoverage(const Pose &start,
           const int first = best_forward ? road.from : road.to;
           const int second = best_forward ? road.to : road.from;
           try {
-            append_grid_path(AStar(
-                current,
-                config_.inspection_nodes[static_cast<std::size_t>(first)]));
-            append_safe(
+            append_grid_path_safely(
+                AStar(current,
+                      config_.inspection_nodes[static_cast<std::size_t>(first)]),
                 config_.inspection_nodes[static_cast<std::size_t>(first)]);
-            append_safe(
+            append_segment(
                 config_.inspection_nodes[static_cast<std::size_t>(second)]);
             result.visit_order.push_back(road.label);
             required_coverage_points.push_back(
                 config_.inspection_nodes[static_cast<std::size_t>(first)]);
             required_coverage_points.push_back(
                 config_.inspection_nodes[static_cast<std::size_t>(second)]);
-            current =
-                config_.inspection_nodes[static_cast<std::size_t>(second)];
+            current = result.points.back();
           } catch (const std::runtime_error &) {
             result.deferred_targets.push_back(road.label);
           }
@@ -348,8 +373,9 @@ ArenaPlanner::PlanCoverage(const Pose &start,
                           static_cast<std::ptrdiff_t>(best));
         }
         try {
-          append_grid_path(AStar(current, config_.default_start.position));
-          append_safe(config_.default_start.position);
+          append_grid_path_safely(
+              AStar(current, config_.default_start.position),
+              config_.default_start.position);
         } catch (const std::runtime_error &) {
           result.deferred_targets.push_back("RETURN_TO_START");
         }
@@ -440,9 +466,9 @@ ArenaPlanner::PlanCoverage(const Pose &start,
           const int second = direction == 0 ? road.to : road.from;
           try {
             const double cost =
-                AStar(current,
-                      config_.inspection_nodes[static_cast<std::size_t>(first)])
-                    .cost +
+                path_score(AStar(
+                  current,
+                  config_.inspection_nodes[static_cast<std::size_t>(first)])) +
                 Distance(
                     config_.inspection_nodes[static_cast<std::size_t>(first)],
                     config_.inspection_nodes[static_cast<std::size_t>(second)]);
@@ -479,7 +505,7 @@ ArenaPlanner::PlanCoverage(const Pose &start,
                   continue;
                 const std::size_t next_mask = mask | (std::size_t{1} << next);
                 const double candidate =
-                    current_state.cost + connector->cost +
+                    current_state.cost + path_score(*connector) +
                     Distance(config_.inspection_nodes[static_cast<std::size_t>(
                                  next_first)],
                              config_.inspection_nodes[static_cast<std::size_t>(
@@ -504,9 +530,9 @@ ArenaPlanner::PlanCoverage(const Pose &start,
           const int last_end = direction == 0 ? road.to : road.from;
           try {
             return_costs[edge][direction] =
-                AStar(config_.inspection_nodes[static_cast<std::size_t>(last_end)],
-                      config_.default_start.position)
-                    .cost;
+                path_score(AStar(
+                  config_.inspection_nodes[static_cast<std::size_t>(last_end)],
+                  config_.default_start.position));
           } catch (const std::runtime_error &) {
             // An open partial route is still useful if this entire connected
             // component cannot return home. It is selected only when no road
@@ -603,22 +629,23 @@ ArenaPlanner::PlanCoverage(const Pose &start,
             throw std::runtime_error(
                     "coverage tour became unreachable during reconstruction");
           }
-          append_grid_path(approach);
-          append_safe(
+          append_grid_path_safely(
+              approach,
               config_.inspection_nodes[static_cast<std::size_t>(first)]);
-          append_safe(
+          append_segment(
               config_.inspection_nodes[static_cast<std::size_t>(second)]);
           result.visit_order.push_back(road.label);
           required_coverage_points.push_back(
               config_.inspection_nodes[static_cast<std::size_t>(first)]);
           required_coverage_points.push_back(
               config_.inspection_nodes[static_cast<std::size_t>(second)]);
-          current = config_.inspection_nodes[static_cast<std::size_t>(second)];
+          current = result.points.back();
         }
         if (return_path_available) {
           try {
-            append_grid_path(AStar(current, config_.default_start.position));
-            append_safe(config_.default_start.position);
+            append_grid_path_safely(
+                AStar(current, config_.default_start.position),
+                config_.default_start.position);
           } catch (const std::runtime_error &) {
             defer_once("RETURN_TO_START");
           }
@@ -677,8 +704,8 @@ ArenaPlanner::PlanCoverage(const Pose &start,
       try {
         GridPath candidate =
             AStar(start.position, config_.inspection_nodes[index]);
-        if (candidate.cost < entry_cost) {
-          entry_cost = candidate.cost;
+        if (path_score(candidate) < entry_cost) {
+          entry_cost = path_score(candidate);
           entry_node = static_cast<int>(index);
           entry_path = std::move(candidate);
         }
@@ -732,14 +759,50 @@ ArenaPlanner::PlanCoverage(const Pose &start,
     }
 
     result.points.push_back(start.position);
-    for (std::size_t index = 1; index + 1 < entry_path.cells.size(); ++index) {
-      result.points.push_back(CellToWorld(entry_path.cells[index]));
-    }
-    if (Distance(result.points.back(), config_.inspection_nodes[entry_node]) >
-        1.0e-9) {
-      result.points.push_back(config_.inspection_nodes[entry_node]);
-    }
-    const auto append_segment = [this, &result](const Point &end) {
+    const auto append_grid_path_safely = [this, &result](
+        const GridPath & path, const Point & exact_end) {
+        std::vector<Point> grid_points;
+        grid_points.reserve(path.cells.size());
+        for (const Cell & cell : path.cells) {
+          grid_points.push_back(CellToWorld(cell));
+        }
+
+        std::size_t first = 0;
+        while (first < grid_points.size() &&
+          !SegmentIsFree(result.points.back(), grid_points[first]))
+        {
+          ++first;
+        }
+        if (first == grid_points.size()) {
+          throw std::runtime_error(
+                  "A* coverage path cannot safely leave the exact start point");
+        }
+
+        std::size_t last = grid_points.size() - 1;
+        bool reaches_exact_end = false;
+        for (std::size_t candidate = grid_points.size(); candidate-- > first;) {
+          if (SegmentIsFree(grid_points[candidate], exact_end)) {
+            last = candidate;
+            reaches_exact_end = true;
+            break;
+          }
+        }
+        if (!reaches_exact_end) {
+          throw std::runtime_error(
+                  "A* coverage path cannot safely reach the exact end point");
+        }
+        for (std::size_t index = first; index <= last; ++index) {
+          if (Distance(result.points.back(), grid_points[index]) > 1.0e-9) {
+            result.points.push_back(grid_points[index]);
+          }
+        }
+        if (Distance(result.points.back(), exact_end) > 1.0e-9) {
+          result.points.push_back(exact_end);
+        }
+      };
+    append_grid_path_safely(entry_path, config_.inspection_nodes[entry_node]);
+    const auto append_segment = [this, &result, &append_grid_path_safely](
+        const Point &end) {
       const Point begin = result.points.back();
       if (SegmentIsFree(begin, end)) {
         const double length = Distance(begin, end);
@@ -757,17 +820,7 @@ ArenaPlanner::PlanCoverage(const Pose &start,
       // when its exported centre line clips an inflated obstacle. Reuse the
       // same collision-free A* connector used by task planning instead of
       // emitting an unsafe straight chord.
-      const GridPath connector = AStar(begin, end);
-      for (std::size_t cell = 1; cell < connector.cells.size(); ++cell) {
-        result.points.push_back(CellToWorld(connector.cells[cell]));
-      }
-      if (Distance(result.points.back(), end) > 1.0e-9) {
-        if (!SegmentIsFree(result.points.back(), end)) {
-          throw std::runtime_error(
-                  "A* connector cannot safely reach the exact coverage point");
-        }
-        result.points.push_back(end);
-      }
+      append_grid_path_safely(AStar(begin, end), end);
     };
     for (std::size_t index = 1; index < walk.size(); ++index) {
       append_segment(config_.inspection_nodes[walk[index]]);
@@ -796,6 +849,10 @@ ArenaPlanner::PlanCoverage(const Pose &start,
     result.headings.clear();
     result.visit_order.clear();
     result.covered_edges.clear();
+    result.covered_intervals.clear();
+    result.planned_intervals.clear();
+    result.blocked_intervals.clear();
+    result.deferred_intervals.clear();
     result.length = 0.0;
   }
   return result;

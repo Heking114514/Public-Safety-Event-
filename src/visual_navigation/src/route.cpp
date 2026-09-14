@@ -15,6 +15,8 @@ bool WaypointNavigator::LoadRoute(const std::string &routeFile) {
   }
 
   waypoints_ = std::move(loadedWaypoints);
+  routeStartTurnAuthorized_ =
+      !waypoints_.empty() && waypoints_.front().turn_junction;
   RCLCPP_INFO(get_logger(), "Loaded %zu waypoints from %s", waypoints_.size(),
               routeFile.c_str());
   return true;
@@ -45,6 +47,7 @@ void WaypointNavigator::PublishRoutePath() {
     pose.header = path.header;
     pose.pose.position.x = waypoint.x;
     pose.pose.position.y = waypoint.y;
+    pose.pose.position.z = waypoint.turn_junction ? 1.0e-3 : 0.0;
     pose.pose.orientation = QuaternionFromYaw(yaw);
     path.poses.push_back(pose);
   }
@@ -97,6 +100,15 @@ void WaypointNavigator::HandleRouteInput(
     return;
   }
 
+  if (pendingFrontObstacle_ || obstacleRecoveryController_.braking() ||
+      obstacleRecoveryController_.reversing()) {
+    RCLCPP_WARN(get_logger(),
+                "Ignoring a replacement route until obstacle retreat reaches "
+                "its recovery anchor");
+    PublishState();
+    return;
+  }
+
   if (routeLoaded_ && visual_navigation::RouteManager::Equivalent(
                           waypoints_, loadedWaypoints)) {
     // A repeated publish is also the ACK-loss recovery path. Do not reset a
@@ -106,12 +118,25 @@ void WaypointNavigator::HandleRouteInput(
       PublishRoutePath();
       PublishRouteAck(route_id);
       PublishState();
-      RCLCPP_WARN_THROTTLE(
-          get_logger(), *get_clock(), 2000,
-          "Re-acknowledging a duplicate route without resetting active progress");
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+                           "Re-acknowledging a duplicate route without "
+                           "resetting active progress");
       return;
     }
 
+    // Replanning may legitimately return the same geometry after we have
+    // retreated to its entrance. This new route id must release the completed
+    // recovery state before normal activation can acknowledge it.
+    if (obstacleRecoveryController_.route_may_take_over()) {
+      currentWaypointIndex_ = 0;
+      pathSegmentInitialized_ = false;
+      resumePathFromCurrentPose_ = true;
+      ResetRunControl();
+      ResetObstacleRecovery();
+    }
+
+    routeStartTurnAuthorized_ =
+        !waypoints_.empty() && waypoints_.front().turn_junction;
     std::string activation_result;
     if (!ActivateNavigation(activation_result)) {
       PublishRoutePath();
@@ -139,16 +164,20 @@ void WaypointNavigator::HandleRouteInput(
   pathSegmentInitialized_ = false;
   resumePathFromCurrentPose_ = false;
   ResetRunControl();
+  ResetObstacleRecovery();
   PublishStop();
 
   waypoints_ = std::move(loadedWaypoints);
+  routeStartTurnAuthorized_ =
+      !waypoints_.empty() && waypoints_.front().turn_junction;
   routeLoaded_ = true;
   PublishRoutePath();
   PublishCurrentWaypoint();
   std::string activation_result;
   if (!ActivateNavigation(activation_result)) {
     PublishState();
-    RCLCPP_WARN(get_logger(), "Loaded dynamic route but activation was rejected: %s",
+    RCLCPP_WARN(get_logger(),
+                "Loaded dynamic route but activation was rejected: %s",
                 activation_result.c_str());
     return;
   }

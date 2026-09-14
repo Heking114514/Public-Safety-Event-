@@ -54,7 +54,9 @@ fused_odometry_gate:
     max_wheel_only_time_s: 2.0
     max_wheel_only_distance_m: 0.30
     max_wheel_only_speed_mps: 0.30
-    max_wheel_speed_mps: 1.5
+    # STM32 declares 1.0 m/s as the physical wheel-speed ceiling. Normal
+    # navigation is lower still (0.6 m/s per-wheel command limit).
+    max_wheel_speed_mps: 1.0
     max_wheel_yaw_rate_radps: 4.0
     max_imu_yaw_rate_radps: 4.0
 
@@ -67,6 +69,7 @@ fused_odometry_gate:
     # of whether the absolute visual pose has passed its recovery gate.
     visual_stationary_speed_mps: 0.025
     stationary_wheel_reject_speed_mps: 0.03
+    stationary_command_yaw_speed_radps: 0.12
     imu_visual_soft_radps: 0.15
     imu_visual_covariance_cap_radps: 0.80
     residual_bad_samples: 3

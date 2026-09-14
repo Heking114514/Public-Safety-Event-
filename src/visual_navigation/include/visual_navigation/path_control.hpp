@@ -2,6 +2,7 @@
 #define VISUAL_NAVIGATION__PATH_CONTROL_HPP_
 
 #include <algorithm>
+#include <cstddef>
 #include <cmath>
 
 namespace visual_navigation
@@ -155,6 +156,40 @@ inline double StanleyPathError(
     heading_error - correction, 2.0 * 3.14159265358979323846);
 }
 
+inline bool PlannedTurnMayPivot(bool stopped_at_turn, bool already_aligned,
+  double distance_from_turn, double heading_error, double enter_threshold)
+{
+  return stopped_at_turn && !already_aligned &&
+    std::isfinite(distance_from_turn) && distance_from_turn <= 0.10 &&
+    std::isfinite(heading_error) &&
+    std::abs(heading_error) >= std::max(0.0, enter_threshold);
+}
+
+inline double FirstHalfTurnYaw(double initial_yaw, double final_yaw)
+{
+  const double difference = std::remainder(
+    final_yaw - initial_yaw, 2.0 * 3.14159265358979323846);
+  return std::remainder(
+    initial_yaw + std::copysign(3.14159265358979323846 / 2.0, difference),
+    2.0 * 3.14159265358979323846);
+}
+
+inline bool IsOutAndBackWaypoint(double segment_start_x, double segment_start_y,
+  double endpoint_x, double endpoint_y, double next_x, double next_y,
+  double return_tolerance, double minimum_leg_length)
+{
+  if (!std::isfinite(segment_start_x) || !std::isfinite(segment_start_y) ||
+    !std::isfinite(endpoint_x) || !std::isfinite(endpoint_y) ||
+    !std::isfinite(next_x) || !std::isfinite(next_y))
+  {
+    return false;
+  }
+  return std::hypot(next_x - segment_start_x, next_y - segment_start_y) <=
+    std::max(0.0, return_tolerance) &&
+    std::hypot(endpoint_x - segment_start_x, endpoint_y - segment_start_y) >=
+    std::max(0.0, minimum_leg_length);
+}
+
 inline bool FinalPositionCaptured(
   bool already_captured, bool final_waypoint, double distance, double tolerance)
 {
@@ -177,28 +212,14 @@ inline bool ShouldBeginWaypointBrake(
   return !braking && !brake_completed && waypoint_reached && stop_required;
 }
 
-inline double TurnPositionHoldSpeed(
-  double current_x, double current_y, double current_yaw,
-  double anchor_x, double anchor_y, double gain,
-  double deadband, double maximum_speed)
+inline bool SatisfiedRouteStartMayAdvance(
+  std::size_t waypoint_index, bool final_waypoint, double stop_time,
+  double distance, double tolerance)
 {
-  if (!std::isfinite(current_x) || !std::isfinite(current_y) ||
-    !std::isfinite(current_yaw) || !std::isfinite(anchor_x) ||
-    !std::isfinite(anchor_y) || !std::isfinite(gain) ||
-    !std::isfinite(deadband) || !std::isfinite(maximum_speed))
-  {
-    return 0.0;
-  }
-
-  const double error_x = anchor_x - current_x;
-  const double error_y = anchor_y - current_y;
-  const double forward_error =
-    std::cos(current_yaw) * error_x + std::sin(current_yaw) * error_y;
-  const double active_error = std::max(
-    0.0, std::abs(forward_error) - std::max(0.0, deadband));
-  const double command = std::max(0.0, gain) * active_error;
-  return std::copysign(
-    std::min(std::max(0.0, maximum_speed), command), forward_error);
+  return waypoint_index == 0 && !final_waypoint &&
+    std::isfinite(stop_time) && stop_time <= 0.0 &&
+    std::isfinite(distance) && std::isfinite(tolerance) &&
+    distance <= std::max(0.0, tolerance);
 }
 
 inline bool TurnHasSettled(
@@ -213,6 +234,22 @@ inline bool TurnHasSettled(
   }
   return absolute_yaw_rate <= std::max(0.0, settle_yaw_rate) &&
     seconds_below_threshold >= std::max(0.0, settle_dwell);
+}
+
+inline bool TurnTranslationHasStopped(bool wheel_telemetry_received,
+  double wheel_telemetry_age, double wheel_telemetry_timeout,
+  double left_speed, double right_speed, double fallback_pose_speed,
+  bool fallback_pose_speed_valid, double stop_speed)
+{
+  const bool wheel_telemetry_fresh = wheel_telemetry_received &&
+    std::isfinite(wheel_telemetry_age) && wheel_telemetry_age >= 0.0 &&
+    wheel_telemetry_age <= std::max(0.0, wheel_telemetry_timeout);
+  if (wheel_telemetry_fresh) {
+    return std::isfinite(left_speed) && std::isfinite(right_speed) &&
+      std::abs(left_speed) <= stop_speed && std::abs(right_speed) <= stop_speed;
+  }
+  return fallback_pose_speed_valid && std::isfinite(fallback_pose_speed) &&
+    std::abs(fallback_pose_speed) <= stop_speed;
 }
 
 inline double CrossTrackSpeedLimit(
@@ -263,6 +300,15 @@ inline double CurvatureFeedforwardAngularSpeed(
     return 0.0;
   }
   return std::max(0.0, linear_speed) * signed_path_curvature * std::max(0.0, gain);
+}
+
+inline double ContinuousTrackingCurvature(
+  double signed_path_curvature, bool waypoint_requires_stop)
+{
+  if (!std::isfinite(signed_path_curvature) || waypoint_requires_stop) {
+    return 0.0;
+  }
+  return signed_path_curvature;
 }
 
 inline double LateralAccelerationAngularLimit(

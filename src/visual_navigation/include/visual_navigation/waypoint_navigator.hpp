@@ -17,12 +17,14 @@
 #include "builtin_interfaces/msg/time.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/twist.hpp"
+#include "mission_control_interfaces/msg/control_telemetry.hpp"
 #include "mission_control_interfaces/msg/motion_hold_state.hpp"
 #include "mission_control_interfaces/srv/set_motion_hold.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/imu.hpp"
+#include "sensor_msgs/msg/range.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/empty.hpp"
 #include "std_msgs/msg/int32.hpp"
@@ -33,6 +35,7 @@
 #include "visual_navigation/fusion_health_policy.hpp"
 #include "visual_navigation/navigation_input_cache.hpp"
 #include "visual_navigation/navigation_supervisor.hpp"
+#include "visual_navigation/obstacle_recovery.hpp"
 #include "visual_navigation/odometry_input_validation.hpp"
 #include "visual_navigation/path_control.hpp"
 #include "visual_navigation/path_progress_supervisor.hpp"
@@ -153,6 +156,15 @@ private:
 
   void HandleActuatorHealth(const std_msgs::msg::Bool::SharedPtr message);
 
+  void HandleFrontObstacle(const std_msgs::msg::Bool::SharedPtr message);
+
+  void
+  HandleFrontObstacleRange(const sensor_msgs::msg::Range::SharedPtr message);
+
+  void HandleControlTelemetry(
+      const mission_control_interfaces::msg::ControlTelemetry::SharedPtr
+          message);
+
   void HandleRouteInput(const nav_msgs::msg::Path::SharedPtr message);
 
   void HandleStart(const std_srvs::srv::Trigger::Request::SharedPtr,
@@ -197,22 +209,44 @@ private:
 
   void RunGoal(const ControlFrame &frame);
 
-  void RunRecovery(const ControlFrame &frame);
+  void RunRecovery(const ControlFrame &frame, bool plannedReverse = false);
 
   void RunPath(const ControlFrame &frame);
 
-  void AdvanceWaypoint();
+  void RunObstacleRecovery(
+      const visual_navigation::FusionHealthDecision &fusion_health);
+
+  void BeginObstacleRecovery();
+
+  bool BeginJunctionRetreat();
+
+  void ClassifyPendingObstacle();
+
+  void ClearPendingObstacleSignal(const char *reason);
+
+  void BeginObstacleBrakeConfirmation();
+
+  bool ObstacleBrakeHasCompleted();
+
+  void ResetObstacleRecovery();
+
+  void RecordExecutedPose();
+
+  visual_navigation::RecoveryPoint SelectObstacleRecoveryAnchor() const;
+
+  bool CurrentWaypointIsPlannedTurn() const;
+
+  void AdvanceWaypoint(bool preservePathFeedback = false);
 
   void CompleteNavigation();
 
   void BeginPathSegment();
 
-  bool SupervisePathProgress(
-      double measuredProgress, bool eligible,
-      double commandedLinearVelocity = 0.0,
-      double measuredLinearVelocity = 0.0,
-      bool measuredLinearVelocityValid = false,
-      bool linearMotionExpected = true);
+  bool SupervisePathProgress(double measuredProgress, bool eligible,
+                             double commandedLinearVelocity = 0.0,
+                             double measuredLinearVelocity = 0.0,
+                             bool measuredLinearVelocityValid = false,
+                             bool linearMotionExpected = true);
 
   bool SuperviseTurnProgress(std::size_t phaseOffset, double absoluteYawError,
                              double expectedYawRate, bool eligible);
@@ -241,7 +275,8 @@ private:
 
   void PublishStop();
 
-  void PublishMotionCommand(const geometry_msgs::msg::Twist &desired);
+  void PublishMotionCommand(const geometry_msgs::msg::Twist &desired,
+                            bool forceZeroLinear = false);
 
   void PublishCurrentWaypoint();
 
@@ -264,6 +299,9 @@ private:
   std::string imuTopic_;
   std::string fusionStatusTopic_;
   std::string actuatorHealthTopic_;
+  std::string controlTelemetryTopic_;
+  std::string frontObstacleTopic_;
+  std::string frontObstacleRangeTopic_;
   std::string trackingStateTopic_;
   std::string cmdVelTopic_;
   std::string pathTopic_;
@@ -276,10 +314,10 @@ private:
   double controlFrequency_{30.0};
   double trackingPointOffsetX_{0.0};
   double trackingPointOffsetY_{0.0};
-  double defaultSpeed_{0.50};
-  double maxLinearSpeed_{0.50};
-  double maxAngularSpeed_{0.95};
-  double maxPathAngularSpeed_{0.45};
+  double defaultSpeed_{0.15};
+  double maxLinearSpeed_{0.15};
+  double maxAngularSpeed_{0.75};
+  double maxPathAngularSpeed_{0.65};
   double minPathAngularSpeed_{0.14};
   double pathAngularActivationError_{0.025};
   double pathYawResponseThreshold_{0.04};
@@ -292,16 +330,13 @@ private:
   double maxAngularAcceleration_{1.80};
   double maxAngularDeceleration_{3.00};
   double linearGain_{0.8};
-  double angularGain_{2.8};
+  double angularGain_{1.4};
   double pathPidKp_{2.4};
   double pathPidKi_{0.15};
   double pathPidKd_{0.0};
   double pathYawRateDamping_{0.45};
-  double turnYawRateDamping_{0.55};
-  double turnCruiseSpeed_{0.90};
-  double turnPositionHoldGain_{0.80};
-  double turnPositionHoldDeadband_{0.015};
-  double turnPositionHoldMaxSpeed_{0.08};
+  double turnYawRateDamping_{1.00};
+  double turnCruiseSpeed_{0.45};
   double crossTrackGain_{1.5};
   double stanleySofteningSpeed_{0.25};
   double maxCrossTrackCorrection_{0.70};
@@ -315,29 +350,45 @@ private:
   double rotateInPlaceReentryThreshold_{0.44};
   double rotateInPlaceExitThreshold_{0.035};
   double precisionTurnThreshold_{0.45};
-  double turnSettleYawRate_{0.12};
-  double turnSettleDwell_{0.30};
-  double minPrecisionTurnSpeed_{0.25};
+  double turnSettleYawRate_{0.15};
+  double turnSettleDwell_{0.20};
+  double minPrecisionTurnSpeed_{0.20};
   double waypointTolerance_{0.04};
   double waypointPassLongitudinalTolerance_{0.01};
   double waypointPassLateralTolerance_{0.06};
   double waypointRecoverySpeed_{0.10};
   double waypointRecoveryHeadingTolerance_{0.12};
-  double waypointRecoveryMaxAngularSpeed_{0.60};
+  double waypointRecoveryMaxAngularSpeed_{0.40};
   double preTurnStopHeadingThreshold_{0.18};
   double preTurnStopSpeed_{0.03};
   double preTurnStopDwell_{0.10};
   double stopMotionWindow_{0.20};
   double preTurnMinimumStopTime_{0.20};
-  double preTurnBrakeTimeout_{0.60};
-  double finalYawTolerance_{0.060};
-  double finalYawMaxAngularSpeed_{0.90};
-  double finalYawMinTurnSpeed_{0.70};
-  double finalYawMinPrecisionSpeed_{0.22};
+  double preTurnBrakeTimeout_{1.00};
+  double preTurnFallbackPoseSpeed_{0.08};
+  std::size_t preTurnStopTelemetrySamples_{2};
+  std::size_t preTurnFallbackTimeouts_{2};
+  double finalYawTolerance_{0.12};
+  double finalPositionReleaseTolerance_{0.10};
+  double finalYawMaxAngularSpeed_{0.40};
+  double finalYawMinTurnSpeed_{0.30};
+  double finalYawMinPrecisionSpeed_{0.20};
   double odomTimeout_{0.40};
   double imuTimeout_{0.15};
   double fusionStatusTimeout_{0.60};
   double actuatorHealthTimeout_{0.80};
+  double controlTelemetryTimeout_{0.30};
+  double frontObstacleTimeout_{0.50};
+  double frontObstacleClassificationWait_{0.10};
+  double frontObstaclePairingReorderTolerance_{0.10};
+  double obstacleSensorForwardOffset_{0.070};
+  double vehicleFrontOffset_{0.0717};
+  double expectedObstacleTolerance_{0.05};
+  double obstacleReverseSpeed_{0.10};
+  double obstacleReverseAngularGain_{1.2};
+  double obstacleReverseYawRateDamping_{0.4};
+  double obstacleReverseMaxAngularSpeed_{0.30};
+  double obstacleReverseMaxHeadingError_{0.70};
   double stampFutureTolerance_{0.20};
   bool requireFusionStatus_{true};
   bool requireActuatorHealth_{false};
@@ -349,12 +400,20 @@ private:
   visual_navigation::NavigationSupervisor navigationSupervisor_;
   visual_navigation::PathProgressSupervisor pathProgressSupervisor_;
   visual_navigation::TurnProgressSupervisor turnProgressSupervisor_;
+  visual_navigation::ObstacleRecoveryController obstacleRecoveryController_;
 
   std::vector<Waypoint> waypoints_;
   std::size_t currentWaypointIndex_{0};
   bool routeLoaded_{false};
   bool navigationActive_{false};
   bool resumePathFromCurrentPose_{false};
+  bool continuePathControlOnNextSegment_{false};
+  bool stoppedAtPlannedTurn_{false};
+  bool firstHalfTurnPending_{false};
+  double firstHalfTurnYaw_{0.0};
+  bool reverseSegmentActive_{false};
+  bool routeStartTurnAuthorized_{false};
+  std::size_t lastStoppedTurnIndex_{std::numeric_limits<std::size_t>::max()};
   bool motionHoldStartInitialized_{false};
   bool trackingReferenceInitialized_{false};
   double currentX_{0.0};
@@ -376,10 +435,36 @@ private:
   std::chrono::steady_clock::time_point lastMotionCommandTime_{};
   visual_navigation::PathTrackingController pathTrackingController_;
   visual_navigation::WaypointBrakeController waypointBrakeController_;
+  visual_navigation::WaypointBrakeController obstacleBrakeController_;
   visual_navigation::TurnSettleController turnSettleController_;
   visual_navigation::ControlState controlState_;
   geometry_msgs::msg::Twist lastMotionCommand_;
   bool motionCommandInitialized_{false};
+  bool controlTelemetryReceived_{false};
+  bool waypointBrakeRecovering_{false};
+  double measuredLeftWheelSpeed_{0.0};
+  double measuredRightWheelSpeed_{0.0};
+  double targetLeftWheelSpeed_{0.0};
+  double targetRightWheelSpeed_{0.0};
+  std::uint32_t lastControlTelemetrySequence_{0};
+  std::uint32_t lastControlTelemetryMcuTime_{0};
+  std::uint64_t controlTelemetrySampleCount_{0};
+  std::uint64_t waypointBrakeTelemetryBaseline_{0};
+  std::uint64_t obstacleBrakeTelemetryBaseline_{0};
+  std::size_t waypointBrakeRecoveryAttempts_{0};
+  std::size_t waypointBrakeStoppedTelemetrySamples_{0};
+  std::size_t obstacleBrakeStoppedTelemetrySamples_{0};
+  std::size_t obstacleBrakeConfirmationTimeouts_{0};
+  std::chrono::steady_clock::time_point lastControlTelemetryArrival_{};
+  std::chrono::steady_clock::time_point lastFrontObstacleArrival_{};
+  std::chrono::steady_clock::time_point lastFrontObstacleRangeArrival_{};
+  std::chrono::steady_clock::time_point pendingObstacleStartedAt_{};
+  bool frontObstacleReceived_{false};
+  bool frontObstacleReported_{false};
+  bool frontObstacleEventHandled_{false};
+  bool frontObstacleRangeReceived_{false};
+  bool pendingFrontObstacle_{false};
+  double frontObstacleRange_{std::numeric_limits<double>::infinity()};
 
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmdVelPublisher_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pathPublisher_;
@@ -394,6 +479,12 @@ private:
       fusionStatusSubscription_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr
       actuatorHealthSubscription_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr
+      frontObstacleSubscription_;
+  rclcpp::Subscription<sensor_msgs::msg::Range>::SharedPtr
+      frontObstacleRangeSubscription_;
+  rclcpp::Subscription<mission_control_interfaces::msg::ControlTelemetry>::
+      SharedPtr controlTelemetrySubscription_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr
       trackingStateSubscription_;
   rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr routeInputSubscription_;

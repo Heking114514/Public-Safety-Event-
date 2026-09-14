@@ -29,7 +29,7 @@ def read_records(startup=STARTUP, recording=RECORDING):
 
 
 class NavigationConfigTest(unittest.TestCase):
-    def test_defaults_preserve_modes_and_cover_tuning_topics(self):
+    def test_defaults_preserve_modes_and_cover_diagnostic_topics(self):
         result, records = read_records()
         self.assertEqual(0, result.returncode, result.stderr)
         settings = {key: value for key, value in records if key != "topic"}
@@ -41,8 +41,8 @@ class NavigationConfigTest(unittest.TestCase):
         self.assertEqual("scripts/waypoints.csv", settings["default_autostart_route"])
         self.assertEqual(len(topics), len(set(topics)))
         required = {
-            "/camera/camera/infra1/image_rect_raw",
-            "/camera/camera/infra2/image_rect_raw",
+            "/camera/camera/infra1/camera_info",
+            "/camera/camera/infra2/camera_info",
             "/camera/camera/imu",
             "/odometry/visual_raw",
             "/wheel/odom",
@@ -58,6 +58,13 @@ class NavigationConfigTest(unittest.TestCase):
             "/tf_static",
         }
         self.assertTrue(required.issubset(topics))
+        bulk_sensor_topics = [
+            topic for topic in topics
+            if "/image" in topic.lower()
+            or "pointcloud" in topic.lower()
+            or topic.lower().endswith("/points")
+        ]
+        self.assertEqual([], bulk_sensor_topics)
         self.assertNotIn("/fusion/input/imu", topics)
         self.assertNotIn("/path", topics)
 

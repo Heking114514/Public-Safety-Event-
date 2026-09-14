@@ -437,8 +437,6 @@ private:
       static_cast<float>(frame.measured_right_velocity_milli) * milli_to_si;
     message.pwm_left = frame.pwm_left;
     message.pwm_right = frame.pwm_right;
-    controlTelemetryPublisher_->publish(message);
-
     const auto arrival = std::chrono::steady_clock::now();
     if (control_sample_identity_initialized_)
     {
@@ -466,6 +464,7 @@ private:
     latest_control_sample_sequence_ = frame.sample_sequence;
     latest_control_mcu_time_ms_ = frame.mcu_time_ms;
     control_sample_identity_initialized_ = true;
+    controlTelemetryPublisher_->publish(message);
     if (control_telemetry_received_)
     {
       const double gap = std::chrono::duration<double>(

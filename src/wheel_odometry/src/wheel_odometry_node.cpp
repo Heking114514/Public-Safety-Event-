@@ -64,8 +64,10 @@ private:
   {
     IntegratorConfig config;
     config.wheel_radius_m = positive_parameter("wheel_radius_m", config.wheel_radius_m);
-    config.ticks_per_revolution = positive_parameter(
-      "ticks_per_revolution", config.ticks_per_revolution);
+    config.left_encoder_counts_per_revolution = positive_parameter(
+      "left_encoder_counts_per_revolution", config.left_encoder_counts_per_revolution);
+    config.right_encoder_counts_per_revolution = positive_parameter(
+      "right_encoder_counts_per_revolution", config.right_encoder_counts_per_revolution);
     config.wheel_track_m = positive_parameter("wheel_track_m", config.wheel_track_m);
     config.left_distance_scale = positive_parameter(
       "left_distance_scale", config.left_distance_scale);

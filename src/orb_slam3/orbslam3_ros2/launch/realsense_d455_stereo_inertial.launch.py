@@ -21,6 +21,7 @@ def generate_launch_description():
     initial_reset = LaunchConfiguration("initial_reset")
     use_slam_imu = LaunchConfiguration("use_slam_imu")
     enable_imu = LaunchConfiguration("enable_imu")
+    enable_depth = LaunchConfiguration("enable_depth")
     publish_tf = LaunchConfiguration("publish_tf")
     odom_topic = LaunchConfiguration("odom_topic")
     raw_odom_topic = LaunchConfiguration("raw_odom_topic")
@@ -38,11 +39,12 @@ def generate_launch_description():
                 "serial_no": ParameterValue(serial_no, value_type=str),
                 "initial_reset": ParameterValue(initial_reset, value_type=bool),
                 "enable_color": False,
-                "enable_depth": False,
+                "enable_depth": ParameterValue(enable_depth, value_type=bool),
                 "enable_infra1": True,
                 "enable_infra2": True,
                 "depth_module.emitter_enabled": 0,
                 "depth_module.infra_profile": "848x480x30",
+                "depth_module.depth_profile": "848x480x30",
                 "depth_module.infra1_format": "Y8",
                 "depth_module.infra2_format": "Y8",
                 "enable_gyro": ParameterValue(enable_imu, value_type=bool),
@@ -104,6 +106,11 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument("body_frame_id", default_value="camera_link"),
             DeclareLaunchArgument("map_frame_id", default_value="map"),
+            DeclareLaunchArgument(
+                "enable_depth",
+                default_value="false",
+                description="Publish D455 depth for a separately launched perception node",
+            ),
             DeclareLaunchArgument(
                 "publish_tf",
                 default_value="true",

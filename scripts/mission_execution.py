@@ -15,7 +15,9 @@ ROUTE_DEPENDENT_FAULTS = frozenset(
         "FAULT_WAYPOINT_BRAKE_TIMEOUT",
     }
 )
-ROUTE_LOST_STATUSES = frozenset({"IDLE", "WAITING_FOR_ROUTE"})
+ROUTE_LOST_STATUSES = frozenset(
+    {"IDLE", "WAITING_FOR_ROUTE", "OBSTACLE_REPLAN_REQUIRED"}
+)
 PLANNER_REQUEST_TIMEOUT_SECONDS = 30.0
 
 
@@ -64,6 +66,10 @@ class RouteExecution:
     active_state_seen: bool = False
     new_progress_count: int = 0
     route_signature: tuple[tuple[int, int], ...] = ()
+    planned_intervals: tuple[tuple[str, float, float], ...] = ()
+    blocked_intervals: tuple[tuple[str, float, float], ...] = ()
+    predicted_interval_progress: bool = False
+    observed_coverage_before: float = 0.0
 
 
 class AutoReplanBackoff:
@@ -164,6 +170,56 @@ class LatestRequestQueue:
         return token, item
 
 
+class PreviewSequenceState:
+    """Keep simulation playback separate from real mission completion state."""
+
+    def __init__(self, first_stage: int = 1, last_stage: int = 3) -> None:
+        if first_stage < 1 or last_stage < first_stage:
+            raise ValueError("invalid preview stage range")
+        self.first_stage = first_stage
+        self.last_stage = last_stage
+        self.reset()
+
+    def reset(self) -> None:
+        self.current_stage = self.first_stage
+        self.active = False
+        self.waiting_for_plan = False
+        self.complete = False
+
+    def start(self, stage: int) -> None:
+        if stage != self.current_stage or self.complete:
+            raise ValueError("preview can only start at its current unfinished stage")
+        self.active = True
+        self.waiting_for_plan = False
+
+    def pause(self) -> None:
+        self.active = False
+
+    def finish_stage(self, stage: int) -> Optional[int]:
+        if stage != self.current_stage or not self.active:
+            raise ValueError("only the active preview stage can finish")
+        if stage >= self.last_stage:
+            self.active = False
+            self.complete = True
+            self.waiting_for_plan = False
+            return None
+        self.current_stage += 1
+        self.waiting_for_plan = True
+        return self.current_stage
+
+    def plan_ready(self, stage: int) -> bool:
+        if stage != self.current_stage or not self.waiting_for_plan:
+            return False
+        self.waiting_for_plan = False
+        return self.active
+
+    def plan_failed(self, stage: int) -> None:
+        if stage != self.current_stage:
+            return
+        self.waiting_for_plan = False
+        self.active = False
+
+
 class MissionExecutionState:
     """Commit planner predictions only after the matching route really finishes."""
 
@@ -182,6 +238,7 @@ class MissionExecutionState:
         self.completed_tasks: set[str] = set()
         self.completed_tunnels: set[str] = set()
         self.completed_roads: set[str] = set()
+        self.exempted_roads: set[str] = set()
         self.pending: Optional[RouteExecution] = None
         self.active: Optional[RouteExecution] = None
 
@@ -293,10 +350,29 @@ class MissionExecutionState:
         return [label for label in self.tunnel_labels if label not in self.completed_tunnels]
 
     def remaining_roads(self) -> list[str]:
-        return [label for label in self.road_labels if label not in self.completed_roads]
+        accounted = self.completed_roads | self.exempted_roads
+        return [label for label in self.road_labels if label not in accounted]
 
     def covered_roads(self) -> list[str]:
         return [label for label in self.road_labels if label in self.completed_roads]
+
+    def commit_observed_roads(self, labels: Sequence[str]) -> int:
+        before = len(self.completed_roads)
+        self.completed_roads.update(
+            label for label in map(str, labels) if label in self.road_labels
+        )
+        self.exempted_roads.difference_update(self.completed_roads)
+        return len(self.completed_roads) - before
+
+    def commit_exempted_roads(self, labels: Sequence[str]) -> int:
+        """Mark only fully accounted blocked roads, never claim they were driven."""
+        before = len(self.exempted_roads)
+        self.exempted_roads.update(
+            label
+            for label in map(str, labels)
+            if label in self.road_labels and label not in self.completed_roads
+        )
+        return len(self.exempted_roads) - before
 
     def predicted_progress_count(self, execution: RouteExecution) -> int:
         predicted_tasks = set(execution.visit_order).intersection(self.remaining_tasks())
@@ -314,6 +390,8 @@ class MissionExecutionState:
         if not route_has_motion:
             return False
         if self.predicted_progress_count(execution) > 0:
+            return True
+        if execution.predicted_interval_progress:
             return True
         return (
             execution.mode in {"layered", "layer3"}
@@ -334,6 +412,14 @@ class MissionExecutionState:
         if execution.mode not in {"layered", "layer3"}:
             return "layer3"
         return None
+
+    def no_motion_continuation_mode(
+        self, execution: RouteExecution
+    ) -> Optional[str]:
+        """Return None to finish, the same mode to wait, or a new stage to enter."""
+        if self.mission_complete(execution):
+            return None
+        return self.continuation_mode(execution) or execution.mode
 
     def mission_complete(self, execution: RouteExecution) -> bool:
         return (

@@ -6,24 +6,85 @@
 
 namespace arena_path_planner
 {
+namespace
+{
+
+bool AxisAligned(const Point & left, const Point & right)
+{
+  constexpr double tolerance = 1.0e-9;
+  return std::abs(left.x - right.x) <= tolerance ||
+         std::abs(left.y - right.y) <= tolerance;
+}
+
+}  // namespace
+
 std::vector<Point> ArenaPlanner::Simplify(
   const std::vector<Point> & points,
   const std::vector<Point> & required_targets) const
 {
-  if (points.size() <= 2) {
-    return points;
+  if (points.size() < 2 || required_targets.empty()) {
+    if (points.size() <= 2) {
+      return points;
+    }
   }
-  std::vector<Point> result{points.front()};
+
+  // A long straight connector can pass through an inspection intersection
+  // without the grid path containing that exact floating-point coordinate.
+  // Insert such semantic points before simplification so they remain usable
+  // as reverse/replan anchors after a dynamic obstacle is detected.
+  std::vector<Point> anchored_points;
+  anchored_points.reserve(points.size() + required_targets.size());
+  if (!points.empty()) {
+    anchored_points.push_back(points.front());
+  }
+  for (std::size_t index = 1; index < points.size(); ++index) {
+    const Point & begin = points[index - 1];
+    const Point & end = points[index];
+    const double dx = end.x - begin.x;
+    const double dy = end.y - begin.y;
+    const double squared_length = dx * dx + dy * dy;
+    std::vector<std::pair<double, Point>> interior;
+    if (squared_length > 1.0e-12) {
+      for (const Point & target : required_targets) {
+        if (DistanceToSegment(target, begin, end) > 1.0e-6) {
+          continue;
+        }
+        const double ratio =
+          ((target.x - begin.x) * dx + (target.y - begin.y) * dy) /
+          squared_length;
+        if (ratio > 1.0e-6 && ratio < 1.0 - 1.0e-6) {
+          interior.emplace_back(ratio, target);
+        }
+      }
+    }
+    std::sort(
+      interior.begin(), interior.end(),
+      [](const auto & left, const auto & right) {return left.first < right.first;});
+    for (const auto & [ratio, target] : interior) {
+      (void)ratio;
+      if (Distance(anchored_points.back(), target) > 1.0e-9) {
+        anchored_points.push_back(target);
+      }
+    }
+    if (anchored_points.empty() || Distance(anchored_points.back(), end) > 1.0e-9) {
+      anchored_points.push_back(end);
+    }
+  }
+  if (anchored_points.size() <= 2) {
+    return anchored_points;
+  }
+  const std::vector<Point> & candidates = anchored_points;
+  std::vector<Point> result{candidates.front()};
   std::size_t index = 0;
-  while (index + 1 < points.size()) {
-    std::size_t candidate = points.size() - 1;
+  while (index + 1 < candidates.size()) {
+    std::size_t candidate = candidates.size() - 1;
     for (std::size_t required_index = index + 1;
-      required_index < points.size(); ++required_index)
+      required_index < candidates.size(); ++required_index)
     {
       const bool required = std::any_of(
         required_targets.begin(), required_targets.end(),
-        [&points, required_index](const Point & target) {
-          return Distance(target, points[required_index]) <= 1.0e-6;
+        [&candidates, required_index](const Point & target) {
+          return Distance(target, candidates[required_index]) <= 1.0e-6;
         });
       if (required) {
         candidate = required_index;
@@ -31,28 +92,174 @@ std::vector<Point> ArenaPlanner::Simplify(
       }
     }
     while (candidate > index + 1) {
+      // Do not replace a rectilinear grid chain with a diagonal line-of-sight
+      // shortcut. Long cardinal legs give the controller one stable heading;
+      // a diagonal is retained only when it already exists as an unavoidable
+      // one-segment connection to an arbitrary start or target.
+      if (!AxisAligned(candidates[index], candidates[candidate])) {
+        --candidate;
+        continue;
+      }
+      const double shortcut_heading = std::atan2(
+        candidates[candidate].y - candidates[index].y,
+        candidates[candidate].x - candidates[index].x);
+      bool creates_blocked_reversal = false;
+      if (result.size() >= 2) {
+        const double incoming_heading = std::atan2(
+          result.back().y - result[result.size() - 2].y,
+          result.back().x - result[result.size() - 2].x);
+        creates_blocked_reversal =
+          std::abs(NormalizeAngle(shortcut_heading - incoming_heading)) > 2.6;
+      }
+      if (!creates_blocked_reversal && candidate + 1 < candidates.size()) {
+        const double outgoing_heading = std::atan2(
+          candidates[candidate + 1].y - candidates[candidate].y,
+          candidates[candidate + 1].x - candidates[candidate].x);
+        creates_blocked_reversal =
+          std::abs(NormalizeAngle(outgoing_heading - shortcut_heading)) > 2.6;
+      }
+      if (creates_blocked_reversal) {
+        --candidate;
+        continue;
+      }
       const double required = std::max(
         0.0, std::min(
-          {config_.preferred_clearance, Clearance(points[index]),
-            Clearance(points[candidate])}) - config_.resolution * 0.25);
+          {config_.preferred_clearance, Clearance(candidates[index]),
+            Clearance(candidates[candidate])}) - config_.resolution * 0.25);
       bool clearance_ok = true;
-      const double length = Distance(points[index], points[candidate]);
+      const double length = Distance(candidates[index], candidates[candidate]);
       const int samples = std::max(
         1, static_cast<int>(std::ceil(length / config_.resolution)));
       for (int sample = 0; sample <= samples && clearance_ok; ++sample) {
         const double ratio = static_cast<double>(sample) / samples;
         const Point point{
-          points[index].x + ratio * (points[candidate].x - points[index].x),
-          points[index].y + ratio * (points[candidate].y - points[index].y)};
+          candidates[index].x + ratio * (candidates[candidate].x - candidates[index].x),
+          candidates[index].y + ratio * (candidates[candidate].y - candidates[index].y)};
         clearance_ok = Clearance(point) + 1.0e-9 >= required;
       }
-      if (SegmentIsFree(points[index], points[candidate]) && clearance_ok) {
+      if (SegmentIsFree(candidates[index], candidates[candidate]) && clearance_ok) {
         break;
       }
       --candidate;
     }
-    result.push_back(points[candidate]);
+    result.push_back(candidates[candidate]);
     index = candidate;
+  }
+  return result;
+}
+
+std::vector<Point> ArenaPlanner::MaterializeGridPath(
+  const GridPath & path, const Point & exact_start, const Point & exact_end) const
+{
+  if (path.cells.empty()) {
+    throw std::runtime_error("grid path has no cells");
+  }
+  std::vector<Point> grid_points;
+  grid_points.reserve(path.cells.size());
+  for (const Cell & cell : path.cells) {
+    grid_points.push_back(CellToWorld(cell));
+  }
+
+  // YAML road centres commonly have the same sub-cell offset at both ends.
+  // Translate the complete cardinal chain by that shared offset instead of
+  // creating two tiny elbow pairs merely to enter and leave cell centres.
+  const Point offset{
+    exact_start.x - grid_points.front().x,
+    exact_start.y - grid_points.front().y};
+  std::vector<Point> translated;
+  translated.reserve(grid_points.size());
+  for (const Point & point : grid_points) {
+    translated.push_back({point.x + offset.x, point.y + offset.y});
+  }
+  if (Distance(translated.back(), exact_end) <= 1.0e-6) {
+    std::vector<Point> required{exact_end};
+    if (path.preserve_initial_direction && translated.size() >= 2) {
+      required.push_back(translated[1]);
+    }
+    translated = Simplify(translated, required);
+    const bool translated_is_free = std::all_of(
+      translated.begin() + 1, translated.end(),
+      [this, &translated, index = std::size_t{0}](const Point &) mutable {
+        const bool free = SegmentIsFree(translated[index], translated[index + 1]);
+        ++index;
+        return free;
+      });
+    if (translated_is_free) {
+      return translated;
+    }
+  }
+
+  std::vector<Point> result{exact_start};
+  const auto append_connection = [this](
+      std::vector<Point> & output, const Point & end) {
+      const Point begin = output.back();
+      if (Distance(begin, end) <= 1.0e-9) {
+        return true;
+      }
+      if (AxisAligned(begin, end) && SegmentIsFree(begin, end)) {
+        output.push_back(end);
+        return true;
+      }
+      // Prefer an orthogonal two-leg connector so exact points on grid-cell
+      // boundaries do not introduce tiny diagonal headings.
+      for (const Point & elbow :
+        {Point{end.x, begin.y}, Point{begin.x, end.y}})
+      {
+        if (Distance(begin, elbow) > 1.0e-9 &&
+          !SegmentIsFree(begin, elbow))
+        {
+          continue;
+        }
+        if (Distance(elbow, end) > 1.0e-9 && !SegmentIsFree(elbow, end)) {
+          continue;
+        }
+        if (Distance(begin, elbow) > 1.0e-9) {
+          output.push_back(elbow);
+        }
+        if (Distance(output.back(), end) > 1.0e-9) {
+          output.push_back(end);
+        }
+        return true;
+      }
+      // A non-cardinal configured inspection stroke is still a valid explicit
+      // requirement. Keep that direct leg only when the full footprint fits.
+      if (SegmentIsFree(begin, end)) {
+        output.push_back(end);
+        return true;
+      }
+      return false;
+    };
+
+  std::size_t first = 0;
+  std::vector<Point> prefix;
+  for (; first < grid_points.size(); ++first) {
+    prefix = result;
+    if (append_connection(prefix, grid_points[first])) {
+      break;
+    }
+  }
+  if (first == grid_points.size()) {
+    throw std::runtime_error("grid path cannot leave the exact start point");
+  }
+  result = std::move(prefix);
+  for (std::size_t index = first + 1; index < grid_points.size(); ++index) {
+    if (Distance(result.back(), grid_points[index]) > 1.0e-9) {
+      result.push_back(grid_points[index]);
+    }
+  }
+  if (!append_connection(result, exact_end)) {
+    throw std::runtime_error("grid path cannot reach the exact end point");
+  }
+
+  std::vector<Point> required{exact_end};
+  if (path.preserve_initial_direction && result.size() >= 2) {
+    required.push_back(result[1]);
+  }
+  result = Simplify(result, required);
+  for (std::size_t index = 1; index < result.size(); ++index) {
+    if (!SegmentIsFree(result[index - 1], result[index])) {
+      throw std::runtime_error("materialized grid path is not collision-free");
+    }
   }
   return result;
 }
@@ -131,20 +338,82 @@ std::vector<Point> ArenaPlanner::Smooth(
   if (points.size() < 2) {
     return points;
   }
+  std::vector<Point> aligned = points;
+  if (config_.turns_at_junctions_only) {
+    const auto align_axis = [this](double coordinate, bool horizontal) {
+        double closest = coordinate;
+        double error = config_.resolution * 0.75;
+        const auto consider = [&](const Point & junction) {
+            const double axis = horizontal ? junction.x : junction.y;
+            if (std::abs(coordinate - axis) < error) {
+              closest = axis;
+              error = std::abs(coordinate - axis);
+            }
+          };
+        for (const Point & junction : config_.inspection_nodes) consider(junction);
+        for (const Point & junction : config_.turn_junctions) consider(junction);
+        return closest;
+      };
+    for (std::size_t index = 1; index + 1 < aligned.size(); ++index) {
+      aligned[index].x = align_axis(aligned[index].x, true);
+      aligned[index].y = align_axis(aligned[index].y, false);
+    }
+    bool removed_spur = true;
+    while (removed_spur && aligned.size() >= 3) {
+      removed_spur = false;
+      for (std::size_t index = 1; index + 1 < aligned.size(); ++index) {
+        if (Distance(aligned[index - 1], aligned[index + 1]) <= 1.0e-6) {
+          aligned.erase(aligned.begin() + static_cast<std::ptrdiff_t>(index),
+                        aligned.begin() + static_cast<std::ptrdiff_t>(index + 2));
+          removed_spur = true;
+          break;
+        }
+      }
+    }
+    for (std::size_t index = 1; index + 1 < aligned.size(); ++index) {
+      const Point original = aligned[index];
+      if (std::any_of(required_targets.begin(), required_targets.end(),
+        [&original](const Point & target) {return Distance(original, target) <= 1.0e-6;}))
+      {
+        continue;
+      }
+      const auto snap = [this, &aligned, index, &original](const Point & junction) {
+          if (Distance(original, junction) > config_.resolution * 0.75) {
+            return false;
+          }
+          aligned[index] = junction;
+          return true;
+        };
+      if (std::any_of(config_.inspection_nodes.begin(), config_.inspection_nodes.end(), snap)) {
+        continue;
+      }
+      std::any_of(config_.turn_junctions.begin(), config_.turn_junctions.end(), snap);
+    }
+  }
+  bool removed_duplicate = true;
+  while (removed_duplicate && aligned.size() >= 2) {
+    removed_duplicate = false;
+    for (std::size_t index = 1; index < aligned.size(); ++index) {
+      if (Distance(aligned[index - 1], aligned[index]) <= 1.0e-6) {
+        aligned.erase(aligned.begin() + static_cast<std::ptrdiff_t>(index));
+        removed_duplicate = true;
+        break;
+      }
+    }
+  }
   // A* connectors and consecutive coverage layers can share their endpoint.
   // Remove those zero-length legs before computing headings; otherwise the
   // next segment appears as an artificial 180 degree turn to the navigator.
   std::vector<Point> clean;
-  clean.reserve(points.size());
-  for (const Point & point : points) {
+  clean.reserve(aligned.size());
+  for (const Point & point : aligned) {
     if (clean.empty() || Distance(clean.back(), point) > 1.0e-6) {
       clean.push_back(point);
     }
   }
   // A connector can end one grid cell before a layer endpoint and the next
   // connector can immediately return to that same cell. Collapse these tiny
-  // out-and-back artifacts; they otherwise become a visible spike and a
-  // 180-degree heading sample despite being only a few millimetres long.
+  // out-and-back artifacts before reducing the control polyline.
   bool collapsed = true;
   while (collapsed && clean.size() >= 3) {
     collapsed = false;
@@ -157,137 +426,47 @@ std::vector<Point> ArenaPlanner::Smooth(
       if (required) {
         continue;
       }
-      if (Distance(clean[index - 1], clean[index + 1]) <= config_.resolution * 0.15) {
+      const double joined_heading = std::atan2(
+        clean[index + 1].y - clean[index - 1].y,
+        clean[index + 1].x - clean[index - 1].x);
+      const double outgoing_heading = std::atan2(
+        clean[index + 1].y - clean[index].y,
+        clean[index + 1].x - clean[index].x);
+      // A live replan starts from the fused pose, which is normally a few
+      // millimetres off the nominal road centre. Do not turn that harmless
+      // offset into a tiny perpendicular leg followed by a fake 90 degree
+      // turn. Join it into the first forward leg when the resulting heading
+      // change remains below the normal path-turn threshold.
+      const bool small_start_alignment =
+        index == 1 &&
+        Distance(clean[index - 1], clean[index]) <=
+        kTurnJunctionOperatingTolerance &&
+        std::abs(NormalizeAngle(joined_heading - outgoing_heading)) <
+        config_.in_place_turn_heading_threshold &&
+        SegmentIsFree(clean[index - 1], clean[index + 1]);
+      if (Distance(clean[index - 1], clean[index + 1]) <= config_.resolution * 0.15 ||
+        small_start_alignment ||
+        (config_.turns_at_junctions_only &&
+        (Distance(clean[index - 1], clean[index]) <= config_.resolution * 0.75 ||
+        Distance(clean[index], clean[index + 1]) <= config_.resolution * 0.75) &&
+        AxisAligned(clean[index - 1], clean[index + 1]) &&
+        SegmentIsFree(clean[index - 1], clean[index + 1])))
+      {
         clean.erase(clean.begin() + static_cast<std::ptrdiff_t>(index));
         collapsed = true;
         break;
       }
     }
   }
-  if (clean.size() < 3) {
-    return clean;
-  }
-  std::vector<Point> output{clean.front()};
-  const auto append_line = [this, &output](const Point & end) {
-      const Point start = output.back();
-      const double length = Distance(start, end);
-      const int count = std::max(
-        1, static_cast<int>(std::ceil(length / config_.waypoint_spacing)));
-      for (int sample = 1; sample <= count; ++sample) {
-        const double ratio = static_cast<double>(sample) / count;
-        output.push_back(
-          {start.x + ratio * (end.x - start.x),
-            start.y + ratio * (end.y - start.y)});
-      }
-    };
-  for (std::size_t index = 1; index + 1 < clean.size(); ++index) {
-    const Point previous = clean[index - 1];
-    const Point corner = clean[index];
-    const Point following = clean[index + 1];
-    const double incoming_length = Distance(previous, corner);
-    const double outgoing_length = Distance(corner, following);
-    if (incoming_length <= 1.0e-9 || outgoing_length <= 1.0e-9) {
-      append_line(corner);
-      continue;
-    }
-    const Point incoming{
-      (corner.x - previous.x) / incoming_length,
-      (corner.y - previous.y) / incoming_length};
-    const Point outgoing{
-      (following.x - corner.x) / outgoing_length,
-      (following.y - corner.y) / outgoing_length};
-    const double turn = std::abs(NormalizeAngle(
-        std::atan2(outgoing.y, outgoing.x) - std::atan2(incoming.y, incoming.x)));
-    // A near-U-turn is a genuine constrained reversal, not a corner to round
-    // with a quadratic curve. Bezier interpolation there doubles back over
-    // the entry point and produces an artificial spike in the route.
-    if (turn < config_.maximum_heading_step || turn > 2.6) {
-      append_line(corner);
-      continue;
-    }
-    // A curved transition sweeps the chassis through intermediate headings.
-    // In a narrow lane the centre-line chord may be free while that swept
-    // rectangle is not. Keep an axis-aligned corner in that case; the
-    // navigator can apply the configured in-place-turn policy at the corner.
-    if (!RotationIsFree(
-        corner, std::atan2(incoming.y, incoming.x), std::atan2(outgoing.y, outgoing.x))) {
-      append_line(corner);
-      continue;
-    }
-    const double maximum_trim = std::min(
-      {config_.minimum_turning_radius, incoming_length * 0.35,
-        outgoing_length * 0.35});
-    bool accepted = false;
-    for (double scale : {1.0, 0.85, 0.7, 0.55, 0.4}) {
-      const double trim = maximum_trim * scale;
-      if (trim < config_.curve_spacing) {
-        continue;
-      }
-      const Point entry{corner.x - incoming.x * trim, corner.y - incoming.y * trim};
-      const Point exit{corner.x + outgoing.x * trim, corner.y + outgoing.y * trim};
-      const int dense_count = std::max(
-        8, static_cast<int>(std::ceil(2.0 * trim / (config_.resolution * 0.5))));
-      std::vector<Point> dense;
-      for (int sample = 0; sample <= dense_count; ++sample) {
-        dense.push_back(QuadraticBezier(
-            entry, corner, exit, static_cast<double>(sample) / dense_count));
-      }
-      bool free = SegmentIsFree(output.back(), entry);
-      for (std::size_t sample = 1; sample < dense.size() && free; ++sample) {
-        free = SegmentIsFree(dense[sample - 1], dense[sample]);
-      }
-      bool preserves_targets = true;
-      for (const Point & target : required_targets) {
-        if (Distance(target, corner) > 1.0e-6) {
-          continue;
-        }
-        double minimum = std::numeric_limits<double>::infinity();
-        for (std::size_t sample = 1; sample < dense.size(); ++sample) {
-          minimum = std::min(
-            minimum, DistanceToSegment(target, dense[sample - 1], dense[sample]));
-        }
-        preserves_targets = minimum <= config_.task_tolerance;
-      }
-      if (!free || !preserves_targets) {
-        continue;
-      }
-      append_line(entry);
-      const int curve_count = std::max(
-        {2, static_cast<int>(std::ceil(turn / config_.maximum_heading_step)),
-          static_cast<int>(std::ceil(2.0 * trim / config_.curve_spacing))});
-      for (int sample = 1; sample <= curve_count; ++sample) {
-        output.push_back(QuadraticBezier(
-            entry, corner, exit, static_cast<double>(sample) / curve_count));
-      }
-      accepted = true;
-      break;
-    }
-    if (!accepted) {
-      append_line(corner);
-    }
-  }
-  append_line(clean.back());
-  std::vector<Point> deduplicated;
-  deduplicated.reserve(output.size());
-  for (const Point & point : output) {
-    if (deduplicated.empty() || Distance(deduplicated.back(), point) > 1.0e-6) {
-      deduplicated.push_back(point);
-    }
-  }
-  output = std::move(deduplicated);
-  bool free = true;
-  for (std::size_t index = 1; index < output.size(); ++index) {
-    if (!SegmentIsFree(output[index - 1], output[index])) {
-      free = false;
-      break;
-    }
-  }
-  if (!free) {
-    // A single tight corner must not discard smoothing for the whole route.
-    // Simplify retains collision-free line-of-sight sections and leaves only
-    // the locally constrained corner as a short polyline.
-    return Simplify(clean, required_targets);
-  }
-  return output;
+  // The controller now receives only semantic control points: start, required
+  // target/road crossings, actual corners, and end. It interpolates along each
+  // long straight itself; adding samples here merely causes repeated waypoint
+  // switching and PID resets without changing the geometry.
+  std::vector<Point> result = Simplify(clean, required_targets);
+  result.erase(
+    std::unique(result.begin(), result.end(), [](const Point & left, const Point & right) {
+      return Distance(left, right) <= 1.0e-4;
+    }), result.end());
+  return result;
 }
 }  // namespace arena_path_planner

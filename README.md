@@ -453,8 +453,20 @@ linear.x,angular.z\r\n
 
 # 导航模式二：自动规划导航
 
+默认地图已经按正式比赛图转换为当前规划器使用的 YAML：总包络
+`3.2 × 4.4 m`、主场地 `3.2 × 3.2 m`、10 个 `800 × 800 mm` 障碍块、
+`200 mm` 道路和 4 段隧道。车辆采用实测的 `143.4 × 143.7 mm` 完整外廓，
+每侧保留 `15 mm` 余量后直行包络为 `173.4 × 173.7 mm`，可以通过名义道路；
+`124.7 mm` 运动学轮距是单独参数，与整车外廓不混用。图纸本身没有
+任务编号，配置中的 12 个编号点是项目现有的
+道路中心访问点。原 6×6 地图保存在
+`src/arena_path_planner/config/arena_map_6x6_legacy.yaml`，需要时可通过
+`./scripts/start_arena_planner.sh --map <文件>` 显式加载。
+
 自动规划模式不读取 `route_file`，也不需要调用 `/waypoint_navigator/start`。规划前端向
 `/arena_path_planner/plan` 提交当前位姿、剩余目标、已完成道路、障碍物和规划模式。规划器找到完整路线时直接执行；后续目标暂时不可达时，只要已得到的阶段路线通过碰撞检查、确实有位移并能增加任务或道路进度，也会在 `activate_navigation=true` 时发布到 `/waypoint_navigation/route_input`。导航节点收到后自动激活。定位、融合健康状态和执行器健康检查仍然是实际发车的必要条件。
+
+当前只保留在线障碍话题，障碍识别本身尚未实现。导航始终订阅 `std_msgs/msg/Bool /obstacle/front_blocked` 和 `sensor_msgs/msg/Range /obstacle/front_range`；没有节点发布就等于没有障碍，不需要额外开关。后续独立感知节点先用 YOLO 确认目标，再从同一目标框内取得对齐深度并同步发布上述结果。默认启动不运行感知生产者，也不会用深度 ROI 猜障碍。
 
 `success` 只表示规划结果合法，`navigation_activated` 才表示路线真的已发布，`all_targets_reached` 表示整场任务完成。前端必须收到匹配的 route ACK、看到导航实际运行并最终收到 `GOAL_REACHED`，才记录本段完成的任务、隧道和道路；随后使用最新融合位姿与剩余访问项自动规划下一段。隧道只有入口、出口都跑到才算完成，单纯绕行不会被记成道路覆盖。
 
@@ -807,9 +819,9 @@ Publisher count: 1
 python3 -m json.tool latest_navigation_run/run_manifest.json | less
 ```
 
-默认清单保存 ORB-SLAM3 实际消费的左右 `image_rect_raw`、两路 `camera_info`、IMU、跟踪状态、融合输入/输出、控制与执行器状态、规划路径/栅格、`/diagnostics`、`/parameter_events`、`/rosout` 和 TF。没有重复录制 `/odom`、`/pose` 等兼容输出，也没有录制每帧不断增长的 ORB `/path`，避免无意义放大 bag。两路 848x480 Y8 30 Hz 图像理论载荷约 24.4 MB/s，即约 1.47 GB/min；10 分钟约 14.7 GB，默认保留三次最多约 44 GB。当前默认不压缩，实车前应确认 SSD 持续写入能力和剩余空间，不能为了省空间直接开启未经实测的实时压缩而影响定位线程。
+默认清单不录制任何原始/压缩图像或点云，只保留两路 `camera_info`、IMU、ORB 跟踪与视觉里程输出、融合输入/输出、控制与执行器状态、规划路径/栅格、`/diagnostics`、`/parameter_events`、`/rosout` 和 TF。这样不会再产生两路 848x480 Y8 30 Hz 图像约 `1.47 GB/min` 的主要负载，也没有重复录制 `/odom`、`/pose` 等兼容输出或每帧增长的 ORB `/path`。代价是该 bag 只能分析在线 ORB 的结果，不能离线重新运行 ORB；比赛默认优先保证磁盘空间和在线导航稳定。
 
-ROS 2 Humble 的 rosbag 不记录 service 请求/响应。当前 bag 足以调视觉、IMU、轮速融合、导航控制、执行器和规划结果，但不能单独重建 `/arena_path_planner/plan` 请求中的目标标签、动态障碍和访问顺序。规划器算法回归仍应同时保留任务输入或测试用例。
+ROS 2 Humble 的 rosbag 不记录 service 请求/响应。当前 bag 足以分析在线视觉定位结果，并排查 IMU、轮速融合、导航控制、执行器和规划结果，但不能离线重跑 ORB，也不能单独重建 `/arena_path_planner/plan` 请求中的目标标签、动态障碍和访问顺序。规划器算法回归仍应同时保留任务输入或测试用例。
 
 回放前可确认录制内容：
 

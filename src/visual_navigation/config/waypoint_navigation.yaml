@@ -17,6 +17,10 @@ waypoint_navigator:
     tracking_point_offset_y: 0.0
     fusion_status_topic: "/odometry/fusion_status"
     actuator_health_topic: "/cup_car_serial/actuator_healthy"
+    # Used only to confirm that both wheels stopped; it is not fused into pose.
+    control_telemetry_topic: "/cup_car_serial/control_telemetry"
+    front_obstacle_topic: "/obstacle/front_blocked"
+    front_obstacle_range_topic: "/obstacle/front_range"
     tracking_state_topic: "/tracking_state"
     cmd_vel_topic: "/cmd_vel_nav"
     path_topic: "/waypoint_path"
@@ -26,19 +30,19 @@ waypoint_navigator:
     route_ack_topic: "/waypoint_navigation/route_ack"
 
     control_frequency: 30.0
-    default_speed: 0.50
-    max_linear_speed: 0.50
-    max_angular_speed: 0.95
+    default_speed: 0.15
+    max_linear_speed: 0.15
+    max_angular_speed: 0.75
     # The instantaneous limit is also constrained by max_lateral_acceleration.
     # This higher ceiling lets a slow, planned corner turn decisively without
     # forcing a high-speed curve to cut inside its safety envelope.
-    max_path_angular_speed: 0.85
-    min_path_angular_speed: 0.14
-    path_angular_activation_error: 0.025
+    max_path_angular_speed: 0.65
+    min_path_angular_speed: 0.12
+    path_angular_activation_error: 0.05
     path_yaw_response_threshold: 0.04
     max_linear_acceleration: 0.40
     max_linear_deceleration: 0.80
-    # Physical stopping model used to keep 0.5m/s cruise speed without
+    # Physical stopping model used to keep 0.15 m/s cruise speed without
     # carrying residual forward velocity into a waypoint turn.
     effective_braking_deceleration: 0.35
     braking_control_delay: 0.20
@@ -47,26 +51,24 @@ waypoint_navigator:
     max_angular_acceleration: 1.80
     max_angular_deceleration: 3.00
     linear_gain: 0.80
-    angular_gain: 2.80
-    path_pid_kp: 1.80
-    path_pid_ki: 0.15
+    angular_gain: 1.40
+    path_pid_kp: 1.20
+    path_pid_ki: 0.08
     path_pid_kd: 0.00
     path_yaw_rate_damping: 0.45
-    turn_yaw_rate_damping: 0.55
-    # The latest bag only reached 0.65 rad/s and the chassis achieved about
-    # 0.30-0.47 rad/s. Keep IMU damping and raise the target enough to clear
-    # the drivetrain's low-speed turn dead zone.
-    turn_cruise_speed: 0.90
-    turn_position_hold_gain: 0.80
-    turn_position_hold_deadband: 0.015
-    turn_position_hold_max_speed: 0.08
-    cross_track_gain: 1.50
+    turn_yaw_rate_damping: 1.00
+    # Keep normal waypoint turns below the aggressive response seen in the
+    # latest bag while remaining above the drivetrain's turn dead zone.
+    turn_cruise_speed: 0.45
+    # ALIGN_PATH and final-yaw control always publish exactly zero linear speed.
+    # A small position correction can make the MCU leave its pivot controller.
+    cross_track_gain: 1.00
     stanley_softening_speed: 0.25
-    max_cross_track_correction: 0.70
+    max_cross_track_correction: 0.30
     cross_track_slowdown_start: 0.015
     # The planner reserves 5 cm for tracking error outside the chassis safety
     # envelope. Slow well before consuming it; straight, centred segments stay
-    # at 0.5 m/s.
+    # at 0.15 m/s.
     cross_track_slowdown_full: 0.04
     cross_track_minimum_speed: 0.10
     # Limit speed from generated-path curvature, so the rectangular vehicle
@@ -78,17 +80,17 @@ waypoint_navigator:
     path_pid_integral_limit: 0.20
     rotate_in_place_threshold: 0.18
     rotate_in_place_reentry_threshold: 0.44
-    rotate_in_place_exit_threshold: 0.035
+    rotate_in_place_exit_threshold: 0.09
     precision_turn_threshold: 0.45
-    turn_settle_yaw_rate: 0.12
-    turn_settle_dwell: 0.30
-    min_precision_turn_speed: 0.25
+    turn_settle_yaw_rate: 0.15
+    turn_settle_dwell: 0.20
+    min_precision_turn_speed: 0.20
     waypoint_tolerance: 0.04
     waypoint_pass_longitudinal_tolerance: 0.01
     waypoint_pass_lateral_tolerance: 0.06
     waypoint_recovery_speed: 0.10
     waypoint_recovery_heading_tolerance: 0.12
-    waypoint_recovery_max_angular_speed: 0.60
+    waypoint_recovery_max_angular_speed: 0.40
     # Braking, mission holds, localization grace and final-yaw control pause
     # position progress. In-place turns remain safe through the displacement gate.
     path_progress_timeout: 10.0
@@ -112,15 +114,52 @@ waypoint_navigator:
     pre_turn_stop_dwell: 0.10
     stop_motion_window: 0.20
     pre_turn_minimum_stop_time: 0.20
-    pre_turn_brake_timeout: 0.60
-    final_yaw_tolerance: 0.060
-    final_yaw_max_angular_speed: 0.90
-    final_yaw_min_turn_speed: 0.70
-    final_yaw_min_precision_speed: 0.22
+    pre_turn_brake_timeout: 1.00
+    # Require distinct MCU frames; a cached or duplicated zero cannot pass.
+    pre_turn_stop_telemetry_samples: 2
+    # After two zero-command windows, tolerate encoder noise only when both
+    # fused translation and fresh IMU rotation confirm that the chassis is still.
+    pre_turn_fallback_timeouts: 2
+    pre_turn_fallback_pose_speed: 0.08
+    final_yaw_tolerance: 0.12
+    # Once the final point has been reached, tolerate turn-induced translation
+    # without relaxing the 4 cm capture tolerance used by the route follower.
+    final_position_release_tolerance: 0.10
+    final_yaw_max_angular_speed: 0.40
+    final_yaw_min_turn_speed: 0.30
+    final_yaw_min_precision_speed: 0.20
     odom_timeout: 0.40
     imu_timeout: 0.15
     fusion_status_timeout: 0.60
     actuator_health_timeout: 0.80
+    control_telemetry_timeout: 0.30
+    # No publisher means no obstacle. Only a fresh true event can stop the car;
+    # false or timeout clears an event that has not entered recovery yet.
+    front_obstacle_timeout: 0.50
+    front_obstacle_classification_wait: 0.10
+    # Range may arrive just before Bool because the subscriptions are separate,
+    # but samples from an older clear/true cycle must never be reused.
+    front_obstacle_pairing_reorder_tolerance: 0.10
+    # base_link -> D455 and measured front extent of the 143.4 mm chassis.
+    obstacle_sensor_forward_offset: 0.070
+    vehicle_front_offset: 0.0717
+    expected_obstacle_tolerance: 0.05
+    obstacle_reverse_speed: 0.10
+    obstacle_reverse_angular_gain: 1.20
+    obstacle_reverse_yaw_rate_damping: 0.40
+    obstacle_reverse_max_angular_speed: 0.30
+    obstacle_reverse_max_heading_error: 0.70
+    obstacle_breadcrumb_spacing: 0.04
+    # Reject a single fusion discontinuity from the reverse breadcrumb trace.
+    obstacle_maximum_breadcrumb_step: 0.25
+    obstacle_reverse_lookahead: 0.12
+    obstacle_reverse_target_tolerance: 0.04
+    obstacle_recovery_anchor_tolerance: 0.04
+    obstacle_reverse_minimum_progress: 0.03
+    obstacle_reverse_no_progress_timeout: 3.0
+    obstacle_reverse_attempt_timeout: 20.0
+    obstacle_reverse_max_recovery_attempts: 2
+    obstacle_maximum_breadcrumbs: 2000
     stamp_future_tolerance: 0.20
     transient_localization_grace: 2.00
     transient_fault_speed_scale: 0.25

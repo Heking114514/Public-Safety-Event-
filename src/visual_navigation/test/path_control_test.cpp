@@ -32,6 +32,37 @@ TEST(PathControl, StanleyCorrectionIsBoundedAndSpeedAware)
     0.8, 1e-9);
 }
 
+TEST(PathControl, OnlyStoppedJunctionTurnMayPivot)
+{
+  EXPECT_TRUE(visual_navigation::PlannedTurnMayPivot(true, false, 0.03, 1.57, 0.70));
+  EXPECT_FALSE(visual_navigation::PlannedTurnMayPivot(false, false, 0.03, 1.57, 0.70));
+  EXPECT_FALSE(visual_navigation::PlannedTurnMayPivot(true, true, 0.03, 1.57, 0.70));
+  EXPECT_FALSE(visual_navigation::PlannedTurnMayPivot(true, false, 0.15, 1.57, 0.70));
+  EXPECT_FALSE(visual_navigation::PlannedTurnMayPivot(true, false, 0.03, 0.40, 0.70));
+}
+
+TEST(PathControl, ReversalStopsAtIntermediateNinetyDegrees)
+{
+  constexpr double pi = 3.14159265358979323846;
+  const double intermediate = visual_navigation::FirstHalfTurnYaw(-pi / 2.0, pi / 2.0);
+  EXPECT_NEAR(std::abs(std::remainder(intermediate - (-pi / 2.0), 2.0 * pi)),
+              pi / 2.0, 1e-12);
+  EXPECT_NEAR(std::abs(std::remainder(pi / 2.0 - intermediate, 2.0 * pi)),
+              pi / 2.0, 1e-12);
+}
+
+TEST(PathControl, ExactOutAndBackIsRecognizedAsReverseSegment)
+{
+  EXPECT_TRUE(visual_navigation::IsOutAndBackWaypoint(
+    1.10, 1.10, 1.10, 1.19, 1.10, 1.10, 0.02, 0.05));
+  EXPECT_TRUE(visual_navigation::IsOutAndBackWaypoint(
+    0.0, 0.0, 0.30, 0.0, 0.015, 0.0, 0.02, 0.05));
+  EXPECT_FALSE(visual_navigation::IsOutAndBackWaypoint(
+    0.0, 0.0, 0.03, 0.0, 0.0, 0.0, 0.02, 0.05));
+  EXPECT_FALSE(visual_navigation::IsOutAndBackWaypoint(
+    0.0, 0.0, 0.30, 0.0, -0.30, 0.0, 0.02, 0.05));
+}
+
 TEST(PathControl, FinalPositionCaptureIsLatchedAcrossRotationDrift)
 {
   EXPECT_FALSE(visual_navigation::FinalPositionCaptured(false, true, 0.081, 0.08));
@@ -43,6 +74,9 @@ TEST(PathControl, FinalPositionCaptureIsLatchedAcrossRotationDrift)
 TEST(PathControl, FinalCompletionRechecksPositionAfterYawAlignment)
 {
   EXPECT_TRUE(visual_navigation::FinalPositionCanComplete(true, 0.039, 0.04));
+  // The route follower may use a larger release tolerance after the goal was
+  // captured, without weakening the initial capture tolerance.
+  EXPECT_TRUE(visual_navigation::FinalPositionCanComplete(true, 0.0875, 0.10));
   EXPECT_FALSE(visual_navigation::FinalPositionCanComplete(true, 0.11, 0.04));
   EXPECT_FALSE(visual_navigation::FinalPositionCanComplete(false, 0.01, 0.04));
 }
@@ -53,6 +87,18 @@ TEST(PathControl, CompletedWaypointBrakeDoesNotRestartAtFinalPoint)
   EXPECT_FALSE(visual_navigation::ShouldBeginWaypointBrake(false, true, true, true));
   EXPECT_FALSE(visual_navigation::ShouldBeginWaypointBrake(true, false, true, true));
   EXPECT_FALSE(visual_navigation::ShouldBeginWaypointBrake(false, false, true, false));
+}
+
+TEST(PathControl, SatisfiedRouteStartAdvancesWithoutBraking)
+{
+  EXPECT_TRUE(visual_navigation::SatisfiedRouteStartMayAdvance(
+    0, false, 0.0, 0.003, 0.04));
+  EXPECT_FALSE(visual_navigation::SatisfiedRouteStartMayAdvance(
+    1, false, 0.0, 0.003, 0.04));
+  EXPECT_FALSE(visual_navigation::SatisfiedRouteStartMayAdvance(
+    0, true, 0.0, 0.003, 0.04));
+  EXPECT_FALSE(visual_navigation::SatisfiedRouteStartMayAdvance(
+    0, false, 0.5, 0.003, 0.04));
 }
 
 TEST(PathControl, SegmentProjectionKeepsSignedRemainingDistance)
@@ -133,41 +179,23 @@ TEST(PathControl, SignedApproachDistanceCannotGrowAfterEndpoint)
     visual_navigation::EndpointApproachDistance(0.40, passed), 0.0);
 }
 
-TEST(PathControl, TurnPositionHoldProjectsAnchorErrorOntoBodyForwardAxis)
-{
-  EXPECT_NEAR(
-    visual_navigation::TurnPositionHoldSpeed(
-      0.0, 0.0, 0.0, 0.10, 0.0, 0.8, 0.015, 0.08),
-    0.068, 1e-12);
-  EXPECT_NEAR(
-    visual_navigation::TurnPositionHoldSpeed(
-      0.0, 0.0, 3.14159265358979323846 / 2.0,
-      0.0, -0.10, 0.8, 0.015, 0.08),
-    -0.068, 1e-12);
-  EXPECT_DOUBLE_EQ(
-    visual_navigation::TurnPositionHoldSpeed(
-      0.0, 0.0, 0.0, 0.01, 1.0, 0.8, 0.015, 0.08),
-    0.0);
-}
-
-TEST(PathControl, TurnPositionHoldIsBoundedAndRejectsInvalidInput)
-{
-  EXPECT_DOUBLE_EQ(
-    visual_navigation::TurnPositionHoldSpeed(
-      0.0, 0.0, 0.0, 1.0, 0.0, 2.0, 0.0, 0.08),
-    0.08);
-  EXPECT_DOUBLE_EQ(
-    visual_navigation::TurnPositionHoldSpeed(
-      std::numeric_limits<double>::quiet_NaN(), 0.0, 0.0,
-      1.0, 0.0, 2.0, 0.0, 0.08),
-    0.0);
-}
-
 TEST(PathControl, TurnRequiresContinuousLowRateBeforeSettling)
 {
   EXPECT_FALSE(visual_navigation::TurnHasSettled(0.20, 1.0, 0.12, 0.30));
   EXPECT_FALSE(visual_navigation::TurnHasSettled(0.10, 0.29, 0.12, 0.30));
   EXPECT_TRUE(visual_navigation::TurnHasSettled(0.10, 0.30, 0.12, 0.30));
+}
+
+TEST(PathControl, FreshSingleWheelMotionCannotConfirmTurnStopped)
+{
+  EXPECT_FALSE(visual_navigation::TurnTranslationHasStopped(
+    true, 0.05, 0.30, 0.04, 0.0, 0.0, true, 0.03));
+  EXPECT_TRUE(visual_navigation::TurnTranslationHasStopped(
+    true, 0.05, 0.30, 0.01, 0.0, 0.10, false, 0.03));
+  EXPECT_TRUE(visual_navigation::TurnTranslationHasStopped(
+    false, 1.0, 0.30, 0.04, 0.0, 0.01, true, 0.03));
+  EXPECT_FALSE(visual_navigation::TurnTranslationHasStopped(
+    false, 1.0, 0.30, 0.0, 0.0, 0.0, false, 0.03));
 }
 
 TEST(PathControl, CrossTrackErrorProgressivelyLimitsForwardSpeed)
@@ -208,6 +236,19 @@ TEST(PathControl, CurvatureFeedforwardAndLateralLimitPreserveTheArcDirection)
   EXPECT_NEAR(
     visual_navigation::LateralAccelerationAngularLimit(0.85, 0.10, 0.22),
     0.85, 1.0e-12);
+}
+
+TEST(PathControl, StopAndTurnCornerDoesNotSteerTheIncomingStraight)
+{
+  constexpr double next_segment_curvature = 0.5235987755982988;
+  EXPECT_DOUBLE_EQ(
+    visual_navigation::ContinuousTrackingCurvature(
+      next_segment_curvature, true),
+    0.0);
+  EXPECT_DOUBLE_EQ(
+    visual_navigation::ContinuousTrackingCurvature(
+      next_segment_curvature, false),
+    next_segment_curvature);
 }
 
 TEST(PathControl, WaypointApproachDoesNotOverrideCrossTrackSpeedLimit)
@@ -349,16 +390,34 @@ TEST(PathControl, TurnDoesNotFinishWhileBodyIsStillRotating)
       true, 0.02, 0.1, 0.18, 0.035, 0.12));
 }
 
-TEST(PathControl, CrossTrackCancellationCannotFinishHeadingAlignment)
+TEST(PathControl, InterceptionHeadingDoesNotReenterRoadHeadingAlignment)
 {
-  const double heading_error = 0.467;
-  const double cross_track_error = 0.113;
-  const double path_error = visual_navigation::StanleyPathError(
-    heading_error, cross_track_error, 2.0, 0.2, 0.25, 0.7);
-
-  EXPECT_NEAR(path_error, 0.002, 0.01);
+  constexpr double cross_track_error = 0.20;
+  const double initial_left_error = visual_navigation::StanleyPathError(
+    0.0, cross_track_error, 1.5, 0.15, 0.25, 0.7);
+  const double initial_right_error = visual_navigation::StanleyPathError(
+    0.0, -cross_track_error, 1.5, 0.15, 0.25, 0.7);
+  EXPECT_LT(initial_left_error, -0.44);
+  EXPECT_GT(initial_right_error, 0.44);
   EXPECT_TRUE(visual_navigation::ShouldRotateInPlace(
-      true, std::abs(heading_error), 0.0, 0.18, 0.035, 0.12));
+      false, std::abs(initial_left_error), 0.0, 0.44, 0.035, 0.12));
+  EXPECT_TRUE(visual_navigation::ShouldRotateInPlace(
+      false, std::abs(initial_right_error), 0.0, 0.44, 0.035, 0.12));
+
+  const double interception_correction = std::atan2(1.5 * cross_track_error,
+                                                     0.15 + 0.25);
+  const double road_heading_error = interception_correction;
+  const double path_error = visual_navigation::StanleyPathError(
+    road_heading_error, cross_track_error, 1.5, 0.15, 0.25, 0.7);
+
+  EXPECT_GT(std::abs(road_heading_error), 0.44);
+  EXPECT_NEAR(path_error, 0.0, 1e-12);
+  EXPECT_FALSE(visual_navigation::ShouldRotateInPlace(
+      false, std::abs(path_error), 0.0, 0.44, 0.035, 0.12));
+
+  const double mirrored_path_error = visual_navigation::StanleyPathError(
+    -road_heading_error, -cross_track_error, 1.5, 0.15, 0.25, 0.7);
+  EXPECT_NEAR(mirrored_path_error, 0.0, 1e-12);
 }
 
 TEST(PathControl, TurnSpeedDropsInsidePrecisionZone)

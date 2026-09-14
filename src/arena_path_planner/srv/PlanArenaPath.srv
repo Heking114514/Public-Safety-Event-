@@ -3,6 +3,7 @@ geometry_msgs/Point[] targets
 string[] labels
 geometry_msgs/Polygon[] dynamic_obstacles
 string[] covered_edges
+arena_path_planner/RoadInterval[] covered_intervals
 string[] remaining_visits
 string mode
 bool activate_navigation
@@ -15,6 +16,10 @@ nav_msgs/Path navigation_path
 string[] visit_order
 string[] deferred_targets
 string[] covered_edges
+arena_path_planner/RoadInterval[] covered_intervals
+arena_path_planner/RoadInterval[] planned_intervals
+arena_path_planner/RoadInterval[] blocked_intervals
+arena_path_planner/RoadInterval[] deferred_intervals
 bool all_targets_reached
 float64 length
 float64 planning_time_ms

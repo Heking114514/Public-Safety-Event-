@@ -9,7 +9,7 @@ void WaypointNavigator::PublishStop() {
 }
 
 void WaypointNavigator::PublishMotionCommand(
-    const geometry_msgs::msg::Twist &desired) {
+    const geometry_msgs::msg::Twist &desired, bool forceZeroLinear) {
   const auto currentTime = std::chrono::steady_clock::now();
   double dt = 1.0 / controlFrequency_;
   if (motionCommandInitialized_) {
@@ -21,9 +21,16 @@ void WaypointNavigator::PublishMotionCommand(
   }
 
   geometry_msgs::msg::Twist limited = desired;
-  limited.linear.x = visual_navigation::LimitRate(
-      desired.linear.x, lastMotionCommand_.linear.x, maxLinearAcceleration_,
-      maxLinearDeceleration_, dt);
+  const double targetLinear =
+      std::clamp(desired.linear.x, -maxLinearSpeed_, maxLinearSpeed_);
+  limited.linear.x =
+      forceZeroLinear
+          ? 0.0
+          : visual_navigation::LimitRate(
+                targetLinear, lastMotionCommand_.linear.x,
+                maxLinearAcceleration_, maxLinearDeceleration_, dt);
+  limited.linear.x =
+      std::clamp(limited.linear.x, -maxLinearSpeed_, maxLinearSpeed_);
   limited.angular.z = visual_navigation::LimitRate(
       desired.angular.z, lastMotionCommand_.angular.z, maxAngularAcceleration_,
       maxAngularDeceleration_, dt);

@@ -2,6 +2,7 @@
 #include "arena_path_planner/dynamic_obstacle.hpp"
 #include "arena_path_planner/request_validation.hpp"
 
+#include "arena_path_planner/msg/road_interval.hpp"
 #include "arena_path_planner/srv/plan_arena_path.hpp"
 
 #include <geometry_msgs/msg/pose_stamped.hpp>
@@ -23,12 +24,36 @@ namespace arena_path_planner
 namespace
 {
 
+constexpr double kStartProjectionMaxDistance = 0.08;
+
 geometry_msgs::msg::Quaternion QuaternionFromYaw(double yaw)
 {
   geometry_msgs::msg::Quaternion quaternion;
   quaternion.z = std::sin(yaw * 0.5);
   quaternion.w = std::cos(yaw * 0.5);
   return quaternion;
+}
+
+bool PointHasFiniteCoordinates(
+  const Point & point, std::string * rejection_reason = nullptr)
+{
+  if (!std::isfinite(point.x) || !std::isfinite(point.y)) {
+    if (rejection_reason != nullptr) {
+      *rejection_reason = "coordinates contain a non-finite value";
+    }
+    return false;
+  }
+  if (rejection_reason != nullptr) {
+    rejection_reason->clear();
+  }
+  return true;
+}
+
+double DistanceOutsideArena(const Point & point, const PlannerConfig & config)
+{
+  const double closest_x = std::clamp(point.x, 0.0, std::nextafter(config.width, 0.0));
+  const double closest_y = std::clamp(point.y, 0.0, std::nextafter(config.height, 0.0));
+  return std::hypot(point.x - closest_x, point.y - closest_y);
 }
 
 bool RouteHasUnsafeInPlaceTurn(
@@ -126,6 +151,11 @@ private:
       pose.header = path.header;
       pose.pose.position.x = cosine * delta_x + sine * delta_y;
       pose.pose.position.y = -sine * delta_x + cosine * delta_y;
+      // nav_msgs/Path has no semantic waypoint field. The otherwise-unused z
+      // component distinguishes a junction U-turn from a road-end retreat.
+      pose.pose.position.z = NavigationPathMarkerZ(
+        planner_->IsTurnJunction(
+          result.points[index], kTurnJunctionOperatingTolerance));
       pose.pose.orientation = QuaternionFromYaw(
         NormalizeAngle(result.headings[index] - map_origin.yaw));
       path.poses.push_back(pose);
@@ -149,6 +179,10 @@ private:
       response->visit_order.clear();
       response->deferred_targets.clear();
       response->covered_edges.clear();
+      response->covered_intervals.clear();
+      response->planned_intervals.clear();
+      response->blocked_intervals.clear();
+      response->deferred_intervals.clear();
       response->all_targets_reached = false;
       response->length = 0.0;
       response->planning_time_ms = std::chrono::duration<double, std::milli>(
@@ -165,13 +199,18 @@ private:
     std::string rejection_reason;
     Pose start;
     start.position = {request->start.position.x, request->start.position.y};
-    if (!PointIsInsideArena(start.position, planner_->config(), &rejection_reason)) {
+    if (!PointHasFiniteCoordinates(start.position, &rejection_reason)) {
       throw std::invalid_argument("invalid start: " + rejection_reason);
     }
     const auto & orientation = request->start.orientation;
     if (!QuaternionToYaw(
         orientation.x, orientation.y, orientation.z, orientation.w,
         start.yaw, &rejection_reason))
+    {
+      throw std::invalid_argument("invalid start: " + rejection_reason);
+    }
+    if (!PointIsInsideArena(start.position, planner_->config(), &rejection_reason) &&
+      DistanceOutsideArena(start.position, planner_->config()) > kStartProjectionMaxDistance)
     {
       throw std::invalid_argument("invalid start: " + rejection_reason);
     }
@@ -225,14 +264,58 @@ private:
     PlanResult result;
     const ArenaPlanner * active_planner = planner_.get();
     std::unique_ptr<ArenaPlanner> dynamic_planner;
-    if (request->dynamic_obstacles.empty()) {
-      result = planner_->Plan(start, targets, labels, mode, request->covered_edges);
-    } else {
+    if (!request->dynamic_obstacles.empty()) {
       dynamic_planner = std::make_unique<ArenaPlanner>(
         std::move(request_config), false);
       active_planner = dynamic_planner.get();
-      result = active_planner->Plan(
-        start, targets, labels, mode, request->covered_edges);
+    }
+    Pose planning_start = start;
+    bool start_was_projected = false;
+    // A few centimetres of fused-pose drift must not make replanning stop the
+    // mission at a lane boundary. Do not use this escape hatch when a dynamic
+    // obstacle alone covers an otherwise valid start: that may be a real block.
+    const bool static_start_is_usable =
+      planner_->IsFree(start.position) && planner_->PoseIsFree(start.position, start.yaw);
+    const bool active_start_is_usable =
+      active_planner->IsFree(start.position) &&
+      active_planner->PoseIsFree(start.position, start.yaw);
+    const bool dynamic_obstacle_covers_free_start =
+      !request->dynamic_obstacles.empty() && static_start_is_usable &&
+      !active_start_is_usable;
+    if (!active_start_is_usable &&
+      !dynamic_obstacle_covers_free_start)
+    {
+      Pose projected;
+      if (active_planner->ProjectToNearestFreePose(
+          start, kStartProjectionMaxDistance, projected))
+      {
+        planning_start = projected;
+        start_was_projected = true;
+      }
+    }
+    std::vector<RoadInterval> covered_intervals;
+    covered_intervals.reserve(request->covered_intervals.size());
+    for (const auto & interval : request->covered_intervals) {
+      covered_intervals.push_back({
+        interval.edge_label, interval.start_fraction, interval.end_fraction});
+    }
+    result = active_planner->Plan(
+      planning_start, targets, labels, mode, request->covered_edges,
+      covered_intervals);
+    if (result.success && start_was_projected) {
+      const double correction = Distance(start.position, planning_start.position);
+      result.message += "; start pose projected " +
+        std::to_string(correction) + " m onto nearby free space";
+      RCLCPP_WARN(
+        get_logger(),
+        "replan start (%.3f, %.3f) is just outside free space; using (%.3f, %.3f), %.3f m away",
+        start.position.x, start.position.y, planning_start.position.x,
+        planning_start.position.y, correction);
+    }
+    if (result.success && !active_planner->RouteTurnsAreAllowed(result.points)) {
+      result.success = false;
+      result.message =
+        "route requires a U-turn or consecutive tight turns; recover to a junction before replanning";
     }
     if (result.success && !active_planner->config().allow_in_place_turns &&
       RouteHasUnsafeInPlaceTurn(
@@ -273,6 +356,38 @@ private:
     response->visit_order = result.visit_order;
     response->deferred_targets = result.deferred_targets;
     response->covered_edges = result.covered_edges;
+    response->covered_intervals.clear();
+    for (const RoadInterval & interval : result.covered_intervals) {
+      arena_path_planner::msg::RoadInterval message;
+      message.edge_label = interval.edge_label;
+      message.start_fraction = interval.start_fraction;
+      message.end_fraction = interval.end_fraction;
+      response->covered_intervals.push_back(std::move(message));
+    }
+    response->planned_intervals.clear();
+    for (const RoadInterval & interval : result.planned_intervals) {
+      arena_path_planner::msg::RoadInterval message;
+      message.edge_label = interval.edge_label;
+      message.start_fraction = interval.start_fraction;
+      message.end_fraction = interval.end_fraction;
+      response->planned_intervals.push_back(std::move(message));
+    }
+    response->blocked_intervals.clear();
+    for (const RoadInterval & interval : result.blocked_intervals) {
+      arena_path_planner::msg::RoadInterval message;
+      message.edge_label = interval.edge_label;
+      message.start_fraction = interval.start_fraction;
+      message.end_fraction = interval.end_fraction;
+      response->blocked_intervals.push_back(std::move(message));
+    }
+    response->deferred_intervals.clear();
+    for (const RoadInterval & interval : result.deferred_intervals) {
+      arena_path_planner::msg::RoadInterval message;
+      message.edge_label = interval.edge_label;
+      message.start_fraction = interval.start_fraction;
+      message.end_fraction = interval.end_fraction;
+      response->deferred_intervals.push_back(std::move(message));
+    }
     response->all_targets_reached = result.all_targets_reached;
     response->length = result.length;
     response->planning_time_ms = std::chrono::duration<double, std::milli>(
@@ -295,9 +410,9 @@ private:
     // navigator to finish it, then replans the deferred labels from the new
     // pose; all_targets_reached remains the distinct mission-completion flag.
     const bool activation_allowed = ActivationAllowed(
-      request->activate_navigation, result, start,
+      request->activate_navigation, result, planning_start,
       active_planner->config().default_start, request->covered_edges,
-      request->remaining_visits);
+      request->remaining_visits, covered_intervals);
     if (request->activate_navigation && !activation_allowed) {
       response->navigation_path = nav_msgs::msg::Path{};
       response->message +=

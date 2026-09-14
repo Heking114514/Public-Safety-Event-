@@ -3,10 +3,11 @@
 WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
   routeFile_ = declare_parameter<std::string>("route_file", "");
   routeFrame_ = declare_parameter<std::string>("route_frame", "map");
-  odomChildFrame_ = declare_parameter<std::string>("odom_child_frame", "base_link");
+  odomChildFrame_ =
+      declare_parameter<std::string>("odom_child_frame", "base_link");
   if (Trim(routeFrame_).empty() || Trim(odomChildFrame_).empty()) {
     throw std::invalid_argument(
-      "route_frame and odom_child_frame must not be empty");
+        "route_frame and odom_child_frame must not be empty");
   }
   odomTopic_ = declare_parameter<std::string>("odom_topic", "/odometry/fused");
   imuTopic_ = declare_parameter<std::string>("imu_topic", "/imu/control");
@@ -21,6 +22,12 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
       "fusion_status_topic", "/odometry/fusion_status");
   actuatorHealthTopic_ = declare_parameter<std::string>(
       "actuator_health_topic", "/cup_car_serial/actuator_healthy");
+  controlTelemetryTopic_ = declare_parameter<std::string>(
+      "control_telemetry_topic", "/cup_car_serial/control_telemetry");
+  frontObstacleTopic_ = declare_parameter<std::string>(
+      "front_obstacle_topic", "/obstacle/front_blocked");
+  frontObstacleRangeTopic_ = declare_parameter<std::string>(
+      "front_obstacle_range_topic", "/obstacle/front_range");
   trackingStateTopic_ =
       declare_parameter<std::string>("tracking_state_topic", "/tracking_state");
   cmdVelTopic_ =
@@ -42,14 +49,14 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
   controlFrequency_ =
       std::max(1.0, declare_parameter<double>("control_frequency", 30.0));
   defaultSpeed_ =
-      std::max(0.0, declare_parameter<double>("default_speed", 0.50));
+      std::max(0.0, declare_parameter<double>("default_speed", 0.15));
   maxLinearSpeed_ =
-      std::max(0.0, declare_parameter<double>("max_linear_speed", 0.50));
+      std::max(0.0, declare_parameter<double>("max_linear_speed", 0.15));
   maxAngularSpeed_ =
-      std::max(0.0, declare_parameter<double>("max_angular_speed", 0.95));
+      std::max(0.0, declare_parameter<double>("max_angular_speed", 0.75));
   maxPathAngularSpeed_ = std::min(
       maxAngularSpeed_,
-      std::max(0.0, declare_parameter<double>("max_path_angular_speed", 0.45)));
+      std::max(0.0, declare_parameter<double>("max_path_angular_speed", 0.65)));
   minPathAngularSpeed_ = std::min(
       maxPathAngularSpeed_,
       std::max(0.0, declare_parameter<double>("min_path_angular_speed", 0.14)));
@@ -74,25 +81,17 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
   maxAngularDeceleration_ = std::max(
       0.01, declare_parameter<double>("max_angular_deceleration", 3.00));
   linearGain_ = std::max(0.0, declare_parameter<double>("linear_gain", 0.8));
-  angularGain_ = std::max(0.0, declare_parameter<double>("angular_gain", 2.8));
+  angularGain_ = std::max(0.0, declare_parameter<double>("angular_gain", 1.4));
   pathPidKp_ = std::max(0.0, declare_parameter<double>("path_pid_kp", 2.4));
   pathPidKi_ = std::max(0.0, declare_parameter<double>("path_pid_ki", 0.15));
   pathPidKd_ = std::max(0.0, declare_parameter<double>("path_pid_kd", 0.0));
   pathYawRateDamping_ =
       std::max(0.0, declare_parameter<double>("path_yaw_rate_damping", 0.45));
   turnYawRateDamping_ =
-      std::max(0.0, declare_parameter<double>("turn_yaw_rate_damping", 0.55));
+      std::max(0.0, declare_parameter<double>("turn_yaw_rate_damping", 1.00));
   turnCruiseSpeed_ = std::min(
       maxAngularSpeed_,
-      std::max(0.0, declare_parameter<double>("turn_cruise_speed", 0.90)));
-  turnPositionHoldGain_ =
-      std::max(0.0, declare_parameter<double>("turn_position_hold_gain", 0.80));
-  turnPositionHoldDeadband_ = std::max(
-      0.0, declare_parameter<double>("turn_position_hold_deadband", 0.015));
-  turnPositionHoldMaxSpeed_ =
-      std::min(maxLinearSpeed_,
-               std::max(0.0, declare_parameter<double>(
-                                 "turn_position_hold_max_speed", 0.08)));
+      std::max(0.0, declare_parameter<double>("turn_cruise_speed", 0.45)));
   crossTrackGain_ =
       std::max(0.0, declare_parameter<double>("cross_track_gain", 1.5));
   stanleySofteningSpeed_ = std::max(
@@ -128,12 +127,12 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
       std::max(rotateInPlaceExitThreshold_,
                declare_parameter<double>("precision_turn_threshold", 0.45));
   turnSettleYawRate_ =
-      std::max(0.01, declare_parameter<double>("turn_settle_yaw_rate", 0.12));
+      std::max(0.01, declare_parameter<double>("turn_settle_yaw_rate", 0.15));
   turnSettleDwell_ =
-      std::max(0.0, declare_parameter<double>("turn_settle_dwell", 0.30));
+      std::max(0.0, declare_parameter<double>("turn_settle_dwell", 0.20));
   minPrecisionTurnSpeed_ = std::min(
       turnCruiseSpeed_, std::max(0.0, declare_parameter<double>(
-                                          "min_precision_turn_speed", 0.25)));
+                                          "min_precision_turn_speed", 0.20)));
   waypointTolerance_ =
       std::max(0.001, declare_parameter<double>("waypoint_tolerance", 0.04));
   waypointPassLongitudinalTolerance_ = std::max(
@@ -151,7 +150,7 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
   waypointRecoveryMaxAngularSpeed_ =
       std::min(maxAngularSpeed_,
                std::max(0.0, declare_parameter<double>(
-                                 "waypoint_recovery_max_angular_speed", 0.60)));
+                                 "waypoint_recovery_max_angular_speed", 0.40)));
   const double pathProgressTimeout =
       std::max(0.0, declare_parameter<double>("path_progress_timeout", 10.0));
   const double pathProgressMinimumAdvance = std::max(
@@ -164,14 +163,14 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
                       "path_progress_max_recovery_attempts", 2)));
   const double pathProgressCommandThreshold = std::max(
       0.0, declare_parameter<double>("path_progress_command_threshold", 0.08));
-  const double pathProgressStationarySpeedThreshold = std::max(
-      0.0, declare_parameter<double>(
-                "path_progress_stationary_speed_threshold", 0.02));
+  const double pathProgressStationarySpeedThreshold =
+      std::max(0.0, declare_parameter<double>(
+                        "path_progress_stationary_speed_threshold", 0.02));
   const double pathProgressNoMotionTimeout = std::max(
       0.0, declare_parameter<double>("path_progress_no_motion_timeout", 3.0));
   const double pathProgressNoMotionDisplacement = std::max(
-      0.0, declare_parameter<double>(
-                "path_progress_no_motion_displacement", 0.05));
+      0.0,
+      declare_parameter<double>("path_progress_no_motion_displacement", 0.05));
   pathProgressSupervisor_ = visual_navigation::PathProgressSupervisor(
       {pathProgressTimeout, pathProgressMinimumAdvance,
        pathProgressMinimumActualDisplacement, pathProgressMaxRecoveryAttempts,
@@ -209,24 +208,39 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
       0.0, declare_parameter<double>("pre_turn_minimum_stop_time", 0.20));
   preTurnBrakeTimeout_ =
       std::max(preTurnMinimumStopTime_,
-               declare_parameter<double>("pre_turn_brake_timeout", 0.60));
+               declare_parameter<double>("pre_turn_brake_timeout", 1.00));
   waypointBrakeController_.configure(preTurnStopSpeed_, preTurnStopDwell_,
                                      preTurnMinimumStopTime_,
                                      preTurnBrakeTimeout_);
+  obstacleBrakeController_.configure(preTurnStopSpeed_, preTurnStopDwell_,
+                                     preTurnMinimumStopTime_,
+                                     preTurnBrakeTimeout_);
+  preTurnFallbackPoseSpeed_ =
+      std::max(preTurnStopSpeed_,
+               declare_parameter<double>("pre_turn_fallback_pose_speed", 0.08));
+  const auto stopTelemetrySamples = std::max<int64_t>(
+      1, declare_parameter<int64_t>("pre_turn_stop_telemetry_samples", 2));
+  preTurnStopTelemetrySamples_ = static_cast<std::size_t>(stopTelemetrySamples);
+  const auto fallbackTimeouts = std::max<int64_t>(
+      1, declare_parameter<int64_t>("pre_turn_fallback_timeouts", 2));
+  preTurnFallbackTimeouts_ = static_cast<std::size_t>(fallbackTimeouts);
   finalYawTolerance_ =
-      std::max(0.001, declare_parameter<double>("final_yaw_tolerance", 0.060));
+      std::max(0.001, declare_parameter<double>("final_yaw_tolerance", 0.12));
+  finalPositionReleaseTolerance_ = std::max(
+      waypointTolerance_,
+      declare_parameter<double>("final_position_release_tolerance", 0.10));
   finalYawMaxAngularSpeed_ = std::min(
       maxAngularSpeed_,
       std::max(0.0,
-               declare_parameter<double>("final_yaw_max_angular_speed", 0.90)));
+               declare_parameter<double>("final_yaw_max_angular_speed", 0.40)));
   finalYawMinTurnSpeed_ = std::min(
       finalYawMaxAngularSpeed_,
       std::max(0.0,
-               declare_parameter<double>("final_yaw_min_turn_speed", 0.70)));
+               declare_parameter<double>("final_yaw_min_turn_speed", 0.30)));
   finalYawMinPrecisionSpeed_ =
       std::min(finalYawMinTurnSpeed_,
                std::max(0.0, declare_parameter<double>(
-                                 "final_yaw_min_precision_speed", 0.22)));
+                                 "final_yaw_min_precision_speed", 0.20)));
   odomTimeout_ =
       std::max(0.01, declare_parameter<double>("odom_timeout", 0.40));
   imuTimeout_ = std::max(0.01, declare_parameter<double>("imu_timeout", 0.15));
@@ -234,6 +248,70 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
       std::max(0.01, declare_parameter<double>("fusion_status_timeout", 0.60));
   actuatorHealthTimeout_ = std::max(
       0.01, declare_parameter<double>("actuator_health_timeout", 0.80));
+  controlTelemetryTimeout_ = std::max(
+      0.01, declare_parameter<double>("control_telemetry_timeout", 0.30));
+  frontObstacleTimeout_ =
+      std::max(0.01, declare_parameter<double>("front_obstacle_timeout", 0.50));
+  frontObstacleClassificationWait_ = std::max(
+      0.0,
+      declare_parameter<double>("front_obstacle_classification_wait", 0.10));
+  frontObstaclePairingReorderTolerance_ =
+      std::max(0.0, declare_parameter<double>(
+                        "front_obstacle_pairing_reorder_tolerance", 0.10));
+  obstacleSensorForwardOffset_ =
+      declare_parameter<double>("obstacle_sensor_forward_offset", 0.070);
+  vehicleFrontOffset_ =
+      std::max(0.0, declare_parameter<double>("vehicle_front_offset", 0.0717));
+  expectedObstacleTolerance_ = std::max(
+      0.0, declare_parameter<double>("expected_obstacle_tolerance", 0.05));
+  if (!std::isfinite(obstacleSensorForwardOffset_))
+    throw std::invalid_argument("obstacle sensor offset must be finite");
+  obstacleReverseSpeed_ = std::min(
+      maxLinearSpeed_,
+      std::max(0.0, declare_parameter<double>("obstacle_reverse_speed", 0.10)));
+  obstacleReverseAngularGain_ = std::max(
+      0.0, declare_parameter<double>("obstacle_reverse_angular_gain", 1.20));
+  obstacleReverseYawRateDamping_ = std::max(
+      0.0,
+      declare_parameter<double>("obstacle_reverse_yaw_rate_damping", 0.40));
+  obstacleReverseMaxAngularSpeed_ =
+      std::min(maxAngularSpeed_,
+               std::max(0.0, declare_parameter<double>(
+                                 "obstacle_reverse_max_angular_speed", 0.30)));
+  obstacleReverseMaxHeadingError_ = std::max(
+      0.0,
+      declare_parameter<double>("obstacle_reverse_max_heading_error", 0.70));
+  visual_navigation::ObstacleRecoveryConfig obstacleRecoveryConfig;
+  obstacleRecoveryConfig.breadcrumb_spacing = std::max(
+      0.005, declare_parameter<double>("obstacle_breadcrumb_spacing", 0.04));
+  obstacleRecoveryConfig.maximum_breadcrumb_step = std::max(
+      obstacleRecoveryConfig.breadcrumb_spacing,
+      declare_parameter<double>("obstacle_maximum_breadcrumb_step", 0.25));
+  obstacleRecoveryConfig.reverse_lookahead =
+      std::max(obstacleRecoveryConfig.breadcrumb_spacing,
+               declare_parameter<double>("obstacle_reverse_lookahead", 0.12));
+  obstacleRecoveryConfig.target_tolerance = std::max(
+      obstacleRecoveryConfig.breadcrumb_spacing,
+      declare_parameter<double>("obstacle_reverse_target_tolerance", 0.06));
+  obstacleRecoveryConfig.anchor_tolerance = std::max(
+      obstacleRecoveryConfig.target_tolerance,
+      declare_parameter<double>("obstacle_recovery_anchor_tolerance", 0.08));
+  obstacleRecoveryConfig.minimum_progress = std::max(
+      0.005,
+      declare_parameter<double>("obstacle_reverse_minimum_progress", 0.03));
+  obstacleRecoveryConfig.no_progress_timeout = std::max(
+      0.1,
+      declare_parameter<double>("obstacle_reverse_no_progress_timeout", 3.0));
+  obstacleRecoveryConfig.attempt_timeout = std::max(
+      obstacleRecoveryConfig.no_progress_timeout,
+      declare_parameter<double>("obstacle_reverse_attempt_timeout", 20.0));
+  obstacleRecoveryConfig.maximum_recovery_attempts =
+      std::max(0, static_cast<int>(declare_parameter<int64_t>(
+                      "obstacle_reverse_max_recovery_attempts", 2)));
+  obstacleRecoveryConfig.maximum_breadcrumbs =
+      static_cast<std::size_t>(std::max<int64_t>(
+          2, declare_parameter<int64_t>("obstacle_maximum_breadcrumbs", 2000)));
+  obstacleRecoveryController_.configure(obstacleRecoveryConfig);
   stampFutureTolerance_ =
       std::max(0.0, declare_parameter<double>("stamp_future_tolerance", 0.20));
   const double transientLocalizationGrace = std::max(
@@ -303,6 +381,20 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
       actuatorHealthTopic_, rclcpp::QoS(1).transient_local().reliable(),
       std::bind(&WaypointNavigator::HandleActuatorHealth, this,
                 std::placeholders::_1));
+  controlTelemetrySubscription_ =
+      create_subscription<mission_control_interfaces::msg::ControlTelemetry>(
+          controlTelemetryTopic_, 10,
+          std::bind(&WaypointNavigator::HandleControlTelemetry, this,
+                    std::placeholders::_1));
+  frontObstacleSubscription_ = create_subscription<std_msgs::msg::Bool>(
+      frontObstacleTopic_, rclcpp::SensorDataQoS(),
+      std::bind(&WaypointNavigator::HandleFrontObstacle, this,
+                std::placeholders::_1));
+  frontObstacleRangeSubscription_ =
+      create_subscription<sensor_msgs::msg::Range>(
+          frontObstacleRangeTopic_, rclcpp::SensorDataQoS(),
+          std::bind(&WaypointNavigator::HandleFrontObstacleRange, this,
+                    std::placeholders::_1));
   trackingStateSubscription_ = create_subscription<std_msgs::msg::Int32>(
       trackingStateTopic_, 10,
       std::bind(&WaypointNavigator::HandleTrackingState, this,
@@ -357,10 +449,13 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
       get_logger(),
       "Waypoint navigator ready: odom=%s fusion_status=%s actuator_health=%s "
       "require_actuator_health=%s actuator_health_timeout=%.2f "
+      "control_telemetry=%s front_obstacle=%s front_range=%s "
       "route_input=%s output=%s",
       odomTopic_.c_str(), fusionStatusTopic_.c_str(),
       actuatorHealthTopic_.c_str(), requireActuatorHealth_ ? "true" : "false",
-      actuatorHealthTimeout_, routeInputTopic_.c_str(), cmdVelTopic_.c_str());
+      actuatorHealthTimeout_, controlTelemetryTopic_.c_str(),
+      frontObstacleTopic_.c_str(), frontObstacleRangeTopic_.c_str(),
+      routeInputTopic_.c_str(), cmdVelTopic_.c_str());
 }
 
 WaypointNavigator::~WaypointNavigator() { PublishStop(); }

@@ -1,0 +1,3 @@
+string edge_label
+float64 start_fraction
+float64 end_fraction

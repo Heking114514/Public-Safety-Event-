@@ -107,6 +107,24 @@ TEST(GlobalCorrection, StationaryCommandRequiresFreshBoundedLinearAndAngularSpee
       0.0, 0.0, false, 0.03, 0.12));
 }
 
+TEST(GlobalCorrection, RejectsVisualMotionWhenCommandAndWheelAreStationary)
+{
+  EXPECT_TRUE(fused_odometry::stationary_chassis_rejects_visual_motion(
+      0.0, 0.0, true, 0.0, true, 0.60, true, 0.03, 0.12, 0.03, 0.04));
+  EXPECT_FALSE(fused_odometry::stationary_chassis_rejects_visual_motion(
+      0.0, 0.0, false, 0.0, true, 0.60, true, 0.03, 0.12, 0.03, 0.04));
+  EXPECT_FALSE(fused_odometry::stationary_chassis_rejects_visual_motion(
+      0.0, 0.0, true, 0.0, false, 0.60, true, 0.03, 0.12, 0.03, 0.04));
+  EXPECT_FALSE(fused_odometry::stationary_chassis_rejects_visual_motion(
+      0.05, 0.0, true, 0.0, true, 0.60, true, 0.03, 0.12, 0.03, 0.04));
+  EXPECT_FALSE(fused_odometry::stationary_chassis_rejects_visual_motion(
+      0.0, 0.30, true, 0.0, true, 0.60, true, 0.03, 0.12, 0.03, 0.04));
+  EXPECT_FALSE(fused_odometry::stationary_chassis_rejects_visual_motion(
+      0.0, 0.0, true, 0.08, true, 0.60, true, 0.03, 0.12, 0.03, 0.04));
+  EXPECT_FALSE(fused_odometry::stationary_chassis_rejects_visual_motion(
+      0.0, 0.0, true, 0.0, true, 0.02, true, 0.03, 0.12, 0.03, 0.04));
+}
+
 TEST(DisagreementCovariance, IsBoundedAndNeverRejectsThePrimaryRateSource)
 {
   EXPECT_DOUBLE_EQ(fused_odometry::disagreement_covariance_scale(0.0, 0.2, 0.8), 1.0);

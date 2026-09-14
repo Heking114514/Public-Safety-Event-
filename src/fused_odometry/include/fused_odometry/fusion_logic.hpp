@@ -49,6 +49,13 @@ bool motion_command_is_stationary(
   double linear_velocity, double angular_velocity, bool command_fresh,
   double maximum_linear_speed, double maximum_angular_speed);
 
+bool stationary_chassis_rejects_visual_motion(
+  double command_velocity, double command_yaw_rate, bool command_fresh,
+  double wheel_velocity, bool wheel_fresh,
+  double visual_velocity, bool visual_velocity_valid,
+  double maximum_command_linear_speed, double maximum_command_angular_speed,
+  double maximum_wheel_speed, double minimum_visual_speed);
+
 class PoseAligner
 {
 public:

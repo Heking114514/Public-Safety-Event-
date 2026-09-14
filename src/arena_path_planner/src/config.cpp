@@ -73,8 +73,19 @@ PlannerConfig ArenaPlanner::LoadConfig(const std::string & path)
   if (arena["tracking_margin_m"]) {
     config.tracking_margin = arena["tracking_margin_m"].as<double>();
   }
+  if (arena["obstacle_stop_buffer_m"]) {
+    config.obstacle_stop_buffer = arena["obstacle_stop_buffer_m"].as<double>();
+  }
   if (arena["allow_in_place_turns"]) {
     config.allow_in_place_turns = arena["allow_in_place_turns"].as<bool>();
+  }
+  if (arena["turns_at_junctions_only"]) {
+    config.turns_at_junctions_only = arena["turns_at_junctions_only"].as<bool>();
+  }
+  if (arena["turn_junctions"]) {
+    for (const auto & node : arena["turn_junctions"]) {
+      config.turn_junctions.push_back(ReadPoint(node));
+    }
   }
   for (const auto & node : arena["free_regions"]) {
     config.free_regions.push_back(ReadRectangle(node));

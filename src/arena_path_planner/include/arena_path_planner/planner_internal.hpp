@@ -25,6 +25,22 @@ void ValidatePlannerConfig(const PlannerConfig &config);
 std::vector<std::string>
 CoveredInspectionEdges(const PlannerConfig &config,
                        const std::vector<Point> &route);
+std::vector<RoadInterval> NormalizeRoadIntervals(
+  const PlannerConfig & config, const std::vector<std::string> & covered_edges,
+  const std::vector<RoadInterval> & intervals);
+std::vector<RoadInterval> MergeRoadIntervals(
+  const PlannerConfig & config, const std::vector<RoadInterval> & left,
+  const std::vector<RoadInterval> & right);
+std::vector<RoadInterval> IntersectRoadIntervals(
+  const PlannerConfig & config, const std::vector<RoadInterval> & left,
+  const std::vector<RoadInterval> & right);
+std::vector<RoadInterval> UncoveredRoadIntervals(
+  const PlannerConfig & config, const std::vector<RoadInterval> & covered,
+  bool tunnels_only = false, bool non_tunnels_only = false);
+std::vector<RoadInterval> CoveredInspectionIntervals(
+  const PlannerConfig & config, const std::vector<Point> & route);
+std::vector<std::string> FullyCoveredInspectionEdges(
+  const PlannerConfig & config, const std::vector<RoadInterval> & intervals);
 
 } // namespace arena_path_planner
 

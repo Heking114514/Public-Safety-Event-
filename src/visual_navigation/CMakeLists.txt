@@ -25,6 +25,7 @@ add_executable(waypoint_navigator
   src/node_init.cpp
   src/route.cpp
   src/runtime.cpp
+  src/obstacle_recovery.cpp
   src/control.cpp
   src/maneuvers.cpp
   src/path_following.cpp
@@ -90,6 +91,8 @@ if(BUILD_TESTING)
   target_include_directories(turn_settle_controller_test PRIVATE include)
   ament_add_gtest(control_state_test test/control_state_test.cpp)
   target_include_directories(control_state_test PRIVATE include)
+  ament_add_gtest(obstacle_recovery_test test/obstacle_recovery_test.cpp)
+  target_include_directories(obstacle_recovery_test PRIVATE include)
   add_launch_test(test/waypoint_navigator_launch_test.py TIMEOUT 30)
 endif()
 

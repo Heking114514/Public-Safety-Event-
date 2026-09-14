@@ -28,6 +28,8 @@
 | `/tracking_state` | `std_msgs/msg/Int32` | 可选的旧 ORB 兼容检查，默认关闭 |
 | `/waypoint_navigation/route_input` | `nav_msgs/msg/Path` | 动态替换当前路线 |
 | `/waypoint_navigation/route_ack` | `std_msgs/msg/UInt64` | 导航器接受的路线 ID（Path 时间戳纳秒） |
+| `/obstacle/front_blocked` | `std_msgs/msg/Bool` | 可选前方障碍心跳；`true` 边沿立即停车 |
+| `/obstacle/front_range` | `sensor_msgs/msg/Range` | 可选障碍距离；排除转角点之后的已知墙 |
 
 Odometry and IMU messages are accepted only when their ROS timestamps are
 positive, monotonic, within the configured age limit, and no farther in the
@@ -68,6 +70,10 @@ ros2 service call /waypoint_navigator/set_motion_hold \
 
 普通 bringup 的 `require_actuator_health` 默认为 `false`，便于不连接下位机时测试；`visual_navigation_serial_bringup.launch.py` 强制设为 `true`。此时启动前必须收到新鲜的 `actuator_healthy=true`，即下位机控制遥测新鲜、处于导航模式、未急停且命令没有超时。运行中状态变为 `false` 或心跳超过 `actuator_health_timeout`（默认 `0.8 s`）会立即发布零速度并进入 `WAITING_FOR_ACTUATOR_RECOVERY`，但保留当前路线和进度；健康状态恢复后自动续跑。
 
+本工程当前只定义感知接口，不提供障碍识别节点；后续 YOLO + 深度测距节点确认障碍后，应发布 `/obstacle/front_blocked` 和 `/obstacle/front_range`。导航始终订阅这两个话题，无发布者就按“没有障碍”继续运行，不需要开关。Bool 和 Range 都按传感器数据 QoS 订阅，可直接兼容常见的 best-effort 感知发布端。只有新鲜的 `front_blocked=true` 会立即发零速；在正式进入恢复前收到 `false` 或心跳超时会撤销这次停车，已经开始停稳确认或倒车则继续完成恢复，不因感知消息中断而停在路中间。Range 允许比同一次 Bool 最多早到 `0.1 s`，但 clear 边沿或新路线接管会丢弃缓存，上一障碍事件的旧 Range 不会复用。新路线接管也会重新启用 Bool 事件，因此感知连续发布 `true` 时，接管后的下一帧仍会再次制动。每次 `true` 事件都必须配对发布本次 Range；只发 Bool 时小车仍会停车倒退，但前端无法把障碍落到地图上，可能再次规划到同一条路。
+
+路段中出现障碍时，导航状态依次为 `OBSTACLE_BRAKING`、`OBSTACLE_REVERSING` 和 `OBSTACLE_REPLAN_REQUIRED`：先确认停稳，再沿本次实际行驶轨迹以独立的负速度控制退回上一语义航点（即当前道路入口），最后停住旧路线，等待任务协调器下发新路线。Range 显示障碍表面在当前计划转角之后时，按正常路口墙处理，不启动倒车。倒车有独立限速、无进展重试和总超时；单帧融合位姿大跳不会写入倒车轨迹。规划器即使返回几何相同但 route ID 更新的路线，导航也会解除 `OBSTACLE_REPLAN_REQUIRED`、确认并重新执行。
+
 ## 航点文件
 
 CSV 列顺序：
@@ -97,7 +103,7 @@ x,y,yaw,speed,tolerance,stop_time
 如果合法样本持续缺失并超过 `odom_timeout`，车辆才会停车等待；收到下一条合法样本后
 自动恢复。
 
-最终航点首次进入位置容差后会锁定终点对角阶段。此后原地旋转造成的
+最终航点首次进入位置容差后会锁定终点阶段。此后停车造成的
 `base_link` 位置摆动不会让导航重新追踪最后一段路径方向；达到最终
 `yaw` 容差后直接发布零速度并进入 `GOAL_REACHED`。
 
@@ -175,7 +181,9 @@ ros2 launch visual_navigation route_editor.launch.py
 
 导航节点收到合法动态路线后会立即发零速度、清零航点索引并开始导航。编辑器等待 `/waypoint_path` 回显确认本次路线；确认失败会在界面显示，不需要手动执行服务或发布启动话题。历史 transient-local 路线回显不会触发编辑器重复发布。
 
-动态路线中的速度和到达容差使用 `default_speed` 和 `waypoint_tolerance` 参数。当前默认巡航速度和最高线速度均为 `0.5 m/s`。默认启动不加载 CSV，重启导航节点后需要再次点击发布按钮才能重新启用编辑路线。
+动态路线中的速度和到达容差使用 `default_speed` 和 `waypoint_tolerance` 参数。当前默认巡航速度和最高线速度均为 `0.15 m/s`；最终速度发布口也会按该上限限幅。默认启动不加载 CSV，重启导航节点后需要再次点击发布按钮才能重新启用编辑路线。
+
+规划器发布的二维 `nav_msgs/Path` 用 `pose.position.z=0.001` 标记真实转向路口，普通点为 `0`。这使导航能把真路口的 180 度动作拆成两次 90 度，同时把未标记的精确 `A->B->A` 路末折返执行为直接倒车。其他 z 值会被拒绝。
 
 ## 自动规划模式
 
@@ -227,7 +235,7 @@ ros2 launch visual_navigation visual_navigation_serial_bringup.launch.py \
   autostart:=false
 ```
 
-当前完整启动链固定发布 `base_link -> camera_link` 前向 `0.096m` 的二维静态 TF，并将 ORB、轮式里程计和融合结果统一到 `base_link`。重新测量安装位置后应同步修改该静态 TF；导航内部的旧相机位置补偿已经清零，不能重复补偿。
+当前完整启动链固定发布 `base_link -> camera_link` 前向 `0.070m` 的二维静态 TF，并将 ORB、轮式里程计和融合结果统一到 `base_link`。重新测量安装位置后应同步修改该静态 TF；导航内部的旧相机位置补偿已经清零，不能重复补偿。
 
 ## 下位机连接
 

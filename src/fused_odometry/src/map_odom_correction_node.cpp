@@ -295,14 +295,16 @@ private:
     pending_visual_.reset();
 
     const double visual_arrival = steady_seconds();
-    const bool visual_recovered = correction_valid_ &&
-      visual_arrival - visual_received_at_ > visual_recovery_gap_;
+    const bool visual_recovered = correction_valid_ && visual_stamp_received_ &&
+      (visual_stamp - last_visual_stamp_).seconds() > visual_recovery_gap_;
     latest_raw_visual_ = message_pose(message);
     latest_visual_local_ = local_pose;
     visual_xy_variance_ = finite_covariance(message.pose.covariance[0], 0.05);
     visual_yaw_variance_ = finite_covariance(message.pose.covariance[35], 0.10);
     visual_pair_valid_ = true;
     visual_received_at_ = visual_arrival;
+    last_visual_stamp_ = visual_stamp;
+    visual_stamp_received_ = true;
     if (turn_hold_active_) {
       return;
     }
@@ -314,6 +316,18 @@ private:
       // remains zeroed at the same vehicle pose.
       visual_pose_aligner_.align_to(
         latest_raw_visual_, {initial_map_x_, initial_map_y_, initial_map_yaw_});
+    } else if (visual_recovered) {
+      // ORB may restart its source origin after tracking loss. Keep the
+      // vehicle at the locally propagated global pose on the first recovered
+      // sample, then apply only subsequent visual increments. Treating the
+      // recovered raw pose as an absolute correction can otherwise drag
+      // map->odom back toward the ORB origin while the vehicle is moving.
+      const Pose2d recovery_anchor = fused_odometry::compose_pose(
+        map_from_odom_, latest_visual_local_);
+      visual_pose_aligner_.align_to(latest_raw_visual_, recovery_anchor);
+      RCLCPP_WARN(
+        get_logger(),
+        "Visual tracking recovered; rebasing raw visual pose without jumping map->odom");
     }
     const Pose2d aligned_visual = visual_pose_aligner_.apply(latest_raw_visual_);
     desired_map_from_odom_ = fused_odometry::compose_pose(
@@ -557,11 +571,13 @@ private:
   bool desired_valid_{false};
   bool correction_valid_{false};
   bool visual_pair_valid_{false};
+  bool visual_stamp_received_{false};
   bool turn_hold_active_{false};
   bool turn_hold_motion_rejected_{false};
   bool command_received_{false};
   double local_received_at_{0.0};
   double visual_received_at_{0.0};
+  rclcpp::Time last_visual_stamp_{0, 0, RCL_ROS_TIME};
   double visual_recovery_blend_until_{0.0};
   double last_update_at_{0.0};
   double map_change_active_until_{0.0};

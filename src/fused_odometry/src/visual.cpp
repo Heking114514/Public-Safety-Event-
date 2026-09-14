@@ -14,24 +14,25 @@ void FusionGateNode::reject_raw_visual_sample() {
 }
 
 void FusionGateNode::mark_visual_interrupted() {
-  if (!visual_.interrupted) {
-    visual_.interrupted = true;
-    visual_.accepted = false;
-    visual_.velocity_valid = false;
-    visual_.forward_velocity = 0.0;
-    visual_.yaw_rate = 0.0;
-    imu_.visual_residual = 0.0;
-    imu_.robust_visual_residual = 0.0;
-    visual_.yaw_disagreement_scale = 1.0;
-    visual_vx_window_.clear();
-    visual_wz_window_.clear();
-    raw_visual_vx_window_.clear();
-    raw_visual_wz_window_.clear();
-    wheel_visual_residual_window_.clear();
-    imu_visual_residual_window_.clear();
-    raw_visual_.velocity_valid = false;
-    raw_visual_.increment_pose_valid = false;
-    visual_.recovery_samples = 0;
+  const bool already_interrupted = visual_.interrupted;
+  visual_.interrupted = true;
+  visual_.accepted = false;
+  visual_.velocity_valid = false;
+  visual_.forward_velocity = 0.0;
+  visual_.yaw_rate = 0.0;
+  imu_.visual_residual = 0.0;
+  imu_.robust_visual_residual = 0.0;
+  visual_.yaw_disagreement_scale = 1.0;
+  visual_vx_window_.clear();
+  visual_wz_window_.clear();
+  raw_visual_vx_window_.clear();
+  raw_visual_wz_window_.clear();
+  wheel_visual_residual_window_.clear();
+  imu_visual_residual_window_.clear();
+  raw_visual_.velocity_valid = false;
+  raw_visual_.increment_pose_valid = false;
+  visual_.recovery_samples = 0;
+  if (!already_interrupted) {
     health_monitor_.start_vision_outage(steady_seconds());
   }
 }
@@ -131,6 +132,32 @@ void FusionGateNode::publish_raw_visual(const nav_msgs::msg::Odometry &message,
   if (map_change_grace) {
     // Consume authorization on the first post-event visual sample.
     map_change_.pending = false;
+  }
+  const bool raw_visual_velocity_valid =
+      raw_visual_.velocity_valid &&
+      raw_visual_vx_window_.ready(robust_min_samples_);
+  const double raw_visual_velocity = raw_visual_velocity_valid
+                                         ? raw_visual_vx_window_.median()
+                                         : raw_visual_.forward_velocity;
+  const bool stationary_conflict =
+      !map_change_grace &&
+      stationary_chassis_rejects_visual_motion(
+          command_.velocity, command_.yaw_rate,
+          command_.input.fresh(command_timeout_), wheel_.velocity,
+          wheel_.input.fresh(wheel_timeout_), raw_visual_velocity,
+          raw_visual_velocity_valid, stationary_wheel_reject_speed_,
+          stationary_command_yaw_speed_, stationary_wheel_reject_speed_,
+          std::max(visual_stationary_speed_, stationary_wheel_reject_speed_));
+  if (stationary_conflict) {
+    ++visual_.rejected_recoveries;
+    mark_visual_interrupted();
+    RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Rejecting raw visual odometry while chassis is stationary "
+        "(cmd %.3f m/s %.3f rad/s, wheel %.3f m/s, visual %.3f m/s)",
+        command_.velocity, command_.yaw_rate, wheel_.velocity,
+        raw_visual_velocity);
+    return;
   }
   if (recovering) {
     if (!raw_visual_increment_healthy()) {

@@ -26,7 +26,7 @@ ORB-SLAM3 /tracking_state
                       下位机桥接节点
 ```
 
-系统不使用 Nav2，也不进行在线避障。导航节点根据融合里程计提供的当前位置依次跟踪规划器或 CSV 给出的航点。
+系统不使用 Nav2。导航节点根据融合里程计提供的当前位置依次跟踪规划器或 CSV 给出的航点；可选接收独立感知节点的前方静态障碍事件，负责立即停车、沿实际轨迹倒退到恢复锚点，并通知任务层重规划。
 
 ---
 
@@ -50,12 +50,14 @@ visual_navigation/
 ├── include/visual_navigation/
 │   ├── waypoint_navigator.hpp
 │   ├── control_state.hpp
+│   ├── obstacle_recovery.hpp
 │   └── 控制器、输入缓存与监督器头文件
 └── src/
     ├── waypoint_navigator.cpp
     ├── node_init.cpp
     ├── route.cpp
     ├── runtime.cpp
+    ├── obstacle_recovery.cpp
     ├── control.cpp
     ├── maneuvers.cpp
     ├── path_following.cpp
@@ -70,10 +72,12 @@ visual_navigation/
 | --- | --- |
 | `include/visual_navigation/waypoint_navigator.hpp` | ROS 节点声明及节点内部共享状态 |
 | `include/visual_navigation/control_state.hpp` | 互斥控制阶段、终点父状态和状态文本映射 |
+| `include/visual_navigation/obstacle_recovery.hpp` | 实际轨迹缓存、倒车目标、超时/无进展监督和纯控制逻辑 |
 | `src/waypoint_navigator.cpp` | 程序入口，只负责启动节点 |
 | `src/node_init.cpp` | 参数、ROS 接口和初始状态 |
 | `src/route.cpp` | CSV/动态路线加载、发布和接收 |
 | `src/runtime.cpp` | 运行时输入回调、启停复位、任务驻停和时间戳校验 |
+| `src/obstacle_recovery.cpp` | 障碍分类、立即停车、停稳确认、专用倒车和重规划状态 |
 | `src/control.cpp` | 安全门控、周期上下文和状态机分派 |
 | `src/maneuvers.cpp` | 等待、制动、航点恢复和终点动作 |
 | `src/path_following.cpp` | 路径跟随和路径方向对齐 |
@@ -113,7 +117,8 @@ waypoint_navigator
 6. 根据位置误差和航向误差计算速度。
 7. 发布 `geometry_msgs/msg/Twist`。
 8. 定位失效且不满足短暂异常宽限条件时立即发布零速度。
-9. 发布路线、当前航点编号和导航状态。
+9. 接收可选前障碍事件，执行停车和退回路口，不承担障碍检测与新路线搜索。
+10. 发布路线、当前航点编号和导航状态。
 
 它不负责：
 
@@ -121,7 +126,7 @@ waypoint_navigator
 - 地图加载
 - 障碍物检测
 - 路径搜索
-- 动态避障
+- 障碍物几何建图和绕行路径搜索
 - 串口或 CAN 数据发送
 - 轮速闭环控制
 
@@ -151,7 +156,7 @@ pose.pose.orientation
 twist.twist.linear.x
 ```
 
-节点把四元数转换为平面偏航角 `yaw`，用纵向速度反馈提前制动，并用约 `0.2 s` 的融合位置位移窗口判断车体是否已经停稳。
+节点把四元数转换为平面偏航角 `yaw`，用纵向速度反馈提前制动。停车确认优先使用刹车开始后收到的新鲜 MCU 左右轮瞬时速度；MCU 遥测缺失或过期时，才回退到约 `0.2 s` 的融合位置位移窗口。轮速只参与停车确认，不进入位置融合。
 
 当前代码不使用 Z 方向位置、横滚角和俯仰角，也不积分里程计速度来计算位置。
 
@@ -601,6 +606,7 @@ FOLLOW
 | `WAITING_FOR_INITIALIZATION` | ORB 暖机等待，不锁存，保持零速 |
 | `FOLLOWING` | 正在向当前航点运动 |
 | `ROTATING_TO_PATH` | 正在原地旋转以对齐当前路径 |
+| `TURN_HALF_SETTLED` | 180 度掉头的第一个 90 度已停稳，随后执行第二个 90 度 |
 | `PATH_ALIGNED` | 路径方向已对齐，准备进入路径跟随 |
 | `BRAKING_APPROACH` | 按剩余距离和实际车速执行航点接近制动 |
 | `BRAKING_AT_WAYPOINT` | 已收点，持续发零速并等待车体停稳后再转向 |
@@ -608,8 +614,12 @@ FOLLOW
 | `RECOVERING_FINAL_POSITION` | 最终朝向调整后发现位置超差，开始终点位置回收；后续回收周期沿用 `RECOVERING_WAYPOINT` |
 | `ALIGNING_FINAL_YAW` | 已到达最终位置，正在调整最终朝向 |
 | `RECOVERING_WAYPOINT` | 航点越过或位置超差，正在低速回收 |
+| `REVERSING_PLANNED_RETREAT` | 路段末端不可继续前进，保持车头方向并沿原路倒回路口 |
+| `RETREATING_TO_JUNCTION` | 路中出现过大方向误差，正沿实走轨迹倒回最后一个已确认路口 |
+| `RETREATING_TO_ROUTE_START` | 尚未经过路口时出现过大方向误差，正沿实走轨迹倒回本次路线起点 |
 | `RECOVERING_NO_PATH_PROGRESS` | 路径进度不足，正在重置路径反馈并尝试恢复 |
 | `RECOVERING_NO_TURN_PROGRESS` | 转向进度不足，正在重置转向控制并尝试恢复 |
+| `RECOVERING_WAYPOINT_BRAKE` | 未在单次时间窗内确认停稳，继续发零速并自动重新确认，不结束任务 |
 | `GOAL_REACHED` | 已完成全部航点 |
 | `FAULT_ROUTE_NOT_LOADED` | 航点文件加载失败 |
 | `FAULT_ODOMETRY_FRAME` | 融合里程计坐标系与 `route_frame` 不一致 |
@@ -620,7 +630,6 @@ FOLLOW
 | `FAULT_TRACKING_LOST` | 启用跟踪检查且丢失后锁存任务 |
 | `FAULT_ACTUATOR_STALE` | 执行器健康消息未收到或已超时 |
 | `FAULT_ACTUATOR_DISCONNECTED` | 执行器连接或健康状态无效 |
-| `FAULT_WAYPOINT_BRAKE_TIMEOUT` | 航点制动超时，未确认停稳而停车锁存 |
 | `FAULT_NO_PATH_PROGRESS` | 路径进度恢复尝试耗尽 |
 | `FAULT_NO_TURN_PROGRESS` | 转向进度恢复尝试耗尽 |
 
@@ -752,6 +761,8 @@ angular_z = path_pid_kp × path_error
 
 ### 12.4 原地转向判断
 
+只有车辆已经在计划拐点停稳，且该拐点方向变化超过约 40 度时，才允许原地转向。普通直线路段的横向误差不会再触发原地转；180 度掉头固定拆成两个 90 度，每段都发零速确认停稳。
+
 当：
 
 ```text
@@ -790,22 +801,11 @@ linear_x = min(requested_speed, v_limit, cross_track_limit) × heading_scale
 
 相邻路径方向变化小于 `pre_turn_stop_heading_threshold` 时可以连续通过；超过阈值时先停稳再转向。
 
-### 12.6 最终朝向控制
+### 12.6 最终航点
 
-到达最终航点位置后，如果最终航点填写了 `yaw`：
+最终航点可能位于路中，因此路径消息携带的切线朝向不再授权原地调整；位置到达并确认停车后直接完成。需要改变行驶方向时，规划器必须把转向安排在前一个真实路口。
 
-```text
-final_yaw_error = normalize(target_yaw - current_yaw)
-```
-
-如果误差大于 `final_yaw_tolerance`：
-
-```text
-linear_x = 0
-angular_z = clamp(angular_gain × final_yaw_error)
-```
-
-达到朝向容差后才认为任务完成。
+动态 `nav_msgs/Path` 是二维路径。`pose.position.z=0.001` 表示该点是规划器确认的真实转向路口，`z=0` 表示普通路径点。导航只把这个标记当作普通路口转向授权；规划器不再发布 180 度掉头或短距离连续 90 度转向。遇到前方障碍需要退出时，由障碍恢复模块停车、倒回上一个恢复锚点/路口，再等待重规划；其他 z 值会被拒绝。
 
 ---
 
@@ -910,16 +910,16 @@ config/waypoint_navigation.yaml
 | 参数 | 默认值 | 作用 |
 | --- | --- | --- |
 | `control_frequency` | `30.0` | 控制频率，Hz |
-| `default_speed` | `0.50` | CSV 未填写速度时的默认速度，m/s |
-| `max_linear_speed` | `0.50` | 全局最大线速度，m/s |
-| `max_angular_speed` | `0.95` | 最大角速度，rad/s |
+| `default_speed` | `0.15` | CSV 未填写速度时的默认速度，m/s |
+| `max_linear_speed` | `0.15` | 最终速度发布口强制执行的全局最大线速度，m/s |
+| `max_angular_speed` | `0.75` | 最大角速度，rad/s |
 | `effective_braking_deceleration` | `0.35` | 实车有效制动减速度，m/s^2 |
 | `braking_control_delay` | `0.20` | 串口、控制与执行总延迟估计，s |
 | `braking_safety_margin` | `0.015` | 航点前预留的制动距离，m |
 | `braking_distance_feedback_gain` | `1.00` | 实际停止距离超出剩余距离时的速度压低增益 |
-| `angular_gain` | `2.80` | 终点朝向对齐的比例增益 |
-| `path_pid_kp` | `1.80` | 路径误差 PID 的比例增益 |
-| `path_pid_ki` | `0.15` | 路径误差 PID 的积分增益，用于补偿持续机械跑偏 |
+| `angular_gain` | `1.40` | 终点朝向对齐的比例增益 |
+| `path_pid_kp` | `1.20` | 路径误差 PID 的比例增益 |
+| `path_pid_ki` | `0.08` | 路径误差 PID 的积分增益，用于补偿持续机械跑偏 |
 | `path_pid_kd` | `0.00` | 路径误差 PID 的微分增益 |
 | `path_yaw_rate_damping` | `0.45` | 实际角速度阻尼，用于抑制横向纠偏过冲 |
 | `cross_track_gain` | `1.50` | 横向偏差到航向误差的换算增益，rad/m |
@@ -934,14 +934,16 @@ config/waypoint_navigation.yaml
 | `waypoint_pass_lateral_tolerance` | `0.06` | 停车点或最终点越过终点时允许收点的横向走廊，m |
 | `waypoint_recovery_speed` | `0.10` | 停车点或最终点超出走廊后回收至航点的最高线速度，m/s |
 | `waypoint_recovery_heading_tolerance` | `0.12` | 停车点或最终点回收时允许开始低速前进的朝向误差，rad |
-| `waypoint_recovery_max_angular_speed` | `0.60` | 停车点或最终点回收的最高角速度，rad/s |
+| `waypoint_recovery_max_angular_speed` | `0.40` | 停车点或最终点回收的最高角速度，rad/s |
 | `pre_turn_stop_heading_threshold` | `0.18` | 相邻路径转角超过此值时要求先停稳，rad |
 | `pre_turn_stop_speed` | `0.03` | 判断车体停稳的纵向速度阈值，m/s |
 | `pre_turn_stop_dwell` | `0.10` | 速度连续低于阈值的确认时间，s |
 | `stop_motion_window` | `0.20` | 从融合位姿计算实际移动速度的窗口，s |
 | `pre_turn_minimum_stop_time` | `0.20` | 收点后最短制动等待时间，s |
-| `pre_turn_brake_timeout` | `0.60` | 速度反馈异常时避免状态机永久卡住的上限，s |
-| `final_yaw_tolerance` | `0.06` | 最终朝向容差，rad |
+| `pre_turn_brake_timeout` | `1.00` | 单次停车确认时间窗；超时后保持零速并自动重新确认，s |
+| `control_telemetry_timeout` | `0.30` | MCU 轮速用于停车确认的最大到达间隔，s |
+| `final_yaw_tolerance` | `0.12` | 最终朝向容差，rad |
+| `final_position_release_tolerance` | `0.10` | 已进入最终点后允许完成的最大位置误差，m |
 | `odom_timeout` | `0.40` | 里程计到达超时时间，s |
 | `imu_timeout` | `0.15` | 控制 IMU 到达超时时间，s |
 | `fusion_status_timeout` | `0.60` | 融合健康状态超时时间，s |
@@ -1146,7 +1148,7 @@ w = angular.z
 5. 坐标系、位姿、四元数和输入测量时间戳无效时不运动。
 6. 默认不强制依赖 `/tracking_state`；显式启用后可按参数选择等待恢复或锁存
    `FAULT_TRACKING_LOST`。
-7. 融合硬故障、制动超时、路径进度耗尽或转向进度耗尽时锁存并发布零速度。
+7. 融合硬故障、路径进度耗尽或转向进度耗尽时锁存并发布零速度；制动确认超时只保持零速并自动重试，不结束任务。
 8. 调用停止、复位或任务驻停服务时立即发布零速度。
 9. 节点析构时发布零速度。
 

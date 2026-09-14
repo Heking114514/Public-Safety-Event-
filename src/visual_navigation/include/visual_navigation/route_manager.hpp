@@ -25,6 +25,7 @@ struct RouteWaypoint
   double speed{0.0};
   double tolerance{0.0};
   double stop_time{0.0};
+  bool turn_junction{false};
 };
 
 // Owns route parsing and comparison policy. The ROS node remains responsible
@@ -114,6 +115,7 @@ public:
       const bool right_yaw = std::isfinite(right[index].yaw);
       if (std::abs(left[index].x - right[index].x) > k_position_tolerance ||
         std::abs(left[index].y - right[index].y) > k_position_tolerance ||
+        left[index].turn_junction != right[index].turn_junction ||
         left_yaw != right_yaw ||
         (left_yaw && std::abs(normalize_angle(left[index].yaw - right[index].yaw)) >
         k_yaw_tolerance))
@@ -138,7 +140,13 @@ public:
     output.reserve(path.poses.size());
     for (std::size_t index = 0; index < path.poses.size(); ++index) {
       const auto & pose = path.poses[index].pose;
+      const bool ordinary_height =
+        std::isfinite(pose.position.z) && std::abs(pose.position.z) <= 1.0e-6;
+      const bool turn_junction_height =
+        std::isfinite(pose.position.z) &&
+        std::abs(pose.position.z - 1.0e-3) <= 1.0e-6;
       if (!std::isfinite(pose.position.x) || !std::isfinite(pose.position.y) ||
+        (!ordinary_height && !turn_junction_height) ||
         !valid_quaternion(pose.orientation))
       {
         invalid_index = index;
@@ -149,6 +157,7 @@ public:
       RouteWaypoint waypoint;
       waypoint.x = pose.position.x;
       waypoint.y = pose.position.y;
+      waypoint.turn_junction = turn_junction_height;
       waypoint.yaw = quaternion_yaw(pose.orientation);
       waypoint.speed = default_speed;
       waypoint.tolerance = default_tolerance;

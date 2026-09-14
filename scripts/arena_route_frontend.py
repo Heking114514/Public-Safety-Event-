@@ -16,10 +16,12 @@ import yaml
 
 import rclpy
 from ament_index_python.packages import get_package_share_directory
+from arena_path_planner.msg import RoadInterval
 from arena_path_planner.srv import PlanArenaPath
 from geometry_msgs.msg import Point, Point32, Polygon, Pose
 from nav_msgs.msg import Odometry
-from std_msgs.msg import String, UInt64
+from sensor_msgs.msg import Range
+from std_msgs.msg import Bool, String, UInt64
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import (
@@ -35,10 +37,13 @@ from mission_execution import (
     LatestRequestQueue,
     MissionExecutionState,
     PLANNER_REQUEST_TIMEOUT_SECONDS,
+    PreviewSequenceState,
     RouteFailureCooldown,
     RouteExecution,
     valid_odometry_stamp,
 )
+from obstacle_mapping import ObstacleMappingState, TimedBoolEventGate
+from road_coverage import RoadCoverageLedger
 
 
 SERVICE_NAME = "/arena_path_planner/plan"
@@ -48,6 +53,9 @@ ROUTE_ACK_TIMEOUT_MS = 1500
 ROUTE_FAILURE_COOLDOWN_S = 5.0
 ROUTE_ACK_TOPIC = "/waypoint_navigation/route_ack"
 NAVIGATION_STATUS_TOPIC = "/waypoint_navigation/status"
+FRONT_RANGE_TOPIC = "/obstacle/front_range"
+FRONT_OBSTACLE_TOPIC = "/obstacle/front_blocked"
+FRONT_OBSTACLE_TIMEOUT_S = 0.50
 
 
 def normalize_angle(angle: float) -> float:
@@ -73,12 +81,19 @@ class PlannerClient(Node):
         responses: queue.Queue[tuple[int, Any]],
         odometry_updates: queue.Queue[Optional[tuple[float, float, float, float]]],
         navigation_events: queue.Queue[tuple[str, Any, float]],
+        front_range_updates: queue.Queue[tuple[float, float]],
+        front_blocked_updates: queue.Queue[tuple[bool, float]],
     ) -> None:
         super().__init__("arena_route_frontend")
         self.client = self.create_client(PlanArenaPath, SERVICE_NAME)
         self.responses = responses
         self.odometry_updates = odometry_updates
         self.navigation_events = navigation_events
+        self.front_range_updates = front_range_updates
+        self.front_blocked_updates = front_blocked_updates
+        self.front_obstacle_event_gate = TimedBoolEventGate(
+            FRONT_OBSTACLE_TIMEOUT_S
+        )
         self.lock = threading.Lock()
         self.request_queue = LatestRequestQueue()
         self.request_timeout_timer: Optional[threading.Timer] = None
@@ -108,12 +123,42 @@ class PlannerClient(Node):
                 durability=DurabilityPolicy.TRANSIENT_LOCAL,
             ),
         )
+        self.front_obstacle_subscription = self.create_subscription(
+            Bool,
+            FRONT_OBSTACLE_TOPIC,
+            self._handle_front_obstacle,
+            qos_profile_sensor_data,
+        )
+        self.front_range_subscription = self.create_subscription(
+            Range, FRONT_RANGE_TOPIC, self._handle_front_range, qos_profile_sensor_data
+        )
 
     def _handle_route_ack(self, message: UInt64) -> None:
         self._put_navigation_event("ack", int(message.data))
 
     def _handle_navigation_status(self, message: String) -> None:
         self._put_navigation_event("status", str(message.data))
+
+    def _handle_front_obstacle(self, message: Bool) -> None:
+        blocked = bool(message.data)
+        received_at = time.monotonic()
+        if not self.front_obstacle_event_gate.observe(blocked, received_at):
+            return
+        self.front_blocked_updates.put((blocked, received_at))
+
+    def _handle_front_range(self, message: Range) -> None:
+        measured_range = float(message.range)
+        if not math.isfinite(measured_range) or measured_range <= 0.0:
+            return
+        update = (measured_range, time.monotonic())
+        try:
+            self.front_range_updates.put_nowait(update)
+        except queue.Full:
+            try:
+                self.front_range_updates.get_nowait()
+            except queue.Empty:
+                pass
+            self.front_range_updates.put_nowait(update)
 
     def _put_navigation_event(self, kind: str, value: Any) -> None:
         event = (kind, value, time.monotonic())
@@ -171,11 +216,12 @@ class PlannerClient(Node):
         obstacles: list[tuple[float, float, float, float]],
         targets: list[tuple[str, float, float]],
         covered_edges: list[str],
+        covered_intervals: list[tuple[str, float, float]],
         remaining_visits: list[str],
     ) -> None:
         item = (
             generation, start, mode, activate, obstacles, targets,
-            covered_edges, remaining_visits,
+            covered_edges, covered_intervals, remaining_visits,
         )
         if not self.client.service_is_ready():
             self.responses.put((generation, RuntimeError("规划后端未启动")))
@@ -193,13 +239,21 @@ class PlannerClient(Node):
                 return
         (
             generation, start, mode, activate, obstacles, targets,
-            covered_edges, remaining_visits,
+            covered_edges, covered_intervals, remaining_visits,
         ) = item
         request = PlanArenaPath.Request()
         request.start = start
         request.mode = mode
         request.activate_navigation = activate
         request.covered_edges = covered_edges
+        request.covered_intervals = [
+            RoadInterval(
+                edge_label=label,
+                start_fraction=float(start_fraction),
+                end_fraction=float(end_fraction),
+            )
+            for label, start_fraction, end_fraction in covered_intervals
+        ]
         request.remaining_visits = remaining_visits
         for label, x, y in targets:
             request.targets.append(Point(x=x, y=y))
@@ -344,17 +398,33 @@ class ArenaFrontend:
         self.route: list[tuple[float, float, float]] = []
         self.layer_routes: dict[int, list[tuple[float, float, float]]] = {}
         self.layer_display_segments: dict[int, list[list[tuple[float, float, float]]]] = {}
+        self.active_route: list[tuple[float, float, float]] = []
+        self.active_route_layer = 1
+        self.pending_active_route: list[tuple[float, float, float]] = []
+        self.pending_active_route_id: Optional[int] = None
+        self.pending_active_route_layer = 1
         self.layer_mode = 1
         self.visible_layer = 1
+        self.preview_sequence = PreviewSequenceState()
+        self.layer_statuses = {1: "待规划", 2: "待规划", 3: "待规划"}
         self.dynamic_obstacles: list[tuple[float, float, float, float]] = []
         self.remaining_labels = [str(label) for label, _position in self.tasks]
         self.planned_deferred_labels: list[str] = []
-        self.retry_pending = False
-        self.retry_used = False
-        self.preview_covered_edges: list[str] = []
         self.covered_edges: list[str] = []
         graph_edges = config.get("inspection_graph", {}).get("edges", [])
+        graph_nodes = config.get("inspection_graph", {}).get("nodes", [])
         road_labels = [str(edge[2]) for edge in graph_edges if len(edge) >= 3]
+        self.coverage_ledger = RoadCoverageLedger(
+            graph_nodes, graph_edges, maximum_motion=0.25
+        )
+        self.preview_coverage_ledger = RoadCoverageLedger(
+            graph_nodes, graph_edges, maximum_motion=0.25
+        )
+        self.layer_planned_intervals: dict[
+            int, list[tuple[str, float, float]]
+        ] = {}
+        self.last_coverage_pose: Optional[tuple[float, float]] = None
+        self.obstacle_mapping = ObstacleMappingState(self.width_m, self.height_m)
         self.mission = MissionExecutionState(
             [str(label) for label, _position in self.tasks],
             list(config.get("tunnels", {}).keys()),
@@ -391,10 +461,19 @@ class ArenaFrontend:
         self.navigation_events: queue.Queue[tuple[str, Any, float]] = queue.Queue(
             maxsize=64
         )
+        self.front_range_updates: queue.Queue[tuple[float, float]] = queue.Queue(
+            maxsize=1
+        )
+        self.front_blocked_updates: queue.Queue[tuple[bool, float]] = queue.Queue()
+        self.front_blocked = False
 
         rclpy.init(args=[])
         self.node = PlannerClient(
-            self.responses, self.odometry_updates, self.navigation_events
+            self.responses,
+            self.odometry_updates,
+            self.navigation_events,
+            self.front_range_updates,
+            self.front_blocked_updates,
         )
         self.executor = MultiThreadedExecutor(num_threads=2)
         self.executor.add_node(self.node)
@@ -405,6 +484,7 @@ class ArenaFrontend:
         self.order_var = tk.StringVar(value="shortest")
         self.status_var = tk.StringVar(value="等待规划后端")
         self.metrics_var = tk.StringVar(value="路径 -- m    规划 -- ms    重规划 0")
+        self.preview_stage_var = tk.StringVar(value=self._preview_stage_summary())
         self.view = ArenaView(self.root, self, self.width_m, self.height_m)
         self.root.after(50, self._poll)
         self.root.after(200, self._request_initial_plan)
@@ -417,6 +497,16 @@ class ArenaFrontend:
 
     def draw(self) -> None:
         self.view.draw()
+
+    def _preview_stage_summary(self) -> str:
+        return "   ".join(
+            f"{stage}: {self.layer_statuses[stage]}" for stage in range(1, 4)
+        )
+
+    def _set_preview_stage_status(self, stage: int, status: str) -> None:
+        self.layer_statuses[stage] = status
+        if hasattr(self, "preview_stage_var"):
+            self.preview_stage_var.set(self._preview_stage_summary())
 
     def _pose(self, values: Optional[tuple[float, float, float]] = None) -> Pose:
         x, y, yaw = values or (self.vehicle_x, self.vehicle_y, self.vehicle_yaw)
@@ -451,6 +541,12 @@ class ArenaFrontend:
         self.vehicle_x, self.vehicle_y, self.vehicle_yaw = self._odometry_to_arena(
             self.current_odometry[0], self.current_odometry[1], self.current_odometry[2]
         )
+        current_coverage_pose = (self.vehicle_x, self.vehicle_y)
+        if self.mission_running and self.last_coverage_pose is not None:
+            self.coverage_ledger.observe_motion(
+                self.last_coverage_pose, current_coverage_pose
+            )
+        self.last_coverage_pose = current_coverage_pose
         if not self.odom_trace or math.hypot(
             self.vehicle_x - self.odom_trace[-1][0],
             self.vehicle_y - self.odom_trace[-1][1],
@@ -486,6 +582,35 @@ class ArenaFrontend:
                 )
                 self.draw()
 
+    def _consume_front_range(self) -> None:
+        latest: Optional[tuple[float, float]] = None
+        try:
+            while True:
+                latest = self.front_range_updates.get_nowait()
+        except queue.Empty:
+            pass
+        if latest is None:
+            return
+        self.obstacle_mapping.update_range(
+            latest[0],
+            latest[1],
+            (self.vehicle_x, self.vehicle_y, self.vehicle_yaw),
+        )
+
+    def _consume_front_blocked(self) -> None:
+        try:
+            while True:
+                blocked, received_at = self.front_blocked_updates.get_nowait()
+                self.front_blocked = blocked
+                self.obstacle_mapping.update_blocked(
+                    blocked,
+                    received_at,
+                    (self.vehicle_x, self.vehicle_y, self.vehicle_yaw),
+                    force_new_event=blocked,
+                )
+        except queue.Empty:
+            pass
+
     def request_plan(self, activate: bool = False) -> None:
         if self.mission_running:
             self.status_var.set("自动任务运行中，忽略预览规划请求")
@@ -496,6 +621,7 @@ class ArenaFrontend:
         mode = {1: "layer1", 2: "layer2", 3: "layer3"}.get(
             self.layer_mode, "layer1"
         )
+        self._set_preview_stage_status(self.layer_mode, "规划中")
         self.generation += 1
         self.request_count += 1
         if activate:
@@ -509,7 +635,8 @@ class ArenaFrontend:
                 for label, position in self.tasks
                 if str(label) in self.remaining_labels
             ],
-            list(self.preview_covered_edges),
+            self.preview_coverage_ledger.covered_edges(),
+            self.preview_coverage_ledger.intervals(),
             [],
         )
 
@@ -519,27 +646,24 @@ class ArenaFrontend:
             return
         self.layer_mode = 1
         self.visible_layer = 1
+        self.playing = False
+        self.preview_sequence.reset()
+        self.layer_statuses = {1: "规划中", 2: "待规划", 3: "待规划"}
+        self.preview_stage_var.set(self._preview_stage_summary())
         self.layer_routes.clear()
         self.layer_display_segments.clear()
-        self.preview_covered_edges.clear()
+        self.preview_coverage_ledger.reset()
+        self.layer_planned_intervals.clear()
         self.layer_start = (self.vehicle_x, self.vehicle_y, self.vehicle_yaw)
-        self.view.next_layer_button.configure(text="进入第二阶段", state=tk.DISABLED)
+        self.view.next_layer_button.configure(text="三阶段自动串播", state=tk.DISABLED)
+        self.view.play_button.configure(
+            text="播放",
+            state=tk.NORMAL if self.mode_var.get() == "simulation" else tk.DISABLED,
+        )
         self.request_plan()
 
     def advance_layer(self) -> None:
-        """Start the next inspection phase only after operator confirmation."""
-        if self.mission_running or self.layer_mode >= 3 or self.node.in_flight:
-            return
-        current_route = self.layer_routes.get(self.layer_mode, [])
-        if len(current_route) < 2:
-            self.status_var.set("当前阶段尚未规划完成")
-            return
-        self.layer_start = current_route[-1]
-        self.layer_mode += 1
-        self.visible_layer = self.layer_mode
-        self.view.next_layer_button.configure(state=tk.DISABLED)
-        self.status_var.set(f"正在规划第 {self.layer_mode} 阶段...")
-        self.request_plan()
+        self.status_var.set("模拟预览会在播放结束后自动衔接下一阶段")
 
     def publish_navigation(self) -> None:
         if self.mission_running:
@@ -557,15 +681,25 @@ class ArenaFrontend:
         if not self.mission_running:
             self.mission.reset()
             self.covered_edges.clear()
+            self.coverage_ledger.reset()
+            self.last_coverage_pose = (self.vehicle_x, self.vehicle_y)
+            self.obstacle_mapping.cancel_recovery()
             self.expired_route_ids.clear()
             self.route_failure_cooldown.clear()
             self.remaining_labels = [str(label) for label, _position in self.tasks]
             self.planned_deferred_labels.clear()
+            self.active_route.clear()
+            self.pending_active_route.clear()
+            self.pending_active_route_id = None
+        self.playing = False
+        self.preview_sequence.pause()
+        self.view.play_button.configure(text="播放", state=tk.DISABLED)
         self.mission_running = True
         self.auto_waiting = False
         self.auto_replan_backoff.reset()
         self._set_mission_controls(True)
-        self._request_mission_plan("layered")
+        self.draw()
+        self._request_mission_plan("layer1")
 
     def _set_mission_controls(self, running: bool) -> None:
         self.view.publish_button.configure(
@@ -598,6 +732,8 @@ class ArenaFrontend:
                 self._schedule_mission_replan(mode, "等待新鲜里程计后自动续规划")
             return
 
+        self.mission.commit_observed_roads(self.coverage_ledger.covered_edges())
+
         remaining_tasks = set(self.mission.remaining_tasks())
         targets = [
             (str(label), float(position[0]), float(position[1]))
@@ -618,6 +754,7 @@ class ArenaFrontend:
             list(self.dynamic_obstacles),
             targets,
             self.mission.covered_roads(),
+            self.coverage_ledger.intervals(),
             self.mission.remaining_tasks() + self.mission.remaining_tunnels(),
         )
 
@@ -655,6 +792,11 @@ class ArenaFrontend:
     def _finish_mission(self) -> None:
         self.mission_running = False
         self.auto_waiting = False
+        self.active_route.clear()
+        self.pending_active_route.clear()
+        self.pending_active_route_id = None
+        self.layer_routes.clear()
+        self.layer_display_segments.clear()
         self._cancel_ack_watchdog()
         self.awaiting_route_ack_stamp = None
         self.planned_deferred_labels.clear()
@@ -662,7 +804,29 @@ class ArenaFrontend:
         self._set_mission_controls(False)
         self.view.publish_button.configure(text="重新执行")
         self.view.next_layer_button.configure(state=tk.DISABLED)
-        self.status_var.set("全部任务已实际执行完成")
+        self.status_var.set(
+            "任务完成：可通行部分已巡视，障碍段已记录豁免"
+            if self.mission.exempted_roads
+            else "全部任务已执行完成"
+        )
+        self.draw()
+
+    def _handle_no_motion_response(
+        self, execution: RouteExecution, current_mode: str
+    ) -> None:
+        next_mode = self.mission.no_motion_continuation_mode(execution)
+        if next_mode is None:
+            self._finish_mission()
+        elif next_mode != current_mode:
+            self.auto_waiting = False
+            self.auto_replan_backoff.reset()
+            self._schedule_mission_replan(
+                next_mode, "当前阶段无需行驶，自动进入下一阶段", delay_ms=50
+            )
+        else:
+            self._schedule_auto_wait_probe(
+                current_mode, "本轮没有可执行路线，继续自动重试"
+            )
 
     def _read_route(self, response: Any) -> None:
         self.route = []
@@ -684,27 +848,108 @@ class ArenaFrontend:
         )
         self.visible_layer = self.layer_mode
         self.planned_deferred_labels = list(response.deferred_targets)
-        for edge in response.covered_edges:
-            if edge not in self.preview_covered_edges:
-                self.preview_covered_edges.append(edge)
+        planned_messages = getattr(response, "planned_intervals", None)
+        if planned_messages is None:
+            planned_messages = getattr(response, "covered_intervals", [])
+        self.layer_planned_intervals[self.layer_mode] = [
+            (
+                str(interval.edge_label),
+                float(interval.start_fraction),
+                float(interval.end_fraction),
+            )
+            for interval in planned_messages
+        ]
+        self._set_preview_stage_status(
+            self.layer_mode, "部分可达" if incomplete else "已规划"
+        )
         self.status_var.set(
-            f"第 {self.layer_mode} 阶段可达部分已规划，实车将自动续规划"
+            f"第 {self.layer_mode} 阶段可达部分已规划，播放后仍会自动进入下一阶段"
             if incomplete
             else f"第 {self.layer_mode} 阶段规划完成"
         )
         if self.layer_mode < 3:
             self.view.next_layer_button.configure(
-                text=f"进入第 {self.layer_mode + 1} 阶段",
-                state=tk.DISABLED if incomplete else tk.NORMAL,
+                text=f"播放后自动进入第 {self.layer_mode + 1} 阶段",
+                state=tk.DISABLED,
             )
         else:
-            self.view.next_layer_button.configure(text="三阶段已完成", state=tk.DISABLED)
+            self.view.next_layer_button.configure(
+                text="第三阶段已就绪", state=tk.DISABLED
+            )
+        if self.preview_sequence.plan_ready(self.layer_mode):
+            self._start_preview_playback()
+        elif self.mode_var.get() == "simulation":
+            self.view.play_button.configure(text="播放", state=tk.NORMAL)
+
+    def _start_preview_playback(self) -> None:
+        self._set_preview_stage_status(self.layer_mode, "播放中")
+        self.play_last_time = time.monotonic()
+        self.view.play_button.configure(text="暂停串播", state=tk.NORMAL)
+        if len(self.route) < 2:
+            self.playing = False
+            self.root.after(0, self._complete_preview_stage)
+            return
+        self.playing = True
+        self.status_var.set(f"正在播放第 {self.layer_mode} 阶段")
+
+    def _complete_preview_stage(self) -> None:
+        if not self.preview_sequence.active:
+            return
+        completed_stage = self.layer_mode
+        route = self.layer_routes.get(completed_stage, [])
+        if route:
+            self.vehicle_x, self.vehicle_y, self.vehicle_yaw = route[-1]
+        route_has_motion = any(
+            math.hypot(right[0] - left[0], right[1] - left[1]) > 1.0e-6
+            for left, right in zip(route, route[1:])
+        )
+        if route_has_motion:
+            for label, start_fraction, end_fraction in self.layer_planned_intervals.get(
+                completed_stage, []
+            ):
+                self.preview_coverage_ledger.add_interval(
+                    label, start_fraction, end_fraction
+                )
+        self.playing = False
+        self.remaining_labels = list(self.planned_deferred_labels)
+        self._set_preview_stage_status(completed_stage, "已播放")
+        next_stage = self.preview_sequence.finish_stage(completed_stage)
+        if next_stage is None:
+            self.view.play_button.configure(text="三阶段已播放", state=tk.DISABLED)
+            self.view.next_layer_button.configure(
+                text="三阶段预览完成", state=tk.DISABLED
+            )
+            self.status_var.set("三阶段模拟预览完成，不计入实车任务进度")
+            self.draw()
+            return
+
+        self.layer_start = (self.vehicle_x, self.vehicle_y, self.vehicle_yaw)
+        self.layer_mode = next_stage
+        self.visible_layer = next_stage
+        self._set_preview_stage_status(next_stage, "规划中")
+        self.view.play_button.configure(
+            text=f"等待第 {next_stage} 阶段", state=tk.DISABLED
+        )
+        self.view.next_layer_button.configure(
+            text=f"正在自动衔接第 {next_stage} 阶段", state=tk.DISABLED
+        )
+        self.status_var.set(
+            f"第 {completed_stage} 阶段已播放，正在规划第 {next_stage} 阶段"
+        )
+        self.draw()
+        self.request_plan()
 
     def _accept_route_ack(self, route_id: int, received_at: float) -> None:
         if route_id in self.expired_route_ids:
             return
         if not self.mission.acknowledge(route_id, received_at):
             return
+        if self.pending_active_route_id == route_id:
+            self.active_route = list(self.pending_active_route)
+            self.active_route_layer = self.pending_active_route_layer
+            self.pending_active_route.clear()
+            self.pending_active_route_id = None
+            self.draw()
         self._cancel_ack_watchdog()
         self.received_route_acks.pop(route_id, None)
         self.awaiting_route_ack_stamp = None
@@ -719,9 +964,26 @@ class ArenaFrontend:
                 self._observe_active_route_status(status, status_at)
 
     def _observe_active_route_status(self, status: str, received_at: float) -> None:
+        self.mission.commit_observed_roads(self.coverage_ledger.covered_edges())
+        if self.mission.active is not None:
+            self.mission.commit_exempted_roads(
+                self.coverage_ledger.accounted_edges(
+                    self.mission.active.blocked_intervals
+                )
+            )
         interrupted = self.mission.abort_for_status(status, received_at)
         if interrupted is not None:
-            if status.startswith("FAULT_"):
+            self.active_route.clear()
+            self.draw()
+            if status == "OBSTACLE_REPLAN_REQUIRED":
+                self.auto_waiting = False
+                self.auto_replan_backoff.reset()
+                self._schedule_mission_replan(
+                    interrupted.mode,
+                    "已退回路口并记录障碍，正在立即重规划",
+                    delay_ms=50,
+                )
+            elif status.startswith("FAULT_"):
                 self.route_failure_cooldown.record(
                     status,
                     interrupted.mode,
@@ -731,11 +993,16 @@ class ArenaFrontend:
                 reason = f"导航报告 {status}，本轮不记进度并自动重规划"
             else:
                 reason = f"导航进入 {status}，当前路线已丢失并自动重新下发"
-            self._schedule_auto_wait_probe(interrupted.mode, reason)
+            if status != "OBSTACLE_REPLAN_REQUIRED":
+                self._schedule_auto_wait_probe(interrupted.mode, reason)
             return
         execution = self.mission.observe_status(status, received_at)
         if execution is None:
             return
+        if self.coverage_ledger.covered_length() > execution.observed_coverage_before + 0.01:
+            execution.new_progress_count += 1
+        self.active_route.clear()
+        self.draw()
         self.covered_edges = self.mission.covered_roads()
         self.remaining_labels = self.mission.remaining_tasks()
         self.planned_deferred_labels = list(execution.deferred_targets)
@@ -773,6 +1040,25 @@ class ArenaFrontend:
             self._accept_route_ack(route_id, received_at)
             return
         status = str(value)
+        if status == "OBSTACLE_BRAKING":
+            self.obstacle_mapping.begin_recovery(
+                (self.vehicle_x, self.vehicle_y, self.vehicle_yaw), received_at
+            )
+        elif status == "EXPECTED_OBSTACLE_AT_TURN":
+            self.obstacle_mapping.cancel_recovery()
+        elif status == "OBSTACLE_REPLAN_REQUIRED":
+            self._promote_pending_obstacle(received_at)
+        elif status == "GOAL_REACHED" or status.startswith("FAULT_"):
+            self.dynamic_obstacles, promoted = (
+                self.obstacle_mapping.finalize_navigation_status(
+                    status,
+                    self.dynamic_obstacles,
+                    (self.vehicle_x, self.vehicle_y, self.vehicle_yaw),
+                    received_at,
+                )
+            )
+            if promoted:
+                self.draw()
         self.recent_navigation_statuses.append((status, received_at))
         self.recent_navigation_statuses = self.recent_navigation_statuses[-64:]
         self._observe_active_route_status(status, received_at)
@@ -782,6 +1068,15 @@ class ArenaFrontend:
             and self.mission.active is not None
         ):
             self.status_var.set(f"阶段导航状态：{status}")
+
+    def _promote_pending_obstacle(self, received_at: float) -> None:
+        self.dynamic_obstacles, promoted = self.obstacle_mapping.promote(
+            self.dynamic_obstacles,
+            (self.vehicle_x, self.vehicle_y, self.vehicle_yaw),
+            received_at,
+        )
+        if promoted:
+            self.draw()
 
     def _handle_plan_response(self, generation: int, response: Any) -> None:
         activation = self.activation_requests.pop(generation, None)
@@ -798,8 +1093,12 @@ class ArenaFrontend:
                     mission_mode, f"服务调用失败，自动重试：{response}"
                 )
             else:
+                self.preview_sequence.plan_failed(self.layer_mode)
+                self.playing = False
+                self._set_preview_stage_status(self.layer_mode, "规划失败")
                 self.status_var.set(f"服务调用失败：{response}")
                 self.view.publish_button.configure(state=tk.NORMAL, text="开始导航")
+                self.view.play_button.configure(text="播放", state=tk.DISABLED)
             return
         if not response.success:
             if mission_mode is not None and self.mission_running:
@@ -808,8 +1107,12 @@ class ArenaFrontend:
                 )
             else:
                 self.route = []
+                self.preview_sequence.plan_failed(self.layer_mode)
+                self.playing = False
+                self._set_preview_stage_status(self.layer_mode, "规划失败")
                 self.status_var.set(f"规划失败：{response.message}")
                 self.view.publish_button.configure(state=tk.NORMAL, text="开始导航")
+                self.view.play_button.configure(text="播放", state=tk.DISABLED)
                 self.draw()
             return
 
@@ -824,9 +1127,9 @@ class ArenaFrontend:
             f"延迟目标 {', '.join(response.deferred_targets) or '无'}"
         )
         self.play_distance = 0.0
-        self.draw()
         if mission_mode is None:
             self._handle_preview_response(response)
+            self.draw()
             return
 
         stamp = response.navigation_path.header.stamp
@@ -835,11 +1138,35 @@ class ArenaFrontend:
             math.hypot(right[0] - left[0], right[1] - left[1]) > 1.0e-6
             for left, right in zip(self.route, self.route[1:])
         )
+        planned_interval_messages = getattr(response, "planned_intervals", None)
+        if planned_interval_messages is None:
+            planned_interval_messages = getattr(response, "covered_intervals", [])
+        planned_intervals = tuple(
+            (
+                str(interval.edge_label),
+                float(interval.start_fraction),
+                float(interval.end_fraction),
+            )
+            for interval in planned_interval_messages
+        )
+        blocked_intervals = tuple(
+            (
+                str(interval.edge_label),
+                float(interval.start_fraction),
+                float(interval.end_fraction),
+            )
+            for interval in getattr(response, "blocked_intervals", [])
+        )
+        self.mission.commit_exempted_roads(
+            self.coverage_ledger.accounted_edges(blocked_intervals)
+        )
         candidate = RouteExecution(
             route_id=max(1, route_id),
             mode=mission_mode,
             visit_order=tuple(map(str, response.visit_order)),
-            covered_edges=tuple(map(str, response.covered_edges)),
+            # Planner output is a prediction. Only the odometry-derived ledger
+            # is allowed to become committed road coverage.
+            covered_edges=tuple(self.coverage_ledger.covered_edges()),
             deferred_targets=tuple(map(str, response.deferred_targets)),
             all_targets_reached=bool(response.all_targets_reached),
             activation_requested_at=activation_requested_at,
@@ -847,8 +1174,17 @@ class ArenaFrontend:
                 (round(point[0] * 20), round(point[1] * 20))
                 for point in self.route
             ),
+            planned_intervals=planned_intervals,
+            blocked_intervals=blocked_intervals,
+            predicted_interval_progress=(
+                self.coverage_ledger.additional_length(planned_intervals) > 0.01
+            ),
+            observed_coverage_before=self.coverage_ledger.covered_length(),
         )
         if probe_mode is not None:
+            if not route_has_motion:
+                self._handle_no_motion_response(candidate, probe_mode)
+                return
             if (
                 self.mission.probe_may_activate(candidate, route_has_motion)
                 and not self.route_failure_cooldown.blocked(
@@ -866,27 +1202,7 @@ class ArenaFrontend:
             return
 
         if not route_has_motion or route_id <= 0:
-            no_work_left = (
-                activation_mode in {"layered", "layer3"}
-                and
-                response.all_targets_reached
-                and not response.deferred_targets
-                and not self.mission.remaining_tasks()
-                and not self.mission.remaining_tunnels()
-                and not self.mission.remaining_roads()
-            )
-            if no_work_left:
-                self._finish_mission()
-            else:
-                next_mode = self.mission.continuation_mode(candidate)
-                if next_mode is not None and next_mode != activation_mode:
-                    self._schedule_mission_replan(
-                        next_mode, "当前阶段无需行驶，自动进入下一阶段", delay_ms=50
-                    )
-                else:
-                    self._schedule_auto_wait_probe(
-                        activation_mode, "本轮没有可执行路线，继续自动重试"
-                    )
+            self._handle_no_motion_response(candidate, activation_mode)
             return
 
         execution = candidate
@@ -900,6 +1216,13 @@ class ArenaFrontend:
         if self.mission.pending is not None or self.mission.active is not None:
             self.status_var.set("当前阶段路线仍在执行，忽略重复规划结果")
             return
+        self.pending_active_route = list(self.route)
+        self.pending_active_route_id = route_id
+        self.pending_active_route_layer = {
+            "layer1": 1,
+            "layer2": 2,
+            "layer3": 3,
+        }.get(activation_mode, self.layer_mode)
         self.mission.begin_route(execution)
         self.awaiting_route_ack_stamp = route_id
         self._start_ack_watchdog(execution)
@@ -933,6 +1256,9 @@ class ArenaFrontend:
             if len(self.expired_route_ids) > 64:
                 self.expired_route_ids.pop()
             self.awaiting_route_ack_stamp = None
+            if self.pending_active_route_id == execution.route_id:
+                self.pending_active_route.clear()
+                self.pending_active_route_id = None
             self._schedule_auto_wait_probe(
                 execution.mode, "路线确认超时，忽略迟到确认并自动重新请求"
             )
@@ -943,6 +1269,8 @@ class ArenaFrontend:
         if self.closing or not rclpy.ok():
             return
         self._consume_odometry()
+        self._consume_front_range()
+        self._consume_front_blocked()
         try:
             while True:
                 generation, response = self.responses.get_nowait()
@@ -1024,7 +1352,9 @@ class ArenaFrontend:
         if not selected:
             return [route]
 
-        def segment_distance(point: tuple[float, float], edge: tuple[list[float], list[float]]) -> float:
+        def segment_distance(
+            point: tuple[float, float], edge: tuple[list[float], list[float]]
+        ) -> float:
             (ax, ay), (bx, by) = edge
             dx, dy = bx - ax, by - ay
             length_sq = dx * dx + dy * dy
@@ -1091,7 +1421,9 @@ class ArenaFrontend:
     def _wheel_rotate(self, event: tk.Event) -> None:
         if self.mode_var.get() != "simulation":
             return
-        self.vehicle_yaw = normalize_angle(self.vehicle_yaw + math.copysign(math.radians(5.0), event.delta))
+        self.vehicle_yaw = normalize_angle(
+            self.vehicle_yaw + math.copysign(math.radians(5.0), event.delta)
+        )
         self.draw()
         self._request_initial_plan()
 
@@ -1108,15 +1440,21 @@ class ArenaFrontend:
         self.view.play_button.configure(text="播放")
         self.remaining_labels = [str(label) for label, _position in self.tasks]
         self.planned_deferred_labels = []
-        self.retry_pending = False
-        self.retry_used = False
         self.covered_edges = []
+        self.coverage_ledger.reset()
+        self.preview_coverage_ledger.reset()
+        self.layer_planned_intervals.clear()
+        self.last_coverage_pose = (self.vehicle_x, self.vehicle_y)
+        self.obstacle_mapping.cancel_recovery()
+        self.active_route.clear()
+        self.pending_active_route.clear()
+        self.pending_active_route_id = None
         self.layer_routes.clear()
         self.layer_display_segments.clear()
         self.layer_mode = 1
         self.visible_layer = 1
         self.layer_start = self.default_pose
-        self.view.next_layer_button.configure(text="进入第二阶段", state=tk.DISABLED)
+        self.view.next_layer_button.configure(text="三阶段自动串播", state=tk.DISABLED)
         self._request_initial_plan()
         self.draw()
 
@@ -1159,11 +1497,21 @@ class ArenaFrontend:
         self.draw()
 
     def toggle_playback(self) -> None:
-        if self.mode_var.get() != "simulation" or len(self.route) < 2:
+        if self.mode_var.get() != "simulation" or self.mission_running:
             return
-        self.playing = not self.playing
-        self.play_last_time = time.monotonic()
-        self.view.play_button.configure(text="暂停" if self.playing else "播放")
+        if self.preview_sequence.waiting_for_plan:
+            return
+        if self.playing:
+            self.playing = False
+            self.preview_sequence.pause()
+            self._set_preview_stage_status(self.layer_mode, "已暂停")
+            self.view.play_button.configure(text="播放")
+            self.status_var.set(f"第 {self.layer_mode} 阶段播放已暂停")
+            return
+        if self.layer_mode not in self.layer_routes or self.preview_sequence.complete:
+            return
+        self.preview_sequence.start(self.layer_mode)
+        self._start_preview_playback()
 
     def _advance_playback(self) -> None:
         if len(self.route) < 2:
@@ -1185,14 +1533,8 @@ class ArenaFrontend:
             remaining -= segment
         self.vehicle_x, self.vehicle_y, self.vehicle_yaw = self.route[-1]
         self.playing = False
-        self.view.play_button.configure(text="播放")
-        self.remaining_labels = list(self.planned_deferred_labels)
-        self.retry_pending = bool(self.remaining_labels) and not self.retry_used
         self.draw()
-        if self.retry_pending and not self.retry_used:
-            self.retry_pending = False
-            self.retry_used = True
-            self._request_initial_plan()
+        self._complete_preview_stage()
 
     def close(self) -> None:
         if self.closing:

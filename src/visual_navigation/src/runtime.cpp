@@ -81,6 +81,54 @@ void WaypointNavigator::HandleActuatorHealth(
   inputCache_.update_actuator(message->data, now());
 }
 
+void WaypointNavigator::HandleControlTelemetry(
+    const mission_control_interfaces::msg::ControlTelemetry::SharedPtr message) {
+  if (!message || !std::isfinite(message->measured_left_velocity_mps) ||
+      !std::isfinite(message->measured_right_velocity_mps) ||
+      !std::isfinite(message->target_left_velocity_mps) ||
+      !std::isfinite(message->target_right_velocity_mps)) {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+                         "Ignoring invalid wheel control telemetry");
+    return;
+  }
+  if (controlTelemetryReceived_) {
+    if (!visual_navigation::ControlTelemetrySampleIsFresh(
+            lastControlTelemetrySequence_, lastControlTelemetryMcuTime_,
+            message->sample_sequence, message->mcu_time_ms)) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+                           "Ignoring duplicate or out-of-order wheel telemetry");
+      return;
+    }
+  }
+  measuredLeftWheelSpeed_ = message->measured_left_velocity_mps;
+  measuredRightWheelSpeed_ = message->measured_right_velocity_mps;
+  targetLeftWheelSpeed_ = message->target_left_velocity_mps;
+  targetRightWheelSpeed_ = message->target_right_velocity_mps;
+  lastControlTelemetrySequence_ = message->sample_sequence;
+  lastControlTelemetryMcuTime_ = message->mcu_time_ms;
+  lastControlTelemetryArrival_ = std::chrono::steady_clock::now();
+  controlTelemetryReceived_ = true;
+  ++controlTelemetrySampleCount_;
+  if (controlState_.in(visual_navigation::ControlPhase::BRAKE)) {
+    const double wheelEvidence = visual_navigation::IndependentWheelStopEvidence(
+        measuredLeftWheelSpeed_, measuredRightWheelSpeed_,
+        targetLeftWheelSpeed_, targetRightWheelSpeed_, preTurnStopSpeed_, 1, 1);
+    if (std::isfinite(wheelEvidence) && wheelEvidence <= preTurnStopSpeed_)
+      ++waypointBrakeStoppedTelemetrySamples_;
+    else
+      waypointBrakeStoppedTelemetrySamples_ = 0;
+  }
+  if (obstacleRecoveryController_.braking()) {
+    const double wheelEvidence = visual_navigation::IndependentWheelStopEvidence(
+        measuredLeftWheelSpeed_, measuredRightWheelSpeed_,
+        targetLeftWheelSpeed_, targetRightWheelSpeed_, preTurnStopSpeed_, 1, 1);
+    if (std::isfinite(wheelEvidence) && wheelEvidence <= preTurnStopSpeed_)
+      ++obstacleBrakeStoppedTelemetrySamples_;
+    else
+      obstacleBrakeStoppedTelemetrySamples_ = 0;
+  }
+}
+
 void WaypointNavigator::HandleStart(
     const std_srvs::srv::Trigger::Request::SharedPtr,
     std_srvs::srv::Trigger::Response::SharedPtr response) {
@@ -103,6 +151,11 @@ bool WaypointNavigator::ActivateNavigation(std::string &result) {
     result = "Waypoint route is not loaded";
     return false;
   }
+  if (pendingFrontObstacle_ || !obstacleRecoveryController_.idle()) {
+    result = "A new route is required after obstacle recovery";
+    return false;
+  }
+  obstacleRecoveryController_.reset_trace();
 
   const auto inputs = CurrentNavigationInputs();
   const auto readiness = visual_navigation::EvaluateNavigationStart(inputs);
@@ -168,6 +221,7 @@ void WaypointNavigator::HandleStop(
   turnProgressSupervisor_.Reset();
   pathSegmentInitialized_ = false;
   ResetRunControl();
+  ResetObstacleRecovery();
   PublishStop();
   SetState("IDLE");
   response->success = true;
@@ -252,6 +306,9 @@ void WaypointNavigator::HandleReset(
   turnProgressSupervisor_.Reset();
   pathSegmentInitialized_ = false;
   ResetRunControl();
+  routeStartTurnAuthorized_ =
+      !waypoints_.empty() && waypoints_.front().turn_junction;
+  ResetObstacleRecovery();
   PublishStop();
   PublishCurrentWaypoint();
   SetState("IDLE");

@@ -147,8 +147,8 @@ relocalization jumps and are not odometry-fusion pose inputs.
 
 ## Frames
 
-The current planar measurement places `camera_link` 0.096 m forward of the
-drive-wheel center: `base_link -> camera_link = (0.096, 0, 0)`. ORB and wheel
+The current planar measurement places `camera_link` 0.070 m forward of the
+drive-wheel center: `base_link -> camera_link = (0.070, 0, 0)`. ORB and wheel
 odometry publish the vehicle center as `base_link`; the IMU filter keeps its
 camera frame but already converts gyro measurements to Euler yaw rate before the
 gate republishes that scalar in `base_link`.

@@ -28,6 +28,19 @@ std::string SyntheticConfigPath()
          "/config/arena_map_synthetic.yaml";
 }
 
+PlannerConfig DiagramPointRobotConfig()
+{
+  PlannerConfig config = ArenaPlanner::LoadConfig(ConfigPath());
+  config.vehicle_length = 0.0;
+  config.vehicle_width = 0.0;
+  config.safety_margin = 0.0;
+  config.tracking_margin = 0.0;
+  config.inflation_radius = 0.0;
+  config.preferred_clearance = 0.05;
+  config.minimum_turning_radius = 0.05;
+  return config;
+}
+
 double RouteDistance(const Point & point, const std::vector<Point> & route)
 {
   double distance = std::numeric_limits<double>::infinity();
@@ -37,24 +50,146 @@ double RouteDistance(const Point & point, const std::vector<Point> & route)
   return distance;
 }
 
+void ExpectNoBlockedReversal(const ArenaPlanner & planner, const PlanResult & result)
+{
+  (void)planner;
+  ASSERT_EQ(result.headings.size(), result.points.size());
+  for (std::size_t index = 1; index + 1 < result.points.size(); ++index) {
+    const double heading_change = std::abs(NormalizeAngle(
+        result.headings[index] - result.headings[index - 1]));
+    if (heading_change <= 2.6) {
+      continue;
+    }
+    ADD_FAILURE() << "route contains a 180 degree reversal at route index "
+      << index << " point ("
+      << result.points[index].x << ", " << result.points[index].y
+      << "), previous (" << result.points[index - 1].x << ", "
+      << result.points[index - 1].y << "), next ("
+      << result.points[index + 1].x << ", " << result.points[index + 1].y
+      << "), heading change " << heading_change;
+  }
+}
+
+void ExpectTurnsAtJunctions(const ArenaPlanner & planner, const PlanResult & result)
+{
+  ASSERT_EQ(result.headings.size(), result.points.size());
+  for (std::size_t index = 1; index + 1 < result.points.size(); ++index) {
+    const double heading_change = std::abs(NormalizeAngle(
+        result.headings[index] - result.headings[index - 1]));
+    if (heading_change < 1.0) {
+      continue;
+    }
+    const Point & point = result.points[index];
+    EXPECT_TRUE(planner.IsTurnJunction(point))
+      << "road turn " << heading_change << " at route index " << index << " ("
+      << point.x << ", " << point.y << ") previous (" << result.points[index - 1].x
+      << ", " << result.points[index - 1].y << ") next ("
+      << result.points[index + 1].x << ", " << result.points[index + 1].y << ")";
+  }
+}
+
+std::vector<Point> RoadRetreats(const ArenaPlanner & planner, const PlanResult & result)
+{
+  std::vector<Point> retreats;
+  for (std::size_t index = 1; index + 1 < result.points.size(); ++index) {
+    const double heading_change = std::abs(NormalizeAngle(
+        result.headings[index] - result.headings[index - 1]));
+    if (heading_change > 2.6 && !planner.IsTurnJunction(result.points[index]) &&
+      Distance(result.points[index - 1], result.points[index + 1]) <= 1.0e-4)
+    {
+      retreats.push_back(result.points[index]);
+    }
+  }
+  return retreats;
+}
+
+void ExpectExecutableInitialTurn(
+  const ArenaPlanner & planner, const Pose & start, const PlanResult & result)
+{
+  ASSERT_GE(result.points.size(), 2U);
+  const double departure = std::atan2(
+    result.points[1].y - result.points[0].y,
+    result.points[1].x - result.points[0].x);
+  if (std::abs(NormalizeAngle(departure - start.yaw)) > 2.6) {
+    EXPECT_TRUE((planner.config().turns_at_junctions_only &&
+      planner.IsTurnJunction(result.points[0])) ||
+      planner.RotationIsFree(result.points[0], start.yaw, departure))
+      << "blocked initial reversal at (" << result.points[0].x << ", "
+      << result.points[0].y << ")";
+  }
+}
+
 TEST(ArenaPlanner, LoadsDefaultConfiguration)
 {
   const PlannerConfig config = ArenaPlanner::LoadConfig(ConfigPath());
-  EXPECT_DOUBLE_EQ(config.width, 6.0);
-  EXPECT_DOUBLE_EQ(config.height, 6.0);
-  EXPECT_DOUBLE_EQ(config.resolution, 0.05);
-  EXPECT_DOUBLE_EQ(config.vehicle_length, 0.217);
-  EXPECT_DOUBLE_EQ(config.vehicle_width, 0.210);
+  EXPECT_DOUBLE_EQ(config.width, 3.2);
+  EXPECT_DOUBLE_EQ(config.height, 4.4);
+  EXPECT_DOUBLE_EQ(config.resolution, 0.02);
+  EXPECT_DOUBLE_EQ(config.vehicle_length, 0.1434);
+  EXPECT_DOUBLE_EQ(config.vehicle_width, 0.1437);
   EXPECT_DOUBLE_EQ(config.safety_margin, 0.015);
-  ASSERT_EQ(config.default_targets.size(), 8U);
+  EXPECT_DOUBLE_EQ(config.obstacle_stop_buffer, 0.05);
+  EXPECT_TRUE(config.allow_in_place_turns);
+  EXPECT_TRUE(config.turns_at_junctions_only);
+  ASSERT_EQ(config.turn_junctions.size(), 1U);
+  EXPECT_NEAR(config.turn_junctions.front().x, 1.6, 1.0e-12);
+  EXPECT_NEAR(config.turn_junctions.front().y, 4.1, 1.0e-12);
+  ASSERT_EQ(config.free_regions.size(), 3U);
+  ASSERT_EQ(config.obstacles.size(), 10U);
+  for (const Rectangle & obstacle : config.obstacles) {
+    EXPECT_DOUBLE_EQ(obstacle.maximum_x - obstacle.minimum_x, 0.8);
+    EXPECT_DOUBLE_EQ(obstacle.maximum_y - obstacle.minimum_y, 0.8);
+  }
+  ASSERT_EQ(config.default_targets.size(), 12U);
   EXPECT_EQ(config.default_labels.front(), "1");
-  EXPECT_EQ(config.default_labels.back(), "8");
-  ASSERT_FALSE(config.staging_regions.empty());
+  EXPECT_EQ(config.default_labels.back(), "12");
+  EXPECT_DOUBLE_EQ(config.default_start.position.x, 1.6);
+  EXPECT_DOUBLE_EQ(config.default_start.position.y, 4.3);
+  EXPECT_NEAR(config.default_start.yaw, -0.5 * std::acos(-1.0), 1.0e-12);
+  EXPECT_TRUE(config.staging_regions.empty());
+  EXPECT_EQ(config.tunnel_segments.size(), 4U);
+  EXPECT_EQ(config.inspection_nodes.size(), 18U);
+  EXPECT_EQ(config.inspection_edges.size(), 27U);
+  EXPECT_EQ(std::count_if(
+      config.inspection_edges.begin(), config.inspection_edges.end(),
+      [](const InspectionEdge & edge) {return edge.tunnel;}), 4);
   EXPECT_EQ(config.topics.service, "/arena_path_planner/plan");
   EXPECT_EQ(config.topics.arena_path, "/arena_path_planner/arena_path");
   EXPECT_EQ(config.topics.navigation_path, "/arena_path_planner/navigation_path");
   EXPECT_EQ(config.topics.occupancy_grid, "/arena_path_planner/map");
   EXPECT_EQ(config.topics.route_input, "/waypoint_navigation/route_input");
+}
+
+TEST(ArenaPlanner, OfficialJunctionSupportsCardinalTravel)
+{
+  const ArenaPlanner planner(ArenaPlanner::LoadConfig(ConfigPath()));
+  EXPECT_TRUE(planner.PoseIsFree({1.1, 1.1}, 0.0));
+  EXPECT_TRUE(planner.PoseIsFree({1.1, 1.1}, 0.5 * std::acos(-1.0)));
+}
+
+TEST(ArenaPlanner, AllowsOnlyJunctionTurnsAndRejectsRetreats)
+{
+  PlannerConfig config;
+  config.width = 2.0;
+  config.height = 2.0;
+  config.resolution = 0.05;
+  config.free_regions = {{0.0, 0.0, 2.0, 2.0}};
+  config.inspection_nodes = {{0.5, 0.5}, {0.5, 0.55}, {0.5, 1.20}};
+  config.turns_at_junctions_only = true;
+  const ArenaPlanner planner(config, false);
+
+  EXPECT_TRUE(planner.RouteTurnsAreAllowed(
+    {{0.2, 0.5}, {0.5, 0.5}, {0.5, 1.0}}));
+  EXPECT_FALSE(planner.RouteTurnsAreAllowed(
+    {{0.2, 1.0}, {0.7, 1.0}, {0.7, 1.5}}));
+  EXPECT_TRUE(planner.RouteTurnsAreAllowed(
+    {{0.2, 0.5}, {0.5, 0.5}, {0.5, 1.20}, {1.0, 1.20}}));
+  EXPECT_FALSE(planner.RouteTurnsAreAllowed(
+    {{0.2, 1.0}, {0.7, 1.0}, {0.2, 1.0}}));
+  EXPECT_FALSE(planner.RouteTurnsAreAllowed(
+    {{0.2, 0.5}, {0.5, 0.5}, {0.5, 0.55}, {0.8, 0.55}}));
+  EXPECT_DOUBLE_EQ(NavigationPathMarkerZ(true), 0.001);
+  EXPECT_DOUBLE_EQ(NavigationPathMarkerZ(false), 0.0);
 }
 
 TEST(ArenaPlanner, LoadsConfiguredRosInterfaces)
@@ -91,9 +226,10 @@ TEST(ArenaPlanner, LoadsConfiguredRosInterfaces)
   EXPECT_EQ(config.topics.route_input, "/test/route_input");
 }
 
-TEST(ArenaPlanner, PlansClosedCollisionFreeDefaultRoute)
+TEST(ArenaPlanner, PlansLegacyClosedRouteWhenJunctionPolicyIsDisabled)
 {
-  const PlannerConfig config = ArenaPlanner::LoadConfig(ConfigPath());
+  PlannerConfig config = ArenaPlanner::LoadConfig(ConfigPath());
+  config.turns_at_junctions_only = false;
   const ArenaPlanner planner(config);
   const PlanResult result = planner.Plan(
     config.default_start, config.default_targets, config.default_labels, "shortest");
@@ -126,13 +262,16 @@ TEST(ArenaPlanner, PlansClosedCollisionFreeDefaultRoute)
 
 TEST(ArenaPlanner, SupportsNumberedAndDynamicStartPlans)
 {
-  const PlannerConfig config = ArenaPlanner::LoadConfig(ConfigPath());
+  PlannerConfig config = DiagramPointRobotConfig();
+  // This generic API test starts a point robot sideways inside a road. It is
+  // not an executable official-map chassis pose.
+  config.turns_at_junctions_only = false;
   const ArenaPlanner planner(config);
   Pose start{{2.1, 0.75}, 0.0};
   const PlanResult result = planner.Plan(
     start, config.default_targets, config.default_labels, "numbered");
   ASSERT_TRUE(result.success) << result.message;
-  EXPECT_GE(result.visit_order.size(), 8U);
+  EXPECT_GE(result.visit_order.size(), 12U);
   EXPECT_EQ(result.visit_order.front(), "1");
   EXPECT_EQ(result.visit_order.back(), "S");
   EXPECT_NEAR(result.points.front().x, start.position.x, 1.0e-9);
@@ -255,6 +394,19 @@ TEST(ArenaPlanner, RejectsSyntheticMapThatCannotFitVehicle)
   EXPECT_NE(result.message.find("start"), std::string::npos);
 }
 
+TEST(ArenaPlanner, MeasuredVehicleFitsNominalDiagramRoads)
+{
+  const PlannerConfig config = ArenaPlanner::LoadConfig(ConfigPath());
+  const ArenaPlanner planner(config);
+  EXPECT_LT(config.vehicle_width + 2.0 * config.safety_margin, 0.2);
+  EXPECT_LT(config.vehicle_length + 2.0 * config.safety_margin, 0.2);
+  EXPECT_TRUE(planner.PoseIsFree(config.default_start.position, config.default_start.yaw));
+  for (const InspectionEdge & edge : config.inspection_edges) {
+    EXPECT_TRUE(planner.SegmentIsFree(
+        config.inspection_nodes[edge.from], config.inspection_nodes[edge.to])) << edge.label;
+  }
+}
+
 TEST(ArenaPlanner, SafePartialPlanCanBeActivatedWithoutClaimingCompletion)
 {
   const Pose start{{0.0, 0.0}, 0.0};
@@ -353,7 +505,10 @@ TEST(ArenaPlanner, NarrowLaneAllowsAlignedChassisButRejectsAnInPlaceTurn)
 
 TEST(ArenaPlanner, CoverageVisitsEveryConfiguredRoad)
 {
-  const PlannerConfig config = ArenaPlanner::LoadConfig(ConfigPath());
+  PlannerConfig config = ArenaPlanner::LoadConfig(ConfigPath());
+  // Legacy one-shot DFS coverage is retained for API compatibility. The
+  // executable official mission uses layer1/2/3, which is tested below.
+  config.turns_at_junctions_only = false;
   const ArenaPlanner planner(config);
   const PlanResult result = planner.Plan(
     config.default_start, config.default_targets, config.default_labels, "coverage");
@@ -478,7 +633,7 @@ TEST(ArenaPlanner, BlockedTunnelDoesNotStarveAnotherCompleteTunnel)
   }
 }
 
-TEST(ArenaPlanner, DetourDoesNotClaimOrActivateUncoveredRoad)
+TEST(ArenaPlanner, BlockedRoadPlansBothSidesAndWaivesOnlyBlockedMiddle)
 {
   PlannerConfig config;
   config.width = 2.0;
@@ -498,12 +653,42 @@ TEST(ArenaPlanner, DetourDoesNotClaimOrActivateUncoveredRoad)
   const PlanResult result = planner.Plan(
     config.default_start, {}, {}, "layer3");
   ASSERT_TRUE(result.success) << result.message;
-  EXPECT_TRUE(result.visit_order.empty());
+  EXPECT_TRUE(result.all_targets_reached);
+  EXPECT_NE(std::find(result.visit_order.begin(), result.visit_order.end(),
+    "ROAD"), result.visit_order.end());
   EXPECT_TRUE(result.covered_edges.empty());
-  EXPECT_NE(std::find(result.deferred_targets.begin(), result.deferred_targets.end(),
-    "ROAD"), result.deferred_targets.end());
-  EXPECT_FALSE(ActivationAllowed(
+  EXPECT_TRUE(result.deferred_targets.empty());
+  EXPECT_TRUE(result.covered_intervals.empty());
+  ASSERT_EQ(result.planned_intervals.size(), 2U);
+  EXPECT_TRUE(std::all_of(
+    result.planned_intervals.begin(), result.planned_intervals.end(),
+    [](const RoadInterval & interval) {
+      return interval.edge_label == "ROAD" &&
+             !(interval.start_fraction < 0.5 && interval.end_fraction > 0.5);
+    }));
+  ASSERT_EQ(result.blocked_intervals.size(), 1U);
+  EXPECT_TRUE(std::all_of(
+    result.blocked_intervals.begin(), result.blocked_intervals.end(),
+    [](const RoadInterval & interval) {
+      return interval.edge_label == "ROAD" &&
+             interval.start_fraction < 0.5 && interval.end_fraction > 0.5;
+    }));
+  EXPECT_TRUE(result.deferred_intervals.empty());
+  EXPECT_TRUE(ActivationAllowed(
     true, result, config.default_start, config.default_start, {}, {}));
+
+  // Only the executor may promote planned work to confirmed work. Once it
+  // does, the same obstacle snapshot must not make either side creep closer
+  // to the blockage on every replan.
+  const PlanResult confirmed = planner.Plan(
+    config.default_start, {}, {}, "layer3", {}, result.planned_intervals);
+  ASSERT_TRUE(confirmed.success) << confirmed.message;
+  EXPECT_TRUE(confirmed.all_targets_reached);
+  EXPECT_TRUE(confirmed.planned_intervals.empty());
+  EXPECT_TRUE(confirmed.deferred_intervals.empty());
+  EXPECT_FALSE(ActivationAllowed(
+    true, confirmed, config.default_start, config.default_start, {}, {},
+    result.planned_intervals));
 }
 
 TEST(ArenaPlanner, LayerThreeRejectsUnknownCoveredEdgeLabels)
@@ -644,18 +829,78 @@ TEST(ArenaPlanner, DynamicObstacleDoesNotMoveStaticInspectionGraph)
 
   const PlanResult result = dynamic_planner.Plan(
     dynamic_config.default_start, {}, {}, "layer3");
-  EXPECT_FALSE(result.success);
-  EXPECT_FALSE(result.all_targets_reached);
-  EXPECT_TRUE(result.visit_order.empty());
+  ASSERT_TRUE(result.success) << result.message;
+  EXPECT_TRUE(result.all_targets_reached);
+  EXPECT_NE(std::find(result.visit_order.begin(), result.visit_order.end(),
+    "BLOCKED_ROAD"), result.visit_order.end());
   EXPECT_TRUE(result.covered_edges.empty());
-  EXPECT_TRUE(result.points.empty());
-  EXPECT_NE(result.message.find("no uncovered road is reachable"),
-    std::string::npos);
-  EXPECT_NE(std::find(result.deferred_targets.begin(), result.deferred_targets.end(),
-    "BLOCKED_ROAD"), result.deferred_targets.end());
+  EXPECT_FALSE(result.points.empty());
+  EXPECT_TRUE(result.covered_intervals.empty());
+  EXPECT_FALSE(result.planned_intervals.empty());
+  EXPECT_FALSE(result.blocked_intervals.empty());
+  EXPECT_TRUE(result.deferred_intervals.empty());
+  EXPECT_TRUE(result.deferred_targets.empty());
 }
 
-TEST(ArenaPlanner, LayeredPlanMergesHistoricalAndCurrentCoverage)
+TEST(ArenaPlanner, EmitsOnlyLongRectilinearControlLegsInOpenSpace)
+{
+  PlannerConfig config;
+  config.width = 2.0;
+  config.height = 2.0;
+  config.resolution = 0.05;
+  config.inflation_radius = 0.0;
+  config.preferred_clearance = 0.0;
+  config.clearance_cost_weight = 0.0;
+  config.free_regions = {{0.0, 0.0, 2.0, 2.0}};
+  config.default_start = {{0.20, 0.20}, 0.0};
+  const ArenaPlanner planner(config, false);
+
+  const PlanResult straight = planner.Plan(
+    config.default_start, {{1.80, 0.20}}, {"TARGET"}, "layer1");
+  ASSERT_TRUE(straight.success) << straight.message;
+  ASSERT_EQ(straight.points.size(), 2U);
+  EXPECT_NEAR(Distance(straight.points.front(), straight.points.back()), 1.6, 1.0e-9);
+
+  const PlanResult corner = planner.Plan(
+    config.default_start, {{1.80, 1.80}}, {"TARGET"}, "layer1");
+  ASSERT_TRUE(corner.success) << corner.message;
+  ASSERT_EQ(corner.points.size(), 3U) << ::testing::PrintToString(corner.points);
+  for (std::size_t index = 1; index < corner.points.size(); ++index) {
+    EXPECT_TRUE(
+      std::abs(corner.points[index].x - corner.points[index - 1].x) < 1.0e-9 ||
+      std::abs(corner.points[index].y - corner.points[index - 1].y) < 1.0e-9);
+  }
+  const double turn = std::abs(NormalizeAngle(
+    corner.headings[1] - corner.headings[0]));
+  EXPECT_NEAR(turn, 0.5 * std::acos(-1.0), 1.0e-9);
+}
+
+TEST(ArenaPlanner, LongStraightRetainsCrossedIntersectionAsRecoveryAnchor)
+{
+  PlannerConfig config;
+  config.width = 2.0;
+  config.height = 1.0;
+  config.resolution = 0.05;
+  config.inflation_radius = 0.0;
+  config.preferred_clearance = 0.0;
+  config.clearance_cost_weight = 0.0;
+  config.free_regions = {{0.0, 0.0, 2.0, 1.0}};
+  config.default_start = {{0.20, 0.50}, 0.0};
+  config.inspection_nodes = {
+    {0.20, 0.50}, {1.00, 0.50}, {1.80, 0.50}};
+  config.inspection_edges = {
+    {0, 1, "LEFT", false}, {1, 2, "RIGHT", false}};
+  const ArenaPlanner planner(config, false);
+
+  const PlanResult result = planner.Plan(
+    config.default_start, {{1.80, 0.50}}, {"TARGET"}, "layer1");
+  ASSERT_TRUE(result.success) << result.message;
+  ASSERT_EQ(result.points.size(), 3U) << ::testing::PrintToString(result.points);
+  EXPECT_NEAR(result.points[1].x, 1.00, 1.0e-9);
+  EXPECT_NEAR(result.points[1].y, 0.50, 1.0e-9);
+}
+
+TEST(ArenaPlanner, RejectsLegacyLayeredMode)
 {
   PlannerConfig config;
   config.width = 3.0;
@@ -675,14 +920,11 @@ TEST(ArenaPlanner, LayeredPlanMergesHistoricalAndCurrentCoverage)
   const PlanResult result = planner.Plan(
     config.default_start, {{2.50, 0.20}}, {"TASK"}, "layered",
     {"PRIOR_ROAD"});
-  ASSERT_TRUE(result.success) << result.message;
-  EXPECT_TRUE(result.all_targets_reached);
-  EXPECT_TRUE(result.deferred_targets.empty());
-  EXPECT_NE(std::find(result.covered_edges.begin(), result.covered_edges.end(),
-    "PRIOR_ROAD"), result.covered_edges.end());
-  EXPECT_NE(std::find(result.covered_edges.begin(), result.covered_edges.end(),
-    "NEW_ROAD"), result.covered_edges.end());
-  EXPECT_GT(RouteDistance({0.35, 2.40}, result.points), config.task_tolerance);
+  EXPECT_FALSE(result.success);
+  EXPECT_TRUE(result.points.empty());
+  EXPECT_NE(result.message.find("layered mode is disabled"), std::string::npos);
+  EXPECT_NE(result.message.find("layer1, layer2, and layer3 sequentially"),
+    std::string::npos);
 }
 
 TEST(ArenaPlanner, PlansIncrementalTaskTunnelAndGapFillLayers)
@@ -693,15 +935,23 @@ TEST(ArenaPlanner, PlansIncrementalTaskTunnelAndGapFillLayers)
     config.default_start, config.default_targets, config.default_labels, "layer1");
   ASSERT_TRUE(tasks.success) << tasks.message;
   ASSERT_FALSE(tasks.points.empty());
+  ExpectNoBlockedReversal(planner, tasks);
+  ExpectTurnsAtJunctions(planner, tasks);
+  EXPECT_TRUE(RoadRetreats(planner, tasks).empty());
   for (const std::string & label : tasks.visit_order) {
     EXPECT_TRUE(label == "S" || label.find("TUNNEL_") != 0);
   }
 
   const Pose tunnel_start{tasks.points.back(), tasks.headings.back()};
+  std::vector<RoadInterval> confirmed_intervals = tasks.planned_intervals;
   const PlanResult tunnels = planner.Plan(
-    tunnel_start, {}, {}, "layer2", tasks.covered_edges);
+    tunnel_start, {}, {}, "layer2", {}, confirmed_intervals);
   ASSERT_TRUE(tunnels.success) << tunnels.message;
   ASSERT_FALSE(tunnels.points.empty());
+  ExpectExecutableInitialTurn(planner, tunnel_start, tunnels);
+  ExpectNoBlockedReversal(planner, tunnels);
+  ExpectTurnsAtJunctions(planner, tunnels);
+  EXPECT_TRUE(RoadRetreats(planner, tunnels).empty());
   EXPECT_NEAR(tunnels.points.front().x, tasks.points.back().x, 1.0e-9);
   EXPECT_NEAR(tunnels.points.front().y, tasks.points.back().y, 1.0e-9);
   EXPECT_EQ(tunnels.visit_order.size(), config.tunnel_segment_labels.size());
@@ -711,12 +961,18 @@ TEST(ArenaPlanner, PlansIncrementalTaskTunnelAndGapFillLayers)
       tunnels.visit_order.end());
   }
 
-  std::vector<std::string> covered = tasks.covered_edges;
-  covered.insert(covered.end(), tunnels.covered_edges.begin(), tunnels.covered_edges.end());
+  confirmed_intervals.insert(
+    confirmed_intervals.end(), tunnels.planned_intervals.begin(),
+    tunnels.planned_intervals.end());
   const Pose gap_start{tunnels.points.back(), tunnels.headings.back()};
-  const PlanResult gaps = planner.Plan(gap_start, {}, {}, "layer3", covered);
+  const PlanResult gaps = planner.Plan(
+    gap_start, {}, {}, "layer3", {}, confirmed_intervals);
   ASSERT_TRUE(gaps.success) << gaps.message;
   ASSERT_FALSE(gaps.points.empty());
+  ExpectExecutableInitialTurn(planner, gap_start, gaps);
+  ExpectNoBlockedReversal(planner, gaps);
+  ExpectTurnsAtJunctions(planner, gaps);
+  EXPECT_TRUE(RoadRetreats(planner, gaps).empty());
   EXPECT_NEAR(gaps.points.front().x, tunnels.points.back().x, 1.0e-9);
   EXPECT_NEAR(gaps.points.front().y, tunnels.points.back().y, 1.0e-9);
   for (const std::string & label : gaps.visit_order) {
@@ -736,26 +992,11 @@ TEST(ArenaPlanner, PlansIncrementalTaskTunnelAndGapFillLayers)
     EXPECT_NE(std::find(all_covered.begin(), all_covered.end(), edge.label),
       all_covered.end()) << edge.label;
   }
-  EXPECT_NE(std::find(all_covered.begin(), all_covered.end(), "ROAD_97_108"),
-    all_covered.end());
-  EXPECT_NE(std::find(all_covered.begin(), all_covered.end(), "ROAD_185_196"),
-    all_covered.end());
-
   const PlanResult layered = planner.Plan(
     config.default_start, config.default_targets, config.default_labels, "layered");
-  ASSERT_TRUE(layered.success) << layered.message;
-  EXPECT_TRUE(layered.all_targets_reached);
-  EXPECT_TRUE(layered.deferred_targets.empty());
-  for (const InspectionEdge & edge : config.inspection_edges) {
-    EXPECT_NE(std::find(layered.covered_edges.begin(), layered.covered_edges.end(),
-      edge.label), layered.covered_edges.end()) << edge.label;
-  }
-  ASSERT_GE(layered.points.size(), 2U);
-  EXPECT_NEAR(layered.points.back().x, config.default_start.position.x, 1.0e-9);
-  EXPECT_NEAR(layered.points.back().y, config.default_start.position.y, 1.0e-9);
-  for (std::size_t index = 1; index < layered.points.size(); ++index) {
-    EXPECT_TRUE(planner.SegmentIsFree(layered.points[index - 1], layered.points[index]));
-  }
+  EXPECT_FALSE(layered.success);
+  EXPECT_TRUE(layered.points.empty());
+  EXPECT_NE(layered.message.find("layered mode is disabled"), std::string::npos);
 }
 
 }  // namespace

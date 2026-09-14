@@ -275,6 +275,60 @@ bool ArenaPlanner::RotationIsFree(
   return true;
 }
 
+bool ArenaPlanner::IsTurnJunction(const Point & point, double tolerance) const
+{
+  const auto near_point = [&point, tolerance](const Point & junction) {
+      return Distance(point, junction) <= tolerance;
+    };
+  return std::any_of(config_.inspection_nodes.begin(), config_.inspection_nodes.end(), near_point) ||
+         std::any_of(config_.turn_junctions.begin(), config_.turn_junctions.end(), near_point);
+}
+
+bool ArenaPlanner::RouteTurnsAreAllowed(const std::vector<Point> & points) const
+{
+  if (!config_.turns_at_junctions_only) {
+    return true;
+  }
+  constexpr double kNearReversalThreshold = 2.6;
+  constexpr double kMajorTurnThreshold = 1.0;
+  const double consecutive_turn_distance =
+    std::max(0.35, config_.minimum_turning_radius + 2.0 * config_.resolution);
+  std::size_t previous_major_turn = points.size();
+  for (std::size_t index = 1; index + 1 < points.size(); ++index) {
+    if (Distance(points[index - 1], points[index]) <= 1.0e-6 ||
+      Distance(points[index], points[index + 1]) <= 1.0e-6)
+    {
+      continue;
+    }
+    const double incoming = std::atan2(
+      points[index].y - points[index - 1].y,
+      points[index].x - points[index - 1].x);
+    const double outgoing = std::atan2(
+      points[index + 1].y - points[index].y,
+      points[index + 1].x - points[index].x);
+    const double heading_change = std::abs(NormalizeAngle(outgoing - incoming));
+    if (heading_change < config_.in_place_turn_heading_threshold) {
+      continue;
+    }
+    if (heading_change >= kNearReversalThreshold) {
+      return false;
+    }
+    if (!IsTurnJunction(points[index], kTurnJunctionOperatingTolerance))
+    {
+      return false;
+    }
+    if (heading_change >= kMajorTurnThreshold) {
+      if (previous_major_turn + 1 == index &&
+        Distance(points[previous_major_turn], points[index]) <= consecutive_turn_distance)
+      {
+        return false;
+      }
+      previous_major_turn = index;
+    }
+  }
+  return true;
+}
+
 double ArenaPlanner::Clearance(const Point & point) const
 {
   if (!IsFree(point)) {
@@ -313,6 +367,44 @@ bool ArenaPlanner::SegmentIsFree(const Point & start, const Point & end) const
   return true;
 }
 
+bool ArenaPlanner::ProjectToNearestFreePose(
+  const Pose & pose, double maximum_distance, Pose & projected) const
+{
+  if (!IsFinite(pose) || !std::isfinite(maximum_distance) || maximum_distance < 0.0) {
+    return false;
+  }
+  if (IsFree(pose.position) && PoseIsFree(pose.position, pose.yaw)) {
+    projected = pose;
+    return true;
+  }
+
+  double best_distance = maximum_distance + 1.0e-12;
+  Cell best_cell{-1, -1};
+  for (int row = 0; row < rows_; ++row) {
+    for (int column = 0; column < columns_; ++column) {
+      if (!CellIsFree(column, row)) {
+        continue;
+      }
+      const Point candidate = CellToWorld({column, row});
+      const double distance = Distance(pose.position, candidate);
+      if (distance > best_distance || !PoseIsFree(candidate, pose.yaw)) {
+        continue;
+      }
+      if (distance + 1.0e-12 < best_distance || best_cell.first < 0 ||
+        Clearance(candidate) > Clearance(CellToWorld(best_cell)) + 1.0e-12)
+      {
+        best_distance = distance;
+        best_cell = {column, row};
+      }
+    }
+  }
+  if (best_cell.first < 0) {
+    return false;
+  }
+  projected = {CellToWorld(best_cell), pose.yaw};
+  return true;
+}
+
 std::vector<int8_t> ArenaPlanner::OccupancyData() const
 {
   std::vector<int8_t> result;
@@ -323,7 +415,8 @@ std::vector<int8_t> ArenaPlanner::OccupancyData() const
   return result;
 }
 
-ArenaPlanner::GridPath ArenaPlanner::AStar(const Point & start, const Point & goal) const
+ArenaPlanner::GridPath ArenaPlanner::AStar(
+  const Point & start, const Point & goal, double initial_heading) const
 {
   if (!IsFree(start) || !IsFree(goal)) {
     throw std::runtime_error("start or target is outside collision-free space");
@@ -335,80 +428,233 @@ ArenaPlanner::GridPath ArenaPlanner::AStar(const Point & start, const Point & go
   {
     throw std::runtime_error("start or target is occupied");
   }
-  using Entry = std::tuple<double, double, int, int>;
+  // Direction is part of the search state. This lets the planner optimize the
+  // quantity that matters to the differential-drive chassis: first pivot
+  // count, then clearance-weighted travel distance. Four-connected motion also
+  // guarantees that ordinary connector legs are horizontal or vertical.
+  constexpr int kDirectionCount = 4;
+  constexpr int kNoDirection = 4;
+  const int column_steps[kDirectionCount] = {1, 0, -1, 0};
+  const int row_steps[kDirectionCount] = {0, 1, 0, -1};
+  const double direction_yaws[kDirectionCount] = {
+    0.0, 0.5 * std::acos(-1.0), std::acos(-1.0), -0.5 * std::acos(-1.0)};
+  using Entry = std::tuple<double, int, double, int>;
   std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> frontier;
   const int start_index = Index(start_cell.first, start_cell.second);
   const int goal_index = Index(goal_cell.first, goal_cell.second);
-  std::vector<double> costs(columns_ * rows_, std::numeric_limits<double>::infinity());
-  std::vector<int> parents(columns_ * rows_, -1);
-  std::vector<bool> closed(columns_ * rows_, false);
-  costs[start_index] = 0.0;
-  frontier.emplace(Distance(start, goal), 0.0, start_cell.first, start_cell.second);
-  const std::vector<std::tuple<int, int, double>> steps{
-    {1, 0, 1.0}, {-1, 0, 1.0}, {0, 1, 1.0}, {0, -1, 1.0},
-    {1, 1, std::sqrt(2.0)}, {1, -1, std::sqrt(2.0)},
-    {-1, 1, std::sqrt(2.0)}, {-1, -1, std::sqrt(2.0)}};
+  const bool heading_constrained = std::isfinite(initial_heading);
+  if (start_index == goal_index) {
+    return {{start_cell}, 0, 0.0};
+  }
+  const std::uint64_t path_cache_key =
+    (static_cast<std::uint64_t>(static_cast<std::uint32_t>(start_index)) << 32U) |
+    static_cast<std::uint32_t>(goal_index);
+  const auto cached_path = grid_path_cache_.find(path_cache_key);
+  if (!heading_constrained && cached_path != grid_path_cache_.end()) {
+    return cached_path->second;
+  }
+  const auto cache_path = [this, path_cache_key, start_index, goal_index,
+      heading_constrained](
+      GridPath result) {
+      if (heading_constrained) {
+        return result;
+      }
+      grid_path_cache_.emplace(path_cache_key, result);
+      const std::uint64_t reverse_cache_key =
+        (static_cast<std::uint64_t>(static_cast<std::uint32_t>(goal_index)) << 32U) |
+        static_cast<std::uint32_t>(start_index);
+      GridPath reversed = result;
+      std::reverse(reversed.cells.begin(), reversed.cells.end());
+      grid_path_cache_.emplace(reverse_cache_key, std::move(reversed));
+      return result;
+    };
+  constexpr double kAxisTolerance = 1.0e-9;
+  constexpr double kNearReversalThreshold = 2.6;
+  const auto initial_turn_count = [initial_heading](double departure) {
+      if (!std::isfinite(initial_heading)) {
+        return 0;
+      }
+      const double change = std::abs(NormalizeAngle(departure - initial_heading));
+      if (change <= 1.0e-3) {
+        return 0;
+      }
+      return change > 0.75 * std::acos(-1.0) ? 2 : 1;
+    };
+  const auto departure_is_allowed = [this, &start, initial_heading,
+      heading_constrained](double departure) {
+      if (!heading_constrained) {
+        return true;
+      }
+      const double change = std::abs(NormalizeAngle(departure - initial_heading));
+      if (change <= 1.0e-3) {
+        return true;
+      }
+      if (change >= kNearReversalThreshold) {
+        return false;
+      }
+      if (config_.turns_at_junctions_only &&
+        change >= config_.in_place_turn_heading_threshold &&
+        !IsTurnJunction(start, kTurnJunctionOperatingTolerance))
+      {
+        return false;
+      }
+      const bool must_fit_rotation =
+        change > kNearReversalThreshold || !config_.allow_in_place_turns;
+      return !must_fit_rotation ||
+             (config_.turns_at_junctions_only &&
+             IsTurnJunction(start, kTurnJunctionOperatingTolerance)) ||
+             RotationIsFree(start, initial_heading, departure);
+    };
+  if ((std::abs(start.x - goal.x) <= kAxisTolerance ||
+    std::abs(start.y - goal.y) <= kAxisTolerance) &&
+    SegmentIsFree(start, goal))
+  {
+    const double departure = std::atan2(goal.y - start.y, goal.x - start.x);
+    if (departure_is_allowed(departure)) {
+      return cache_path({
+        {start_cell, goal_cell}, initial_turn_count(departure),
+        Distance(start, goal), heading_constrained});
+    }
+  }
+  const int directional_state_count = columns_ * rows_ * kDirectionCount;
+  const int start_state = directional_state_count;
+  std::vector<int> turns(
+    static_cast<std::size_t>(directional_state_count + 1),
+    std::numeric_limits<int>::max());
+  std::vector<double> costs(
+    static_cast<std::size_t>(directional_state_count + 1),
+    std::numeric_limits<double>::infinity());
+  std::vector<int> parents(
+    static_cast<std::size_t>(directional_state_count + 1), -1);
+  const auto state_index = [kDirectionCount](int cell, int direction) {
+      return cell * kDirectionCount + direction;
+    };
+  const double turn_penalty = std::max(0.5, 4.0 * config_.minimum_turning_radius);
+  const auto ranked_cost = [turn_penalty](int turn_count, double distance_cost) {
+      return turn_penalty * static_cast<double>(turn_count) + distance_cost;
+    };
+  const auto turn_lower_bound = [goal_cell, &column_steps, &row_steps](
+      int column, int row, int direction) {
+      const int delta_column = goal_cell.first - column;
+      const int delta_row = goal_cell.second - row;
+      if (delta_column == 0 && delta_row == 0) {
+        return 0;
+      }
+      if (delta_column != 0 && delta_row != 0) {
+        const bool follows_needed_axis =
+          (column_steps[direction] != 0 &&
+          ((column_steps[direction] > 0) == (delta_column > 0))) ||
+          (row_steps[direction] != 0 &&
+          ((row_steps[direction] > 0) == (delta_row > 0)));
+        return follows_needed_axis ? 1 : 2;
+      }
+      const int needed_column = delta_column == 0 ? 0 : (delta_column > 0 ? 1 : -1);
+      const int needed_row = delta_row == 0 ? 0 : (delta_row > 0 ? 1 : -1);
+      return column_steps[direction] == needed_column &&
+             row_steps[direction] == needed_row ? 0 : 1;
+    };
+  turns[start_state] = 0;
+  costs[start_state] = 0.0;
+  // The special start state has no incoming direction and therefore no pivot
+  // charge. The navigator deals with the initial heading before translation.
+  frontier.emplace(0.0, 0, 0.0, start_state);
+  int goal_state = -1;
   while (!frontier.empty()) {
-    const auto [priority, current_cost, column, row] = frontier.top();
+    const auto [priority, current_turns, current_cost, state] = frontier.top();
     (void)priority;
     frontier.pop();
-    const int current_index = Index(column, row);
-    if (closed[current_index]) {
+    if (current_turns != turns[state] ||
+      current_cost > costs[state] + 1.0e-12)
+    {
       continue;
     }
-    closed[current_index] = true;
+    const int current_direction = state == start_state ? kNoDirection : state % kDirectionCount;
+    const int current_index = state == start_state ? start_index : state / kDirectionCount;
+    const int column = current_index % columns_;
+    const int row = current_index / columns_;
     if (current_index == goal_index) {
+      goal_state = state;
       break;
     }
-    for (const auto & [column_delta, row_delta, multiplier] : steps) {
-      const int next_column = column + column_delta;
-      const int next_row = row + row_delta;
+    for (int next_direction = 0; next_direction < kDirectionCount; ++next_direction) {
+      const int next_column = column + column_steps[next_direction];
+      const int next_row = row + row_steps[next_direction];
       if (!CellIsFree(next_column, next_row)) {
         continue;
       }
-      if (column_delta != 0 && row_delta != 0 &&
-        (!CellIsFree(column + column_delta, row) ||
-        !CellIsFree(column, row + row_delta)))
+      int added_turns = 0;
+      if (current_direction == kNoDirection && heading_constrained) {
+        const double departure = direction_yaws[next_direction];
+        if (!departure_is_allowed(departure)) {
+          continue;
+        }
+        added_turns = initial_turn_count(departure);
+      } else if (current_direction != kNoDirection &&
+        current_direction != next_direction)
       {
-        continue;
+        const Point pivot = CellToWorld({column, row});
+        if (config_.turns_at_junctions_only &&
+          !IsTurnJunction(pivot, config_.resolution * 0.75))
+        {
+          continue;
+        }
+        added_turns = (current_direction + 2) % kDirectionCount == next_direction ? 2 : 1;
+        const bool is_reversal = added_turns == 2;
+        if (is_reversal) {
+          continue;
+        }
+        if ((is_reversal || !config_.allow_in_place_turns) &&
+          !(config_.turns_at_junctions_only &&
+          IsTurnJunction(pivot, config_.resolution * 0.75)) && !RotationIsFree(
+            pivot, direction_yaws[current_direction],
+            direction_yaws[next_direction]))
+        {
+          continue;
+        }
       }
-      // The inflated grid is only a translational lower bound. Validate
-      // diagonal grid legs with the oriented chassis before allowing them into
-      // an A* predecessor chain; this rejects shortcuts that clip a corner
-      // even when both endpoint cells are individually free. Cardinal legs
-      // are covered by the inflation bound and avoid an expensive resampling
-      // pass for every A* expansion.
-      if (column_delta != 0 && row_delta != 0 &&
-        !SegmentIsFree(
-          CellToWorld({column, row}), CellToWorld({next_column, next_row})))
-      {
-        continue;
-      }
-      const int next_index = Index(next_column, next_row);
-      const double clearance = clearance_[next_index];
+      // BuildGrid already inflates occupied cells by the chassis translation
+      // radius plus half a grid cell. Cardinal motion between adjacent free
+      // cell centres is therefore valid for search. MaterializeGridPath and
+      // the public service still perform the full rectangular-footprint check
+      // on every emitted control segment before it can reach navigation.
+      const int next_cell_index = Index(next_column, next_row);
+      const int next_state = state_index(next_cell_index, next_direction);
+      const double clearance = clearance_[next_cell_index];
       const double deficit = config_.preferred_clearance > 1.0e-9 ?
         std::max(0.0, config_.preferred_clearance - clearance) /
         config_.preferred_clearance : 0.0;
-      const double step = multiplier * config_.resolution *
+      const double step = config_.resolution *
         (1.0 + config_.clearance_cost_weight * deficit * deficit);
-      const double candidate = current_cost + step;
-      if (candidate + 1.0e-12 >= costs[next_index]) {
+      const int candidate_turns = current_turns + added_turns;
+      const double candidate_cost = current_cost + step;
+      if (ranked_cost(candidate_turns, candidate_cost) + 1.0e-12 >=
+        ranked_cost(turns[next_state], costs[next_state]))
+      {
         continue;
       }
-      costs[next_index] = candidate;
-      parents[next_index] = current_index;
-      const Point next_point = CellToWorld({next_column, next_row});
+      turns[next_state] = candidate_turns;
+      costs[next_state] = candidate_cost;
+      parents[next_state] = state;
+      const int remaining_turns = turn_lower_bound(
+        next_column, next_row, next_direction);
+      const double remaining_distance = config_.resolution *
+        (std::abs(goal_cell.first - next_column) +
+        std::abs(goal_cell.second - next_row));
       frontier.emplace(
-        candidate + Distance(next_point, goal), candidate, next_column, next_row);
+        ranked_cost(
+          candidate_turns + remaining_turns,
+          candidate_cost + remaining_distance),
+        candidate_turns, candidate_cost, next_state);
     }
   }
-  if (!std::isfinite(costs[goal_index])) {
+  if (goal_state < 0) {
     throw std::runtime_error("no collision-free path exists");
   }
   std::vector<Cell> cells;
-  int current = goal_index;
-  while (current != start_index) {
-    cells.emplace_back(current % columns_, current / columns_);
+  int current = goal_state;
+  while (current != start_state) {
+    const int cell = current / kDirectionCount;
+    cells.emplace_back(cell % columns_, cell / columns_);
     current = parents[current];
     if (current < 0) {
       throw std::runtime_error("A* predecessor chain is incomplete");
@@ -416,6 +662,8 @@ ArenaPlanner::GridPath ArenaPlanner::AStar(const Point & start, const Point & go
   }
   cells.push_back(start_cell);
   std::reverse(cells.begin(), cells.end());
-  return {cells, costs[goal_index]};
+  GridPath result{
+    cells, turns[goal_state], costs[goal_state], heading_constrained};
+  return cache_path(std::move(result));
 }
 }  // namespace arena_path_planner

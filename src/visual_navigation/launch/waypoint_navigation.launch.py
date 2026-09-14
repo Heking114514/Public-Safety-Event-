@@ -19,6 +19,8 @@ def generate_launch_description():
     actuator_health_topic = LaunchConfiguration("actuator_health_topic")
     require_actuator_health = LaunchConfiguration("require_actuator_health")
     actuator_health_timeout = LaunchConfiguration("actuator_health_timeout")
+    front_obstacle_topic = LaunchConfiguration("front_obstacle_topic")
+    front_obstacle_range_topic = LaunchConfiguration("front_obstacle_range_topic")
     tracking_state_topic = LaunchConfiguration("tracking_state_topic")
     cmd_vel_topic = LaunchConfiguration("cmd_vel_topic")
     route_input_topic = LaunchConfiguration("route_input_topic")
@@ -46,6 +48,12 @@ def generate_launch_description():
                 ),
                 "actuator_health_timeout": ParameterValue(
                     actuator_health_timeout, value_type=float
+                ),
+                "front_obstacle_topic": ParameterValue(
+                    front_obstacle_topic, value_type=str
+                ),
+                "front_obstacle_range_topic": ParameterValue(
+                    front_obstacle_range_topic, value_type=str
                 ),
                 "tracking_state_topic": ParameterValue(
                     tracking_state_topic, value_type=str
@@ -82,6 +90,12 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument("require_actuator_health", default_value="false"),
             DeclareLaunchArgument("actuator_health_timeout", default_value="0.8"),
+            DeclareLaunchArgument(
+                "front_obstacle_topic", default_value="/obstacle/front_blocked"
+            ),
+            DeclareLaunchArgument(
+                "front_obstacle_range_topic", default_value="/obstacle/front_range"
+            ),
             DeclareLaunchArgument(
                 "tracking_state_topic", default_value="/tracking_state"
             ),

@@ -161,6 +161,28 @@ bool motion_command_is_stationary(
     std::abs(angular_velocity) <= std::max(0.0, maximum_angular_speed);
 }
 
+bool stationary_chassis_rejects_visual_motion(
+  double command_velocity, double command_yaw_rate, bool command_fresh,
+  double wheel_velocity, bool wheel_fresh,
+  double visual_velocity, bool visual_velocity_valid,
+  double maximum_command_linear_speed, double maximum_command_angular_speed,
+  double maximum_wheel_speed, double minimum_visual_speed)
+{
+  if (!wheel_fresh || !visual_velocity_valid || !std::isfinite(wheel_velocity) ||
+    !std::isfinite(visual_velocity) || !std::isfinite(maximum_wheel_speed) ||
+    !std::isfinite(minimum_visual_speed) || maximum_wheel_speed < 0.0 ||
+    minimum_visual_speed <= 0.0)
+  {
+    return false;
+  }
+  const bool command_stationary = motion_command_is_stationary(
+    command_velocity, command_yaw_rate, command_fresh,
+    maximum_command_linear_speed, maximum_command_angular_speed);
+  const bool wheel_stationary = std::abs(wheel_velocity) <= maximum_wheel_speed;
+  const bool visual_moving = std::abs(visual_velocity) >= minimum_visual_speed;
+  return command_stationary && wheel_stationary && visual_moving;
+}
+
 void PoseAligner::clear()
 {
   offset_ = {};

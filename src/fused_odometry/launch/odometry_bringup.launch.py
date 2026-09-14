@@ -21,6 +21,7 @@ def generate_launch_description():
     equalize = LaunchConfiguration("equalize")
     use_wheel = LaunchConfiguration("use_wheel")
     use_sim_time = LaunchConfiguration("use_sim_time")
+    enable_depth = LaunchConfiguration("enable_depth")
 
     wheel_config = os.path.join(
         get_package_share_directory("wheel_odometry"),
@@ -39,7 +40,7 @@ def generate_launch_description():
         name="base_to_d455",
         output="screen",
         arguments=[
-            "--x", "0.096",
+            "--x", "0.070",
             "--y", "0.0",
             "--z", "0.0",
             "--yaw", "0.0",
@@ -60,6 +61,11 @@ def generate_launch_description():
         DeclareLaunchArgument("equalize", default_value="false"),
         DeclareLaunchArgument("use_wheel", default_value="true"),
         DeclareLaunchArgument("use_sim_time", default_value="false"),
+        DeclareLaunchArgument(
+            "enable_depth",
+            default_value="false",
+            description="Expose D455 depth for a separately launched perception node",
+        ),
         base_to_camera,
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
@@ -75,6 +81,7 @@ def generate_launch_description():
                 "initial_reset": initial_reset,
                 "use_slam_imu": use_slam_imu,
                 "enable_imu": use_imu,
+                "enable_depth": enable_depth,
             }.items(),
         ),
         Node(
