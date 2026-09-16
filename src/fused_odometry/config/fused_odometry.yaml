@@ -4,19 +4,16 @@ fused_odometry_gate:
     tracking_topic: /tracking_state
     map_change_topic: /orbslam3/map_change
     wheel_topic: /wheel/odom
-    imu_topic: /imu/filtered
-    command_topic: /cmd_vel_nav
+    imu_topic: /cup_car_serial/bmi088_attitude
     visual_output_topic: /fusion/input/visual_odom
     wheel_output_topic: /fusion/input/wheel_odom
-    # Bias-corrected, frame-normalized gyro used by both EKF and navigation.
-    # The raw /imu/filtered stream remains a gate input only.
+    # Processed BMI088 yaw/yaw-rate used by both EKF and navigation.
     imu_output_topic: /imu/control
     status_topic: /odometry/fusion_status
     diagnostics_topic: /diagnostics
 
     world_frame: map
-    # The sanitized wheel stream is diagnostics-only in the default profile.
-    # Preserve its native odom frame so recorded supervision data stays honest.
+    # The sanitized wheel stream contributes only body-forward vx.
     wheel_frame: odom
     base_frame: base_link
     visual_expected_frame: map
@@ -24,17 +21,17 @@ fused_odometry_gate:
     raw_visual_expected_frame: map
     wheel_expected_frame: odom
     wheel_expected_child_frame: base_link
-    # The filter already converts camera gyro measurements to Euler yaw rate;
-    # the gate republishes that scalar rate in the planar base_link frame.
-    imu_expected_frame: camera_link
+    imu_expected_frame: base_link
     publish_tf: false
 
     visual_timeout_s: 0.40
     tracking_timeout_s: 0.60
     wheel_timeout_s: 0.35
-    imu_timeout_s: 0.15
-    command_timeout_s: 0.40
-    raw_visual_timeout_s: 0.30
+    # Serial ATT and encoder stamps carry MCU measurement time. Under full
+    # camera+ORB+bag load their observed age is about 0.21 s, so keep the IMU
+    # freshness window above that while still rejecting second-scale backlog.
+    imu_timeout_s: 0.30
+    raw_visual_timeout_s: 0.45
     # Reject optical-frame or otherwise non-planar poses mislabeled as map.
     raw_visual_max_tilt_rad: 0.50
     stamp_future_tolerance_s: 0.20
@@ -69,7 +66,6 @@ fused_odometry_gate:
     # of whether the absolute visual pose has passed its recovery gate.
     visual_stationary_speed_mps: 0.025
     stationary_wheel_reject_speed_mps: 0.03
-    stationary_command_yaw_speed_radps: 0.12
     imu_visual_soft_radps: 0.15
     imu_visual_covariance_cap_radps: 0.80
     residual_bad_samples: 3
@@ -83,49 +79,33 @@ fused_odometry_gate:
     # turns. Keep wheel yaw diagnostic-only until repeated turn calibration.
     fuse_wheel_yaw: false
 
-    command_motion_threshold_mps: 0.08
     motion_moving_threshold_mps: 0.04
     motion_stationary_threshold_mps: 0.02
     motion_fault_dwell_s: 0.60
     motion_recovery_dwell_s: 1.00
-    # Path tracking is allowed to request up to 0.45 rad/s while the car is
-    # translating. Treat only rotate-in-place-sized commands as an angular
-    # stall, otherwise drivetrain steering deadband can abort a healthy run.
-    angular_stall_command_threshold_radps: 0.55
-    angular_stall_stationary_threshold_radps: 0.10
-    angular_stall_dwell_s: 0.80
-    angular_stall_recovery_dwell_s: 1.00
 
     visual_xy_variance: 0.02
     visual_yaw_variance: 0.04
-    # Raw ORB frame-to-frame speed is an independent local velocity
-    # observation. It prevents encoder slip/lift from becoming EKF motion.
+    # Raw ORB frame-to-frame speed is the primary local velocity observation.
     visual_vx_variance: 0.01
+    # Wheel vx is low-weight, diagnostic-gated translation. Wheel yaw remains
+    # disabled because the current encoder turn scale is not trusted.
     wheel_vx_variance: 0.08
-    # Encoder vx is biased during turns because the low-speed reverse wheel
-    # overshoots. Downweight it progressively; during a commanded in-place
-    # turn publish a zero center velocity instead of integrating the bias.
+    # Encoder vx is downweighted during observed turns. During an observed
+    # in-place turn, publish zero center velocity instead of integrating bias.
     wheel_turn_downweight_start_radps: 0.15
     wheel_turn_full_downweight_radps: 0.60
     wheel_turn_covariance_scale: 100.0
     wheel_in_place_max_linear_speed_mps: 0.10
-    wheel_in_place_min_yaw_rate_radps: 0.30
+    wheel_in_place_min_yaw_rate_radps: 0.07
     wheel_wz_variance: 0.50
-    # Static bag noise after robust filtering is about 1 deg/s. Keep a modest
-    # floor without effectively discarding the IMU in favor of visual yaw.
+    # BMI088 ATT is already filtered and bias-corrected by the lower controller.
     imu_wz_variance: 0.0004
-    # Learn only a slow gyro-z bias during commanded straight motion while
-    # visual yaw rate is near zero. The high-frequency IMU signal is preserved
-    # during turns and outages; this only suppresses long straight-run drift.
-    imu_bias_time_constant_s: 3.0
-    imu_bias_max_radps: 0.08
-    imu_bias_learning_max_command_radps: 0.08
-    imu_bias_learning_max_visual_rate_radps: 0.12
 
 fused_ekf:
   ros__parameters:
     frequency: 30.0
-    sensor_timeout: 0.20
+    sensor_timeout: 0.35
     two_d_mode: true
     transform_time_offset: 0.0
     transform_timeout: 0.0
@@ -143,9 +123,6 @@ fused_ekf:
 
     # Local odometry intentionally excludes absolute ORB pose. Loop closure
     # updates map->odom in map_odom_correction without moving odom->base_link.
-    # Encoder odometry is intentionally excluded: the current wheel scale drifts
-    # too much to modify the navigation state. Wheel data remains available to
-    # the gate for slip/stall checks and the bounded vision-outage distance.
     odom0: /fusion/input/visual_odom
     odom0_config: [false, false, false,
                    false, false, false,
@@ -158,9 +135,21 @@ fused_ekf:
     odom0_relative: false
     odom0_twist_rejection_threshold: 100.0
 
+    odom1: /fusion/input/wheel_odom
+    odom1_config: [false, false, false,
+                   false, false, false,
+                   true, false, false,
+                   false, false, false,
+                   false, false, false]
+    odom1_queue_size: 10
+    odom1_nodelay: true
+    odom1_differential: false
+    odom1_relative: false
+    odom1_twist_rejection_threshold: 100.0
+
     imu0: /imu/control
     imu0_config: [false, false, false,
-                  false, false, false,
+                  false, false, true,
                   false, false, false,
                   false, false, true,
                   false, false, false]
@@ -178,7 +167,6 @@ map_odom_correction:
   ros__parameters:
     visual_topic: /fusion/input/visual_odom
     local_topic: /odometry/local
-    command_topic: /cmd_vel_nav
     fusion_status_topic: /odometry/fusion_status
     output_topic: /odometry/fused
     map_change_topic: /orbslam3/map_change
@@ -193,10 +181,10 @@ map_odom_correction:
     # Deprecated compatibility parameter. Visual corrections are always
     # smoothed before they update map->odom; true no longer bypasses filtering.
     direct_visual_tracking: false
-    visual_recovery_gap_s: 0.10
+    visual_recovery_gap_s: 0.20
     visual_recovery_time_constant_s: 0.25
     visual_recovery_blend_duration_s: 0.80
-    hold_global_xy_during_turn: false
+    hold_global_xy_during_turn: true
     # The IMU owns short-term angular continuity in odom. ORB supplies the
     # long-term yaw correction through map->odom, exactly like its XY update.
     publish_tf: true
@@ -204,7 +192,7 @@ map_odom_correction:
     # Raw ORB is stable in the latest bag; keep normal fused output close to
     # vision instead of accumulating 8-11cm of local-EKF lag while moving.
     correction_time_constant_s: 0.15
-    # Once the car is commanded stationary, remove local-EKF residual motion
+    # Once measured local motion is stationary, remove local-EKF residual motion
     # quickly so /odometry/fused cannot keep sliding while raw ORB is stable.
     stationary_correction_time_constant_s: 0.08
     loop_correction_time_constant_s: 1.25
@@ -214,17 +202,16 @@ map_odom_correction:
     synchronization_tolerance_s: 0.12
     local_timeout_s: 0.50
     visual_timeout_s: 0.60
-    command_timeout_s: 0.40
     fusion_status_timeout_s: 0.80
     stationary_max_linear_speed_mps: 0.03
     stationary_max_angular_speed_radps: 0.12
-    # ORB reported 4-9 cm of XY motion during commanded zero-vx 90-degree
-    # turns. Hold global XY through the turn, then preserve later visual
-    # increments from the anchored position.
+    # ORB can report XY motion during measured in-place 90-degree turns. Hold
+    # global XY through the turn, then preserve later visual increments.
     turn_hold_max_linear_speed_mps: 0.03
-    turn_hold_max_translation_m: 0.04
-    turn_hold_entry_angular_speed_radps: 0.55
-    turn_hold_min_angular_speed_radps: 0.12
-    # Release early inside the navigator's 0.30s settle window so the fast
-    # stationary visual correction is visible before path alignment completes.
-    turn_hold_release_delay_s: 0.10
+    turn_hold_max_translation_m: 0.10
+    turn_hold_entry_angular_speed_radps: 0.07
+    turn_hold_min_angular_speed_radps: 0.02
+    # The current chassis reports low, slightly intermittent yaw-rate during
+    # pivots. Hold through short measurement gaps, then release before normal
+    # lane following can accumulate meaningful forward displacement.
+    turn_hold_release_delay_s: 0.30

@@ -45,7 +45,8 @@ bool WaypointNavigator::SuperviseTurnProgress(std::size_t phaseOffset,
     RCLCPP_WARN(get_logger(), "No turn progress at waypoint %zu (recovery %d)",
                 currentWaypointIndex_, decision.recovery_attempt);
     PublishStop();
-    ResetManeuver();
+    ResetPathFeedback();
+    turnSettleController_.reset();
     SetState("RECOVERING_NO_TURN_PROGRESS");
     return true;
   }

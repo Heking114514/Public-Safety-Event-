@@ -56,9 +56,22 @@ bool yaw_rates_consistent(double wheel_rate, double imu_rate, double maximum_res
          std::abs(wheel_rate - imu_rate) <= maximum_residual;
 }
 
+bool in_place_turn_observed(
+  double body_velocity, double yaw_rate,
+  bool body_velocity_valid, bool yaw_rate_valid,
+  double maximum_linear_speed, double minimum_yaw_rate)
+{
+  return body_velocity_valid && yaw_rate_valid &&
+         std::isfinite(body_velocity) && std::isfinite(yaw_rate) &&
+         std::isfinite(maximum_linear_speed) &&
+         std::isfinite(minimum_yaw_rate) &&
+         maximum_linear_speed >= 0.0 && minimum_yaw_rate >= 0.0 &&
+         std::abs(body_velocity) <= maximum_linear_speed &&
+         std::abs(yaw_rate) >= minimum_yaw_rate;
+}
+
 double wheel_vx_turn_covariance_scale(
-  double imu_yaw_rate, double command_yaw_rate,
-  bool imu_valid, bool command_valid,
+  double imu_yaw_rate, bool imu_valid,
   double downweight_start_rate, double full_downweight_rate,
   double maximum_scale)
 {
@@ -73,8 +86,6 @@ double wheel_vx_turn_covariance_scale(
   double turn_rate = 0.0;
   if (imu_valid && std::isfinite(imu_yaw_rate)) {
     turn_rate = std::abs(imu_yaw_rate);
-  } else if (command_valid && std::isfinite(command_yaw_rate)) {
-    turn_rate = std::abs(command_yaw_rate);
   }
   if (turn_rate <= downweight_start_rate) {
     return 1.0;
@@ -87,15 +98,13 @@ double wheel_vx_turn_covariance_scale(
 }
 
 bool zero_wheel_vx_during_in_place_turn(
-  double command_velocity, double command_yaw_rate, bool command_valid,
+  double wheel_velocity, double imu_yaw_rate,
+  bool wheel_valid, bool imu_valid,
   double maximum_linear_speed, double minimum_yaw_rate)
 {
-  return command_valid && std::isfinite(command_velocity) &&
-         std::isfinite(command_yaw_rate) && std::isfinite(maximum_linear_speed) &&
-         std::isfinite(minimum_yaw_rate) && maximum_linear_speed >= 0.0 &&
-         minimum_yaw_rate >= 0.0 &&
-         std::abs(command_velocity) <= maximum_linear_speed &&
-         std::abs(command_yaw_rate) >= minimum_yaw_rate;
+  return in_place_turn_observed(
+    wheel_velocity, imu_yaw_rate, wheel_valid, imu_valid,
+    maximum_linear_speed, minimum_yaw_rate);
 }
 
 double disagreement_covariance_scale(
@@ -148,39 +157,6 @@ double wheel_visual_rejection_residual(
     return std::numeric_limits<double>::infinity();
   }
   return residual;
-}
-
-bool motion_command_is_stationary(
-  double linear_velocity, double angular_velocity, bool command_fresh,
-  double maximum_linear_speed, double maximum_angular_speed)
-{
-  return command_fresh && std::isfinite(linear_velocity) &&
-    std::isfinite(angular_velocity) && std::isfinite(maximum_linear_speed) &&
-    std::isfinite(maximum_angular_speed) &&
-    std::abs(linear_velocity) <= std::max(0.0, maximum_linear_speed) &&
-    std::abs(angular_velocity) <= std::max(0.0, maximum_angular_speed);
-}
-
-bool stationary_chassis_rejects_visual_motion(
-  double command_velocity, double command_yaw_rate, bool command_fresh,
-  double wheel_velocity, bool wheel_fresh,
-  double visual_velocity, bool visual_velocity_valid,
-  double maximum_command_linear_speed, double maximum_command_angular_speed,
-  double maximum_wheel_speed, double minimum_visual_speed)
-{
-  if (!wheel_fresh || !visual_velocity_valid || !std::isfinite(wheel_velocity) ||
-    !std::isfinite(visual_velocity) || !std::isfinite(maximum_wheel_speed) ||
-    !std::isfinite(minimum_visual_speed) || maximum_wheel_speed < 0.0 ||
-    minimum_visual_speed <= 0.0)
-  {
-    return false;
-  }
-  const bool command_stationary = motion_command_is_stationary(
-    command_velocity, command_yaw_rate, command_fresh,
-    maximum_command_linear_speed, maximum_command_angular_speed);
-  const bool wheel_stationary = std::abs(wheel_velocity) <= maximum_wheel_speed;
-  const bool visual_moving = std::abs(visual_velocity) >= minimum_visual_speed;
-  return command_stationary && wheel_stationary && visual_moving;
 }
 
 void PoseAligner::clear()
@@ -281,51 +257,6 @@ RobustWindow::RobustWindow(double duration_seconds)
   }
 }
 
-YawBiasEstimator::YawBiasEstimator(double time_constant_seconds, double maximum_bias)
-: time_constant_seconds_(time_constant_seconds), maximum_bias_(maximum_bias)
-{
-  if (!std::isfinite(time_constant_seconds_) || time_constant_seconds_ <= 0.0 ||
-    !std::isfinite(maximum_bias_) || maximum_bias_ < 0.0)
-  {
-    throw std::invalid_argument("yaw bias parameters must be finite and valid");
-  }
-}
-
-void YawBiasEstimator::reset()
-{
-  bias_ = 0.0;
-  last_time_seconds_ = 0.0;
-  initialized_ = false;
-}
-
-double YawBiasEstimator::correct(
-  double time_seconds, double measured_rate, double reference_rate,
-  bool reference_valid, bool learn)
-{
-  if (!std::isfinite(measured_rate)) {
-    return measured_rate;
-  }
-  if (!initialized_) {
-    initialized_ = std::isfinite(time_seconds);
-    last_time_seconds_ = time_seconds;
-    return measured_rate - bias_;
-  }
-
-  const double dt = time_seconds - last_time_seconds_;
-  if (std::isfinite(time_seconds)) {
-    last_time_seconds_ = time_seconds;
-  }
-  if (learn && reference_valid && std::isfinite(reference_rate) &&
-    std::isfinite(dt) && dt > 0.0 && dt <= 1.0)
-  {
-    const double alpha = 1.0 - std::exp(-dt / time_constant_seconds_);
-    const double target_bias = measured_rate - reference_rate;
-    bias_ = std::clamp(
-      bias_ + alpha * (target_bias - bias_), -maximum_bias_, maximum_bias_);
-  }
-  return measured_rate - bias_;
-}
-
 void RobustWindow::add(double time_seconds, double sample)
 {
   if (!std::isfinite(time_seconds) || !std::isfinite(sample)) {
@@ -396,7 +327,7 @@ double RobustWindow::mad() const
 MotionClassifier::MotionClassifier(const MotionClassifierConfig & config)
 : config_(config)
 {
-  if (config_.command_threshold <= 0.0 || config_.moving_threshold <= 0.0 ||
+  if (config_.moving_threshold <= 0.0 ||
     config_.stationary_threshold < 0.0 || config_.fault_dwell_seconds <= 0.0 ||
     config_.recovery_dwell_seconds <= 0.0)
   {
@@ -405,11 +336,10 @@ MotionClassifier::MotionClassifier(const MotionClassifierConfig & config)
 }
 
 MotionFault MotionClassifier::classify(
-  double command_velocity, double wheel_velocity, double visual_velocity,
-  bool command_valid, bool wheel_valid, bool visual_valid) const
+  double wheel_velocity, double visual_velocity,
+  bool wheel_valid, bool visual_valid) const
 {
-  if (!command_valid || !wheel_valid || !visual_valid ||
-    std::abs(command_velocity) < config_.command_threshold)
+  if (!wheel_valid || !visual_valid)
   {
     return MotionFault::kNone;
   }
@@ -420,9 +350,6 @@ MotionFault MotionClassifier::classify(
   if (wheel_moving && visual_stationary) {
     return MotionFault::kSlip;
   }
-  if (wheel_stationary && visual_stationary) {
-    return MotionFault::kStalled;
-  }
   if (wheel_stationary && visual_moving) {
     return MotionFault::kEncoderFailure;
   }
@@ -430,11 +357,11 @@ MotionFault MotionClassifier::classify(
 }
 
 MotionFault MotionClassifier::update(
-  double time_seconds, double command_velocity, double wheel_velocity,
-  double visual_velocity, bool command_valid, bool wheel_valid, bool visual_valid)
+  double time_seconds, double wheel_velocity, double visual_velocity,
+  bool wheel_valid, bool visual_valid)
 {
   const MotionFault observed = classify(
-    command_velocity, wheel_velocity, visual_velocity, command_valid, wheel_valid, visual_valid);
+    wheel_velocity, visual_velocity, wheel_valid, visual_valid);
   if (active_fault_ == MotionFault::kNone) {
     recovery_active_ = false;
     if (observed == MotionFault::kNone) {
@@ -478,58 +405,6 @@ MotionFault MotionClassifier::update(
     recovery_active_ = false;
   }
   return active_fault_;
-}
-
-AngularStallDetector::AngularStallDetector(const AngularStallConfig & config)
-: config_(config)
-{
-  if (!std::isfinite(config_.command_threshold) || config_.command_threshold <= 0.0 ||
-    !std::isfinite(config_.stationary_threshold) || config_.stationary_threshold < 0.0 ||
-    !std::isfinite(config_.fault_dwell_seconds) || config_.fault_dwell_seconds <= 0.0 ||
-    !std::isfinite(config_.recovery_dwell_seconds) || config_.recovery_dwell_seconds <= 0.0)
-  {
-    throw std::invalid_argument("invalid angular stall detector configuration");
-  }
-}
-
-bool AngularStallDetector::update(
-  double time_seconds, double command_yaw_rate, double measured_yaw_rate,
-  bool command_valid, bool measurement_valid)
-{
-  const bool observed = std::isfinite(time_seconds) && command_valid && measurement_valid &&
-    std::isfinite(command_yaw_rate) && std::isfinite(measured_yaw_rate) &&
-    std::abs(command_yaw_rate) >= config_.command_threshold &&
-    std::abs(measured_yaw_rate) <= config_.stationary_threshold;
-
-  if (!stalled_) {
-    recovery_active_ = false;
-    if (!observed) {
-      candidate_active_ = false;
-      return false;
-    }
-    if (!candidate_active_ || time_seconds < candidate_since_) {
-      candidate_since_ = time_seconds;
-      candidate_active_ = true;
-    } else if (time_seconds - candidate_since_ >= config_.fault_dwell_seconds) {
-      stalled_ = true;
-      candidate_active_ = false;
-    }
-    return stalled_;
-  }
-
-  candidate_active_ = false;
-  if (observed) {
-    recovery_active_ = false;
-    return true;
-  }
-  if (!recovery_active_ || time_seconds < recovery_since_) {
-    recovery_since_ = time_seconds;
-    recovery_active_ = true;
-  } else if (time_seconds - recovery_since_ >= config_.recovery_dwell_seconds) {
-    stalled_ = false;
-    recovery_active_ = false;
-  }
-  return stalled_;
 }
 
 const char * motion_fault_name(MotionFault fault)

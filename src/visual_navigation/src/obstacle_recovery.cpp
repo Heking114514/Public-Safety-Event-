@@ -268,8 +268,7 @@ bool WaypointNavigator::ObstacleBrakeHasCompleted() {
   return complete;
 }
 
-void WaypointNavigator::RunObstacleRecovery(
-    const visual_navigation::FusionHealthDecision &fusionHealth) {
+void WaypointNavigator::RunObstacleRecovery() {
   if (obstacleRecoveryController_.braking()) {
     PublishStop();
     if (!ObstacleBrakeHasCompleted()) {
@@ -331,10 +330,10 @@ void WaypointNavigator::RunObstacleRecovery(
   }
   const auto reverseCommand = visual_navigation::ComputeReverseMotionCommand(
       currentX_, currentY_, currentYaw_, target,
-      obstacleReverseSpeed_ * fusionHealth.speed_scale,
+      obstacleReverseSpeed_,
       obstacleReverseAngularGain_, ControlYawRate(),
       obstacleReverseYawRateDamping_,
-      obstacleReverseMaxAngularSpeed_ * fusionHealth.speed_scale,
+      obstacleReverseMaxAngularSpeed_,
       obstacleReverseMaxHeadingError_);
   if (!reverseCommand.valid) {
     navigationActive_ = false;

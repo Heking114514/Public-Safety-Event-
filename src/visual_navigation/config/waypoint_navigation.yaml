@@ -57,9 +57,9 @@ waypoint_navigator:
     path_pid_kd: 0.00
     path_yaw_rate_damping: 0.45
     turn_yaw_rate_damping: 1.00
-    # Keep normal waypoint turns below the aggressive response seen in the
-    # latest bag while remaining above the drivetrain's turn dead zone.
-    turn_cruise_speed: 0.45
+    # Keep waypoint pivots above the low-speed drivetrain response gap seen in
+    # the latest bag, while staying within the configured angular limit.
+    turn_cruise_speed: 0.75
     # ALIGN_PATH and final-yaw control always publish exactly zero linear speed.
     # A small position correction can make the MCU leave its pivot controller.
     cross_track_gain: 1.00
@@ -77,6 +77,9 @@ waypoint_navigator:
     # Track the planned arc proactively; PID remains responsible for residual
     # heading and cross-track error.
     path_curvature_feedforward_gain: 1.00
+    # Stop-required junctions are handled by brake + pivot. Keep incoming lane
+    # tracking corrections small so braking cannot become an early corner.
+    pre_turn_path_angular_ratio: 1.20
     path_pid_integral_limit: 0.20
     rotate_in_place_threshold: 0.18
     rotate_in_place_reentry_threshold: 0.44
@@ -84,14 +87,14 @@ waypoint_navigator:
     precision_turn_threshold: 0.45
     turn_settle_yaw_rate: 0.15
     turn_settle_dwell: 0.20
-    min_precision_turn_speed: 0.20
+    min_precision_turn_speed: 0.50
     waypoint_tolerance: 0.04
     waypoint_pass_longitudinal_tolerance: 0.01
-    waypoint_pass_lateral_tolerance: 0.06
+    waypoint_pass_lateral_tolerance: 0.045
     waypoint_recovery_speed: 0.10
     waypoint_recovery_heading_tolerance: 0.12
     waypoint_recovery_max_angular_speed: 0.40
-    # Braking, mission holds, localization grace and final-yaw control pause
+    # Braking, mission holds, localization waits and final-yaw control pause
     # position progress. In-place turns remain safe through the displacement gate.
     path_progress_timeout: 10.0
     path_progress_minimum_advance: 0.05
@@ -103,11 +106,15 @@ waypoint_navigator:
     path_progress_stationary_speed_threshold: 0.02
     path_progress_no_motion_timeout: 3.0
     path_progress_no_motion_displacement: 0.05
-    turn_progress_stall_timeout: 6.0
+    turn_progress_stall_timeout: 8.0
     turn_progress_minimum_error_reduction: 0.08
     turn_progress_base_total_timeout: 12.0
-    turn_progress_minimum_expected_yaw_rate: 0.12
-    turn_progress_max_total_timeout: 40.0
+    turn_progress_minimum_expected_yaw_rate: 0.08
+    # Bag 20260915T152337 shows real pivot yaw-rate around 0.08-0.10 rad/s,
+    # well below the commanded angular speed. Supervision uses this physical
+    # estimate so stronger commands do not make the watchdog tighter.
+    turn_progress_expected_yaw_rate: 0.08
+    turn_progress_max_total_timeout: 60.0
     turn_progress_max_recovery_attempts: 2
     pre_turn_stop_heading_threshold: 0.18
     pre_turn_stop_speed: 0.03
@@ -122,14 +129,17 @@ waypoint_navigator:
     pre_turn_fallback_timeouts: 2
     pre_turn_fallback_pose_speed: 0.08
     final_yaw_tolerance: 0.12
-    # Once the final point has been reached, tolerate turn-induced translation
-    # without relaxing the 4 cm capture tolerance used by the route follower.
-    final_position_release_tolerance: 0.10
-    final_yaw_max_angular_speed: 0.40
-    final_yaw_min_turn_speed: 0.30
-    final_yaw_min_precision_speed: 0.20
+    # Keep final completion close to the captured point. Fused visual odometry
+    # can read a few percent long, so a wide release window becomes early
+    # physical stopping on short arena segments.
+    final_position_release_tolerance: 0.05
+    final_yaw_max_angular_speed: 0.65
+    final_yaw_min_turn_speed: 0.35
+    final_yaw_min_precision_speed: 0.30
     odom_timeout: 0.40
-    imu_timeout: 0.15
+    # /imu/control preserves the lower-controller measurement stamp. Full
+    # system load currently leaves about 0.21 s of serial timestamp age.
+    imu_timeout: 0.30
     fusion_status_timeout: 0.60
     actuator_health_timeout: 0.80
     control_telemetry_timeout: 0.30
@@ -140,9 +150,9 @@ waypoint_navigator:
     # Range may arrive just before Bool because the subscriptions are separate,
     # but samples from an older clear/true cycle must never be reused.
     front_obstacle_pairing_reorder_tolerance: 0.10
-    # base_link -> D455 and measured front extent of the 143.4 mm chassis.
-    obstacle_sensor_forward_offset: 0.070
-    vehicle_front_offset: 0.0717
+    # base_link -> D455 and measured front extent of the 148.5 mm chassis.
+    obstacle_sensor_forward_offset: 0.055
+    vehicle_front_offset: 0.07425
     expected_obstacle_tolerance: 0.05
     obstacle_reverse_speed: 0.10
     obstacle_reverse_angular_gain: 1.20
@@ -161,8 +171,6 @@ waypoint_navigator:
     obstacle_reverse_max_recovery_attempts: 2
     obstacle_maximum_breadcrumbs: 2000
     stamp_future_tolerance: 0.20
-    transient_localization_grace: 2.00
-    transient_fault_speed_scale: 0.25
     require_fusion_status: true
     require_actuator_health: false
     allowed_fusion_states:
@@ -173,13 +181,6 @@ waypoint_navigator:
       - "DEGRADED_VISION_ONLY"
       - "DEGRADED_WHEEL_ONLY"
       - "DEGRADED_VISUAL_REALIGNED"
-    degraded_speed_scale: 0.50
-    no_vision_speed_scale: 0.50
-    no_imu_speed_scale: 0.65
-    no_wheel_speed_scale: 0.60
-    vision_only_speed_scale: 0.40
-    wheel_only_speed_scale: 0.25
-    visual_realigned_speed_scale: 0.50
 
     # Compatibility with direct ORB odometry; fused odometry does not require it.
     require_tracking_state: false

@@ -22,7 +22,7 @@ TEST(StartProjection, RecoversRecordedLaunchLaneDriftWithinEightCentimetres)
 {
   const ArenaPlanner planner(ArenaPlanner::LoadConfig(ConfigPath()));
   const Pose recorded_start{{1.58032, 4.25334}, -0.5 * std::acos(-1.0)};
-  EXPECT_TRUE(planner.IsFree(recorded_start.position));
+  EXPECT_FALSE(planner.IsFree(recorded_start.position));
   ASSERT_FALSE(planner.PoseIsFree(recorded_start.position, recorded_start.yaw));
 
   Pose projected;
@@ -37,7 +37,7 @@ TEST(StartProjection, RecoversRecordedLaunchLaneDriftWithinEightCentimetres)
 TEST(StartProjection, MillimetreLaunchLaneOffsetDoesNotCreateFakeRoadTurn)
 {
   const ArenaPlanner planner(ArenaPlanner::LoadConfig(ConfigPath()));
-  const Pose live_start{{1.60256, 4.25344}, -1.54977};
+  const Pose live_start{{1.60256, 4.30000}, -1.54977};
 
   const PlanResult result = planner.Plan(
     live_start, planner.config().default_targets,

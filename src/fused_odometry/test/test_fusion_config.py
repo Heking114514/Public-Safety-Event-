@@ -15,7 +15,7 @@ def load_parameters(node_name):
     return document[node_name]["ros__parameters"]
 
 
-def test_default_ekf_excludes_encoder_measurements():
+def test_default_ekf_uses_visual_and_wheel_forward_velocity():
     parameters = load_parameters("fused_ekf")
     sensor_topics = {
         name: value
@@ -23,9 +23,9 @@ def test_default_ekf_excludes_encoder_measurements():
         if re.fullmatch(r"(?:odom|pose|twist|imu)\d+", name)
     }
 
-    assert WHEEL_TOPIC not in sensor_topics.values()
+    assert WHEEL_TOPIC in sensor_topics.values()
     assert parameters["odom0"] == VISUAL_TOPIC
-    assert "odom1" not in parameters
+    assert parameters["odom1"] == WHEEL_TOPIC
     assert parameters["odom0_config"] == [
         False,
         False,
@@ -43,6 +43,7 @@ def test_default_ekf_excludes_encoder_measurements():
         False,
         False,
     ]
+    assert parameters["odom1_config"] == parameters["odom0_config"]
 
 
 def test_wheel_stream_remains_available_to_supervision():
@@ -56,8 +57,9 @@ def test_control_imu_is_single_corrected_feedback_topic():
     gate = load_parameters("fused_odometry_gate")
     ekf = load_parameters("fused_ekf")
 
-    assert gate["imu_topic"] == "/imu/filtered"
+    assert gate["imu_topic"] == "/cup_car_serial/bmi088_attitude"
     assert gate["imu_output_topic"] == CONTROL_IMU_TOPIC
+    assert gate["imu_expected_frame"] == "base_link"
     assert ekf["imu0"] == CONTROL_IMU_TOPIC
 
 

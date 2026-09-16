@@ -66,7 +66,23 @@ install(FILES README.md DESTINATION share/${PROJECT_NAME})
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_cmake_pytest REQUIRED)
+  set(_warn_deprecated_was_defined FALSE)
+  if(DEFINED CMAKE_WARN_DEPRECATED)
+    set(_warn_deprecated_was_defined TRUE)
+    set(_warn_deprecated "${CMAKE_WARN_DEPRECATED}")
+  endif()
+  # Humble's vendored gtest still declares CMake 3.8. Suppress only that
+  # external deprecation while the first test target initializes gtest.
+  set(CMAKE_WARN_DEPRECATED OFF CACHE INTERNAL
+    "Suppress external gtest_vendor deprecation during initialization" FORCE)
   ament_add_gtest(test_fusion_logic test/test_fusion_logic.cpp)
+  if(_warn_deprecated_was_defined)
+    set(CMAKE_WARN_DEPRECATED "${_warn_deprecated}" CACHE INTERNAL
+      "Restored CMake deprecation warning setting" FORCE)
+  else()
+    unset(CMAKE_WARN_DEPRECATED CACHE)
+    unset(CMAKE_WARN_DEPRECATED)
+  endif()
   target_link_libraries(test_fusion_logic fusion_logic)
   ament_add_gtest(test_fusion_health test/test_fusion_health.cpp)
   target_link_libraries(test_fusion_health fusion_logic)

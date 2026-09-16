@@ -69,8 +69,8 @@ class ArenaViewTest(unittest.TestCase):
             vehicle_x=0.2,
             vehicle_y=0.1,
             vehicle_yaw=0.3,
-            vehicle_length_m=0.217,
-            vehicle_width_m=0.210,
+            vehicle_length_m=0.1485,
+            vehicle_width_m=0.1535,
             safety_margin_m=0.015,
         )
         self.view = ArenaView.__new__(ArenaView)

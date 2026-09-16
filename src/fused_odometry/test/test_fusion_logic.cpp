@@ -95,36 +95,6 @@ TEST(GlobalCorrection, VisualPoseCorrectsIndependentLocalDrift)
   EXPECT_NEAR(corrected.yaw, visual_global.yaw, 1e-9);
 }
 
-TEST(GlobalCorrection, StationaryCommandRequiresFreshBoundedLinearAndAngularSpeed)
-{
-  EXPECT_TRUE(fused_odometry::motion_command_is_stationary(
-      0.0, 0.0, true, 0.03, 0.12));
-  EXPECT_FALSE(fused_odometry::motion_command_is_stationary(
-      0.04, 0.0, true, 0.03, 0.12));
-  EXPECT_FALSE(fused_odometry::motion_command_is_stationary(
-      0.0, 0.13, true, 0.03, 0.12));
-  EXPECT_FALSE(fused_odometry::motion_command_is_stationary(
-      0.0, 0.0, false, 0.03, 0.12));
-}
-
-TEST(GlobalCorrection, RejectsVisualMotionWhenCommandAndWheelAreStationary)
-{
-  EXPECT_TRUE(fused_odometry::stationary_chassis_rejects_visual_motion(
-      0.0, 0.0, true, 0.0, true, 0.60, true, 0.03, 0.12, 0.03, 0.04));
-  EXPECT_FALSE(fused_odometry::stationary_chassis_rejects_visual_motion(
-      0.0, 0.0, false, 0.0, true, 0.60, true, 0.03, 0.12, 0.03, 0.04));
-  EXPECT_FALSE(fused_odometry::stationary_chassis_rejects_visual_motion(
-      0.0, 0.0, true, 0.0, false, 0.60, true, 0.03, 0.12, 0.03, 0.04));
-  EXPECT_FALSE(fused_odometry::stationary_chassis_rejects_visual_motion(
-      0.05, 0.0, true, 0.0, true, 0.60, true, 0.03, 0.12, 0.03, 0.04));
-  EXPECT_FALSE(fused_odometry::stationary_chassis_rejects_visual_motion(
-      0.0, 0.30, true, 0.0, true, 0.60, true, 0.03, 0.12, 0.03, 0.04));
-  EXPECT_FALSE(fused_odometry::stationary_chassis_rejects_visual_motion(
-      0.0, 0.0, true, 0.08, true, 0.60, true, 0.03, 0.12, 0.03, 0.04));
-  EXPECT_FALSE(fused_odometry::stationary_chassis_rejects_visual_motion(
-      0.0, 0.0, true, 0.0, true, 0.02, true, 0.03, 0.12, 0.03, 0.04));
-}
-
 TEST(DisagreementCovariance, IsBoundedAndNeverRejectsThePrimaryRateSource)
 {
   EXPECT_DOUBLE_EQ(fused_odometry::disagreement_covariance_scale(0.0, 0.2, 0.8), 1.0);
@@ -145,40 +115,42 @@ TEST(WheelYawValidation, RequiresMotionAndInstantaneousAgreement)
   EXPECT_FALSE(fused_odometry::yaw_rates_consistent(NAN, 0.18, 0.25));
 }
 
-TEST(WheelVelocityTurnWeight, PrefersFreshImuAndFallsBackToCommand)
+TEST(WheelVelocityTurnWeight, UsesFreshImuOnly)
 {
   EXPECT_DOUBLE_EQ(
     fused_odometry::wheel_vx_turn_covariance_scale(
-      0.10, 0.10, true, true, 0.15, 0.60, 100.0),
+      0.10, true, 0.15, 0.60, 100.0),
     1.0);
   EXPECT_NEAR(
     fused_odometry::wheel_vx_turn_covariance_scale(
-      0.375, 0.20, true, true, 0.15, 0.60, 100.0),
+      0.375, true, 0.15, 0.60, 100.0),
     25.75, 1e-9);
   EXPECT_NEAR(
     fused_odometry::wheel_vx_turn_covariance_scale(
-      0.20, 0.90, true, true, 0.15, 0.60, 100.0),
+      0.20, true, 0.15, 0.60, 100.0),
     1.0 + (0.05 / 0.45) * (0.05 / 0.45) * 99.0, 1e-9);
   EXPECT_DOUBLE_EQ(
     fused_odometry::wheel_vx_turn_covariance_scale(
-      0.20, 0.90, false, true, 0.15, 0.60, 100.0),
-    100.0);
+      0.90, false, 0.15, 0.60, 100.0),
+    1.0);
   EXPECT_DOUBLE_EQ(
     fused_odometry::wheel_vx_turn_covariance_scale(
-      0.90, 0.90, false, false, 0.15, 0.60, 100.0),
+      0.90, true, 0.60, 0.15, 100.0),
     1.0);
 }
 
-TEST(WheelVelocityTurnWeight, ZeroesOnlyFreshInPlaceTurnCommands)
+TEST(WheelVelocityTurnWeight, ZeroesObservedInPlaceTurnsOnly)
 {
   EXPECT_TRUE(fused_odometry::zero_wheel_vx_during_in_place_turn(
-      0.0, 0.90, true, 0.10, 0.30));
+      0.0, 0.90, true, true, 0.10, 0.30));
   EXPECT_TRUE(fused_odometry::zero_wheel_vx_during_in_place_turn(
-      -0.08, -0.30, true, 0.10, 0.30));
+      -0.08, -0.30, true, true, 0.10, 0.30));
   EXPECT_FALSE(fused_odometry::zero_wheel_vx_during_in_place_turn(
-      0.20, 0.90, true, 0.10, 0.30));
+      0.20, 0.90, true, true, 0.10, 0.30));
   EXPECT_FALSE(fused_odometry::zero_wheel_vx_during_in_place_turn(
-      0.0, 0.90, false, 0.10, 0.30));
+      0.0, 0.90, true, false, 0.10, 0.30));
+  EXPECT_FALSE(fused_odometry::zero_wheel_vx_during_in_place_turn(
+      0.0, 0.90, false, true, 0.10, 0.30));
 }
 
 TEST(ResidualGate, RejectsAndRecoversWithHysteresis)
@@ -295,66 +267,25 @@ TEST(RobustWindow, MedianRejectsOutlierAndExpiresOldSamples)
   EXPECT_EQ(window.size(), 3U);
 }
 
-TEST(YawBiasEstimator, LearnsOnlyWhenEnabledAndClampsBias)
-{
-  fused_odometry::YawBiasEstimator estimator(1.0, 0.05);
-  EXPECT_NEAR(estimator.correct(0.0, 0.10, 0.0, true, false), 0.10, 1e-9);
-  for (int index = 1; index <= 20; ++index) {
-    estimator.correct(0.1 * index, 0.10, 0.0, true, true);
-  }
-  EXPECT_NEAR(estimator.bias(), 0.05, 1e-6);
-  EXPECT_NEAR(estimator.correct(2.1, 0.10, 0.0, true, false), 0.05, 1e-6);
-}
-
-TEST(YawBiasEstimator, InvalidReferenceAndTimeDoNotCreateJumps)
-{
-  fused_odometry::YawBiasEstimator estimator(2.0, 0.08);
-  estimator.correct(1.0, 0.02, 0.0, true, true);
-  const double before = estimator.bias();
-  EXPECT_NEAR(estimator.correct(0.5, 0.02, NAN, true, true), 0.02 - before, 1e-9);
-  EXPECT_DOUBLE_EQ(estimator.bias(), before);
-  EXPECT_NEAR(estimator.correct(1.6, 0.02, 0.0, true, true), 0.02 - before, 1e-9);
-}
-
 TEST(MotionClassifier, DetectsPersistentFaultsAndUsesRecoveryHysteresis)
 {
-  fused_odometry::MotionClassifier classifier({0.08, 0.04, 0.02, 0.5, 1.0});
+  fused_odometry::MotionClassifier classifier({0.08, 0.04, 0.5, 1.0});
   EXPECT_EQ(
-    classifier.update(0.0, 0.2, 0.2, 0.0, true, true, true),
+    classifier.update(0.0, 0.2, 0.0, true, true),
     fused_odometry::MotionFault::kNone);
   EXPECT_EQ(
-    classifier.update(0.6, 0.2, 0.2, 0.0, true, true, true),
+    classifier.update(0.6, 0.2, 0.0, true, true),
     fused_odometry::MotionFault::kSlip);
   EXPECT_EQ(
-    classifier.update(1.0, 0.2, 0.2, 0.2, true, true, true),
+    classifier.update(1.0, 0.2, 0.2, true, true),
     fused_odometry::MotionFault::kSlip);
   EXPECT_EQ(
-    classifier.update(2.1, 0.2, 0.2, 0.2, true, true, true),
+    classifier.update(2.1, 0.2, 0.2, true, true),
     fused_odometry::MotionFault::kNone);
 
-  fused_odometry::MotionClassifier stalled({0.08, 0.04, 0.02, 0.5, 1.0});
-  stalled.update(0.0, 0.2, 0.0, 0.0, true, true, true);
+  fused_odometry::MotionClassifier encoder({0.08, 0.04, 0.5, 1.0});
+  encoder.update(0.0, 0.0, 0.2, true, true);
   EXPECT_EQ(
-    stalled.update(0.6, 0.2, 0.0, 0.0, true, true, true),
-    fused_odometry::MotionFault::kStalled);
-
-  fused_odometry::MotionClassifier encoder({0.08, 0.04, 0.02, 0.5, 1.0});
-  encoder.update(0.0, 0.2, 0.0, 0.2, true, true, true);
-  EXPECT_EQ(
-    encoder.update(0.6, 0.2, 0.0, 0.2, true, true, true),
+    encoder.update(0.6, 0.0, 0.2, true, true),
     fused_odometry::MotionFault::kEncoderFailure);
-}
-
-TEST(AngularStallDetector, DetectsCommandedTurnWithoutMeasuredRotation)
-{
-  fused_odometry::AngularStallDetector detector({0.3, 0.1, 0.8, 1.0});
-  EXPECT_FALSE(detector.update(0.0, 0.6, 0.0, true, true));
-  EXPECT_FALSE(detector.update(0.7, 0.6, 0.0, true, true));
-  EXPECT_TRUE(detector.update(0.9, 0.6, 0.0, true, true));
-  EXPECT_TRUE(detector.update(1.2, 0.0, 0.0, true, true));
-  EXPECT_FALSE(detector.update(2.3, 0.0, 0.0, true, true));
-
-  fused_odometry::AngularStallDetector moving({0.3, 0.1, 0.8, 1.0});
-  EXPECT_FALSE(moving.update(0.0, 0.6, 0.4, true, true));
-  EXPECT_FALSE(moving.update(1.0, 0.6, 0.4, true, true));
 }

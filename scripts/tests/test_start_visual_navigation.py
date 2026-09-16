@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import fcntl
 import signal
 import subprocess
 import tempfile
@@ -27,7 +28,22 @@ class StartVisualNavigationTest(unittest.TestCase):
         self.latest_run = self.root / "latest_navigation_run"
         self.latest_bag = self.root / "latest_navigation_bag"
         self.build_manifest = self.root / "runtime-build.json"
-        self._write_mock("pgrep", "printf 'pgrep %s\\n' \"$*\" >>\"$MOCK_EVENTS\"\nexit 1\n")
+        self._write_mock("pgrep", r'''
+printf 'pgrep %s\n' "$*" >>"$MOCK_EVENTS"
+if [[ -n "${MOCK_PGREP_PIDS:-}" ]]; then
+  found=0
+  for pid in ${MOCK_PGREP_PIDS}; do
+    if [[ -r "/proc/${pid}/cmdline" ]] &&
+        cmdline="$(tr '\0' ' ' <"/proc/${pid}/cmdline")" &&
+        [[ -n "${cmdline}" ]]; then
+      printf '%s\n' "$pid"
+      found=1
+    fi
+  done
+  exit "$((found == 0))"
+fi
+exit 1
+''')
         self._write_mock("cmake", "printf 'cmake %s\\n' \"$*\" >>\"$MOCK_EVENTS\"\nexit \"${MOCK_CMAKE_EXIT:-0}\"\n")
         self._write_mock("colcon", "printf 'colcon %s\\n' \"$*\" >>\"$MOCK_EVENTS\"\nexit 0\n")
         self._write_mock("ros2", self._ros2_mock())
@@ -158,6 +174,42 @@ exit 2
         self.assertNotIn("pgrep ", events)
         self.assertNotIn("ros2 ", events)
         self.assertFalse(self.runs.exists())
+
+    def test_existing_ros_processes_are_stopped_before_navigation_lock(self):
+        self.runs.mkdir()
+        lock_path = self.runs / ".navigation.lock"
+        residual = subprocess.Popen([
+            "bash",
+            "-c",
+            "exec -a /opt/ros/humble/bin/ros2 bash -c "
+            "'trap \"exit 0\" INT TERM; while true; do sleep 1; done'",
+        ])
+        with lock_path.open("w", encoding="utf-8") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                result = subprocess.run(
+                    self.arguments(),
+                    env=self.environment(
+                        MOCK_PGREP_PIDS=str(residual.pid),
+                        NAVIGATION_RUN_LOCK_RETRIES="2",
+                        NAVIGATION_RUN_LOCK_RETRY_INTERVAL="0.05",
+                    ),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=20,
+                )
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("still owns", result.stderr)
+                self.wait_for(lambda: residual.poll() is not None, timeout=5)
+                events = self.events.read_text()
+                self.assertIn("pgrep ", events)
+                self.assertFalse(self.latest_run.exists())
+            finally:
+                if residual.poll() is None:
+                    residual.kill()
+                residual.wait(timeout=5)
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
 
     def test_exit_status_history_parameters_and_term_are_preserved(self):
         self.latest_bag.mkdir()

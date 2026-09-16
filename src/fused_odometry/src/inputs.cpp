@@ -48,14 +48,4 @@ void FusionGateNode::map_change_callback(
               static_cast<unsigned long>(map_change_.sequence));
 }
 
-void FusionGateNode::command_callback(
-    const geometry_msgs::msg::Twist::SharedPtr message) {
-  if (!finite(message->linear.x) || !finite(message->angular.z)) {
-    return;
-  }
-  command_.velocity = message->linear.x;
-  command_.yaw_rate = message->angular.z;
-  command_.input.update();
-}
-
 } // namespace fused_odometry

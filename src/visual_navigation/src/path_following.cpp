@@ -53,8 +53,7 @@ void WaypointNavigator::RunPath(const ControlFrame &frame) {
       controlDt = measuredDt;
   }
   const double trackingSpeed = std::abs(visual_navigation::LimitRate(
-      limitedLinearSpeed * frame.fusion_health.speed_scale,
-      lastMotionCommand_.linear.x, maxLinearAcceleration_,
+      limitedLinearSpeed, lastMotionCommand_.linear.x, maxLinearAcceleration_,
       maxLinearDeceleration_, controlDt));
   const double pathError = visual_navigation::StanleyPathError(
       headingError, crossTrackError, crossTrackGain_, trackingSpeed,
@@ -95,8 +94,7 @@ void WaypointNavigator::RunPath(const ControlFrame &frame) {
                                  std::abs(crossTrackError) < 0.08;
   const double pathFeedbackAngularSpeed =
       UpdatePathPid(pathError, crossTrackError, allowPathIntegral,
-                    frame.control_yaw_rate) *
-      frame.fusion_health.speed_scale;
+                    frame.control_yaw_rate);
   geometry_msgs::msg::Twist command;
   bool brakingApproach = false;
   const double segmentProgress =
@@ -113,8 +111,7 @@ void WaypointNavigator::RunPath(const ControlFrame &frame) {
       return;
     }
     if (SuperviseTurnProgress(0, std::abs(alignmentError),
-                              turnCruiseSpeed_ *
-                                  frame.fusion_health.speed_scale,
+                              turnProgressExpectedYawRate_,
                               frame.progress_supervision_allowed)) {
       return;
     }
@@ -167,43 +164,39 @@ void WaypointNavigator::RunPath(const ControlFrame &frame) {
     }
 
     turnSettleController_.reset_timer();
-    const double scaledMaxAngularSpeed =
-        turnCruiseSpeed_ * frame.fusion_health.speed_scale;
     const double requestedAngularSpeed =
         Clamp(angularGain_ * alignmentError -
                   turnYawRateDamping_ * frame.control_yaw_rate,
-              -scaledMaxAngularSpeed, scaledMaxAngularSpeed);
+              -turnCruiseSpeed_, turnCruiseSpeed_);
+    const double minimumTurnSpeed = visual_navigation::SelectMinimumTurnSpeed(
+        std::abs(alignmentError), precisionTurnThreshold_,
+        minPrecisionTurnSpeed_, turnCruiseSpeed_);
     command.angular.z = visual_navigation::EnforceMinimumTurnSpeed(
         requestedAngularSpeed, alignmentError,
-        minPrecisionTurnSpeed_ * frame.fusion_health.speed_scale,
-        scaledMaxAngularSpeed);
+        minimumTurnSpeed, turnCruiseSpeed_);
   } else {
     turnProgressSupervisor_.Reset();
     const double headingScale = std::max(0.0, std::cos(pathError));
-    command.linear.x =
-        limitedLinearSpeed * headingScale * frame.fusion_health.speed_scale;
+    command.linear.x = limitedLinearSpeed * headingScale;
     const double feedforwardAngularSpeed =
         visual_navigation::CurvatureFeedforwardAngularSpeed(
             command.linear.x, signedPathCurvature,
             pathCurvatureFeedforwardGain_);
-    const double scaledMaxPathAngularSpeed =
-        maxPathAngularSpeed_ * frame.fusion_health.speed_scale;
     const double lateralAngularLimit =
         visual_navigation::LateralAccelerationAngularLimit(
-            scaledMaxPathAngularSpeed, command.linear.x,
+            maxPathAngularSpeed_, command.linear.x,
             maxLateralAcceleration_);
     command.angular.z = visual_navigation::CompensatePathTurnDeadband(
         feedforwardAngularSpeed + pathFeedbackAngularSpeed, pathError,
         frame.control_yaw_rate, pathAngularActivationError_,
         pathYawResponseThreshold_,
-        minPathAngularSpeed_ * frame.fusion_health.speed_scale,
+        minPathAngularSpeed_,
         lateralAngularLimit);
     if (frame.waypoint_requires_stop) {
       // On a straight approach, a near-zero braking speed must not leave an
       // angular-only command that pivots the car before the junction.
-      command.angular.z = Clamp(command.angular.z,
-                                -3.0 * command.linear.x,
-                                3.0 * command.linear.x);
+      command.angular.z = visual_navigation::StopRequiredPathAngularSpeed(
+          command.angular.z, command.linear.x, preTurnPathAngularRatio_);
     }
 
     const double measuredSpeed = inputCache_.odometry_velocity_valid()

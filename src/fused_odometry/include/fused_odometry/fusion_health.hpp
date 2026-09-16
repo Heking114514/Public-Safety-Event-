@@ -26,9 +26,6 @@ struct FusionHealthInput
   bool wheel_yaw_backup{false};
   bool visual_realigned{false};
 
-  double command_velocity{0.0};
-  double command_yaw_rate{0.0};
-  bool command_fresh{false};
   double wheel_velocity{0.0};
   double visual_velocity{0.0};
   bool visual_motion_valid{false};
@@ -49,7 +46,6 @@ struct FusionHealthSnapshot
   FusionMode mode{FusionMode::kFault};
   MotionFault motion_fault{MotionFault::kNone};
   bool wheel_healthy{false};
-  bool angular_stalled{false};
   double measured_yaw_rate{0.0};
   std::size_t angular_source_count{0};
   double vision_outage_seconds{0.0};
@@ -62,8 +58,7 @@ class FusionHealthMonitor
 {
 public:
   FusionHealthMonitor(
-    const MotionClassifierConfig & motion_config,
-    const AngularStallConfig & angular_stall_config);
+    const MotionClassifierConfig & motion_config);
 
   void start_vision_outage(double now_seconds);
   void finish_vision_outage();
@@ -79,7 +74,6 @@ private:
     double now_seconds, double wheel_velocity, bool wheel_healthy);
 
   MotionClassifier motion_classifier_;
-  AngularStallDetector angular_stall_detector_;
   bool vision_outage_active_{false};
   bool wheel_sample_valid_{false};
   double vision_outage_started_at_{0.0};

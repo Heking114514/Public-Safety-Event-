@@ -8,12 +8,12 @@ namespace wheel_odometry
 
 struct IntegratorConfig
 {
-  double wheel_radius_m{0.0238};
-  double left_encoder_counts_per_revolution{1060.1667};
-  double right_encoder_counts_per_revolution{1060.9333};
-  double wheel_track_m{0.1247};
-  double left_distance_scale{1.000};
-  double right_distance_scale{1.000};
+  double wheel_radius_m{0.0302};
+  double left_encoder_counts_per_revolution{294912.0};
+  double right_encoder_counts_per_revolution{294912.0};
+  double wheel_track_m{0.1466};
+  double left_distance_scale{-1.000};
+  double right_distance_scale{-1.000};
   double yaw_slip_scale{1.0};
   double max_wheel_speed_mps{1.0};
   double min_dt_s{1.0e-4};

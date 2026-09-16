@@ -1,5 +1,9 @@
-cmake_minimum_required(VERSION 3.8)
+cmake_minimum_required(VERSION 3.10)
 project(visual_navigation)
+
+if(POLICY CMP0148)
+  cmake_policy(SET CMP0148 OLD)
+endif()
 
 if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 14)
@@ -60,7 +64,23 @@ install(FILES README.md NAVIGATION_CODE_GUIDE.md
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   find_package(launch_testing_ament_cmake REQUIRED)
+  set(_warn_deprecated_was_defined FALSE)
+  if(DEFINED CMAKE_WARN_DEPRECATED)
+    set(_warn_deprecated_was_defined TRUE)
+    set(_warn_deprecated "${CMAKE_WARN_DEPRECATED}")
+  endif()
+  # Humble's vendored gtest still declares CMake 3.8. Suppress only that
+  # external deprecation while the first test target initializes gtest.
+  set(CMAKE_WARN_DEPRECATED OFF CACHE INTERNAL
+    "Suppress external gtest_vendor deprecation during initialization" FORCE)
   ament_add_gtest(fusion_health_policy_test test/fusion_health_policy_test.cpp)
+  if(_warn_deprecated_was_defined)
+    set(CMAKE_WARN_DEPRECATED "${_warn_deprecated}" CACHE INTERNAL
+      "Restored CMake deprecation warning setting" FORCE)
+  else()
+    unset(CMAKE_WARN_DEPRECATED CACHE)
+    unset(CMAKE_WARN_DEPRECATED)
+  endif()
   target_include_directories(fusion_health_policy_test PRIVATE include)
   ament_add_gtest(actuator_health_policy_test test/actuator_health_policy_test.cpp)
   target_include_directories(actuator_health_policy_test PRIVATE include)

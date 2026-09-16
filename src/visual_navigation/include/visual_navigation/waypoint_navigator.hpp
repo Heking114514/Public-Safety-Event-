@@ -213,8 +213,7 @@ private:
 
   void RunPath(const ControlFrame &frame);
 
-  void RunObstacleRecovery(
-      const visual_navigation::FusionHealthDecision &fusion_health);
+  void RunObstacleRecovery();
 
   void BeginObstacleRecovery();
 
@@ -345,6 +344,7 @@ private:
   double crossTrackMinimumSpeed_{0.20};
   double maxLateralAcceleration_{0.22};
   double pathCurvatureFeedforwardGain_{1.0};
+  double preTurnPathAngularRatio_{1.2};
   double pathPidIntegralLimit_{0.20};
   double rotateInPlaceThreshold_{0.18};
   double rotateInPlaceReentryThreshold_{0.44};
@@ -355,10 +355,11 @@ private:
   double minPrecisionTurnSpeed_{0.20};
   double waypointTolerance_{0.04};
   double waypointPassLongitudinalTolerance_{0.01};
-  double waypointPassLateralTolerance_{0.06};
+  double waypointPassLateralTolerance_{0.045};
   double waypointRecoverySpeed_{0.10};
   double waypointRecoveryHeadingTolerance_{0.12};
   double waypointRecoveryMaxAngularSpeed_{0.40};
+  double turnProgressExpectedYawRate_{0.12};
   double preTurnStopHeadingThreshold_{0.18};
   double preTurnStopSpeed_{0.03};
   double preTurnStopDwell_{0.10};
@@ -369,7 +370,7 @@ private:
   std::size_t preTurnStopTelemetrySamples_{2};
   std::size_t preTurnFallbackTimeouts_{2};
   double finalYawTolerance_{0.12};
-  double finalPositionReleaseTolerance_{0.10};
+  double finalPositionReleaseTolerance_{0.05};
   double finalYawMaxAngularSpeed_{0.40};
   double finalYawMinTurnSpeed_{0.30};
   double finalYawMinPrecisionSpeed_{0.20};
@@ -381,8 +382,8 @@ private:
   double frontObstacleTimeout_{0.50};
   double frontObstacleClassificationWait_{0.10};
   double frontObstaclePairingReorderTolerance_{0.10};
-  double obstacleSensorForwardOffset_{0.070};
-  double vehicleFrontOffset_{0.0717};
+  double obstacleSensorForwardOffset_{0.055};
+  double vehicleFrontOffset_{0.07425};
   double expectedObstacleTolerance_{0.05};
   double obstacleReverseSpeed_{0.10};
   double obstacleReverseAngularGain_{1.2};

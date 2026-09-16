@@ -158,6 +158,15 @@ ArenaPlanner::PlanCoverage(const Pose &start,
                                              : result.headings.back()));
         }
       };
+    bool ended_after_retreat = false;
+    const auto apply_planned_retreat = [this, &result, &ended_after_retreat]() {
+        if (!config_.turns_at_junctions_only) {
+          return;
+        }
+        bool inserted = false;
+        result.points = StopAfterFirstBlockedReversal(result.points, inserted);
+        ended_after_retreat = ended_after_retreat || inserted;
+      };
 
     if (non_tunnels_only) {
       const bool has_partial_history = std::any_of(
@@ -282,13 +291,16 @@ ArenaPlanner::PlanCoverage(const Pose &start,
         if (Distance(start.position, config_.default_start.position) > 1.0e-6) {
           append_segment(config_.default_start.position);
           result.points = Smooth(result.points, {});
+          apply_planned_retreat();
           set_headings();
           result.length = PolylineLength(result.points);
           finish_route();
           result.success = true;
-          result.message = result.all_targets_reached
+          result.message = ended_after_retreat
+                               ? "planned retreat before a required U-turn; replan after reversing"
+                               : (result.all_targets_reached
                                ? "coverage already complete; return route planned"
-                               : "coverage input is incomplete";
+                               : "coverage input is incomplete");
           return result;
         }
         // There is genuinely no command to send.  Report completion without
@@ -415,6 +427,7 @@ ArenaPlanner::PlanCoverage(const Pose &start,
         }
         result.points = Simplify(result.points, required_coverage_points);
         result.points = Smooth(result.points, required_coverage_points);
+        apply_planned_retreat();
         set_headings();
         result.length = PolylineLength(result.points);
         finish_route();
@@ -425,9 +438,11 @@ ArenaPlanner::PlanCoverage(const Pose &start,
                   "no uncovered road is reachable from the current start");
         }
         result.success = true;
-        result.message = result.all_targets_reached
+        result.message = ended_after_retreat
+                             ? "planned retreat before a required U-turn; replan after reversing"
+                             : (result.all_targets_reached
                              ? "large road graph filled"
-                             : "large road graph partially filled";
+                             : "large road graph partially filled");
         return result;
       }
       const std::size_t state_count = std::size_t{1} << road_count;
@@ -684,6 +699,7 @@ ArenaPlanner::PlanCoverage(const Pose &start,
           }
         }
         result.points = Smooth(safe_points, required_coverage_points);
+        apply_planned_retreat();
       }
 
       set_headings();
@@ -691,9 +707,11 @@ ArenaPlanner::PlanCoverage(const Pose &start,
       finish_route();
       result.success = true;
       result.message =
-          result.all_targets_reached
+          ended_after_retreat
+              ? "planned retreat before a required U-turn; replan after reversing"
+              : (result.all_targets_reached
               ? "uncovered roads filled"
-              : "reachable uncovered roads filled; blocked roads deferred";
+              : "reachable uncovered roads filled; blocked roads deferred");
       return result;
     }
 
@@ -834,13 +852,16 @@ ArenaPlanner::PlanCoverage(const Pose &start,
         defer_once("RETURN_TO_START");
       }
     }
+    apply_planned_retreat();
     set_headings();
     result.length = PolylineLength(result.points);
     finish_route();
     result.success = true;
-    result.message = result.all_targets_reached
+    result.message = ended_after_retreat
+                         ? "planned retreat before a required U-turn; replan after reversing"
+                         : (result.all_targets_reached
                          ? "all inspection roads covered"
-                         : "reachable roads covered; blocked roads deferred";
+                         : "reachable roads covered; blocked roads deferred");
   } catch (const std::exception &exception) {
     result.message = exception.what();
     result.success = false;

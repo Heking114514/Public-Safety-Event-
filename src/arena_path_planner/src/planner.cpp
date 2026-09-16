@@ -54,6 +54,9 @@ PlanResult ArenaPlanner::Plan(
   const auto first_blocked_reversal = [this](const std::vector<Point> & points) {
       constexpr double near_reversal_threshold = 2.6;
       for (std::size_t index = 1; index + 1 < points.size(); ++index) {
+        if (IsPlannedReverseRetreat(points, index)) {
+          continue;
+        }
         const double incoming = std::atan2(
           points[index].y - points[index - 1].y,
           points[index].x - points[index - 1].x);
@@ -154,7 +157,7 @@ PlanResult ArenaPlanner::Plan(
         // Reaching both portals by another road is not tunnel completion. The
         // configured portal-to-portal stroke itself must remain traversable.
         tunnel_pair_is_free[index] = SegmentIsFree(
-          nodes[index], nodes[static_cast<std::size_t>(counterpart_node)]);
+            nodes[index], nodes[static_cast<std::size_t>(counterpart_node)]);
       }
     }
     std::vector<int> order{0};
@@ -398,17 +401,31 @@ PlanResult ArenaPlanner::Plan(
       int selected_position = -1;
       GridPath selected_path;
       double selected_cost = std::numeric_limits<double>::infinity();
+      std::vector<std::pair<double, std::size_t>> candidate_positions;
+      candidate_positions.reserve(remaining.size());
       for (std::size_t position = 0; position < remaining.size(); ++position) {
         const int candidate_node = remaining[position];
         if (forced_tunnel_exit >= 0 && candidate_node != forced_tunnel_exit) {
           continue;
         }
         if (layer2 && forced_tunnel_exit < 0 &&
-          tunnel_counterparts[static_cast<std::size_t>(candidate_node)] >= 0 &&
-          !tunnel_pair_is_free[static_cast<std::size_t>(candidate_node)])
-        {
+            tunnel_counterparts[static_cast<std::size_t>(candidate_node)] >=
+                0 &&
+            !tunnel_pair_is_free[static_cast<std::size_t>(candidate_node)]) {
           continue;
         }
+        candidate_positions.emplace_back(
+            Distance(nodes[current_node], nodes[candidate_node]), position);
+      }
+      if (planning_mode != "numbered") {
+        std::sort(candidate_positions.begin(), candidate_positions.end());
+      }
+      for (const auto &[lower_bound, position] : candidate_positions) {
+        if (planning_mode != "numbered" && std::isfinite(selected_cost) &&
+            lower_bound >= selected_cost) {
+          break;
+        }
+        const int candidate_node = remaining[position];
         try {
           GridPath path;
           if (layer2 && candidate_node == forced_tunnel_exit) {
@@ -417,26 +434,26 @@ PlanResult ArenaPlanner::Plan(
             }
             path.cost = Distance(nodes[current_node], nodes[candidate_node]);
           } else {
-            path = config_.turns_at_junctions_only ?
-              AStar(nodes[current_node], nodes[candidate_node], current_heading) :
-              AStar(nodes[current_node], nodes[candidate_node]);
+            path = config_.turns_at_junctions_only
+                       ? AStar(nodes[current_node], nodes[candidate_node],
+                               current_heading)
+                       : AStar(nodes[current_node], nodes[candidate_node]);
           }
           if (config_.turns_at_junctions_only && !path.cells.empty()) {
             const std::vector<Point> preview = MaterializeGridPath(
-              path, nodes[current_node], nodes[candidate_node]);
+                path, nodes[current_node], nodes[candidate_node]);
             if (preview.size() >= 2) {
               std::size_t departure_index = 1;
               while (departure_index + 1 < preview.size() &&
-                Distance(preview.front(), preview[departure_index]) < 0.08)
-              {
+                     Distance(preview.front(), preview[departure_index]) <
+                         0.08) {
                 ++departure_index;
               }
-              const double departure = std::atan2(
-                preview[departure_index].y - preview[0].y,
-                preview[departure_index].x - preview[0].x);
+              const double departure =
+                  std::atan2(preview[departure_index].y - preview[0].y,
+                             preview[departure_index].x - preview[0].x);
               if (std::abs(NormalizeAngle(departure - current_heading)) > 2.6 ||
-                first_blocked_reversal(preview) < preview.size())
-              {
+                  first_blocked_reversal(preview) < preview.size()) {
                 continue;
               }
             }
@@ -590,6 +607,62 @@ PlanResult ArenaPlanner::Plan(
       config_.turn_junctions.end());
     semantic_points.insert(semantic_points.end(), anchors.begin(), anchors.end());
     result.points = Smooth(anchors, semantic_points);
+    bool ended_after_retreat = false;
+    if (config_.turns_at_junctions_only) {
+      result.points = StopAfterFirstBlockedReversal(result.points, ended_after_retreat);
+    }
+    if (ended_after_retreat) {
+      const auto defer_once = [&result](const std::string & label) {
+          if (std::find(
+              result.deferred_targets.begin(), result.deferred_targets.end(), label) ==
+            result.deferred_targets.end())
+          {
+            result.deferred_targets.push_back(label);
+          }
+        };
+      const auto route_reaches = [&result, this](const Point & target) {
+          double minimum = std::numeric_limits<double>::infinity();
+          for (std::size_t index = 1; index < result.points.size(); ++index) {
+            minimum = std::min(
+              minimum, DistanceToSegment(
+                target, result.points[index - 1], result.points[index]));
+          }
+          return minimum <= config_.task_tolerance + 1.0e-9;
+        };
+      std::vector<std::string> reached_visit_order;
+      reached_visit_order.reserve(result.visit_order.size());
+      for (const std::string & label : result.visit_order) {
+        if (label == "S") {
+          if (route_reaches(config_.default_start.position)) {
+            reached_visit_order.push_back(label);
+          } else {
+            defer_once("RETURN_TO_START");
+          }
+          continue;
+        }
+        const auto found = std::find(planning_labels.begin(), planning_labels.end(), label);
+        if (found == planning_labels.end()) {
+          reached_visit_order.push_back(label);
+          continue;
+        }
+        const std::size_t node_index =
+          static_cast<std::size_t>(std::distance(planning_labels.begin(), found) + 1);
+        if (node_index < nodes.size() && route_reaches(nodes[node_index])) {
+          reached_visit_order.push_back(label);
+        } else {
+          defer_once(label);
+        }
+      }
+      for (std::size_t node_index = 1;
+        node_index < nodes.size() && node_index - 1 < planning_labels.size();
+        ++node_index)
+      {
+        if (!route_reaches(nodes[node_index])) {
+          defer_once(planning_labels[node_index - 1]);
+        }
+      }
+      result.visit_order = std::move(reached_visit_order);
+    }
     if (!route_is_free(result.points)) {
       for (std::size_t index = 1; index < result.points.size(); ++index) {
         if (SegmentIsFree(result.points[index - 1], result.points[index])) {
@@ -729,8 +802,10 @@ PlanResult ArenaPlanner::Plan(
     }
     result.all_targets_reached = result.deferred_targets.empty();
     result.success = true;
-    result.message = result.all_targets_reached ?
-      "route planned" : "reachable targets planned; blocked targets deferred for one retry";
+    result.message = ended_after_retreat ?
+      "planned retreat before a required U-turn; replan after reversing" :
+      (result.all_targets_reached ?
+      "route planned" : "reachable targets planned; blocked targets deferred for one retry");
   } catch (const std::exception & exception) {
     result.success = false;
     result.message = exception.what();

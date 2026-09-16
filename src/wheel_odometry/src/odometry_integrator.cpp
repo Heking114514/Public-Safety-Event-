@@ -21,13 +21,17 @@ OdometryIntegrator::OdometryIntegrator(const IntegratorConfig & config)
   if (!(config_.wheel_radius_m > 0.0) ||
     !(config_.left_encoder_counts_per_revolution > 0.0) ||
     !(config_.right_encoder_counts_per_revolution > 0.0) ||
-    !(config_.wheel_track_m > 0.0) || !(config_.left_distance_scale > 0.0) ||
-    !(config_.right_distance_scale > 0.0) || !(config_.yaw_slip_scale > 0.0) ||
+    !(config_.wheel_track_m > 0.0) ||
+    !std::isfinite(config_.left_distance_scale) ||
+    config_.left_distance_scale == 0.0 ||
+    !std::isfinite(config_.right_distance_scale) ||
+    config_.right_distance_scale == 0.0 || !(config_.yaw_slip_scale > 0.0) ||
     !(config_.max_wheel_speed_mps > 0.0) ||
     !(config_.min_dt_s > 0.0) || !(config_.nominal_sample_period_s > 0.0) ||
     config_.nominal_sequence_increment == 0U)
   {
-    throw std::invalid_argument("wheel odometry parameters must be finite and positive");
+    throw std::invalid_argument(
+            "wheel odometry parameters must be finite; distance scales must be non-zero");
   }
 
   const double uncertainty_parameters[] = {

@@ -2,7 +2,7 @@
 # Edit these map-frame waypoints before an autonomous CSV test.
 # x[m], y[m], yaw[rad], speed[m/s], tolerance[m], stop_time[s]
 x,y,yaw,speed,tolerance,stop_time
-2.4,0.0,,0.26,0.08,0.0
-2.4,1.8,,0.26,0.08,0.0
-0.0,1.8,,0.26,0.08,0.0
-0.0,0.0,,0.26,0.08,0.0
+2.4,0.0,,0.26,0.04,0.0
+2.4,1.8,,0.26,0.04,0.0
+0.0,1.8,,0.26,0.04,0.0
+0.0,0.0,,0.26,0.04,0.0

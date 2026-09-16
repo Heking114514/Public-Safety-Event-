@@ -53,8 +53,7 @@ WaypointNavigator::RunBrake(const ControlFrame &frame) {
       routeStartTurnAuthorized_ && frame.target.turn_junction;
   const bool plannedReverse = visual_navigation::IsOutAndBackWaypoint(
       pathSegmentStartX_, pathSegmentStartY_, frame.target.x, frame.target.y,
-      nextTarget.x, nextTarget.y, 0.02, 0.05) &&
-      !frame.target.turn_junction;
+      nextTarget.x, nextTarget.y, 0.02, 0.05);
   const double arrivalHeading = routeStartTurn
       ? currentYaw_
       : NormalizeAngle(frame.path_heading +
@@ -123,19 +122,16 @@ void WaypointNavigator::RunRecovery(const ControlFrame &frame,
   const bool reverse = plannedReverse || std::abs(forwardError) > kPi / 2.0;
   const double recoveryHeadingError = NormalizeAngle(
       recoveryHeading - (reverse ? kPi : 0.0) - currentYaw_);
-  const double scaledMaxAngularSpeed =
-      waypointRecoveryMaxAngularSpeed_ * frame.fusion_health.speed_scale;
   const double requestedAngularSpeed =
       Clamp(angularGain_ * recoveryHeadingError -
                 turnYawRateDamping_ * frame.control_yaw_rate,
-            -scaledMaxAngularSpeed, scaledMaxAngularSpeed);
+            -waypointRecoveryMaxAngularSpeed_, waypointRecoveryMaxAngularSpeed_);
   geometry_msgs::msg::Twist command;
   command.angular.z = requestedAngularSpeed;
   command.linear.x =
       (reverse ? -1.0 : 1.0) *
       std::min(waypointRecoverySpeed_, linearGain_ * frame.distance) *
-      std::max(0.25, std::cos(recoveryHeadingError)) *
-      frame.fusion_health.speed_scale;
+      std::max(0.25, std::cos(recoveryHeadingError));
 
   const double recoveryProgress =
       CompletedRouteLengthBeforeCurrentSegment() +

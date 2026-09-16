@@ -91,12 +91,7 @@ void WaypointNavigator::RunControl() {
   }
 
   const auto fusionHealth = supervision.fusion_health;
-  const bool progressSupervisionAllowed =
-      supervision.state != "DEGRADED_TRANSIENT_LOCALIZATION";
-  if (!progressSupervisionAllowed) {
-    pathProgressSupervisor_.Pause();
-    turnProgressSupervisor_.Pause();
-  }
+  const bool progressSupervisionAllowed = true;
   if (!supervision.state.empty())
     SetState(supervision.state);
 
@@ -127,7 +122,7 @@ void WaypointNavigator::RunControl() {
     }
   }
   if (!obstacleRecoveryController_.idle()) {
-    RunObstacleRecovery(fusionHealth);
+    RunObstacleRecovery();
     return;
   }
 

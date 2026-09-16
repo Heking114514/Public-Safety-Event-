@@ -311,6 +311,18 @@ inline double ContinuousTrackingCurvature(
   return signed_path_curvature;
 }
 
+inline double StopRequiredPathAngularSpeed(
+  double requested_angular_speed, double linear_speed, double angular_ratio)
+{
+  if (!std::isfinite(requested_angular_speed) ||
+    !std::isfinite(linear_speed) || !std::isfinite(angular_ratio))
+  {
+    return 0.0;
+  }
+  const double limit = std::max(0.0, angular_ratio) * std::abs(linear_speed);
+  return std::max(-limit, std::min(limit, requested_angular_speed));
+}
+
 inline double LateralAccelerationAngularLimit(
   double maximum_angular_speed, double linear_speed, double maximum_lateral_acceleration)
 {

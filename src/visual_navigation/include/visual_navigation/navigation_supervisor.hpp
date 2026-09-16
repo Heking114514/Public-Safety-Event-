@@ -3,7 +3,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <limits>
 #include <string>
 
 #include "visual_navigation/actuator_health_policy.hpp"
@@ -51,7 +50,7 @@ inline bool TrackingStateIsValid(const NavigationInputStatus &input)
 inline FusionHealthDecision EffectiveFusionHealth(const NavigationInputStatus &input)
 {
   if (!input.fusion_required)
-    return FusionHealthDecision{true, false, 1.0};
+    return FusionHealthDecision{true, false};
   if (!input.fusion_status_received || !input.fusion_status_fresh)
     return FusionHealthDecision{};
   return input.fusion_health;
@@ -136,8 +135,6 @@ struct NavigationRuntimeDecision
 
 struct NavigationSupervisorConfig
 {
-  double transient_localization_grace{2.0};
-  double transient_fault_speed_scale{0.25};
   bool abort_on_tracking_loss{false};
 };
 
@@ -152,10 +149,6 @@ public:
   explicit NavigationSupervisor(const NavigationSupervisorConfig &config)
   : config_(config)
   {
-    config_.transient_localization_grace =
-      std::max(0.0, config_.transient_localization_grace);
-    config_.transient_fault_speed_scale = std::max(
-      0.0, std::min(1.0, config_.transient_fault_speed_scale));
   }
 
   NavigationRuntimeDecision Evaluate(
@@ -174,30 +167,10 @@ public:
       OdometryIsValid(input) && health.allowed && tracking_valid;
     if (localization_valid)
     {
-      last_valid_localization_time_ = control_time;
-      valid_localization_time_initialized_ = true;
+      (void)control_time;
     }
 
-    const double seconds_since_valid = valid_localization_time_initialized_ ?
-      std::chrono::duration<double>(
-        control_time - last_valid_localization_time_).count() :
-      std::numeric_limits<double>::infinity();
     const bool hard_fault = health.fault || input.fusion_status == "FAULT_STALLED";
-    const bool bridge_transient_loss = !localization_valid &&
-      CanBridgeTransientLocalizationLoss(
-        localization_was_valid_, hard_fault, seconds_since_valid,
-        config_.transient_localization_grace);
-
-    if (bridge_transient_loss)
-    {
-      localization_was_valid_ = true;
-      health.allowed = true;
-      health.fault = false;
-      health.speed_scale = config_.transient_fault_speed_scale;
-      return {
-        NavigationRuntimeAction::DRIVE, health,
-        "DEGRADED_TRANSIENT_LOCALIZATION", false};
-    }
 
     if (!localization_valid)
     {
@@ -218,15 +191,11 @@ public:
   void ResetLocalizationHistory()
   {
     localization_was_valid_ = false;
-    valid_localization_time_initialized_ = false;
-    last_valid_localization_time_ = TimePoint{};
   }
 
 private:
   NavigationSupervisorConfig config_;
   bool localization_was_valid_{false};
-  bool valid_localization_time_initialized_{false};
-  TimePoint last_valid_localization_time_{};
 };
 
 }  // namespace visual_navigation

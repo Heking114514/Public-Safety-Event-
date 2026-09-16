@@ -8,16 +8,16 @@ wheel_odometry_node:
     # when wheel odometry is the sole odometry source.
     publish_tf: false
 
-    # User-confirmed chassis measurements (2026-09-12). Keep the STM32 chassis
-    # constants in sync. A 47.6 mm wheel diameter gives a 23.8 mm radius.
-    wheel_radius_m: 0.0238
-    left_encoder_counts_per_revolution: 1060.1667
-    right_encoder_counts_per_revolution: 1060.9333
-    wheel_track_m: 0.1247
-    # The old distance and turn corrections were measured with the previous
-    # 32.5 mm / 1925 count / 187 mm model and must not be applied to this chassis.
-    left_distance_scale: 1.0
-    right_distance_scale: 1.0
+    # Current STM32 physical model (2026-09-15): wheel radius 30.2 mm,
+    # differential-drive track 146.6 mm, M2006 P36 encoder = 8192 * 36.
+    wheel_radius_m: 0.0302
+    left_encoder_counts_per_revolution: 294912.0
+    right_encoder_counts_per_revolution: 294912.0
+    wheel_track_m: 0.1466
+    # Encoder counts decrease during ROS-forward wheel motion on this chassis;
+    # keep the physical CPR positive and express polarity as signed scales.
+    left_distance_scale: -1.0
+    right_distance_scale: -1.0
     yaw_slip_scale: 1.0
 
     # Reject a sample if either wheel would have exceeded this speed.

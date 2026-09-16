@@ -7,9 +7,8 @@ namespace fused_odometry
 {
 
 FusionHealthMonitor::FusionHealthMonitor(
-  const MotionClassifierConfig & motion_config,
-  const AngularStallConfig & angular_stall_config)
-: motion_classifier_(motion_config), angular_stall_detector_(angular_stall_config)
+  const MotionClassifierConfig & motion_config)
+: motion_classifier_(motion_config)
 {
 }
 
@@ -56,9 +55,8 @@ FusionHealthSnapshot FusionHealthMonitor::evaluate(
 {
   FusionHealthSnapshot result;
   result.motion_fault = motion_classifier_.update(
-    input.now_seconds, input.command_velocity, input.wheel_velocity,
-    input.visual_velocity, input.command_fresh, input.wheel_measurement_fresh,
-    input.visual_motion_valid);
+    input.now_seconds, input.wheel_velocity, input.visual_velocity,
+    input.wheel_measurement_fresh, input.visual_motion_valid);
   const bool wheel_fault = result.motion_fault == MotionFault::kSlip ||
     result.motion_fault == MotionFault::kEncoderFailure;
   result.wheel_healthy = input.wheel_available && !wheel_fault;
@@ -78,10 +76,6 @@ FusionHealthSnapshot FusionHealthMonitor::evaluate(
       result.measured_yaw_rate, std::abs(input.wheel_yaw_rate));
     ++result.angular_source_count;
   }
-  result.angular_stalled = angular_stall_detector_.update(
-    input.now_seconds, input.command_yaw_rate, result.measured_yaw_rate,
-    input.command_fresh, result.angular_source_count >= 2);
-
   update_dead_reckoning(input.now_seconds, input.wheel_velocity, result.wheel_healthy);
   result.vision_outage_seconds = vision_outage_active_ ?
     std::max(0.0, input.now_seconds - vision_outage_started_at_) : 0.0;
@@ -89,7 +83,7 @@ FusionHealthSnapshot FusionHealthMonitor::evaluate(
   result.mode = select_mode(
       input.initialized, input.vision, result.wheel_healthy, input.imu,
       input.wheel_yaw_backup, input.visual_realigned,
-      result.motion_fault == MotionFault::kStalled || result.angular_stalled,
+      false,
       result.vision_outage_seconds, result.dead_reckoning_distance,
       limits.max_dead_reckoning_time, limits.max_dead_reckoning_distance,
       limits.max_wheel_only_time, limits.max_wheel_only_distance);

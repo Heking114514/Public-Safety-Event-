@@ -15,6 +15,9 @@ namespace arena_path_planner
 
 constexpr double kTurnJunctionPathMarkerZ = 0.001;
 constexpr double kTurnJunctionOperatingTolerance = 0.04;
+constexpr double kNearReversalThreshold = 2.6;
+constexpr double kPlannedRetreatReturnTolerance = 0.02;
+constexpr double kPlannedRetreatMinimumLength = 0.05;
 
 inline double NavigationPathMarkerZ(bool turn_junction)
 {
@@ -278,6 +281,10 @@ private:
   std::vector<Point> Smooth(
     const std::vector<Point> & points,
     const std::vector<Point> & required_targets) const;
+  bool IsPlannedReverseRetreat(
+    const std::vector<Point> & points, std::size_t pivot_index) const;
+  std::vector<Point> StopAfterFirstBlockedReversal(
+    const std::vector<Point> & points, bool & inserted_retreat) const;
   std::vector<int> VisitOrder(
     const std::vector<std::vector<double>> & distances,
     const std::string & mode) const;

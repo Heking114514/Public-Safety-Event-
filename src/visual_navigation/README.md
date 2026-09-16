@@ -66,7 +66,7 @@ ros2 service call /waypoint_navigator/set_motion_hold \
   "{source: 'inspection', hold: false, reason: ''}"
 ```
 
-正常情况下，只有里程计和融合健康消息均未超时、且健康状态位于 `allowed_fusion_states` 中，节点才会输出非零速度。ORB 暖机时融合状态为 `WAITING_FOR_INITIALIZATION`：路线可以保持激活但只输出零速等待；连续有效视觉样本到来后会自动转入允许状态，无需再次 `start`。超过融合端 `initialization_timeout_s` 才会变为 `FAULT_INIT_TIMEOUT` 并锁存。最近一次定位有效后发生的短暂丢失，可在 `transient_localization_grace` 内按 `transient_fault_speed_scale` 降速维持；超过该窗口仍会停车。控制 IMU 超时则将角速度反馈置零并按 `no_imu_speed_scale` 限速；不同 `DEGRADED_*` 状态使用各自的 `*_speed_scale`，未单独配置的状态使用 `degraded_speed_scale`；`FAULT`、未知状态、消息陈旧、无效位姿或坐标系不一致都会停车。旧 `/tracking_state` 检查由 `require_tracking_state` 参数选择性启用。导航不得直接订阅原始 `/imu/filtered`，以免绕过融合 gate 的 bias 修正。
+正常情况下，只有里程计和融合健康消息均未超时、且健康状态位于 `allowed_fusion_states` 中，节点才会输出非零速度。`DEGRADED_*` 只是融合层可降级状态；只要列入允许列表，导航仍按原路线速度和全局上限执行，不做额外限速。ORB 暖机时融合状态为 `WAITING_FOR_INITIALIZATION`：路线可以保持激活但只输出零速等待；连续有效视觉样本到来后会自动转入允许状态，无需再次 `start`。融合端上报 `FAULT_*`、未知状态、消息陈旧、无效位姿或坐标系不一致都会停车；确认的融合 `FAULT_*` 会锁存任务，等待健康路线重启。控制 IMU 超时只会让角速度反馈临时回退为零，不参与降速策略。旧 `/tracking_state` 检查由 `require_tracking_state` 参数选择性启用。导航只订阅融合 gate 发布的 `/imu/control`，不直接消费原始 IMU。
 
 普通 bringup 的 `require_actuator_health` 默认为 `false`，便于不连接下位机时测试；`visual_navigation_serial_bringup.launch.py` 强制设为 `true`。此时启动前必须收到新鲜的 `actuator_healthy=true`，即下位机控制遥测新鲜、处于导航模式、未急停且命令没有超时。运行中状态变为 `false` 或心跳超过 `actuator_health_timeout`（默认 `0.8 s`）会立即发布零速度并进入 `WAITING_FOR_ACTUATOR_RECOVERY`，但保留当前路线和进度；健康状态恢复后自动续跑。
 
@@ -110,11 +110,16 @@ x,y,yaw,speed,tolerance,stop_time
 路径控制连续 `10 s` 未取得 `0.05 m` 沿线进展，且车辆相对监督起点
 确实位移过 `0.25 m` 时，先停车一拍并重置路径反馈；另外，只有在直线前进阶段
 持续发出至少 `0.08 m/s` 的线速度命令、而实测速度和位移都接近零超过 `3 s` 时，
-才按同样的恢复次数处理完全卡死。原地转向、制动、任务驻停和短时定位恢复不触发这条
+才按同样的恢复次数处理完全卡死。原地转向、制动、任务驻停和定位等待不触发这条
 低运动检查。连续两次恢复仍无效才进入 `FAULT_NO_PATH_PROGRESS`。转向使用独立的航向误差
 进度监督，持续改善的大角度慢转不会因固定短超时被中止；连续无改善时同样先恢复两次，再进入
 `FAULT_NO_TURN_PROGRESS`。
-制动、任务驻停、航点等待和短时定位恢复期间不累计进度超时。
+制动、任务驻停、航点等待和定位等待期间不累计进度超时。
+
+需要停车的路口不会把下一段路径曲率提前施加到进站直线；进站时只保留受
+`pre_turn_path_angular_ratio` 限制的小幅路径纠偏。到点确认停稳后，原地转向使用
+`turn_cruise_speed`，并在 `precision_turn_threshold` 内保持不低于
+`min_precision_turn_speed` 的命令来跨过实测底盘转向死区。
 
 如果需要使用已有地图中的绝对航点，需要后续增加 `外部地图 -> ORB里程计坐标` 的对齐节点，不能仅修改 CSV 中的 `frame_id`。
 
@@ -235,7 +240,7 @@ ros2 launch visual_navigation visual_navigation_serial_bringup.launch.py \
   autostart:=false
 ```
 
-当前完整启动链固定发布 `base_link -> camera_link` 前向 `0.070m` 的二维静态 TF，并将 ORB、轮式里程计和融合结果统一到 `base_link`。重新测量安装位置后应同步修改该静态 TF；导航内部的旧相机位置补偿已经清零，不能重复补偿。
+当前完整启动链固定发布 `base_link -> camera_link` 前向 `0.055m` 的二维静态 TF，并将 ORB、轮式里程计和融合结果统一到 `base_link`。重新测量安装位置后应同步修改该静态 TF；导航内部的旧相机位置补偿已经清零，不能重复补偿。
 
 ## 下位机连接
 

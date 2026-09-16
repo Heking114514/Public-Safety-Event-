@@ -251,6 +251,20 @@ TEST(PathControl, StopAndTurnCornerDoesNotSteerTheIncomingStraight)
     next_segment_curvature);
 }
 
+TEST(PathControl, StopRequiredApproachKeepsAngularSpeedTiedToForwardSpeed)
+{
+  EXPECT_NEAR(
+    visual_navigation::StopRequiredPathAngularSpeed(0.20, 0.15, 1.2),
+    0.18, 1.0e-12);
+  EXPECT_NEAR(
+    visual_navigation::StopRequiredPathAngularSpeed(-0.20, 0.15, 1.2),
+    -0.18, 1.0e-12);
+  EXPECT_DOUBLE_EQ(
+    visual_navigation::StopRequiredPathAngularSpeed(0.20, 0.0, 1.2), 0.0);
+  EXPECT_DOUBLE_EQ(
+    visual_navigation::StopRequiredPathAngularSpeed(0.20, 0.15, 0.0), 0.0);
+}
+
 TEST(PathControl, WaypointApproachDoesNotOverrideCrossTrackSpeedLimit)
 {
   EXPECT_DOUBLE_EQ(

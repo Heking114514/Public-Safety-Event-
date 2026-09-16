@@ -18,6 +18,81 @@ bool AxisAligned(const Point & left, const Point & right)
 
 }  // namespace
 
+bool ArenaPlanner::IsPlannedReverseRetreat(
+  const std::vector<Point> & points, std::size_t pivot_index) const
+{
+  if (pivot_index == 0 || pivot_index + 1 >= points.size()) {
+    return false;
+  }
+  const Point & segment_start = points[pivot_index - 1];
+  const Point & endpoint = points[pivot_index];
+  const Point & retreat_target = points[pivot_index + 1];
+  return Distance(segment_start, retreat_target) <= kPlannedRetreatReturnTolerance &&
+         Distance(segment_start, endpoint) >= kPlannedRetreatMinimumLength &&
+         SegmentIsFree(endpoint, retreat_target);
+}
+
+std::vector<Point> ArenaPlanner::StopAfterFirstBlockedReversal(
+  const std::vector<Point> & points, bool & inserted_retreat) const
+{
+  inserted_retreat = false;
+  if (points.size() < 3) {
+    return points;
+  }
+
+  std::vector<Point> result{points.front()};
+  if (Distance(points[0], points[1]) <= 1.0e-9) {
+    result.push_back(points[1]);
+    return result;
+  }
+  result.push_back(points[1]);
+  double vehicle_heading = std::atan2(
+    points[1].y - points[0].y,
+    points[1].x - points[0].x);
+
+  for (std::size_t index = 1; index + 1 < points.size(); ++index) {
+    const double leg_length = Distance(points[index], points[index + 1]);
+    if (leg_length <= 1.0e-9) {
+      if (Distance(result.back(), points[index + 1]) > 1.0e-9) {
+        result.push_back(points[index + 1]);
+      }
+      continue;
+    }
+
+    const double outgoing = std::atan2(
+      points[index + 1].y - points[index].y,
+      points[index + 1].x - points[index].x);
+    if (IsPlannedReverseRetreat(points, index)) {
+      if (Distance(result.back(), points[index + 1]) > 1.0e-9) {
+        result.push_back(points[index + 1]);
+      }
+      inserted_retreat = true;
+      return result;
+    }
+
+    if (std::abs(NormalizeAngle(outgoing - vehicle_heading)) >=
+      kNearReversalThreshold)
+    {
+      const Point & retreat_target = points[index - 1];
+      if (Distance(retreat_target, points[index]) >= kPlannedRetreatMinimumLength &&
+        SegmentIsFree(points[index], retreat_target))
+      {
+        if (Distance(result.back(), retreat_target) > 1.0e-9) {
+          result.push_back(retreat_target);
+        }
+        inserted_retreat = true;
+        return result;
+      }
+    }
+
+    if (Distance(result.back(), points[index + 1]) > 1.0e-9) {
+      result.push_back(points[index + 1]);
+    }
+    vehicle_heading = outgoing;
+  }
+  return result;
+}
+
 std::vector<Point> ArenaPlanner::Simplify(
   const std::vector<Point> & points,
   const std::vector<Point> & required_targets) const
@@ -362,6 +437,9 @@ std::vector<Point> ArenaPlanner::Smooth(
     while (removed_spur && aligned.size() >= 3) {
       removed_spur = false;
       for (std::size_t index = 1; index + 1 < aligned.size(); ++index) {
+        if (IsPlannedReverseRetreat(aligned, index)) {
+          continue;
+        }
         if (Distance(aligned[index - 1], aligned[index + 1]) <= 1.0e-6) {
           aligned.erase(aligned.begin() + static_cast<std::ptrdiff_t>(index),
                         aligned.begin() + static_cast<std::ptrdiff_t>(index + 2));
@@ -424,6 +502,9 @@ std::vector<Point> ArenaPlanner::Smooth(
           return Distance(target, clean[index]) <= 1.0e-6;
         });
       if (required) {
+        continue;
+      }
+      if (IsPlannedReverseRetreat(clean, index)) {
         continue;
       }
       const double joined_heading = std::atan2(

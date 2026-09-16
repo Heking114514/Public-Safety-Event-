@@ -16,11 +16,9 @@ Inputs:
 - `/orbslam3/map_change` (`std_msgs/UInt64`): verified ORB loop-closure or
   global-BA map correction sequence.
 - `/wheel/odom` (`nav_msgs/Odometry`): body-forward `vx`; `wz` remains available
-  for consistency diagnostics. Neither component enters the default EKF.
-- `/imu/filtered` (`sensor_msgs/Imu`): raw filtered gyro input; only
-  `angular_velocity.z` is used by the gate.
-- `/cmd_vel_nav` (`geometry_msgs/Twist`): observation-only input for classifying
-  slip, mechanical stall, and encoder failure; it is never forwarded or modified.
+  for consistency diagnostics. Only `vx` enters the default EKF.
+- `/cup_car_serial/bmi088_attitude` (`sensor_msgs/Imu`): lower-controller
+  processed BMI088 ATT yaw and gyro-z input.
 
 Outputs:
 
@@ -35,27 +33,28 @@ Outputs:
   `DEGRADED_VISUAL_REALIGNED`, `FAULT_STALLED`, `FAULT_INIT_TIMEOUT`, or
   `FAULT`.
 - `/diagnostics`: freshness, residuals, rejection counters and dead-reckoning limits.
-- `/imu/control` (`sensor_msgs/Imu`): gate-validated, base-link-frame yaw rate
-  after the bounded visual-reference bias correction. This is the single IMU
-  feedback stream for both the local EKF and navigation control.
+- `/imu/control` (`sensor_msgs/Imu`): gate-validated, base-link-frame processed
+  BMI088 yaw/yaw-rate. This is the single IMU feedback stream for both the local
+  EKF and navigation control.
 
 The gate publishes sanitized visual and wheel inputs below `/fusion/input/*`.
-The corrected control IMU is intentionally public at `/imu/control` so that
+The control IMU is intentionally public at `/imu/control` so that
 navigation damping and EKF prediction use the same yaw-rate sample.
 
 Wheel, IMU, and raw visual callbacks reject unset, stale, future, and
 non-monotonic measurement timestamps. All periodic status/publish timers use
 the node ROS clock, so simulated-time pause and jumps do not mix with wall-time
 control scheduling. When `use_slam_imu=true`, the bringup launch omits the
-external IMU filter to keep the D455 IMU in one estimator path.
+D455 IMU stream from ORB input; the fusion gate still expects processed BMI088
+ATT from `cup_car_serial`.
 
 `/odometry/fused` publishes a map-frame pose. Its position and yaw covariance
 include both the local odometry covariance and the accepted visual correction
 covariance; the local covariance is not relabeled as global covariance.
 
-Optional turn-position holding is disabled by default (`hold_global_xy_during_turn:
-false`). When enabled, it is released if local odometry measures more than
-`turn_hold_max_translation_m` of translation, so a mistaken in-place command
+Turn-position holding is enabled by default (`hold_global_xy_during_turn:
+true`). It is released if local odometry measures more than
+`turn_hold_max_translation_m` of translation, so a misclassified in-place turn
 cannot silently erase real chassis motion.
 
 The map correction node pairs visual poses with local EKF poses at the visual
@@ -75,8 +74,8 @@ global vision-health decision.
 ## Behavior
 
 `robot_localization` performs the local planar EKF from gated visual forward
-velocity and IMU yaw rate. Encoder odometry never modifies this state. A separate
-correction node combines gated ORB pose with the local
+velocity, low-weight wheel `vx`, and processed BMI088 yaw/yaw-rate. Wheel yaw
+does not modify this state. A separate correction node combines gated ORB pose with the local
 estimate to publish `map -> odom` and `/odometry/fused`. Normal visual drift is
 corrected with the configured 0.15-second time constant; when a verified ORB
 map change is active, the correction uses 1.25 seconds so PID control never
@@ -91,36 +90,30 @@ or timeout. IMU/visual disagreement increases visual yaw covariance instead of
 interrupting `/imu/control`, because visual angular rate can lag during a
 rapid turn. Wheel residuals retain hard rejection and recovery hysteresis. Wheel
 covariance supplied by the encoder node remains the lower bound before adaptive
-inflation.
-During healthy commanded straight motion, a slow bounded gyro-z bias estimator
-uses the robust visual yaw rate to suppress long-run lateral drift in
-`/odometry/local`; it freezes during turns and visual outages, so it does not
-replace the high-frequency IMU turn signal.
+inflation. The upper computer does not relearn BMI088 gyro bias; it trusts the
+lower-controller processed ATT sample and only validates the frame, timestamp and
+bounds.
 
-Command, wheel, and visual motion are classified only after a configurable dwell:
-wheel motion without visual motion is `WHEEL_SLIP`; commanded motion with neither
-wheel nor visual motion is `MECHANICAL_STALL`; visual motion without wheel motion
-is `ENCODER_FAILURE`. A stall publishes `FAULT_STALLED`. Slip and encoder failure
-remain visible in diagnostics, but do not change `FULL` or navigation speed while
-visual odometry and IMU are healthy. A missing or residual-rejected wheel source is
-handled the same way. With healthy visual odometry but no IMU, the mode is always
-`DEGRADED_NO_IMU`, independent of wheel health. Wheel measurements never enter the
-EKF. Wheel faults and loss still set the diagnostic level to `WARN`; mechanical
-stall remains `ERROR`. Recovery has a separate dwell to prevent rapid state toggling.
-Angular stall detection requires at least two fresh angular-rate sources and
-publishes `FAULT_STALLED` after a turn command produces no measured rotation for
-0.8 seconds.
+Wheel and visual forward motion are classified only after a configurable dwell:
+wheel motion without visual motion is `WHEEL_SLIP`; visual motion without wheel
+motion is `ENCODER_FAILURE`. Slip and encoder failure remain visible in
+diagnostics, but do not change `FULL` or navigation speed while visual odometry
+and IMU are healthy. A missing or residual-rejected wheel source is handled the
+same way. With healthy visual odometry but no IMU, the mode is always
+`DEGRADED_NO_IMU`, independent of wheel health. Wheel faults and loss still set
+the diagnostic level to `WARN`; recovery has a separate dwell to prevent rapid
+state toggling.
 
-During visual loss, the local EKF receives no new translation measurement; its
-short prediction continues from the last accepted visual velocity while IMU `wz`
-keeps angular motion live. Validated wheel speed only measures the outage-distance
-budget and participates in health checks. Navigation applies a reduced speed until
-vision returns, and the configured time/distance limits bound this open-loop period.
+During visual loss, the local EKF continues from wheel `vx` and BMI088 yaw/yaw-rate
+while the configured time/distance limits bound this open-loop period. Fusion
+status is infrastructure health only: allowed degraded states do not lower
+navigation speed. `FAULT`, stale status, invalid odometry, or exceeded
+dead-reckoning limits stop navigation and wait for recovery.
 
 At startup the gate publishes `WAITING_FOR_INITIALIZATION` while ORB warms up
-and accumulates coherent visual increments. This state commands zero velocity
-but is not a latched fault. If no visual initialization arrives within
-`initialization_timeout_s` (10 s by default), the status becomes
+and accumulates coherent visual increments. Navigation treats this state as a
+zero-velocity wait, but it is not a latched fault. If no visual initialization
+arrives within `initialization_timeout_s` (10 s by default), the status becomes
 `FAULT_INIT_TIMEOUT`; navigation can then latch it for manual recovery.
 
 Wheel yaw validation requires sustained agreement with IMU during actual
@@ -147,32 +140,30 @@ relocalization jumps and are not odometry-fusion pose inputs.
 
 ## Frames
 
-The current planar measurement places `camera_link` 0.070 m forward of the
-drive-wheel center: `base_link -> camera_link = (0.070, 0, 0)`. ORB and wheel
-odometry publish the vehicle center as `base_link`; the IMU filter keeps its
-camera frame but already converts gyro measurements to Euler yaw rate before the
-gate republishes that scalar in `base_link`.
+The current planar measurement places `camera_link` 0.055 m forward of the
+geometric vehicle center: `base_link -> camera_link = (0.055, 0, 0)`. ORB, wheel
+odometry and processed BMI088 ATT publish the vehicle center as `base_link`.
 
 The local EKF broadcasts `odom -> base_link`; the correction node broadcasts
 `map -> odom`. ORB and wheel TF publication remain disabled to avoid duplicate
 TF parents.
 
-During a commanded in-place turn, the correction node holds the global vehicle
+During an observed in-place turn, the correction node holds the global vehicle
 center in XY while the local IMU yaw remains live. When the turn ends, the
 visual translation is rebased to that anchor, so later ORB translation
 increments remain available without accepting the 4-9 cm apparent translation
 observed during zero-linear-speed turns.
 
 Motion states are intentionally contextual rather than one shared boolean:
-map correction uses `command_stationary` only to select its correction time
-constant; navigation braking uses measured position-window speed and a dwell;
-the IMU filter's `stationary` state is its own gyro-bias/yaw-hold detector.
-These states must not be substituted for one another because they answer
-different questions and use different trustworthy sensors.
+map correction uses measured local speed to select its correction time constant,
+navigation braking uses measured position-window speed and a dwell, and the IMU
+filter's `stationary` state is its own gyro-bias/yaw-hold detector. These states
+must not be substituted for one another because they answer different questions
+and use different trustworthy sensors.
 
 ## Start
 
-First start ORB with body frame `base_link`, and start the external IMU filter and
+First start ORB with body frame `base_link`, and start cup-car serial ATT plus
 wheel odometry when those inputs are selected, with their live TF outputs
 disabled. Then run:
 
@@ -182,8 +173,8 @@ source install/setup.bash
 ros2 launch fused_odometry fused_odometry.launch.py
 ```
 
-Alternatively, start the complete odometry chain (camera, ORB, optional filtered
-IMU, optional wheel odometry, gate, and EKF) without any navigator or motor output:
+Alternatively, start the camera, ORB, optional wheel odometry, gate, and EKF
+without any navigator or motor output:
 
 ```bash
 ros2 launch fused_odometry odometry_bringup.launch.py
@@ -193,6 +184,8 @@ Bringup arguments are `serial_no`, `initial_reset`, `visualization`, `use_imu`,
 `use_slam_imu`, `equalize`, `use_wheel`, and `use_sim_time`. Their defaults match
 the current D455 setup. `use_imu:=false` also disables the D455 IMU streams;
 `use_wheel:=false` leaves wheel odometry out and produces a degraded status.
+Start `cup_car_serial cmd_vel_serial.launch.py` separately, or use the
+serial-navigation bringup, when the gate should receive BMI088 ATT.
 
 No physical motion is started by this command. Inspect health before connecting
 the output to navigation:

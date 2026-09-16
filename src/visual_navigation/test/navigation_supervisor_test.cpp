@@ -10,7 +10,6 @@ namespace
 using visual_navigation::NavigationInputStatus;
 using visual_navigation::NavigationRuntimeAction;
 using visual_navigation::NavigationSupervisor;
-using visual_navigation::NavigationSupervisorConfig;
 
 NavigationInputStatus HealthyInput()
 {
@@ -22,7 +21,7 @@ NavigationInputStatus HealthyInput()
   input.fusion_status_received = true;
   input.fusion_status_fresh = true;
   input.fusion_status = "FULL";
-  input.fusion_health = {true, false, 1.0};
+  input.fusion_health = {true, false};
   return input;
 }
 
@@ -70,9 +69,25 @@ TEST(NavigationSupervisor, StartReportsStaleAndDisconnectedActuator)
   EXPECT_TRUE(decision.failure_state.empty());
 }
 
-TEST(NavigationSupervisor, BriefLocalizationLossDrivesAtTransientScale)
+TEST(NavigationSupervisor, DegradedFusionStateDrivesWithoutSpeedScaling)
 {
-  NavigationSupervisor supervisor({2.0, 0.25, false});
+  NavigationSupervisor supervisor({false});
+  const auto start = NavigationSupervisor::TimePoint{};
+  auto input = HealthyInput();
+  input.fusion_status = "DEGRADED_NO_VISION";
+  input.fusion_health = {true, false};
+
+  const auto decision = supervisor.Evaluate(input, start);
+
+  EXPECT_EQ(decision.action, NavigationRuntimeAction::DRIVE);
+  EXPECT_TRUE(decision.state.empty());
+  EXPECT_TRUE(decision.fusion_health.allowed);
+  EXPECT_FALSE(decision.fusion_health.fault);
+}
+
+TEST(NavigationSupervisor, StaleOdometryStopsImmediatelyWithoutTransientBridge)
+{
+  NavigationSupervisor supervisor({false});
   const auto start = NavigationSupervisor::TimePoint{};
   auto input = HealthyInput();
   EXPECT_EQ(
@@ -80,37 +95,53 @@ TEST(NavigationSupervisor, BriefLocalizationLossDrivesAtTransientScale)
     NavigationRuntimeAction::DRIVE);
 
   input.odometry_fresh = false;
-  const auto decision = supervisor.Evaluate(input, start + std::chrono::milliseconds(1900));
-
-  EXPECT_EQ(decision.action, NavigationRuntimeAction::DRIVE);
-  EXPECT_EQ(decision.state, "DEGRADED_TRANSIENT_LOCALIZATION");
-  EXPECT_DOUBLE_EQ(decision.fusion_health.speed_scale, 0.25);
-}
-
-TEST(NavigationSupervisor, ExpiredLocalizationGraceStopsWithoutLatching)
-{
-  NavigationSupervisor supervisor({2.0, 0.25, false});
-  const auto start = NavigationSupervisor::TimePoint{};
-  auto input = HealthyInput();
-  supervisor.Evaluate(input, start);
-
-  input.odometry_fresh = false;
-  const auto decision = supervisor.Evaluate(input, start + std::chrono::milliseconds(2100));
+  const auto decision = supervisor.Evaluate(input, start + std::chrono::milliseconds(1));
 
   EXPECT_EQ(decision.action, NavigationRuntimeAction::STOP_AND_WAIT);
   EXPECT_EQ(decision.state, "WAITING_FOR_ODOMETRY");
   EXPECT_TRUE(decision.reset_path_control);
 }
 
+TEST(NavigationSupervisor, StaleFusionStatusStopsImmediately)
+{
+  NavigationSupervisor supervisor({false});
+  const auto start = NavigationSupervisor::TimePoint{};
+  auto input = HealthyInput();
+  supervisor.Evaluate(input, start);
+
+  input.fusion_status_fresh = false;
+  input.fusion_health = {};
+  const auto decision = supervisor.Evaluate(input, start + std::chrono::milliseconds(1));
+
+  EXPECT_EQ(decision.action, NavigationRuntimeAction::STOP_AND_WAIT);
+  EXPECT_EQ(decision.state, "FAULT_FUSION_STATUS_STALE");
+  EXPECT_TRUE(decision.reset_path_control);
+}
+
+TEST(NavigationSupervisor, InvalidOdometryPoseStopsImmediately)
+{
+  NavigationSupervisor supervisor({false});
+  const auto start = NavigationSupervisor::TimePoint{};
+  auto input = HealthyInput();
+  supervisor.Evaluate(input, start);
+
+  input.odometry_pose_valid = false;
+  const auto decision = supervisor.Evaluate(input, start + std::chrono::milliseconds(1));
+
+  EXPECT_EQ(decision.action, NavigationRuntimeAction::STOP_AND_WAIT);
+  EXPECT_EQ(decision.state, "FAULT_ODOMETRY_INVALID");
+  EXPECT_TRUE(decision.reset_path_control);
+}
+
 TEST(NavigationSupervisor, FusionFaultStopsAndLatchesImmediately)
 {
-  NavigationSupervisor supervisor({2.0, 0.25, false});
+  NavigationSupervisor supervisor({false});
   const auto start = NavigationSupervisor::TimePoint{};
   auto input = HealthyInput();
   supervisor.Evaluate(input, start);
 
   input.fusion_status = "FAULT_STALLED";
-  input.fusion_health = {false, true, 0.0};
+  input.fusion_health = {false, true};
   const auto decision = supervisor.Evaluate(input, start + std::chrono::milliseconds(10));
 
   EXPECT_EQ(decision.action, NavigationRuntimeAction::STOP_AND_LATCH);
@@ -119,7 +150,7 @@ TEST(NavigationSupervisor, FusionFaultStopsAndLatchesImmediately)
 
 TEST(NavigationSupervisor, OrbWarmupWaitsWithoutLatching)
 {
-  NavigationSupervisor supervisor({2.0, 0.25, false});
+  NavigationSupervisor supervisor({false});
   const auto start = NavigationSupervisor::TimePoint{};
   auto input = HealthyInput();
   input.fusion_status = "WAITING_FOR_INITIALIZATION";
@@ -133,11 +164,11 @@ TEST(NavigationSupervisor, OrbWarmupWaitsWithoutLatching)
 
 TEST(NavigationSupervisor, InitializationTimeoutIsLatched)
 {
-  NavigationSupervisor supervisor({2.0, 0.25, false});
+  NavigationSupervisor supervisor({false});
   const auto start = NavigationSupervisor::TimePoint{};
   auto input = HealthyInput();
   input.fusion_status = "FAULT_INIT_TIMEOUT";
-  input.fusion_health = {false, true, 0.0};
+  input.fusion_health = {false, true};
 
   const auto decision = supervisor.Evaluate(input, start);
   EXPECT_EQ(decision.action, NavigationRuntimeAction::STOP_AND_LATCH);
@@ -152,7 +183,7 @@ TEST(NavigationSupervisor, TrackingLossOnlyLatchesWhenConfiguredAfterValidRun)
   input.tracking_state_received = true;
   input.tracking_state = 2;
 
-  NavigationSupervisor waiting_supervisor({0.0, 0.25, false});
+  NavigationSupervisor waiting_supervisor({false});
   waiting_supervisor.Evaluate(input, start);
   input.tracking_state = 3;
   EXPECT_EQ(
@@ -160,7 +191,7 @@ TEST(NavigationSupervisor, TrackingLossOnlyLatchesWhenConfiguredAfterValidRun)
     NavigationRuntimeAction::STOP_AND_WAIT);
 
   input.tracking_state = 2;
-  NavigationSupervisor latching_supervisor({0.0, 0.25, true});
+  NavigationSupervisor latching_supervisor({true});
   latching_supervisor.Evaluate(input, start);
   input.tracking_state = 3;
   EXPECT_EQ(
@@ -168,9 +199,9 @@ TEST(NavigationSupervisor, TrackingLossOnlyLatchesWhenConfiguredAfterValidRun)
     NavigationRuntimeAction::STOP_AND_LATCH);
 }
 
-TEST(NavigationSupervisor, ActuatorLossDoesNotConsumeLocalizationGrace)
+TEST(NavigationSupervisor, ActuatorLossIsReportedBeforeLocalizationLoss)
 {
-  NavigationSupervisor supervisor({2.0, 0.25, false});
+  NavigationSupervisor supervisor({false});
   const auto start = NavigationSupervisor::TimePoint{};
   auto input = HealthyInput();
   input.actuator_required = true;
@@ -205,22 +236,25 @@ TEST(NavigationSupervisor, FusionCheckCanBeDisabledWithoutChangingOtherChecks)
   EXPECT_TRUE(start_decision.ready);
   const auto health = visual_navigation::EffectiveFusionHealth(input);
   EXPECT_TRUE(health.allowed);
-  EXPECT_DOUBLE_EQ(health.speed_scale, 1.0);
+  EXPECT_FALSE(health.fault);
 }
 
-TEST(NavigationSupervisor, ResetClearsTransientLocalizationHistory)
+TEST(NavigationSupervisor, ResetClearsTrackingLossLatchHistory)
 {
-  NavigationSupervisor supervisor({2.0, 0.25, false});
+  NavigationSupervisor supervisor({true});
   const auto start = NavigationSupervisor::TimePoint{};
   auto input = HealthyInput();
+  input.tracking_required = true;
+  input.tracking_state_received = true;
+  input.tracking_state = 2;
   EXPECT_EQ(supervisor.Evaluate(input, start).action, NavigationRuntimeAction::DRIVE);
 
   supervisor.ResetLocalizationHistory();
-  input.odometry_fresh = false;
+  input.tracking_state = 3;
   const auto decision = supervisor.Evaluate(input, start + std::chrono::milliseconds(10));
 
   EXPECT_EQ(decision.action, NavigationRuntimeAction::STOP_AND_WAIT);
-  EXPECT_EQ(decision.state, "WAITING_FOR_ODOMETRY");
+  EXPECT_EQ(decision.state, "FAULT_TRACKING_LOST");
 }
 
 }  // namespace

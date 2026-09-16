@@ -20,16 +20,16 @@ ObstacleRecoveryController::TimePoint At(double seconds) {
 
 TEST(ObstacleClassification, IgnoresKnownWallBeyondPlannedTurn) {
   EXPECT_FALSE(visual_navigation::UnexpectedObstacle(
-      false, true, 0.20, true, 0.30, 0.096, 0.0717, 0.05));
+      false, true, 0.20, true, 0.30, 0.096, 0.07425, 0.05));
   EXPECT_FALSE(visual_navigation::UnexpectedObstacle(
-      true, true, 0.30, true, 0.25, 0.096, 0.0717, 0.05));
+      true, true, 0.30, true, 0.25, 0.096, 0.07425, 0.05));
 
   EXPECT_TRUE(visual_navigation::UnexpectedObstacle(true, true, 0.10, true,
-                                                    0.40, 0.096, 0.0717, 0.05));
+                                                    0.40, 0.096, 0.07425, 0.05));
   EXPECT_TRUE(visual_navigation::UnexpectedObstacle(true, false, 0.30, true,
-                                                    0.25, 0.096, 0.0717, 0.05));
+                                                    0.25, 0.096, 0.07425, 0.05));
   EXPECT_TRUE(visual_navigation::UnexpectedObstacle(true, true, 0.30, false,
-                                                    0.25, 0.096, 0.0717, 0.05));
+                                                    0.25, 0.096, 0.07425, 0.05));
 }
 
 TEST(ObstacleRecovery, ReversesRecordedTraceToSelectedAnchor) {

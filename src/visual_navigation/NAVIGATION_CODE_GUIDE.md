@@ -116,7 +116,7 @@ waypoint_navigator
 5. 按顺序选择当前目标航点。
 6. 根据位置误差和航向误差计算速度。
 7. 发布 `geometry_msgs/msg/Twist`。
-8. 定位失效且不满足短暂异常宽限条件时立即发布零速度。
+8. 定位失效、陈旧或融合状态不允许时立即发布零速度。
 9. 接收可选前障碍事件，执行停车和退回路口，不承担障碍检测与新路线搜索。
 10. 发布路线、当前航点编号和导航状态。
 
@@ -185,7 +185,7 @@ std_msgs/msg/Int32
 std_msgs/msg/String
 ```
 
-默认必须收到新鲜且位于 `allowed_fusion_states` 中的融合健康状态；`FAULT`、未知状态或状态超时会阻止运动。`WAITING_FOR_INITIALIZATION` 是 ORB 暖机期间的可恢复等待，路线保持激活但不发速度，初始化完成后自动继续。允许的 `DEGRADED_*` 状态会按各自配置降低速度；最近一次定位有效后的短暂异常在 `transient_localization_grace` 内可按 `transient_fault_speed_scale` 降速维持。
+默认必须收到新鲜且位于 `allowed_fusion_states` 中的融合健康状态；`FAULT`、未知状态或状态超时会阻止运动。`WAITING_FOR_INITIALIZATION` 是 ORB 暖机期间的可恢复等待，路线保持激活但不发速度，初始化完成后自动继续。允许的 `DEGRADED_*` 状态不降低速度；它只表示融合基础设施已降级但仍可向控制器提供可用位姿。
 
 ### 4.2 发布话题
 
@@ -544,9 +544,8 @@ WAITING_FOR_LOCALIZATION
 
 如果导航曾经获得有效定位，之后定位失效：
 
-- 默认 `abort_on_tracking_loss=false` 时，节点发布零速度并等待恢复；如果仍在
-  `transient_localization_grace` 内且不是硬故障，则会以 `transient_fault_speed_scale`
-  降速短时维持。
+- 默认 `abort_on_tracking_loss=false` 时，节点发布零速度并等待恢复；收到新鲜、有效且允许的融合位姿后自动继续。
+- 允许的 `DEGRADED_*` 状态仍按路线速度和全局限幅正常行驶，不再通过融合健康状态改写速度。
 - 只有同时显式启用跟踪状态检查，并设置：
 
 ```yaml
@@ -602,7 +601,6 @@ FOLLOW
 | `WAITING_FOR_ACTUATOR_RECOVERY` | 执行器不健康，保持零速度并等待恢复 |
 | `RESUME_PENDING_LOCALIZATION` | 任务驻停释放后等待重新确认定位 |
 | `HELD_FOR_MISSION` | 任务驻停来源仍存在，持续发布零速度 |
-| `DEGRADED_TRANSIENT_LOCALIZATION` | 短暂定位异常，在宽限期内降速运行 |
 | `WAITING_FOR_INITIALIZATION` | ORB 暖机等待，不锁存，保持零速 |
 | `FOLLOWING` | 正在向当前航点运动 |
 | `ROTATING_TO_PATH` | 正在原地旋转以对齐当前路径 |
@@ -661,12 +659,12 @@ GOAL_REACHED
 
 ```text
 FOLLOWING
-  │ 短暂定位异常且未发生硬故障
+  │ 里程计陈旧、位姿无效或融合状态不允许
   ▼
-DEGRADED_TRANSIENT_LOCALIZATION
-  │ 宽限期结束仍未恢复
+WAITING_FOR_ODOMETRY / WAITING_FOR_ALLOWED_FUSION_STATUS / 对应 FAULT_* 状态
+  │ 输入恢复且未锁存
   ▼
-WAITING_FOR_LOCALIZATION / 对应 FAULT_* 状态
+FOLLOWING
 ```
 
 ---
@@ -800,6 +798,8 @@ linear_x = min(requested_speed, v_limit, cross_track_limit) × heading_scale
 5. 航向误差或横向误差越大，前进速度越低。
 
 相邻路径方向变化小于 `pre_turn_stop_heading_threshold` 时可以连续通过；超过阈值时先停稳再转向。
+需要停车的拐点进站时，路径纠偏角速度还会被 `pre_turn_path_angular_ratio × linear_x`
+限制，避免刹车阶段演变成提前切弯；到点停稳后再进入原地转向。
 
 ### 12.6 最终航点
 
@@ -830,11 +830,8 @@ linear_x = min(requested_speed, v_limit, cross_track_limit) × heading_scale
       按故障类型设置 WAITING_* 或 FAULT_* 状态
       返回
 
-    如果只是短暂定位异常且仍在宽限期：
-      按 transient_fault_speed_scale 限速继续
-
     如果融合处于允许的 DEGRADED_* 状态：
-      按对应状态的速度比例限速
+      不改写速度，继续进入路线控制
 
   如果正在航点等待：
       发布零速度
@@ -923,12 +920,16 @@ config/waypoint_navigation.yaml
 | `path_pid_kd` | `0.00` | 路径误差 PID 的微分增益 |
 | `path_yaw_rate_damping` | `0.45` | 实际角速度阻尼，用于抑制横向纠偏过冲 |
 | `cross_track_gain` | `1.50` | 横向偏差到航向误差的换算增益，rad/m |
+| `pre_turn_path_angular_ratio` | `1.20` | 停车拐点进站段角速度相对线速度的最大比例，rad/m |
 | `path_pid_integral_limit` | `0.20` | PID 积分限幅，避免定位跳变后持续过度转向 |
 | `path_progress_command_threshold` | `0.08` | 触发完全不动检查的最小线速度命令，m/s |
 | `path_progress_stationary_speed_threshold` | `0.02` | 认定实测近似静止的速度阈值，m/s |
 | `path_progress_no_motion_timeout` | `3.0` | 持续命令但无位移时的恢复超时，s |
 | `path_progress_no_motion_displacement` | `0.05` | 无运动检查窗口内允许的最大位移，m |
 | `rotate_in_place_threshold` | `0.18` | 超过该航向误差时禁止前进，rad |
+| `precision_turn_threshold` | `0.45` | 原地转向进入精调最低角速度区间的航向误差，rad |
+| `turn_cruise_speed` | `0.75` | 原地转向巡航角速度命令，rad/s |
+| `min_precision_turn_speed` | `0.50` | 精调阶段最低角速度命令，需高于实测底盘转向死区 |
 | `waypoint_tolerance` | `0.04` | 动态路线未填写容差时的默认值，m |
 | `waypoint_pass_longitudinal_tolerance` | `0.01` | 距终点平面的提前收点余量，m |
 | `waypoint_pass_lateral_tolerance` | `0.06` | 停车点或最终点越过终点时允许收点的横向走廊，m |
@@ -954,10 +955,7 @@ config/waypoint_navigation.yaml
 | 参数 | 默认值 | 作用 |
 | --- | --- | --- |
 | `require_fusion_status` | `true` | 是否要求融合健康状态有效且允许 |
-| `allowed_fusion_states` | 配置列表 | 允许导航的融合状态 |
-| `degraded_speed_scale` | `0.50` | 未单独配置的降级状态速度比例 |
-| `transient_localization_grace` | `2.00` | 短暂定位异常的降级宽限时间，s |
-| `transient_fault_speed_scale` | `0.25` | 宽限期内的速度比例 |
+| `allowed_fusion_states` | 配置列表 | 允许导航的融合状态；允许的 `DEGRADED_*` 不触发额外限速 |
 | `require_actuator_health` | `false` | 是否要求执行器健康；串口 bringup 强制为 `true` |
 | `require_tracking_state` | `false` | 是否额外要求 ORB 跟踪状态为 `OK` 或 `OK_KLT` |
 | `abort_on_tracking_loss` | `false` | 在启用跟踪状态检查时，运行中跟踪丢失是否立即中止任务 |

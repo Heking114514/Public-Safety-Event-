@@ -8,6 +8,8 @@
 输入话题：/cmd_vel_nav
 输入话题：/imu/rpy
 输出话题：/cup_car_serial/encoder_ticks
+输出话题：/cup_car_serial/bmi088_attitude
+输出话题：/cup_car_serial/bmi088_raw_imu
 输出话题：/cup_car_serial/control_telemetry
 输出话题：/cup_car_serial/actuator_healthy
 输出话题：/cup_car_serial/actuator_tracking_status
@@ -23,6 +25,8 @@
 vx,az\r\n
 RPY,roll,pitch,yaw\r\n
 ENC,sample_time_ms,sample_sequence,left_total,right_total\r\n
+IMU,sample_time_ms,sample_sequence,status,gx,gy,gz,temp_cC\r\n
+ATT,sample_time_ms,att_sequence,status,yaw_mdeg,gyro_z_mdps,bias_z_mdps,startup_samples\r\n
 CTL,time_ms,sample_sequence,mode,estop,rx_valid,rx_age_ms,rx_vx_mmps,rx_wz_mradps,target_left_mmps,target_right_mmps,measured_left_mmps,measured_right_mmps,pwm_left,pwm_right\r\n
 ```
 
@@ -36,6 +40,16 @@ CTL,time_ms,sample_sequence,mode,estop,rx_valid,rx_age_ms,rx_vx_mmps,rx_wz_mradp
 - 控制遥测输出类型为
   `mission_control_interfaces/msg/ControlTelemetry`，速度整数毫单位会转换为
   `m/s` 和 `rad/s`。它保留下位机模式、急停、命令年龄、轮速目标/实测值和PWM。
+- `ATT` 是主融合建议使用的 BMI088 平面航向：`sample_time_ms` 为下位机采到
+  BMI088 样本的时刻，`att_sequence` 每条 ATT 帧递增，`yaw_mdeg` 为连续累计 yaw，
+  正方向遵循 ROS `base_link` 的 `+Z`（从车顶看逆时针为正）。`gyro_z_mdps`
+  是低通后的 Z 轴角速度、尚未扣除 bias；节点发布 `/cup_car_serial/bmi088_attitude`
+  时会计算 `gyro_z_mdps - bias_z_mdps`，因此不会双扣。
+- `ATT status` 位：`0x01` gyro valid，`0x02` temperature valid，`0x04` yaw valid，
+  `0x08` bias valid，`0x10` stationary，`0x20` gyro saturated，`0x40` sample timeout。
+  `/cup_car_serial/bmi088_attitude` 只发布 yaw/bias 有效且未饱和、未超时的帧。
+- `IMU` 保留 BMI088 原始 gyro counts，用于诊断；节点会按当前固件的 `±250 dps`
+  量程换算后发布到 `/cup_car_serial/bmi088_raw_imu`。
 - `/cup_car_serial/actuator_healthy` 只有在控制遥测新鲜、下位机处于导航模式、
   未急停、速度命令未超时且左右轮跟踪诊断健康时才为 `true`。它和只表示串口
   文件已打开的 `/cup_car_serial/connected` 含义不同。
@@ -127,7 +141,7 @@ ros2 topic echo /cup_car_serial/actuator_healthy
 ros2 topic echo /cup_car_serial/actuator_tracking_status
 ```
 
-连接正常时 `connected` 为 `true`。最新下位机固件每 50 ms 回传一次 `ENC`，
+连接正常时 `connected` 为 `true`。最新下位机固件每 20 ms 回传一次 `ENC`/`IMU`/`ATT`/`HLD`，
 每 100 ms 回传一次 `CTL`；串口桥会将原始帧同时保留在 `rx` 中，并发布结构化话题。
 固件默认处于遥控模式，切换到导航模式前 `actuator_healthy` 会保持 `false`。
 

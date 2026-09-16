@@ -50,11 +50,23 @@ double RouteDistance(const Point & point, const std::vector<Point> & route)
   return distance;
 }
 
+bool LooksLikePlannedRetreat(const std::vector<Point> & points, std::size_t index)
+{
+  return index > 0 && index + 1 < points.size() &&
+         Distance(points[index - 1], points[index + 1]) <=
+         kPlannedRetreatReturnTolerance &&
+         Distance(points[index - 1], points[index]) >=
+         kPlannedRetreatMinimumLength;
+}
+
 void ExpectNoBlockedReversal(const ArenaPlanner & planner, const PlanResult & result)
 {
   (void)planner;
   ASSERT_EQ(result.headings.size(), result.points.size());
   for (std::size_t index = 1; index + 1 < result.points.size(); ++index) {
+    if (LooksLikePlannedRetreat(result.points, index)) {
+      continue;
+    }
     const double heading_change = std::abs(NormalizeAngle(
         result.headings[index] - result.headings[index - 1]));
     if (heading_change <= 2.6) {
@@ -90,11 +102,12 @@ void ExpectTurnsAtJunctions(const ArenaPlanner & planner, const PlanResult & res
 
 std::vector<Point> RoadRetreats(const ArenaPlanner & planner, const PlanResult & result)
 {
+  (void)planner;
   std::vector<Point> retreats;
   for (std::size_t index = 1; index + 1 < result.points.size(); ++index) {
     const double heading_change = std::abs(NormalizeAngle(
         result.headings[index] - result.headings[index - 1]));
-    if (heading_change > 2.6 && !planner.IsTurnJunction(result.points[index]) &&
+    if (heading_change > kNearReversalThreshold &&
       Distance(result.points[index - 1], result.points[index + 1]) <= 1.0e-4)
     {
       retreats.push_back(result.points[index]);
@@ -124,9 +137,9 @@ TEST(ArenaPlanner, LoadsDefaultConfiguration)
   const PlannerConfig config = ArenaPlanner::LoadConfig(ConfigPath());
   EXPECT_DOUBLE_EQ(config.width, 3.2);
   EXPECT_DOUBLE_EQ(config.height, 4.4);
-  EXPECT_DOUBLE_EQ(config.resolution, 0.02);
-  EXPECT_DOUBLE_EQ(config.vehicle_length, 0.1434);
-  EXPECT_DOUBLE_EQ(config.vehicle_width, 0.1437);
+  EXPECT_DOUBLE_EQ(config.resolution, 0.01);
+  EXPECT_DOUBLE_EQ(config.vehicle_length, 0.1485);
+  EXPECT_DOUBLE_EQ(config.vehicle_width, 0.1535);
   EXPECT_DOUBLE_EQ(config.safety_margin, 0.015);
   EXPECT_DOUBLE_EQ(config.obstacle_stop_buffer, 0.05);
   EXPECT_TRUE(config.allow_in_place_turns);
@@ -167,7 +180,7 @@ TEST(ArenaPlanner, OfficialJunctionSupportsCardinalTravel)
   EXPECT_TRUE(planner.PoseIsFree({1.1, 1.1}, 0.5 * std::acos(-1.0)));
 }
 
-TEST(ArenaPlanner, AllowsOnlyJunctionTurnsAndRejectsRetreats)
+TEST(ArenaPlanner, AllowsOnlyJunctionTurnsAndExplicitRetreats)
 {
   PlannerConfig config;
   config.width = 2.0;
@@ -185,7 +198,11 @@ TEST(ArenaPlanner, AllowsOnlyJunctionTurnsAndRejectsRetreats)
   EXPECT_TRUE(planner.RouteTurnsAreAllowed(
     {{0.2, 0.5}, {0.5, 0.5}, {0.5, 1.20}, {1.0, 1.20}}));
   EXPECT_FALSE(planner.RouteTurnsAreAllowed(
-    {{0.2, 1.0}, {0.7, 1.0}, {0.2, 1.0}}));
+    {{0.2, 1.0}, {0.7, 1.0}, {0.2, 1.0}, {-0.1, 1.0}}));
+  EXPECT_TRUE(planner.RouteTurnsAreAllowed(
+    {{0.5, 0.5}, {0.8, 0.5}, {0.5, 0.5}, {0.5, 1.0}}));
+  EXPECT_FALSE(planner.RouteTurnsAreAllowed(
+    {{0.5, 0.5}, {0.8, 0.5}, {0.5, 0.5}, {0.2, 0.5}}));
   EXPECT_FALSE(planner.RouteTurnsAreAllowed(
     {{0.2, 0.5}, {0.5, 0.5}, {0.5, 0.55}, {0.8, 0.55}}));
   EXPECT_DOUBLE_EQ(NavigationPathMarkerZ(true), 0.001);

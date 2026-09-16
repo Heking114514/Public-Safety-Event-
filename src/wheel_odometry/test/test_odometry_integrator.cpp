@@ -15,10 +15,12 @@ constexpr double kPi = 3.14159265358979323846;
 TEST(OdometryIntegratorConfig, DefaultsMatchMeasuredChassis)
 {
   const IntegratorConfig config;
-  EXPECT_DOUBLE_EQ(config.wheel_radius_m, 0.0238);
-  EXPECT_DOUBLE_EQ(config.wheel_track_m, 0.1247);
-  EXPECT_DOUBLE_EQ(config.left_encoder_counts_per_revolution, 1060.1667);
-  EXPECT_DOUBLE_EQ(config.right_encoder_counts_per_revolution, 1060.9333);
+  EXPECT_DOUBLE_EQ(config.wheel_radius_m, 0.0302);
+  EXPECT_DOUBLE_EQ(config.wheel_track_m, 0.1466);
+  EXPECT_DOUBLE_EQ(config.left_encoder_counts_per_revolution, 294912.0);
+  EXPECT_DOUBLE_EQ(config.right_encoder_counts_per_revolution, 294912.0);
+  EXPECT_DOUBLE_EQ(config.left_distance_scale, -1.0);
+  EXPECT_DOUBLE_EQ(config.right_distance_scale, -1.0);
 }
 
 IntegratorConfig test_config()
@@ -70,6 +72,21 @@ TEST(OdometryIntegrator, UsesIndependentEncoderCountsPerRevolution)
   EXPECT_NEAR(integrator.state().x_m, 2.0 * kPi * 0.05, 1.0e-12);
   EXPECT_NEAR(integrator.state().y_m, 0.0, 1.0e-12);
   EXPECT_NEAR(integrator.state().yaw_rad, 0.0, 1.0e-12);
+}
+
+TEST(OdometryIntegrator, SignedDistanceScaleHandlesEncoderPolarity)
+{
+  IntegratorConfig config = test_config();
+  config.left_distance_scale = -1.0;
+  config.right_distance_scale = -1.0;
+  OdometryIntegrator integrator(config);
+  integrator.update(sample(0, 1, 0, 0));
+
+  const UpdateResult result = integrator.update(sample(1000, 2, -1925, -1925));
+  const double expected_distance = 2.0 * kPi * 0.0325;
+  ASSERT_TRUE(result.publish);
+  EXPECT_NEAR(integrator.state().x_m, expected_distance, 1.0e-12);
+  EXPECT_NEAR(integrator.state().linear_velocity_mps, expected_distance, 1.0e-12);
 }
 
 TEST(OdometryIntegrator, UsesMidpointHeadingForArc)

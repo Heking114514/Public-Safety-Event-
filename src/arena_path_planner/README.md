@@ -11,8 +11,8 @@ arena coordinates to the navigation frame.
 Interfaces are read from the `topics` section of `config/arena_map.yaml`. The
 default configuration follows the official diagram: a 3.2 x 3.2 m main field
 inside a 3.2 x 4.4 m envelope, ten 0.8 x 0.8 m blocks, nominal 0.2 m roads and
-launch box, and four tunnel sections. The 2 cm planning grid keeps the narrow
-road centre lines representable. The 12 numbered task points are existing
+launch box, and four tunnel sections. The 1 cm planning grid keeps the narrow
+roads traversable after applying the current measured chassis footprint. The 12 numbered task points are existing
 project mission points on road centres; the supplied diagram itself does not
 assign task numbers.
 
@@ -25,9 +25,9 @@ must back out after a blocked road, that is handled by obstacle recovery
 returning to a junction before replanning. The marker does not change the
 displayed planar route or the map transform.
 
-The active footprint uses the measured 143.4 x 143.7 mm complete vehicle
-envelope. With a 15 mm margin on each side, its 173.4 x 173.7 mm translational
-envelope fits a nominal 200 mm straight road. The 124.7 mm kinematic wheel
+The active footprint uses the measured 148.5 x 153.5 mm complete vehicle
+envelope. With a 15 mm margin on each side, its 178.5 x 183.5 mm translational
+envelope fits a nominal 200 mm straight road. The 146.6 mm kinematic wheel
 track remains a separate parameter from the measured overall width. In-place
 turns remain explicitly enabled for the tight
 intersections. The old 6 x 6 m map is retained as

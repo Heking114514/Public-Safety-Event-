@@ -13,7 +13,6 @@
 #include "fused_odometry/fusion_logic.hpp"
 #include "fused_odometry/fusion_status_authority.hpp"
 #include "geometry_msgs/msg/transform_stamped.hpp"
-#include "geometry_msgs/msg/twist.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/string.hpp"
@@ -80,7 +79,6 @@ public:
     visual_topic_ = declare_parameter<std::string>(
       "visual_topic", "/fusion/input/visual_odom");
     local_topic_ = declare_parameter<std::string>("local_topic", "/odometry/local");
-    command_topic_ = declare_parameter<std::string>("command_topic", "/cmd_vel_nav");
     fusion_status_topic_ = declare_parameter<std::string>(
       "fusion_status_topic", "/odometry/fusion_status");
     output_topic_ = declare_parameter<std::string>("output_topic", "/odometry/fused");
@@ -114,7 +112,6 @@ public:
     synchronization_tolerance_ = positive("synchronization_tolerance_s", 0.12);
     local_timeout_ = positive("local_timeout_s", 0.50);
     visual_timeout_ = positive("visual_timeout_s", 0.60);
-    command_timeout_ = positive("command_timeout_s", 0.40);
     fusion_status_timeout_ = positive("fusion_status_timeout_s", 0.80);
     stationary_max_linear_speed_ = positive("stationary_max_linear_speed_mps", 0.03);
     stationary_max_angular_speed_ = positive("stationary_max_angular_speed_radps", 0.12);
@@ -135,9 +132,6 @@ public:
     visual_subscription_ = create_subscription<nav_msgs::msg::Odometry>(
       visual_topic_, sensor_qos,
       std::bind(&MapOdomCorrectionNode::visual_callback, this, std::placeholders::_1));
-    command_subscription_ = create_subscription<geometry_msgs::msg::Twist>(
-      command_topic_, 10,
-      std::bind(&MapOdomCorrectionNode::command_callback, this, std::placeholders::_1));
     fusion_status_subscription_ = create_subscription<std_msgs::msg::String>(
       fusion_status_topic_, rclcpp::QoS(10).reliable().transient_local(),
       std::bind(&MapOdomCorrectionNode::fusion_status_callback, this, std::placeholders::_1));
@@ -343,22 +337,26 @@ private:
     }
   }
 
-  void command_callback(const geometry_msgs::msg::Twist::SharedPtr message)
+  bool local_motion_is_stationary() const
   {
-    if (!std::isfinite(message->linear.x) || !std::isfinite(message->angular.z)) {
-      return;
-    }
-    const double current_time = steady_seconds();
-    latest_command_linear_ = message->linear.x;
-    latest_command_angular_ = message->angular.z;
-    command_received_at_ = current_time;
-    command_received_ = true;
+    const auto & twist = latest_local_.twist.twist;
+    const double linear_speed = std::hypot(twist.linear.x, twist.linear.y);
+    return std::isfinite(linear_speed) && std::isfinite(twist.angular.z) &&
+      linear_speed <= stationary_max_linear_speed_ &&
+      std::abs(twist.angular.z) <= stationary_max_angular_speed_;
+  }
+
+  void update_turn_hold(double current_time)
+  {
     if (!hold_global_xy_during_turn_) {
       return;
     }
+    const auto & twist = latest_local_.twist.twist;
     const bool low_linear_speed =
-      std::abs(message->linear.x) <= turn_hold_max_linear_speed_;
-    const double absolute_angular_speed = std::abs(message->angular.z);
+      std::isfinite(twist.linear.x) && std::isfinite(twist.linear.y) &&
+      std::hypot(twist.linear.x, twist.linear.y) <= turn_hold_max_linear_speed_;
+    const double absolute_angular_speed =
+      std::isfinite(twist.angular.z) ? std::abs(twist.angular.z) : 0.0;
     if (turn_hold_motion_rejected_) {
       if (!low_linear_speed || absolute_angular_speed < turn_hold_min_angular_speed_) {
         turn_hold_motion_rejected_ = false;
@@ -368,7 +366,7 @@ private:
     }
     if (turn_hold_active_) {
       if (low_linear_speed && absolute_angular_speed >= turn_hold_min_angular_speed_) {
-        last_turn_command_at_ = current_time;
+        last_turn_motion_at_ = current_time;
       }
       return;
     }
@@ -383,10 +381,10 @@ private:
       map_from_odom_, message_pose(latest_local_));
     turn_anchor_local_ = message_pose(latest_local_);
     turn_hold_active_ = true;
-    last_turn_command_at_ = current_time;
+    last_turn_motion_at_ = current_time;
     desired_valid_ = false;
     RCLCPP_INFO(
-      get_logger(), "Holding global XY during in-place turn at (%.3f, %.3f)",
+      get_logger(), "Holding global XY during observed in-place turn at (%.3f, %.3f)",
       turn_anchor_global_.x, turn_anchor_global_.y);
   }
 
@@ -400,7 +398,7 @@ private:
     if (visual_pair_valid_) {
       // The hold only prevents a transient correction while the chassis is
       // rotating. Never move the visual origin here: doing so would turn every
-      // encoder/command-classified turn into a permanent global position bias.
+      // detected turn into a permanent global position bias.
       const Pose2d aligned_visual = visual_pose_aligner_.apply(latest_raw_visual_);
       desired_map_from_odom_ = fused_odometry::compose_pose(
         aligned_visual,
@@ -434,8 +432,10 @@ private:
       return;
     }
 
+    update_turn_hold(current_time);
+
     if (turn_hold_active_ &&
-      (current_time - last_turn_command_at_ >= turn_hold_release_delay_ ||
+      (current_time - last_turn_motion_at_ >= turn_hold_release_delay_ ||
       std::hypot(
         message_pose(latest_local_).x - turn_anchor_local_.x,
         message_pose(latest_local_).y - turn_anchor_local_.y) > turn_hold_max_translation_))
@@ -459,17 +459,12 @@ private:
         authority_time, fusion_status_timeout_))
     {
       const double elapsed = std::max(0.0, current_time - last_update_at_);
-      const bool command_fresh = command_received_ &&
-        current_time - command_received_at_ <= command_timeout_;
-      const bool command_stationary = fused_odometry::motion_command_is_stationary(
-        latest_command_linear_, latest_command_angular_, command_fresh,
-        stationary_max_linear_speed_, stationary_max_angular_speed_);
       const bool recovery_blend = current_time <= visual_recovery_blend_until_;
       // Never publish raw visual corrections directly. Even in the legacy
       // direct_visual_tracking mode, interpolate the map correction so
       // keyframe and feature-tracking jitter cannot pass into fused odometry.
       double time_constant = recovery_blend ?
-        visual_recovery_time_constant_ : (command_stationary ?
+        visual_recovery_time_constant_ : (local_motion_is_stationary() ?
         stationary_correction_time_constant_ : correction_time_constant_);
       if (current_time <= map_change_active_until_) {
         time_constant = loop_correction_time_constant_;
@@ -488,7 +483,15 @@ private:
       map_from_odom_ = fused_odometry::compose_pose(
         global_pose, fused_odometry::inverse_pose(message_pose(latest_local_)));
     }
+    rclcpp::Time publish_stamp = now();
+    if (last_output_stamp_.nanoseconds() > 0 && publish_stamp <= last_output_stamp_) {
+      publish_stamp = rclcpp::Time(
+        last_output_stamp_.nanoseconds() + 1, publish_stamp.get_clock_type());
+    }
+    last_output_stamp_ = publish_stamp;
+
     nav_msgs::msg::Odometry output = latest_local_;
+    output.header.stamp = publish_stamp;
     output.header.frame_id = map_frame_;
     output.child_frame_id = base_frame_;
     output.pose.pose.position.x = global_pose.x;
@@ -524,7 +527,6 @@ private:
 
   std::string visual_topic_;
   std::string local_topic_;
-  std::string command_topic_;
   std::string fusion_status_topic_;
   std::string output_topic_;
   std::string map_change_topic_;
@@ -544,7 +546,6 @@ private:
   double synchronization_tolerance_{0.12};
   double local_timeout_{0.50};
   double visual_timeout_{0.60};
-  double command_timeout_{0.40};
   double fusion_status_timeout_{0.80};
   double stationary_max_linear_speed_{0.03};
   double stationary_max_angular_speed_{0.12};
@@ -574,26 +575,22 @@ private:
   bool visual_stamp_received_{false};
   bool turn_hold_active_{false};
   bool turn_hold_motion_rejected_{false};
-  bool command_received_{false};
   double local_received_at_{0.0};
   double visual_received_at_{0.0};
   rclcpp::Time last_visual_stamp_{0, 0, RCL_ROS_TIME};
   double visual_recovery_blend_until_{0.0};
   double last_update_at_{0.0};
   double map_change_active_until_{0.0};
-  double last_turn_command_at_{0.0};
-  double command_received_at_{0.0};
-  double latest_command_linear_{0.0};
-  double latest_command_angular_{0.0};
+  double last_turn_motion_at_{0.0};
   uint64_t map_change_sequence_{0};
   uint64_t unsynchronized_visual_count_{0};
+  rclcpp::Time last_output_stamp_{0, 0, RCL_ROS_TIME};
   double initial_map_x_{0.0};
   double initial_map_y_{0.0};
   double initial_map_yaw_{0.0};
 
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr local_subscription_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr visual_subscription_;
-  rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr command_subscription_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr fusion_status_subscription_;
   rclcpp::Subscription<std_msgs::msg::UInt64>::SharedPtr map_change_subscription_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr publisher_;

@@ -29,6 +29,46 @@ TEST(Protocol, ParsesControlTelemetryFrame)
   EXPECT_EQ(frame.pwm_left, -612);
 }
 
+TEST(Protocol, ParsesBmi088ImuFrame)
+{
+  cup_car_serial::Bmi088ImuFrame frame;
+  ASSERT_TRUE(cup_car_serial::parse_bmi088_imu_frame(
+      "IMU,1250,125,29,12,-34,56,3175", &frame));
+  EXPECT_EQ(frame.mcu_time_ms, 1250U);
+  EXPECT_EQ(frame.sample_sequence, 125U);
+  EXPECT_EQ(frame.status, 29U);
+  EXPECT_EQ(frame.gyro_x_counts, 12);
+  EXPECT_EQ(frame.gyro_y_counts, -34);
+  EXPECT_EQ(frame.gyro_z_counts, 56);
+  EXPECT_EQ(frame.temperature_centideg_c, 3175);
+}
+
+TEST(Protocol, ParsesBmi088AttitudeFrame)
+{
+  cup_car_serial::Bmi088AttitudeFrame frame;
+  ASSERT_TRUE(cup_car_serial::parse_bmi088_attitude_frame(
+      "ATT,1250,125,29,90512,16968,345,600", &frame));
+  EXPECT_EQ(frame.mcu_time_ms, 1250U);
+  EXPECT_EQ(frame.sample_sequence, 125U);
+  EXPECT_EQ(frame.status, 29U);
+  EXPECT_EQ(frame.yaw_mdeg, 90512);
+  EXPECT_EQ(frame.gyro_z_mdps, 16968);
+  EXPECT_EQ(frame.bias_z_mdps, 345);
+  EXPECT_EQ(frame.startup_samples, 600U);
+}
+
+TEST(Protocol, RejectsMalformedBmi088Frames)
+{
+  cup_car_serial::Bmi088ImuFrame imu;
+  cup_car_serial::Bmi088AttitudeFrame attitude;
+  EXPECT_FALSE(cup_car_serial::parse_bmi088_imu_frame(
+      "IMU,1,2,300,0,0,0,0", &imu));
+  EXPECT_FALSE(cup_car_serial::parse_bmi088_imu_frame(
+      "IMU,1,2,1,0,0,40000,0", &imu));
+  EXPECT_FALSE(cup_car_serial::parse_bmi088_attitude_frame(
+      "ATT,1,2,1,0,0,0", &attitude));
+}
+
 TEST(Protocol, AcceptsNeverReceivedCommandAge)
 {
   cup_car_serial::ControlTelemetryFrame frame;

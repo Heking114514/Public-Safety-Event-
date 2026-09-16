@@ -56,10 +56,15 @@ NAVIGATION_STATUS_TOPIC = "/waypoint_navigation/status"
 FRONT_RANGE_TOPIC = "/obstacle/front_range"
 FRONT_OBSTACLE_TOPIC = "/obstacle/front_blocked"
 FRONT_OBSTACLE_TIMEOUT_S = 0.50
+CARDINAL_YAW_STEP = 0.5 * math.pi
 
 
 def normalize_angle(angle: float) -> float:
     return math.remainder(angle, 2.0 * math.pi)
+
+
+def snap_to_cardinal_yaw(angle: float) -> float:
+    return normalize_angle(round(angle / CARDINAL_YAW_STEP) * CARDINAL_YAW_STEP)
 
 
 def quaternion_to_yaw(quaternion: Any) -> Optional[float]:
@@ -383,8 +388,8 @@ class ArenaFrontend:
         self.tasks = list(config["tasks"].items())
         self.width_m = float(self.arena["width_m"])
         self.height_m = float(self.arena["height_m"])
-        self.vehicle_length_m = float(self.arena.get("vehicle_length_m", 0.217))
-        self.vehicle_width_m = float(self.arena.get("vehicle_width_m", 0.210))
+        self.vehicle_length_m = float(self.arena.get("vehicle_length_m", 0.1485))
+        self.vehicle_width_m = float(self.arena.get("vehicle_width_m", 0.1535))
         self.safety_margin_m = float(self.arena.get("safety_margin_m", 0.040))
         self.vehicle_x = float(self.start_config["position_m"][0])
         self.vehicle_y = float(self.start_config["position_m"][1])
@@ -510,6 +515,8 @@ class ArenaFrontend:
 
     def _pose(self, values: Optional[tuple[float, float, float]] = None) -> Pose:
         x, y, yaw = values or (self.vehicle_x, self.vehicle_y, self.vehicle_yaw)
+        if self.mode_var.get() == "simulation":
+            yaw = snap_to_cardinal_yaw(yaw)
         pose = Pose()
         pose.position.x = x
         pose.position.y = y
@@ -1411,7 +1418,9 @@ class ArenaFrontend:
         if self.mode_var.get() != "simulation":
             return
         cx, cy = self._to_canvas(self.vehicle_x, self.vehicle_y)
-        self.vehicle_yaw = normalize_angle(-math.atan2(event.y - cy, event.x - cx))
+        self.vehicle_yaw = snap_to_cardinal_yaw(
+            -math.atan2(event.y - cy, event.x - cx)
+        )
         self.draw()
         now = time.monotonic()
         if now - self.last_drag_request >= 0.15:
@@ -1422,7 +1431,7 @@ class ArenaFrontend:
         if self.mode_var.get() != "simulation":
             return
         self.vehicle_yaw = normalize_angle(
-            self.vehicle_yaw + math.copysign(math.radians(5.0), event.delta)
+            self.vehicle_yaw + math.copysign(CARDINAL_YAW_STEP, event.delta)
         )
         self.draw()
         self._request_initial_plan()

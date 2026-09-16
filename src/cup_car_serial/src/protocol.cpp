@@ -79,6 +79,16 @@ bool parse_int16(const std::string & text, int16_t * value)
   *value = static_cast<int16_t>(parsed);
   return true;
 }
+
+bool parse_uint8(const std::string & text, uint8_t * value)
+{
+  uint32_t parsed;
+  if (!parse_uint32(text, &parsed) || parsed > UINT8_MAX) {
+    return false;
+  }
+  *value = static_cast<uint8_t>(parsed);
+  return true;
+}
 }  // namespace
 
 bool parse_encoder_frame(const std::string & line, std::vector<int32_t> * values)
@@ -148,6 +158,58 @@ bool parse_control_telemetry_frame(const std::string & line, ControlTelemetryFra
   return true;
 }
 
+bool parse_bmi088_imu_frame(const std::string & line, Bmi088ImuFrame * frame)
+{
+  if (frame == nullptr || line.rfind("IMU,", 0) != 0) {
+    return false;
+  }
+  const auto fields = split_fields(line);
+  if (fields.size() != 8) {
+    return false;
+  }
+
+  Bmi088ImuFrame parsed;
+  if (!parse_uint32(fields[1], &parsed.mcu_time_ms) ||
+    !parse_uint32(fields[2], &parsed.sample_sequence) ||
+    !parse_uint8(fields[3], &parsed.status) ||
+    !parse_int16(fields[4], &parsed.gyro_x_counts) ||
+    !parse_int16(fields[5], &parsed.gyro_y_counts) ||
+    !parse_int16(fields[6], &parsed.gyro_z_counts) ||
+    !parse_int16(fields[7], &parsed.temperature_centideg_c))
+  {
+    return false;
+  }
+
+  *frame = parsed;
+  return true;
+}
+
+bool parse_bmi088_attitude_frame(const std::string & line, Bmi088AttitudeFrame * frame)
+{
+  if (frame == nullptr || line.rfind("ATT,", 0) != 0) {
+    return false;
+  }
+  const auto fields = split_fields(line);
+  if (fields.size() != 8) {
+    return false;
+  }
+
+  Bmi088AttitudeFrame parsed;
+  if (!parse_uint32(fields[1], &parsed.mcu_time_ms) ||
+    !parse_uint32(fields[2], &parsed.sample_sequence) ||
+    !parse_uint8(fields[3], &parsed.status) ||
+    !parse_int32(fields[4], &parsed.yaw_mdeg) ||
+    !parse_int32(fields[5], &parsed.gyro_z_mdps) ||
+    !parse_int32(fields[6], &parsed.bias_z_mdps) ||
+    !parse_uint32(fields[7], &parsed.startup_samples))
+  {
+    return false;
+  }
+
+  *frame = parsed;
+  return true;
+}
+
 bool control_state_is_healthy(const ControlTelemetryFrame & frame)
 {
   return frame.mode == 1U && !frame.emergency_stop && frame.command_valid;
@@ -157,14 +219,21 @@ SampleSequenceDisposition classify_sample_sequence(
   uint32_t previous_sequence, uint32_t previous_mcu_time_ms,
   uint32_t sequence, uint32_t mcu_time_ms)
 {
-  const uint32_t advance = sequence - previous_sequence;
-  if (advance == 0U) {
+  const uint32_t sequence_advance = sequence - previous_sequence;
+  if (sequence_advance == 0U) {
     return SampleSequenceDisposition::DUPLICATE;
   }
-  if (advance < (uint32_t{1} << 31U)) {
+
+  const uint32_t mcu_time_advance = mcu_time_ms - previous_mcu_time_ms;
+  const bool sequence_is_forward = sequence_advance < (uint32_t{1} << 31U);
+  const bool mcu_time_is_forward = mcu_time_advance < (uint32_t{1} << 31U);
+  if (sequence_is_forward && mcu_time_is_forward) {
     return SampleSequenceDisposition::NEW_SAMPLE;
   }
-  if (mcu_time_ms < previous_mcu_time_ms) {
+
+  // A source restart normally resets both counters. A wrap of either uint32
+  // counter remains a forward modular advance and is accepted above.
+  if (!sequence_is_forward && !mcu_time_is_forward) {
     return SampleSequenceDisposition::SOURCE_RESTART;
   }
   return SampleSequenceDisposition::OUT_OF_ORDER;

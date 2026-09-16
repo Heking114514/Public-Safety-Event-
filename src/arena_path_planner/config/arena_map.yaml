@@ -3,9 +3,9 @@ arena:
   # 3200 x 3200 mm main field as the origin.
   width_m: 3.2
   height_m: 4.4
-  # A 20 mm grid represents the narrow-road centre line without rounding it
-  # onto either obstacle boundary.
-  resolution_m: 0.02
+  # A 10 mm grid keeps the 200 mm launch lane open after applying the current
+  # measured chassis footprint and safety margin.
+  resolution_m: 0.01
   free_regions:
     - [0.0, 0.0, 3.2, 3.2]
     - [1.0, 3.2, 2.2, 4.2]
@@ -25,10 +25,10 @@ arena:
   inflation_radius_m: 0.05
   preferred_clearance_m: 0.15
   clearance_cost_weight: 6.0
-  # Measured complete envelope. The 143.7 mm overall width includes the wheels;
-  # the separately measured differential-drive kinematic track is 124.7 mm.
-  vehicle_length_m: 0.1434
-  vehicle_width_m: 0.1437
+  # Current measured complete envelope. The 153.5 mm overall width includes
+  # the wheels; the differential-drive kinematic track is 146.6 mm.
+  vehicle_length_m: 0.1485
+  vehicle_width_m: 0.1535
   safety_margin_m: 0.015
   tracking_margin_m: 0.020
   # Small planning reserve beyond the inflated obstacle boundary. Braking and

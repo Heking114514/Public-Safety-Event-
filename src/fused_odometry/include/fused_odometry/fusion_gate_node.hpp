@@ -171,13 +171,6 @@ private:
     double yaw_rate{0.0};
     double visual_residual{0.0};
     double robust_visual_residual{0.0};
-    YawBiasEstimator bias_estimator{};
-  };
-
-  struct CommandState {
-    InputState input;
-    double velocity{0.0};
-    double yaw_rate{0.0};
   };
 
   struct MapChangeState {
@@ -218,8 +211,6 @@ private:
 
   void raw_visual_callback(const nav_msgs::msg::Odometry::SharedPtr message);
 
-  void command_callback(const geometry_msgs::msg::Twist::SharedPtr message);
-
   void publish_raw_visual(const nav_msgs::msg::Odometry &message,
                           const Pose2d &raw_pose);
 
@@ -245,7 +236,6 @@ private:
   std::string map_change_topic_;
   std::string wheel_topic_;
   std::string imu_topic_;
-  std::string command_topic_;
   std::string visual_output_topic_;
   std::string wheel_output_topic_;
   std::string imu_output_topic_;
@@ -264,7 +254,6 @@ private:
   double tracking_timeout_{0.6};
   double wheel_timeout_{0.35};
   double imu_timeout_{0.15};
-  double command_timeout_{0.4};
   double raw_visual_timeout_{0.3};
   double raw_visual_max_tilt_{0.5};
   double map_change_grace_{1.0};
@@ -282,7 +271,6 @@ private:
   double wheel_soft_residual_{0.15};
   double visual_stationary_speed_{0.025};
   double stationary_wheel_reject_speed_{0.03};
-  double stationary_command_yaw_speed_{0.12};
   double imu_soft_residual_{0.2};
   double imu_visual_covariance_cap_{0.8};
   double visual_ramp_duration_{0.75};
@@ -300,10 +288,6 @@ private:
   double wheel_in_place_min_yaw_rate_{0.30};
   double wheel_wz_variance_{0.5};
   double imu_wz_variance_{0.015};
-  double imu_bias_time_constant_{3.0};
-  double imu_bias_maximum_{0.08};
-  double imu_bias_learning_command_rate_{0.08};
-  double imu_bias_learning_visual_rate_{0.12};
   double visual_xy_variance_{0.02};
   double visual_yaw_variance_{0.04};
   double visual_vx_variance_{0.01};
@@ -316,7 +300,6 @@ private:
   RawVisualState raw_visual_;
   WheelState wheel_;
   ImuState imu_;
-  CommandState command_;
   MapChangeState map_change_;
   FusionMode last_mode_{FusionMode::kFull};
 
@@ -333,8 +316,6 @@ private:
       map_change_subscription_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr wheel_subscription_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_subscription_;
-  rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr
-      command_subscription_;
   rclcpp::TimerBase::SharedPtr status_timer_;
 };
 

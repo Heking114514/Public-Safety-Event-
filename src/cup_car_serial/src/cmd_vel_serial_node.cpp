@@ -20,15 +20,64 @@
 #include "geometry_msgs/msg/vector3_stamped.hpp"
 #include "mission_control_interfaces/msg/control_telemetry.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "sensor_msgs/msg/imu.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/int32_multi_array.hpp"
 #include "std_msgs/msg/string.hpp"
 
 #include "cup_car_serial/actuator_tracking_monitor.hpp"
+#include "cup_car_serial/mcu_clock_mapper.hpp"
 #include "cup_car_serial/protocol.hpp"
 
 namespace
 {
+constexpr double kPi = 3.14159265358979323846;
+constexpr double kDegToRad = kPi / 180.0;
+constexpr double kBmi088GyroRadpsPerCount = (250.0 / 32768.0) * kDegToRad;
+constexpr double kMdegToRad = 0.001 * kDegToRad;
+constexpr double kMdpsToRadps = 0.001 * kDegToRad;
+constexpr uint8_t kBmi088StatusGyroValid = 0x01U;
+constexpr uint8_t kBmi088StatusYawValid = 0x04U;
+constexpr uint8_t kBmi088StatusBiasValid = 0x08U;
+constexpr uint8_t kBmi088StatusStationary = 0x10U;
+constexpr uint8_t kBmi088StatusSaturated = 0x20U;
+constexpr uint8_t kBmi088StatusSampleTimeout = 0x40U;
+constexpr uint32_t kBmi088StartupBiasSamples = 600U;
+
+std::string describe_bmi088_attitude_status(
+  const cup_car_serial::Bmi088AttitudeFrame & frame)
+{
+  std::string reason;
+  const auto append = [&reason](const std::string & item) {
+      if (!reason.empty()) {
+        reason += ", ";
+      }
+      reason += item;
+    };
+  if ((frame.status & kBmi088StatusGyroValid) == 0U) {
+    append("gyro invalid");
+  }
+  if ((frame.status & kBmi088StatusYawValid) == 0U) {
+    append("yaw not initialized");
+  }
+  if ((frame.status & kBmi088StatusBiasValid) == 0U) {
+    append(
+      "bias not initialized, startup_samples=" +
+      std::to_string(frame.startup_samples) + "/" +
+      std::to_string(kBmi088StartupBiasSamples));
+  }
+  if ((frame.status & kBmi088StatusStationary) != 0U) {
+    append("stationary");
+  }
+  if ((frame.status & kBmi088StatusSaturated) != 0U) {
+    append("gyro saturated");
+  }
+  if ((frame.status & kBmi088StatusSampleTimeout) != 0U) {
+    append("sample timeout");
+  }
+  return reason.empty() ? "status bits do not satisfy publish gate" : reason;
+}
+
 speed_t baud_to_termios(int baud_rate)
 {
   switch (baud_rate) {
@@ -172,6 +221,11 @@ public:
     baud_rate_ = declare_parameter<int>("baud_rate", 115200);
     topic_ = declare_parameter<std::string>("topic", "/cmd_vel_nav");
     rpy_topic_ = declare_parameter<std::string>("rpy_topic", "/imu/rpy");
+    bmi088_raw_imu_topic_ = declare_parameter<std::string>(
+      "bmi088_raw_imu_topic", "/cup_car_serial/bmi088_raw_imu");
+    bmi088_attitude_topic_ = declare_parameter<std::string>(
+      "bmi088_attitude_topic", "/cup_car_serial/bmi088_attitude");
+    bmi088_frame_id_ = declare_parameter<std::string>("bmi088_frame_id", "base_link");
     send_rate_hz_ = declare_parameter<double>("send_rate_hz", 20.0);
     command_timeout_s_ = declare_parameter<double>("command_timeout_s", 0.4);
     rpy_timeout_s_ = declare_parameter<double>("rpy_timeout_s", 0.4);
@@ -208,6 +262,10 @@ public:
     controlTelemetryPublisher_ =
       create_publisher<mission_control_interfaces::msg::ControlTelemetry>(
       "/cup_car_serial/control_telemetry", 20);
+    bmi088RawImuPublisher_ = create_publisher<sensor_msgs::msg::Imu>(
+      bmi088_raw_imu_topic_, rclcpp::SensorDataQoS());
+    bmi088AttitudePublisher_ = create_publisher<sensor_msgs::msg::Imu>(
+      bmi088_attitude_topic_, rclcpp::SensorDataQoS());
     actuatorHealthyPublisher_ = create_publisher<std_msgs::msg::Bool>(
       "/cup_car_serial/actuator_healthy", rclcpp::QoS(1).transient_local().reliable());
     actuatorTrackingStatusPublisher_ = create_publisher<std_msgs::msg::String>(
@@ -277,6 +335,7 @@ private:
       connection_started_ = last_connect_attempt_;
       control_telemetry_received_ = false;
       control_sample_identity_initialized_ = false;
+      reset_bmi088_attitude_stream();
       trackingMonitor_.Reset();
       latestTrackingDecision_ = {};
       receive_buffer_.clear();
@@ -304,6 +363,7 @@ private:
     if (!connected) {
       control_telemetry_received_ = false;
       control_sample_identity_initialized_ = false;
+      reset_bmi088_attitude_stream();
       trackingMonitor_.Reset();
       latestTrackingDecision_ = {};
       publish_tracking_status("DISCONNECTED");
@@ -371,6 +431,8 @@ private:
         message.data = line;
         receivePublisher_->publish(message);
         publish_encoder_frame(line);
+        publish_bmi088_imu_frame(line);
+        publish_bmi088_attitude_frame(line);
         publish_control_telemetry_frame(line);
       }
     }
@@ -401,6 +463,128 @@ private:
     // data: [mcu_time_ms, sequence, left_total_ticks, right_total_ticks]
     message.data = std::move(values);
     encoderPublisher_->publish(message);
+  }
+
+  void publish_bmi088_imu_frame(const std::string & line)
+  {
+    if (line.rfind("IMU,", 0) != 0) {
+      return;
+    }
+    cup_car_serial::Bmi088ImuFrame frame;
+    if (!cup_car_serial::parse_bmi088_imu_frame(line, &frame)) {
+      RCLCPP_WARN(get_logger(), "Ignoring malformed BMI088 IMU frame: '%s'", line.c_str());
+      return;
+    }
+    if ((frame.status & kBmi088StatusGyroValid) == 0U) {
+      return;
+    }
+
+    sensor_msgs::msg::Imu message;
+    message.header.stamp = now();
+    message.header.frame_id = bmi088_frame_id_;
+    message.orientation_covariance[0] = -1.0;
+    message.linear_acceleration_covariance[0] = -1.0;
+    message.angular_velocity.x =
+      static_cast<double>(frame.gyro_x_counts) * kBmi088GyroRadpsPerCount;
+    message.angular_velocity.y =
+      static_cast<double>(frame.gyro_y_counts) * kBmi088GyroRadpsPerCount;
+    message.angular_velocity.z =
+      static_cast<double>(frame.gyro_z_counts) * kBmi088GyroRadpsPerCount;
+    message.angular_velocity_covariance.fill(0.0);
+    message.angular_velocity_covariance[0] = 0.0025;
+    message.angular_velocity_covariance[4] = 0.0025;
+    message.angular_velocity_covariance[8] = 0.0025;
+    bmi088RawImuPublisher_->publish(message);
+  }
+
+  void publish_bmi088_attitude_frame(const std::string & line)
+  {
+    if (line.rfind("ATT,", 0) != 0) {
+      return;
+    }
+    cup_car_serial::Bmi088AttitudeFrame frame;
+    if (!cup_car_serial::parse_bmi088_attitude_frame(line, &frame)) {
+      RCLCPP_WARN(get_logger(), "Ignoring malformed BMI088 attitude frame: '%s'", line.c_str());
+      return;
+    }
+
+    if (bmi088_attitude_identity_initialized_) {
+      const auto disposition = cup_car_serial::classify_sample_sequence(
+        latest_bmi088_attitude_sequence_, latest_bmi088_attitude_mcu_time_ms_,
+        frame.sample_sequence, frame.mcu_time_ms);
+      if (disposition == cup_car_serial::SampleSequenceDisposition::DUPLICATE ||
+        disposition == cup_car_serial::SampleSequenceDisposition::OUT_OF_ORDER)
+      {
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 2000,
+          "Ignoring %s BMI088 ATT frame sequence %u after %u",
+          disposition == cup_car_serial::SampleSequenceDisposition::DUPLICATE ?
+          "duplicate" : "out-of-order",
+          frame.sample_sequence, latest_bmi088_attitude_sequence_);
+        return;
+      }
+      if (disposition == cup_car_serial::SampleSequenceDisposition::SOURCE_RESTART) {
+        bmi088_attitude_clock_mapper_.reset();
+        bmi088_attitude_stamp_initialized_ = false;
+        RCLCPP_WARN(
+          get_logger(), "BMI088 ATT source restarted; resetting timestamp mapping");
+      }
+    }
+    latest_bmi088_attitude_sequence_ = frame.sample_sequence;
+    latest_bmi088_attitude_mcu_time_ms_ = frame.mcu_time_ms;
+    bmi088_attitude_identity_initialized_ = true;
+
+    const bool attitude_is_usable =
+      (frame.status & (kBmi088StatusGyroValid | kBmi088StatusYawValid |
+      kBmi088StatusBiasValid)) ==
+      (kBmi088StatusGyroValid | kBmi088StatusYawValid | kBmi088StatusBiasValid) &&
+      (frame.status & (kBmi088StatusSaturated | kBmi088StatusSampleTimeout)) == 0U;
+    if (!attitude_is_usable) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Ignoring unusable BMI088 attitude frame: status=0x%02x (%s)",
+        static_cast<unsigned int>(frame.status),
+        describe_bmi088_attitude_status(frame).c_str());
+      return;
+    }
+
+    const double yaw = static_cast<double>(frame.yaw_mdeg) * kMdegToRad;
+    const double corrected_yaw_rate =
+      static_cast<double>(frame.gyro_z_mdps - frame.bias_z_mdps) * kMdpsToRadps;
+    const rclcpp::Time reception_time = now();
+    int64_t mapped_stamp_ns = bmi088_attitude_clock_mapper_.map(
+      frame.mcu_time_ms, reception_time.nanoseconds());
+    if (bmi088_attitude_stamp_initialized_) {
+      if (reception_time.nanoseconds() <= last_bmi088_attitude_stamp_ns_) {
+        bmi088_attitude_clock_mapper_.reset();
+        bmi088_attitude_stamp_initialized_ = false;
+        mapped_stamp_ns = reception_time.nanoseconds();
+      } else {
+        mapped_stamp_ns = std::max(
+          mapped_stamp_ns, last_bmi088_attitude_stamp_ns_ + 1);
+        mapped_stamp_ns = std::min(mapped_stamp_ns, reception_time.nanoseconds());
+      }
+    }
+    last_bmi088_attitude_stamp_ns_ = mapped_stamp_ns;
+    bmi088_attitude_stamp_initialized_ = true;
+
+    sensor_msgs::msg::Imu message;
+    message.header.stamp = rclcpp::Time(
+      mapped_stamp_ns, reception_time.get_clock_type());
+    message.header.frame_id = bmi088_frame_id_;
+    message.orientation.z = std::sin(0.5 * yaw);
+    message.orientation.w = std::cos(0.5 * yaw);
+    message.orientation_covariance.fill(0.0);
+    message.orientation_covariance[0] = 1.0e6;
+    message.orientation_covariance[4] = 1.0e6;
+    message.orientation_covariance[8] = 0.0025;
+    message.angular_velocity.z = corrected_yaw_rate;
+    message.angular_velocity_covariance.fill(0.0);
+    message.angular_velocity_covariance[0] = 1.0e6;
+    message.angular_velocity_covariance[4] = 1.0e6;
+    message.angular_velocity_covariance[8] = 0.0025;
+    message.linear_acceleration_covariance[0] = -1.0;
+    bmi088AttitudePublisher_->publish(message);
   }
 
   void publish_control_telemetry_frame(const std::string & line)
@@ -504,6 +688,16 @@ private:
     publish_actuator_health(control_is_healthy());
   }
 
+  void reset_bmi088_attitude_stream()
+  {
+    bmi088_attitude_clock_mapper_.reset();
+    bmi088_attitude_identity_initialized_ = false;
+    bmi088_attitude_stamp_initialized_ = false;
+    latest_bmi088_attitude_sequence_ = 0U;
+    latest_bmi088_attitude_mcu_time_ms_ = 0U;
+    last_bmi088_attitude_stamp_ns_ = 0;
+  }
+
   void send_command()
   {
     double vx = 0.0;
@@ -603,6 +797,9 @@ private:
   bool allow_generic_auto_device_{false};
   std::string topic_;
   std::string rpy_topic_;
+  std::string bmi088_raw_imu_topic_;
+  std::string bmi088_attitude_topic_;
+  std::string bmi088_frame_id_;
   std::string receive_buffer_;
   int baud_rate_{};
   double send_rate_hz_{};
@@ -620,8 +817,13 @@ private:
   bool received_rpy_{false};
   bool control_telemetry_received_{false};
   bool control_sample_identity_initialized_{false};
+  bool bmi088_attitude_identity_initialized_{false};
+  bool bmi088_attitude_stamp_initialized_{false};
   uint32_t latest_control_sample_sequence_{0};
   uint32_t latest_control_mcu_time_ms_{0};
+  uint32_t latest_bmi088_attitude_sequence_{0};
+  uint32_t latest_bmi088_attitude_mcu_time_ms_{0};
+  int64_t last_bmi088_attitude_stamp_ns_{0};
   double vx_mps_{0.0};
   double az_radps_{0.0};
   double roll_rad_{0.0};
@@ -633,6 +835,7 @@ private:
   std::chrono::steady_clock::time_point connection_started_{};
   std::chrono::steady_clock::time_point last_control_telemetry_arrival_{};
   cup_car_serial::ControlTelemetryFrame latest_control_telemetry_{};
+  cup_car_serial::McuClockMapper bmi088_attitude_clock_mapper_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr subscription_;
   rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr rpySubscription_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr connectedPublisher_;
@@ -640,6 +843,8 @@ private:
   rclcpp::Publisher<std_msgs::msg::Int32MultiArray>::SharedPtr encoderPublisher_;
   rclcpp::Publisher<mission_control_interfaces::msg::ControlTelemetry>::SharedPtr
     controlTelemetryPublisher_;
+  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr bmi088RawImuPublisher_;
+  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr bmi088AttitudePublisher_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr actuatorHealthyPublisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr actuatorTrackingStatusPublisher_;
   rclcpp::TimerBase::SharedPtr timer_;

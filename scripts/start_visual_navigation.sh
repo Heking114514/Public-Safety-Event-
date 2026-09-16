@@ -303,7 +303,7 @@ build_orb_slam3() {
 
 build_ros_packages() {
   log "Building ROS 2 nodes"
-  local packages=(mission_control_interfaces orbslam3 imu_rpy_filter wheel_odometry fused_odometry visual_navigation)
+  local packages=(mission_control_interfaces imu_rpy_filter wheel_odometry fused_odometry visual_navigation)
   if [[ "${USE_SERIAL}" == "true" ]]; then
     packages+=(cup_car_serial)
   fi
@@ -312,10 +312,14 @@ build_ros_packages() {
   CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS}" "${COLCON_COMMAND}" build --symlink-install \
     --executor sequential \
     --packages-ignore ORB_SLAM3 pangolin \
-    --packages-select "${packages[@]}" \
+    --packages-select orbslam3 \
     --cmake-args \
       -DSophus_DIR="${DEPS_ROOT}/share/sophus/cmake" \
       -DPangolin_DIR="${DEPS_ROOT}/lib/cmake/Pangolin"
+  CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS}" "${COLCON_COMMAND}" build --symlink-install \
+    --executor sequential \
+    --packages-ignore ORB_SLAM3 pangolin \
+    --packages-select "${packages[@]}"
 }
 
 runtime_artifacts() {
@@ -356,6 +360,78 @@ runtime_artifacts() {
   fi
 }
 
+stop_navigation_lock_owners() {
+  command -v fuser >/dev/null 2>&1 || return 0
+
+  local owner_output
+  owner_output="$(fuser "${RUNS_ROOT}/.navigation.lock" 2>/dev/null || true)"
+  [[ -n "${owner_output}" ]] || return 0
+
+  local -a owners=()
+  local -a targets=()
+  local -a remaining=()
+  local -A start_times=()
+  local pid
+  local attempt
+  local current_start
+  read -r -a owners <<<"${owner_output}"
+
+  for pid in "${owners[@]}"; do
+    [[ "${pid}" =~ ^[0-9]+$ ]] || continue
+    [[ "${pid}" != "$$" && "${pid}" != "${BASHPID:-$$}" ]] || continue
+    read_process_argv "${pid}" || continue
+    if argv_contains_path PROCESS_ARGV "${SCRIPT_DIR}/start_visual_navigation.sh" ||
+        argv_has_sequence PROCESS_ARGV "scripts/start_visual_navigation.sh" ||
+        argv_has_sequence PROCESS_ARGV "./scripts/start_visual_navigation.sh"; then
+      current_start="$(process_start_time "${pid}" 2>/dev/null)" || continue
+      start_times["${pid}"]="${current_start}"
+      targets+=("${pid}")
+    fi
+  done
+  ((${#targets[@]} == 0)) && return 0
+
+  log "Stopping ${#targets[@]} stale navigation startup process(es) holding the run lock"
+  kill -TERM "${targets[@]}" 2>/dev/null || true
+  for attempt in {1..30}; do
+    remaining=()
+    for pid in "${targets[@]}"; do
+      current_start="$(process_start_time "${pid}" 2>/dev/null)" || continue
+      [[ "${current_start}" == "${start_times[${pid}]}" ]] || continue
+      remaining+=("${pid}")
+    done
+    ((${#remaining[@]} == 0)) && return 0
+    sleep 0.1
+  done
+
+  log "Forcing ${#remaining[@]} stale navigation startup process(es) to exit"
+  kill -KILL "${remaining[@]}" 2>/dev/null || true
+}
+
+acquire_navigation_run_lock() {
+  local retries="${NAVIGATION_RUN_LOCK_RETRIES:-50}"
+  local retry_interval="${NAVIGATION_RUN_LOCK_RETRY_INTERVAL:-0.2}"
+  local attempt
+
+  command -v flock >/dev/null 2>&1 || fail "flock is required for navigation run locking"
+  mkdir -p -- "${RUNS_ROOT}"
+  exec {RUN_LOCK_FD}>"${RUNS_ROOT}/.navigation.lock"
+
+  for ((attempt = 1; attempt <= retries; ++attempt)); do
+    if flock -n "${RUN_LOCK_FD}"; then
+      return 0
+    fi
+    if ((attempt == 1)); then
+      log "Waiting for previous navigation startup to release ${RUNS_ROOT}/.navigation.lock"
+    fi
+    if ((attempt == 15)); then
+      stop_navigation_lock_owners
+    fi
+    sleep "${retry_interval}"
+  done
+
+  fail "another navigation startup still owns ${RUNS_ROOT}/.navigation.lock after old-process cleanup"
+}
+
 runtime_artifacts
 log "Waiting for exclusive workspace build access"
 acquire_workspace_build_lock || fail "could not acquire the workspace build lock"
@@ -394,13 +470,8 @@ else
 fi
 release_workspace_build_lock
 
-command -v flock >/dev/null 2>&1 || fail "flock is required for navigation run locking"
-mkdir -p -- "${RUNS_ROOT}"
-exec {RUN_LOCK_FD}>"${RUNS_ROOT}/.navigation.lock"
-flock -n "${RUN_LOCK_FD}" ||
-  fail "another navigation startup owns ${RUNS_ROOT}/.navigation.lock"
-
 stop_existing_ros_nodes
+acquire_navigation_run_lock
 
 if [[ "${CHECK_CAMERA}" == "true" ]]; then
   detect_camera_serial

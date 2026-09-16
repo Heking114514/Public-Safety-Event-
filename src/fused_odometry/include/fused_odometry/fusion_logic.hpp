@@ -27,14 +27,19 @@ Pose2d interpolate_pose(const Pose2d & from, const Pose2d & to, double fraction)
 bool yaw_rates_excited(double wheel_rate, double imu_rate, double minimum_rate);
 bool yaw_rates_consistent(double wheel_rate, double imu_rate, double maximum_residual);
 
+bool in_place_turn_observed(
+  double body_velocity, double yaw_rate,
+  bool body_velocity_valid, bool yaw_rate_valid,
+  double maximum_linear_speed, double minimum_yaw_rate);
+
 double wheel_vx_turn_covariance_scale(
-  double imu_yaw_rate, double command_yaw_rate,
-  bool imu_valid, bool command_valid,
+  double imu_yaw_rate, bool imu_valid,
   double downweight_start_rate, double full_downweight_rate,
   double maximum_scale);
 
 bool zero_wheel_vx_during_in_place_turn(
-  double command_velocity, double command_yaw_rate, bool command_valid,
+  double wheel_velocity, double imu_yaw_rate,
+  bool wheel_valid, bool imu_valid,
   double maximum_linear_speed, double minimum_yaw_rate);
 
 bool pose_residual_within(
@@ -44,17 +49,6 @@ bool pose_residual_within(
 double wheel_visual_rejection_residual(
   double wheel_velocity, double visual_velocity,
   double visual_stationary_threshold, double stationary_wheel_threshold);
-
-bool motion_command_is_stationary(
-  double linear_velocity, double angular_velocity, bool command_fresh,
-  double maximum_linear_speed, double maximum_angular_speed);
-
-bool stationary_chassis_rejects_visual_motion(
-  double command_velocity, double command_yaw_rate, bool command_fresh,
-  double wheel_velocity, bool wheel_fresh,
-  double visual_velocity, bool visual_velocity_valid,
-  double maximum_command_linear_speed, double maximum_command_angular_speed,
-  double maximum_wheel_speed, double minimum_visual_speed);
 
 class PoseAligner
 {
@@ -116,28 +110,6 @@ private:
   std::deque<std::pair<double, double>> samples_;
 };
 
-// Estimates only a slowly varying gyro z bias. The reference is normally the
-// robust visual yaw rate; callers decide when learning is safe (straight,
-// healthy visual tracking). During turns the last bias is held constant.
-class YawBiasEstimator
-{
-public:
-  YawBiasEstimator(double time_constant_seconds = 3.0, double maximum_bias = 0.08);
-
-  void reset();
-  double correct(
-    double time_seconds, double measured_rate, double reference_rate,
-    bool reference_valid, bool learn);
-  double bias() const {return bias_;}
-
-private:
-  double time_constant_seconds_;
-  double maximum_bias_;
-  double bias_{0.0};
-  double last_time_seconds_{0.0};
-  bool initialized_{false};
-};
-
 enum class MotionFault
 {
   kNone,
@@ -148,7 +120,6 @@ enum class MotionFault
 
 struct MotionClassifierConfig
 {
-  double command_threshold{0.08};
   double moving_threshold{0.04};
   double stationary_threshold{0.02};
   double fault_dwell_seconds{0.6};
@@ -160,14 +131,14 @@ class MotionClassifier
 public:
   explicit MotionClassifier(const MotionClassifierConfig & config);
   MotionFault update(
-    double time_seconds, double command_velocity, double wheel_velocity,
-    double visual_velocity, bool command_valid, bool wheel_valid, bool visual_valid);
+    double time_seconds, double wheel_velocity, double visual_velocity,
+    bool wheel_valid, bool visual_valid);
   MotionFault fault() const {return active_fault_;}
 
 private:
   MotionFault classify(
-    double command_velocity, double wheel_velocity, double visual_velocity,
-    bool command_valid, bool wheel_valid, bool visual_valid) const;
+    double wheel_velocity, double visual_velocity,
+    bool wheel_valid, bool visual_valid) const;
   MotionClassifierConfig config_;
   MotionFault active_fault_{MotionFault::kNone};
   MotionFault candidate_fault_{MotionFault::kNone};
@@ -175,32 +146,6 @@ private:
   double recovery_since_{0.0};
   bool candidate_active_{false};
   bool recovery_active_{false};
-};
-
-struct AngularStallConfig
-{
-  double command_threshold{0.30};
-  double stationary_threshold{0.10};
-  double fault_dwell_seconds{0.8};
-  double recovery_dwell_seconds{1.0};
-};
-
-class AngularStallDetector
-{
-public:
-  explicit AngularStallDetector(const AngularStallConfig & config);
-  bool update(
-    double time_seconds, double command_yaw_rate, double measured_yaw_rate,
-    bool command_valid, bool measurement_valid);
-  bool stalled() const {return stalled_;}
-
-private:
-  AngularStallConfig config_;
-  double candidate_since_{0.0};
-  double recovery_since_{0.0};
-  bool candidate_active_{false};
-  bool recovery_active_{false};
-  bool stalled_{false};
 };
 
 const char * motion_fault_name(MotionFault fault);

@@ -262,15 +262,15 @@ PlanResult ArenaPlanner::PlanRoadIntervals(
       strokes.erase(strokes.begin() + static_cast<std::ptrdiff_t>(selected));
     }
 
-    const std::vector<RoadInterval> normalized_planned = NormalizeRoadIntervals(
+    const std::vector<RoadInterval> selected_normalized_planned = NormalizeRoadIntervals(
       config_, {}, planned_intervals);
-    const std::vector<RoadInterval> prospective_coverage = MergeRoadIntervals(
-      config_, historical_coverage, normalized_planned);
-    const std::vector<RoadInterval> resolved_intervals = MergeRoadIntervals(
-      config_, prospective_coverage, blocked_intervals);
-    const std::vector<RoadInterval> remaining_intervals = UncoveredRoadIntervals(
-      config_, resolved_intervals, false, true);
-    if (normalized_planned.empty() && !remaining_intervals.empty()) {
+    const std::vector<RoadInterval> selected_prospective_coverage = MergeRoadIntervals(
+      config_, historical_coverage, selected_normalized_planned);
+    const std::vector<RoadInterval> selected_resolved_intervals = MergeRoadIntervals(
+      config_, selected_prospective_coverage, blocked_intervals);
+    const std::vector<RoadInterval> selected_remaining_intervals = UncoveredRoadIntervals(
+      config_, selected_resolved_intervals, false, true);
+    if (selected_normalized_planned.empty() && !selected_remaining_intervals.empty()) {
       throw std::runtime_error(
               "no uncovered road interval is reachable from the current start");
     }
@@ -291,6 +291,10 @@ PlanResult ArenaPlanner::PlanRoadIntervals(
     }
 
     result.points = Smooth(result.points, required_points);
+    bool ended_after_retreat = false;
+    if (config_.turns_at_junctions_only) {
+      result.points = StopAfterFirstBlockedReversal(result.points, ended_after_retreat);
+    }
     for (std::size_t index = 1; index < result.points.size(); ++index) {
       if (!SegmentIsFree(result.points[index - 1], result.points[index])) {
         throw std::runtime_error(
@@ -316,6 +320,28 @@ PlanResult ArenaPlanner::PlanRoadIntervals(
           result.points[index + 1].x - result.points[index].x) :
         (result.headings.empty() ? start.yaw : result.headings.back()));
     }
+    const std::vector<RoadInterval> normalized_planned = ended_after_retreat ?
+      NormalizeRoadIntervals(config_, {}, CoveredInspectionIntervals(config_, result.points)) :
+      selected_normalized_planned;
+    const std::vector<RoadInterval> prospective_coverage = MergeRoadIntervals(
+      config_, historical_coverage, normalized_planned);
+    const std::vector<RoadInterval> resolved_intervals = MergeRoadIntervals(
+      config_, prospective_coverage, blocked_intervals);
+    const std::vector<RoadInterval> remaining_intervals = UncoveredRoadIntervals(
+      config_, resolved_intervals, false, true);
+    if (ended_after_retreat) {
+      const std::vector<std::string> current_coverage =
+        FullyCoveredInspectionEdges(config_, normalized_planned);
+      result.visit_order.erase(
+        std::remove_if(
+          result.visit_order.begin(), result.visit_order.end(),
+          [&current_coverage](const std::string & label) {
+            return std::find(
+              current_coverage.begin(), current_coverage.end(), label) ==
+                   current_coverage.end();
+          }),
+        result.visit_order.end());
+    }
     result.covered_intervals = historical_coverage;
     result.planned_intervals = normalized_planned;
     result.blocked_intervals = blocked_intervals;
@@ -333,9 +359,11 @@ PlanResult ArenaPlanner::PlanRoadIntervals(
     result.all_targets_reached =
       result.deferred_intervals.empty() && result.deferred_targets.empty();
     result.success = true;
-    result.message = result.all_targets_reached ?
+    result.message = ended_after_retreat ?
+      "planned retreat before a required U-turn; replan after reversing" :
+      (result.all_targets_reached ?
       "uncovered road intervals filled" :
-      "reachable road intervals filled; remaining intervals deferred";
+      "reachable road intervals filled; remaining intervals deferred");
   } catch (const std::exception & exception) {
     result.success = false;
     result.all_targets_reached = false;

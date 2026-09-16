@@ -109,6 +109,8 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
       0.01, declare_parameter<double>("max_lateral_acceleration", 0.22));
   pathCurvatureFeedforwardGain_ = std::max(
       0.0, declare_parameter<double>("path_curvature_feedforward_gain", 1.0));
+  preTurnPathAngularRatio_ = std::max(
+      0.0, declare_parameter<double>("pre_turn_path_angular_ratio", 1.2));
   pathPidIntegralLimit_ =
       std::max(0.0, declare_parameter<double>("path_pid_integral_limit", 0.20));
   pathTrackingController_.configure(pathPidKp_, pathPidKi_, pathPidKd_,
@@ -140,7 +142,7 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
       declare_parameter<double>("waypoint_pass_longitudinal_tolerance", 0.01));
   waypointPassLateralTolerance_ = std::max(
       waypointTolerance_,
-      declare_parameter<double>("waypoint_pass_lateral_tolerance", 0.06));
+      declare_parameter<double>("waypoint_pass_lateral_tolerance", 0.045));
   waypointRecoverySpeed_ = std::min(
       maxLinearSpeed_, std::max(0.0, declare_parameter<double>(
                                          "waypoint_recovery_speed", 0.10)));
@@ -186,6 +188,10 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
   const double turnProgressMinimumExpectedYawRate =
       std::max(0.001, declare_parameter<double>(
                           "turn_progress_minimum_expected_yaw_rate", 0.12));
+  turnProgressExpectedYawRate_ =
+      std::max(turnProgressMinimumExpectedYawRate,
+               declare_parameter<double>("turn_progress_expected_yaw_rate",
+                                         turnProgressMinimumExpectedYawRate));
   const double turnProgressMaxTotalTimeout = std::max(
       turnProgressBaseTotalTimeout,
       declare_parameter<double>("turn_progress_max_total_timeout", 40.0));
@@ -228,7 +234,7 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
       std::max(0.001, declare_parameter<double>("final_yaw_tolerance", 0.12));
   finalPositionReleaseTolerance_ = std::max(
       waypointTolerance_,
-      declare_parameter<double>("final_position_release_tolerance", 0.10));
+      declare_parameter<double>("final_position_release_tolerance", 0.05));
   finalYawMaxAngularSpeed_ = std::min(
       maxAngularSpeed_,
       std::max(0.0,
@@ -259,9 +265,9 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
       std::max(0.0, declare_parameter<double>(
                         "front_obstacle_pairing_reorder_tolerance", 0.10));
   obstacleSensorForwardOffset_ =
-      declare_parameter<double>("obstacle_sensor_forward_offset", 0.070);
+      declare_parameter<double>("obstacle_sensor_forward_offset", 0.055);
   vehicleFrontOffset_ =
-      std::max(0.0, declare_parameter<double>("vehicle_front_offset", 0.0717));
+      std::max(0.0, declare_parameter<double>("vehicle_front_offset", 0.07425));
   expectedObstacleTolerance_ = std::max(
       0.0, declare_parameter<double>("expected_obstacle_tolerance", 0.05));
   if (!std::isfinite(obstacleSensorForwardOffset_))
@@ -314,10 +320,6 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
   obstacleRecoveryController_.configure(obstacleRecoveryConfig);
   stampFutureTolerance_ =
       std::max(0.0, declare_parameter<double>("stamp_future_tolerance", 0.20));
-  const double transientLocalizationGrace = std::max(
-      0.0, declare_parameter<double>("transient_localization_grace", 2.00));
-  const double transientFaultSpeedScale = Clamp(
-      declare_parameter<double>("transient_fault_speed_scale", 0.25), 0.0, 1.0);
   requireFusionStatus_ = declare_parameter<bool>("require_fusion_status", true);
   requireActuatorHealth_ =
       declare_parameter<bool>("require_actuator_health", false);
@@ -326,30 +328,14 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
       {"FULL", "DEGRADED_NO_VISION", "DEGRADED_NO_IMU", "DEGRADED_NO_WHEEL",
        "DEGRADED_VISION_ONLY", "DEGRADED_WHEEL_ONLY",
        "DEGRADED_VISUAL_REALIGNED"});
-  visual_navigation::FusionSpeedScales fusionSpeedScales;
-  fusionSpeedScales.fallback =
-      declare_parameter<double>("degraded_speed_scale", 0.50);
-  fusionSpeedScales.no_vision =
-      declare_parameter<double>("no_vision_speed_scale", 0.50);
-  fusionSpeedScales.no_imu =
-      declare_parameter<double>("no_imu_speed_scale", 0.65);
-  fusionSpeedScales.no_wheel =
-      declare_parameter<double>("no_wheel_speed_scale", 0.60);
-  fusionSpeedScales.vision_only =
-      declare_parameter<double>("vision_only_speed_scale", 0.40);
-  fusionSpeedScales.wheel_only =
-      declare_parameter<double>("wheel_only_speed_scale", 0.25);
-  fusionSpeedScales.visual_realigned =
-      declare_parameter<double>("visual_realigned_speed_scale", 0.50);
-  fusionHealthPolicy_ = visual_navigation::FusionHealthPolicy(
-      allowedFusionStates_, fusionSpeedScales);
+  fusionHealthPolicy_ =
+      visual_navigation::FusionHealthPolicy(allowedFusionStates_);
   requireTrackingState_ =
       declare_parameter<bool>("require_tracking_state", false);
   const bool abortOnTrackingLoss =
       declare_parameter<bool>("abort_on_tracking_loss", false);
   navigationSupervisor_ = visual_navigation::NavigationSupervisor(
-      {transientLocalizationGrace, transientFaultSpeedScale,
-       abortOnTrackingLoss});
+      {abortOnTrackingLoss});
   autostart_ = declare_parameter<bool>("autostart", false);
 
   cmdVelPublisher_ =

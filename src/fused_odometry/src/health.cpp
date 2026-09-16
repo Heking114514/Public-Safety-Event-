@@ -7,7 +7,6 @@ void FusionGateNode::publish_status() {
     mark_visual_interrupted();
   }
   const bool vision = vision_healthy();
-  const bool command_fresh = command_.input.fresh(command_timeout_);
   const bool wheel_measurement_fresh = wheel_.input.fresh(wheel_timeout_);
   const bool raw_visual_motion_valid = raw_visual_increment_healthy();
   const bool accepted_visual_motion_valid =
@@ -21,8 +20,11 @@ void FusionGateNode::publish_status() {
                                           : visual_.forward_velocity);
   const double current_time = steady_seconds();
   const double wheel_motion_velocity =
-      wheel_vx_window_.ready(robust_min_samples_) ? wheel_vx_window_.median()
-                                                  : wheel_.velocity;
+      wheel_.vx_zeroed
+          ? 0.0
+          : (wheel_vx_window_.ready(robust_min_samples_)
+                 ? wheel_vx_window_.median()
+                 : wheel_.velocity);
   const bool imu = imu_healthy();
   const bool wheel_yaw_backup =
       fuse_wheel_yaw_ && wheel_.yaw.validated &&
@@ -41,9 +43,6 @@ void FusionGateNode::publish_status() {
   health_input.imu = imu;
   health_input.wheel_yaw_backup = wheel_yaw_backup;
   health_input.visual_realigned = current_time <= visual_.realigned_until;
-  health_input.command_velocity = command_.velocity;
-  health_input.command_yaw_rate = command_.yaw_rate;
-  health_input.command_fresh = command_fresh;
   health_input.wheel_velocity = wheel_motion_velocity;
   health_input.visual_velocity = visual_motion_velocity;
   health_input.visual_motion_valid = visual_motion_valid;
@@ -102,8 +101,6 @@ void FusionGateNode::publish_status() {
       value("wheel_visual_residual_mps", std::to_string(wheel_.residual)));
   item.values.push_back(
       value("imu_visual_residual_radps", std::to_string(imu_.visual_residual)));
-  item.values.push_back(
-      value("imu_yaw_bias_radps", std::to_string(imu_.bias_estimator.bias())));
   item.values.push_back(value("visual_yaw_disagreement_scale",
                               std::to_string(visual_.yaw_disagreement_scale)));
   item.values.push_back(
@@ -115,15 +112,9 @@ void FusionGateNode::publish_status() {
   item.values.push_back(
       value("motion_fault", motion_fault_name(health.motion_fault)));
   item.values.push_back(
-      value("command_vx_mps", std::to_string(command_.velocity)));
-  item.values.push_back(
-      value("command_wz_radps", std::to_string(command_.yaw_rate)));
-  item.values.push_back(
       value("measured_wz_radps", std::to_string(health.measured_yaw_rate)));
   item.values.push_back(
       value("angular_sources", std::to_string(health.angular_source_count)));
-  item.values.push_back(
-      value("angular_stalled", health.angular_stalled ? "true" : "false"));
   item.values.push_back(
       value("wheel_yaw_validated", wheel_.yaw.validated ? "true" : "false"));
   item.values.push_back(

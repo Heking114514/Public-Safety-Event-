@@ -69,9 +69,9 @@ private:
     config.right_encoder_counts_per_revolution = positive_parameter(
       "right_encoder_counts_per_revolution", config.right_encoder_counts_per_revolution);
     config.wheel_track_m = positive_parameter("wheel_track_m", config.wheel_track_m);
-    config.left_distance_scale = positive_parameter(
+    config.left_distance_scale = nonzero_parameter(
       "left_distance_scale", config.left_distance_scale);
-    config.right_distance_scale = positive_parameter(
+    config.right_distance_scale = nonzero_parameter(
       "right_distance_scale", config.right_distance_scale);
     config.yaw_slip_scale = positive_parameter("yaw_slip_scale", config.yaw_slip_scale);
     config.max_wheel_speed_mps = positive_parameter(
@@ -138,6 +138,15 @@ private:
     const double value = declare_parameter<double>(name, default_value);
     if (!std::isfinite(value) || value < 0.0) {
       throw std::invalid_argument(name + " must be finite and non-negative");
+    }
+    return value;
+  }
+
+  double nonzero_parameter(const std::string & name, double default_value)
+  {
+    const double value = declare_parameter<double>(name, default_value);
+    if (!std::isfinite(value) || value == 0.0) {
+      throw std::invalid_argument(name + " must be finite and non-zero");
     }
     return value;
   }

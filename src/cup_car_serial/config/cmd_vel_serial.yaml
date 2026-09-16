@@ -13,3 +13,6 @@ cmd_vel_serial_node:
     tracking_recovery_stop_s: 0.5
     tracking_retry_rearm_s: 3.0
     tracking_maximum_recovery_attempts: 2
+    bmi088_raw_imu_topic: /cup_car_serial/bmi088_raw_imu
+    bmi088_attitude_topic: /cup_car_serial/bmi088_attitude
+    bmi088_frame_id: base_link

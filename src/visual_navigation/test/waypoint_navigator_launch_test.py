@@ -389,11 +389,13 @@ class TestWaypointNavigatorContract(unittest.TestCase):
         for x in (0.10, 0.20, 0.30):
             self.hold_odometry(x, cycles=2)
         for _ in range(12):
+            self.publish_fusion("FULL")
             self.publish_odometry(x=0.30)
             self.publish_stopped_wheels()
             self.spin(0.04)
         self.commands.clear()
         for _ in range(10):
+            self.publish_fusion("FULL")
             self.publish_odometry(x=0.35)
             self.spin(0.04)
 
@@ -417,7 +419,7 @@ class TestWaypointNavigatorContract(unittest.TestCase):
                    for linear, angular in self.commands[-5:])
         self.call_trigger(self.stop_client)
 
-    def test_planned_reversal_stops_between_two_ninety_degree_turns(self):
+    def test_marked_out_and_back_uses_planned_reverse_without_pivot(self):
         self.call_trigger(self.stop_client)
         self.commands.clear()
         self.states.clear()
@@ -435,15 +437,12 @@ class TestWaypointNavigatorContract(unittest.TestCase):
             self.publish_stopped_wheels()
             self.spin(0.04)
 
-        assert "ROTATING_TO_PATH" in self.states
         self.commands.clear()
-        self.hold_odometry(0.30, yaw=math.pi / 2.0, cycles=12)
-        assert "TURN_HALF_SETTLED" in self.states
-        assert any(abs(linear) < 1e-12 and abs(angular) < 1e-12
-                   for linear, angular in self.commands)
-        assert any(angular > 0.05 for _, angular in self.commands[-6:])
-        self.hold_odometry(0.30, yaw=math.pi, cycles=12)
-        assert "PATH_ALIGNED" in self.states
+        self.hold_odometry(0.28, cycles=6)
+        assert "REVERSING_PLANNED_RETREAT" in self.states
+        assert "ROTATING_TO_PATH" not in self.states
+        assert any(linear < -0.01 for linear, _ in self.commands)
+        assert all(abs(angular) < 0.05 for _, angular in self.commands[-5:])
         self.call_trigger(self.stop_client)
 
     def test_marked_route_start_authorizes_junction_turn(self):

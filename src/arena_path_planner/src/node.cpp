@@ -34,6 +34,11 @@ geometry_msgs::msg::Quaternion QuaternionFromYaw(double yaw)
   return quaternion;
 }
 
+double Degrees(double radians)
+{
+  return radians * 180.0 / std::acos(-1.0);
+}
+
 bool PointHasFiniteCoordinates(
   const Point & point, std::string * rejection_reason = nullptr)
 {
@@ -91,6 +96,7 @@ public:
       throw std::runtime_error("config_file parameter is required");
     }
     planner_ = std::make_unique<ArenaPlanner>(ArenaPlanner::LoadConfig(config_file));
+    PrewarmStaticRoutes();
     const PlannerTopics & topics = planner_->config().topics;
 
     const auto durable_qos = rclcpp::QoS(1).reliable().transient_local();
@@ -115,6 +121,30 @@ public:
   }
 
 private:
+  void PrewarmStaticRoutes()
+  {
+    const auto begin = std::chrono::steady_clock::now();
+    const char * modes[] = {"layer1", "layer2", "layer3"};
+    std::size_t warmed = 0;
+    for (const char * mode : modes) {
+      const PlanResult result = planner_->Plan(
+        planner_->config().default_start, planner_->config().default_targets,
+        planner_->config().default_labels, mode);
+      if (!result.success) {
+        RCLCPP_WARN(
+          get_logger(), "static planner cache prewarm skipped %s: %s",
+          mode, result.message.c_str());
+        continue;
+      }
+      ++warmed;
+    }
+    const double elapsed_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - begin).count();
+    RCLCPP_INFO(
+      get_logger(), "prewarmed %zu static planner route cache(s) in %.0f ms",
+      warmed, elapsed_ms);
+  }
+
   nav_msgs::msg::Path MakeArenaPath(
     const PlanResult & result, const rclcpp::Time & stamp) const
   {
@@ -393,7 +423,20 @@ private:
     response->planning_time_ms = std::chrono::duration<double, std::milli>(
       std::chrono::steady_clock::now() - begin).count();
     if (!result.success) {
-      RCLCPP_WARN(get_logger(), "planning failed: %s", result.message.c_str());
+      RCLCPP_WARN(
+        get_logger(),
+        "planning failed: %s "
+        "[mode=%s activate=%s request_start=(%.3f, %.3f, %.1f deg) "
+        "planning_start=(%.3f, %.3f, %.1f deg) targets=%zu labels=%zu "
+        "obstacles=%zu covered_edges=%zu covered_intervals=%zu remaining_visits=%zu "
+        "deferred=%zu projected_start=%s]",
+        result.message.c_str(), mode.c_str(),
+        request->activate_navigation ? "true" : "false",
+        start.position.x, start.position.y, Degrees(start.yaw),
+        planning_start.position.x, planning_start.position.y, Degrees(planning_start.yaw),
+        targets.size(), labels.size(), request->dynamic_obstacles.size(),
+        request->covered_edges.size(), covered_intervals.size(), request->remaining_visits.size(),
+        result.deferred_targets.size(), start_was_projected ? "true" : "false");
       return;
     }
     if (result.points.empty()) {

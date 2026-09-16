@@ -2,7 +2,6 @@
 #define VISUAL_NAVIGATION__FUSION_HEALTH_POLICY_HPP_
 
 #include <algorithm>
-#include <cmath>
 #include <string>
 #include <utility>
 #include <vector>
@@ -14,18 +13,6 @@ struct FusionHealthDecision
 {
   bool allowed{false};
   bool fault{false};
-  double speed_scale{0.0};
-};
-
-struct FusionSpeedScales
-{
-  double fallback{0.5};
-  double no_vision{0.5};
-  double no_imu{0.65};
-  double no_wheel{0.6};
-  double vision_only{0.4};
-  double wheel_only{0.25};
-  double visual_realigned{0.5};
 };
 
 inline bool LocalizationCanStart(
@@ -42,34 +29,14 @@ inline bool ShouldLatchFusedLocalizationLoss(
     (localization_was_valid && (!odometry_valid || !health.allowed));
 }
 
-inline bool CanBridgeTransientLocalizationLoss(
-  bool localization_was_valid, bool hard_fault,
-  double seconds_since_valid, double grace_seconds)
-{
-  return localization_was_valid && !hard_fault &&
-    std::isfinite(seconds_since_valid) && seconds_since_valid >= 0.0 &&
-    seconds_since_valid <= std::max(0.0, grace_seconds);
-}
-
 class FusionHealthPolicy
 {
 public:
   FusionHealthPolicy() = default;
 
-  FusionHealthPolicy(std::vector<std::string> allowed_states, double degraded_speed_scale)
-  : allowed_states_(std::move(allowed_states)),
-    speed_scales_({degraded_speed_scale, degraded_speed_scale, degraded_speed_scale,
-      degraded_speed_scale, degraded_speed_scale, degraded_speed_scale,
-      degraded_speed_scale})
+  explicit FusionHealthPolicy(std::vector<std::string> allowed_states)
+  : allowed_states_(std::move(allowed_states))
   {
-    ClampScales();
-  }
-
-  FusionHealthPolicy(
-    std::vector<std::string> allowed_states, FusionSpeedScales speed_scales)
-  : allowed_states_(std::move(allowed_states)), speed_scales_(speed_scales)
-  {
-    ClampScales();
   }
 
   FusionHealthDecision Evaluate(const std::string &state) const
@@ -81,51 +48,11 @@ public:
 
     decision.allowed = std::find(
       allowed_states_.begin(), allowed_states_.end(), state) != allowed_states_.end();
-    if (!decision.allowed)
-      return decision;
-
-    decision.speed_scale = SpeedScale(state);
     return decision;
   }
 
 private:
-  static double ClampScale(double value)
-  {
-    return std::max(0.0, std::min(1.0, value));
-  }
-
-  void ClampScales()
-  {
-    speed_scales_.fallback = ClampScale(speed_scales_.fallback);
-    speed_scales_.no_vision = ClampScale(speed_scales_.no_vision);
-    speed_scales_.no_imu = ClampScale(speed_scales_.no_imu);
-    speed_scales_.no_wheel = ClampScale(speed_scales_.no_wheel);
-    speed_scales_.vision_only = ClampScale(speed_scales_.vision_only);
-    speed_scales_.wheel_only = ClampScale(speed_scales_.wheel_only);
-    speed_scales_.visual_realigned = ClampScale(speed_scales_.visual_realigned);
-  }
-
-  double SpeedScale(const std::string &state) const
-  {
-    if (state == "FULL")
-      return 1.0;
-    if (state == "DEGRADED_NO_VISION")
-      return speed_scales_.no_vision;
-    if (state == "DEGRADED_NO_IMU")
-      return speed_scales_.no_imu;
-    if (state == "DEGRADED_NO_WHEEL")
-      return speed_scales_.no_wheel;
-    if (state == "DEGRADED_VISION_ONLY")
-      return speed_scales_.vision_only;
-    if (state == "DEGRADED_WHEEL_ONLY")
-      return speed_scales_.wheel_only;
-    if (state == "DEGRADED_VISUAL_REALIGNED")
-      return speed_scales_.visual_realigned;
-    return state.compare(0, 9, "DEGRADED_") == 0 ? speed_scales_.fallback : 1.0;
-  }
-
   std::vector<std::string> allowed_states_;
-  FusionSpeedScales speed_scales_;
 };
 
 }  // namespace visual_navigation

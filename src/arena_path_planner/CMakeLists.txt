@@ -1,5 +1,9 @@
-cmake_minimum_required(VERSION 3.8)
+cmake_minimum_required(VERSION 3.10)
 project(arena_path_planner)
+
+if(POLICY CMP0148)
+  cmake_policy(SET CMP0148 OLD)
+endif()
 
 if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 17)
@@ -56,10 +60,26 @@ install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
 if(BUILD_TESTING)
   find_package(ament_index_cpp REQUIRED)
   find_package(ament_cmake_gtest REQUIRED)
+  set(_warn_deprecated_was_defined FALSE)
+  if(DEFINED CMAKE_WARN_DEPRECATED)
+    set(_warn_deprecated_was_defined TRUE)
+    set(_warn_deprecated "${CMAKE_WARN_DEPRECATED}")
+  endif()
+  # Humble's vendored gtest still declares CMake 3.8. Suppress only that
+  # external deprecation while the first test target initializes gtest.
+  set(CMAKE_WARN_DEPRECATED OFF CACHE INTERNAL
+    "Suppress external gtest_vendor deprecation during initialization" FORCE)
   # The executable includes several full 2 cm official-map routes. Their
   # aggregate runtime exceeds CTest's 60 s default even though each planning
   # request stays within the frontend's request budget.
   ament_add_gtest(arena_planner_test test/planner_test.cpp TIMEOUT 180)
+  if(_warn_deprecated_was_defined)
+    set(CMAKE_WARN_DEPRECATED "${_warn_deprecated}" CACHE INTERNAL
+      "Restored CMake deprecation warning setting" FORCE)
+  else()
+    unset(CMAKE_WARN_DEPRECATED CACHE)
+    unset(CMAKE_WARN_DEPRECATED)
+  endif()
   target_link_libraries(arena_planner_test arena_planner_core)
   ament_target_dependencies(arena_planner_test ament_index_cpp)
   ament_add_gtest(dynamic_obstacle_test test/dynamic_obstacle_test.cpp)

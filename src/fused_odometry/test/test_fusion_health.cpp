@@ -8,8 +8,7 @@ namespace
 fused_odometry::FusionHealthMonitor make_monitor()
 {
   return fused_odometry::FusionHealthMonitor(
-    fused_odometry::MotionClassifierConfig{0.08, 0.04, 0.02, 0.6, 1.0},
-    fused_odometry::AngularStallConfig{0.30, 0.10, 0.8, 1.0});
+    fused_odometry::MotionClassifierConfig{0.08, 0.04, 0.6, 1.0});
 }
 
 fused_odometry::FusionHealthInput healthy_input(double now_seconds)
@@ -35,7 +34,6 @@ TEST(FusionHealthMonitor, HealthySourcesProduceOneConsistentSnapshot)
   EXPECT_EQ(result.mode, fused_odometry::FusionMode::kFull);
   EXPECT_EQ(result.motion_fault, fused_odometry::MotionFault::kNone);
   EXPECT_TRUE(result.wheel_healthy);
-  EXPECT_FALSE(result.angular_stalled);
 }
 
 TEST(FusionHealthMonitor, OrbWarmupWaitsThenTimesOutAsDistinctFault)
@@ -148,8 +146,6 @@ TEST(FusionHealthMonitor, WheelSlipRemainsDiagnosticDuringHealthyVisualFusion)
 {
   auto monitor = make_monitor();
   auto input = healthy_input(0.0);
-  input.command_fresh = true;
-  input.command_velocity = 0.2;
   input.wheel_velocity = 0.2;
   input.visual_velocity = 0.0;
   monitor.evaluate(input, {});
@@ -165,8 +161,6 @@ TEST(FusionHealthMonitor, EncoderFailureRemainsDiagnosticDuringHealthyVisualFusi
 {
   auto monitor = make_monitor();
   auto input = healthy_input(0.0);
-  input.command_fresh = true;
-  input.command_velocity = 0.2;
   input.wheel_velocity = 0.0;
   input.visual_velocity = 0.2;
   monitor.evaluate(input, {});
@@ -208,38 +202,34 @@ TEST(FusionHealthMonitor, MissingImuHasOneModeIndependentOfWheelHealth)
     fused_odometry::FusionMode::kNoImu);
 }
 
-TEST(FusionHealthMonitor, MechanicalStallStillOverridesHealthyVisualFusion)
+TEST(FusionHealthMonitor, StationaryAgreementDoesNotCreateCommandFault)
 {
   auto monitor = make_monitor();
   auto input = healthy_input(0.0);
-  input.command_fresh = true;
-  input.command_velocity = 0.2;
   input.wheel_velocity = 0.0;
   input.visual_velocity = 0.0;
   monitor.evaluate(input, {});
   input.now_seconds = 0.7;
   const auto result = monitor.evaluate(input, {});
 
-  EXPECT_EQ(result.motion_fault, fused_odometry::MotionFault::kStalled);
-  EXPECT_EQ(result.mode, fused_odometry::FusionMode::kFaultStalled);
+  EXPECT_EQ(result.motion_fault, fused_odometry::MotionFault::kNone);
+  EXPECT_EQ(result.mode, fused_odometry::FusionMode::kFull);
 }
 
-TEST(FusionHealthMonitor, AngularStallStillOverridesHealthyVisualFusion)
+TEST(FusionHealthMonitor, YawSourcesAreDiagnosticOnlyWithoutCommandCoupling)
 {
   auto monitor = make_monitor();
   auto input = healthy_input(0.0);
-  input.command_fresh = true;
-  input.command_yaw_rate = 0.5;
   input.visual_yaw_valid = true;
-  input.visual_yaw_rate = 0.0;
-  input.imu_yaw_rate = 0.0;
+  input.visual_yaw_rate = 0.4;
+  input.imu_yaw_rate = 0.5;
   monitor.evaluate(input, {});
   input.now_seconds = 0.9;
   const auto result = monitor.evaluate(input, {});
 
-  EXPECT_TRUE(result.angular_stalled);
   EXPECT_EQ(result.angular_source_count, 2U);
-  EXPECT_EQ(result.mode, fused_odometry::FusionMode::kFaultStalled);
+  EXPECT_NEAR(result.measured_yaw_rate, 0.5, 1e-9);
+  EXPECT_EQ(result.mode, fused_odometry::FusionMode::kFull);
 }
 
 }  // namespace

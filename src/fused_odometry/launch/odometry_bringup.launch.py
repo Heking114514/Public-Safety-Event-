@@ -3,7 +3,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PythonExpression
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 import os
 
@@ -28,19 +28,13 @@ def generate_launch_description():
         "config",
         "wheel_odometry.yaml",
     )
-    imu_config = os.path.join(
-        get_package_share_directory("imu_rpy_filter"),
-        "config",
-        "imu_rpy_filter.yaml",
-    )
-
     base_to_camera = Node(
         package="tf2_ros",
         executable="static_transform_publisher",
         name="base_to_d455",
         output="screen",
         arguments=[
-            "--x", "0.070",
+            "--x", "0.055",
             "--y", "0.0",
             "--z", "0.0",
             "--yaw", "0.0",
@@ -83,18 +77,6 @@ def generate_launch_description():
                 "enable_imu": use_imu,
                 "enable_depth": enable_depth,
             }.items(),
-        ),
-        Node(
-            package="imu_rpy_filter",
-            executable="imu_rpy_filter_node",
-            name="imu_rpy_filter",
-            output="screen",
-            condition=IfCondition(
-                PythonExpression([
-                    "'", use_imu, "' == 'true' and '", use_slam_imu, "' == 'false'"
-                ])
-            ),
-            parameters=[imu_config, {"use_sim_time": use_sim_time}],
         ),
         Node(
             package="wheel_odometry",

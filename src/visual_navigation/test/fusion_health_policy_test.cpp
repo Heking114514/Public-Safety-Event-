@@ -1,51 +1,42 @@
 #include <gtest/gtest.h>
 
-#include <vector>
-
 #include "visual_navigation/fusion_health_policy.hpp"
 
 namespace
 {
 
 const visual_navigation::FusionHealthPolicy kPolicy(
-  {"FULL", "DEGRADED_NO_VISION", "DEGRADED_NO_IMU"}, 0.4);
+  {"FULL", "DEGRADED_NO_VISION", "DEGRADED_NO_IMU"});
 
-TEST(FusionHealthPolicy, FullRunsAtNormalSpeed)
+TEST(FusionHealthPolicy, FullIsAllowed)
 {
   const auto decision = kPolicy.Evaluate("FULL");
   EXPECT_TRUE(decision.allowed);
   EXPECT_FALSE(decision.fault);
-  EXPECT_DOUBLE_EQ(decision.speed_scale, 1.0);
 }
 
-TEST(FusionHealthPolicy, AllowedDegradedStateIsSpeedLimited)
+TEST(FusionHealthPolicy, AllowedDegradedStateIsAllowed)
 {
   const auto decision = kPolicy.Evaluate("DEGRADED_NO_VISION");
   EXPECT_TRUE(decision.allowed);
   EXPECT_FALSE(decision.fault);
-  EXPECT_DOUBLE_EQ(decision.speed_scale, 0.4);
 }
 
-TEST(FusionHealthPolicy, AppliesPerModeSpeedLimits)
+TEST(FusionHealthPolicy, AllowedDegradedModesUseTheSameRuntimeContract)
 {
-  visual_navigation::FusionSpeedScales scales;
-  scales.no_vision = 0.5;
-  scales.no_imu = 0.65;
-  scales.no_wheel = 0.6;
-  scales.vision_only = 0.4;
-  scales.wheel_only = 0.25;
-  scales.visual_realigned = 0.45;
   const visual_navigation::FusionHealthPolicy policy(
     {"DEGRADED_NO_VISION", "DEGRADED_NO_IMU", "DEGRADED_NO_WHEEL",
-      "DEGRADED_VISION_ONLY", "DEGRADED_WHEEL_ONLY", "DEGRADED_VISUAL_REALIGNED"},
-    scales);
+      "DEGRADED_VISION_ONLY", "DEGRADED_WHEEL_ONLY",
+      "DEGRADED_VISUAL_REALIGNED"});
 
-  EXPECT_DOUBLE_EQ(policy.Evaluate("DEGRADED_NO_VISION").speed_scale, 0.5);
-  EXPECT_DOUBLE_EQ(policy.Evaluate("DEGRADED_NO_IMU").speed_scale, 0.65);
-  EXPECT_DOUBLE_EQ(policy.Evaluate("DEGRADED_NO_WHEEL").speed_scale, 0.6);
-  EXPECT_DOUBLE_EQ(policy.Evaluate("DEGRADED_VISION_ONLY").speed_scale, 0.4);
-  EXPECT_DOUBLE_EQ(policy.Evaluate("DEGRADED_WHEEL_ONLY").speed_scale, 0.25);
-  EXPECT_DOUBLE_EQ(policy.Evaluate("DEGRADED_VISUAL_REALIGNED").speed_scale, 0.45);
+  for (const auto &state : {
+      "DEGRADED_NO_VISION", "DEGRADED_NO_IMU", "DEGRADED_NO_WHEEL",
+      "DEGRADED_VISION_ONLY", "DEGRADED_WHEEL_ONLY",
+      "DEGRADED_VISUAL_REALIGNED"}) {
+    const auto decision = policy.Evaluate(state);
+    EXPECT_TRUE(decision.allowed);
+    EXPECT_FALSE(decision.fault);
+  }
 }
 
 TEST(FusionHealthPolicy, UnknownAndDisallowedStatesStop)
@@ -60,19 +51,11 @@ TEST(FusionHealthPolicy, UnknownAndDisallowedStatesStop)
 TEST(FusionHealthPolicy, FaultCannotBeAllowedByConfiguration)
 {
   const visual_navigation::FusionHealthPolicy unsafe_configuration(
-    {"FULL", "FAULT", "FAULT_CAMERA"}, 0.5);
+    {"FULL", "FAULT", "FAULT_CAMERA"});
   EXPECT_TRUE(unsafe_configuration.Evaluate("FAULT").fault);
   EXPECT_FALSE(unsafe_configuration.Evaluate("FAULT").allowed);
   EXPECT_TRUE(unsafe_configuration.Evaluate("FAULT_CAMERA").fault);
   EXPECT_FALSE(unsafe_configuration.Evaluate("FAULT_CAMERA").allowed);
-}
-
-TEST(FusionHealthPolicy, SpeedScaleIsClamped)
-{
-  const visual_navigation::FusionHealthPolicy too_high({"DEGRADED_NO_IMU"}, 2.0);
-  const visual_navigation::FusionHealthPolicy negative({"DEGRADED_NO_IMU"}, -1.0);
-  EXPECT_DOUBLE_EQ(too_high.Evaluate("DEGRADED_NO_IMU").speed_scale, 1.0);
-  EXPECT_DOUBLE_EQ(negative.Evaluate("DEGRADED_NO_IMU").speed_scale, 0.0);
 }
 
 TEST(FusionHealthPolicy, StartRequiresAllCurrentInputsToBeValid)
@@ -96,18 +79,6 @@ TEST(FusionHealthPolicy, RuntimeLossLatchesButStartupWaitDoesNot)
     visual_navigation::ShouldLatchFusedLocalizationLoss(true, true, {}));
   EXPECT_FALSE(
     visual_navigation::ShouldLatchFusedLocalizationLoss(true, true, degraded));
-}
-
-TEST(FusionHealthPolicy, BriefRecoverableLossCanBeBridged)
-{
-  EXPECT_TRUE(visual_navigation::CanBridgeTransientLocalizationLoss(
-      true, false, 1.9, 2.0));
-  EXPECT_FALSE(visual_navigation::CanBridgeTransientLocalizationLoss(
-      true, false, 2.1, 2.0));
-  EXPECT_FALSE(visual_navigation::CanBridgeTransientLocalizationLoss(
-      true, true, 0.1, 0.5));
-  EXPECT_FALSE(visual_navigation::CanBridgeTransientLocalizationLoss(
-      false, false, 0.1, 0.5));
 }
 
 }  // namespace
