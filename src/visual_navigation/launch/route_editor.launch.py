@@ -8,7 +8,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 def generate_launch_description():
     return LaunchDescription(
         [
-            DeclareLaunchArgument("odom_topic", default_value="/odometry/fused"),
+            DeclareLaunchArgument("odom_topic", default_value="/odometry/local_map"),
             DeclareLaunchArgument(
                 "route_input_topic",
                 default_value="/waypoint_navigation/route_input",

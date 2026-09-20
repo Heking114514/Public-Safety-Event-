@@ -22,6 +22,8 @@ OdometryIntegrator::OdometryIntegrator(const IntegratorConfig & config)
     !(config_.left_encoder_counts_per_revolution > 0.0) ||
     !(config_.right_encoder_counts_per_revolution > 0.0) ||
     !(config_.wheel_track_m > 0.0) ||
+    !std::isfinite(config_.base_offset_x_m) ||
+    !std::isfinite(config_.base_offset_y_m) ||
     !std::isfinite(config_.left_distance_scale) ||
     config_.left_distance_scale == 0.0 ||
     !std::isfinite(config_.right_distance_scale) ||
@@ -56,6 +58,9 @@ OdometryIntegrator::OdometryIntegrator(const IntegratorConfig & config)
   uncertainty_ = {
     config_.pose_xy_variance, config_.pose_yaw_variance,
     config_.twist_linear_variance, config_.twist_yaw_variance};
+  // Keep the wheel-axis pose behind the startup base_link origin.
+  wheel_center_x_m_ = -config_.base_offset_x_m;
+  wheel_center_y_m_ = -config_.base_offset_y_m;
 }
 
 UpdateResult OdometryIntegrator::update(const EncoderSample & sample)
@@ -129,11 +134,21 @@ UpdateResult OdometryIntegrator::update(const EncoderSample & sample)
   const double delta_yaw_rad = (right_distance_m - left_distance_m) /
     config_.wheel_track_m * config_.yaw_slip_scale;
   const double midpoint_yaw_rad = state_.yaw_rad + 0.5 * delta_yaw_rad;
-  state_.x_m += center_distance_m * std::cos(midpoint_yaw_rad);
-  state_.y_m += center_distance_m * std::sin(midpoint_yaw_rad);
+  wheel_center_x_m_ += center_distance_m * std::cos(midpoint_yaw_rad);
+  wheel_center_y_m_ += center_distance_m * std::sin(midpoint_yaw_rad);
   state_.yaw_rad = normalize_angle(state_.yaw_rad + delta_yaw_rad);
-  state_.linear_velocity_mps = center_distance_m / dt_s;
   state_.angular_velocity_radps = delta_yaw_rad / dt_s;
+  const double cosine = std::cos(state_.yaw_rad);
+  const double sine = std::sin(state_.yaw_rad);
+  state_.x_m = wheel_center_x_m_ +
+    cosine * config_.base_offset_x_m - sine * config_.base_offset_y_m;
+  state_.y_m = wheel_center_y_m_ +
+    sine * config_.base_offset_x_m + cosine * config_.base_offset_y_m;
+  // Convert the axle midpoint twist to the body-frame twist at base_link.
+  state_.linear_velocity_mps =
+    center_distance_m / dt_s - state_.angular_velocity_radps * config_.base_offset_y_m;
+  state_.lateral_velocity_mps =
+    state_.angular_velocity_radps * config_.base_offset_x_m;
 
   // The MCU updates its encoder sequence faster than it reports cumulative
   // counts, so a healthy serial frame can advance by more than one.
@@ -185,6 +200,12 @@ void OdometryIntegrator::reset_pose(double x_m, double y_m, double yaw_rad)
   state_.x_m = x_m;
   state_.y_m = y_m;
   state_.yaw_rad = normalize_angle(yaw_rad);
+  const double cosine = std::cos(state_.yaw_rad);
+  const double sine = std::sin(state_.yaw_rad);
+  wheel_center_x_m_ = state_.x_m -
+    (cosine * config_.base_offset_x_m - sine * config_.base_offset_y_m);
+  wheel_center_y_m_ = state_.y_m -
+    (sine * config_.base_offset_x_m + cosine * config_.base_offset_y_m);
   uncertainty_ = {
     config_.pose_xy_variance, config_.pose_yaw_variance,
     config_.twist_linear_variance, config_.twist_yaw_variance};
@@ -211,6 +232,7 @@ void OdometryIntegrator::set_baseline(const EncoderSample & sample)
   previous_ = sample;
   initialized_ = true;
   state_.linear_velocity_mps = 0.0;
+  state_.lateral_velocity_mps = 0.0;
   state_.angular_velocity_radps = 0.0;
 }
 

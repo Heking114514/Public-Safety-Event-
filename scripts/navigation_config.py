@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import re
 import sys
 
 try:
@@ -20,6 +21,10 @@ STARTUP_KEYS = {
     "camera_serial": str,
     "use_imu": bool,
     "use_slam_imu": bool,
+    "odom_topic": str,
+    "camera_infra_profile": str,
+    "orb_settings_file": str,
+    "rmw_implementation": str,
     "equalize": bool,
     "visualization": bool,
     "build_if_needed": bool,
@@ -28,6 +33,9 @@ STARTUP_KEYS = {
     "build_jobs": int,
     "default_autostart_route": str,
 }
+ODOM_TOPIC_CHOICES = {"/odometry/local_map", "/odometry/fused"}
+RMW_IMPLEMENTATION_CHOICES = {"", "rmw_fastrtps_cpp", "rmw_cyclonedds_cpp"}
+CAMERA_PROFILE_PATTERN = re.compile(r"^[1-9][0-9]*x[1-9][0-9]*x[1-9][0-9]*$")
 
 
 def load_mapping(path: Path, section: str) -> dict:
@@ -59,6 +67,16 @@ def validate_startup(path: Path) -> dict:
             raise ValueError(f"startup key '{key}' must be true or false")
     if values["serial_baud_rate"] <= 0 or values["build_jobs"] <= 0:
         raise ValueError("serial_baud_rate and build_jobs must be positive")
+    if values["odom_topic"] not in ODOM_TOPIC_CHOICES:
+        choices = ", ".join(sorted(ODOM_TOPIC_CHOICES))
+        raise ValueError(f"odom_topic must be one of: {choices}")
+    if not CAMERA_PROFILE_PATTERN.fullmatch(values["camera_infra_profile"]):
+        raise ValueError("camera_infra_profile must look like WIDTHxHEIGHTxFPS")
+    if values["rmw_implementation"] not in RMW_IMPLEMENTATION_CHOICES:
+        choices = ", ".join(
+            choice if choice else "empty" for choice in sorted(RMW_IMPLEMENTATION_CHOICES)
+        )
+        raise ValueError(f"rmw_implementation must be one of: {choices}")
     for key, value in values.items():
         if isinstance(value, str) and any(character in value for character in "\t\r\n\0"):
             raise ValueError(f"startup key '{key}' contains a control character")

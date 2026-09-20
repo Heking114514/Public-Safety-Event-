@@ -57,6 +57,24 @@ Pose2d message_pose(const nav_msgs::msg::Odometry & message)
     quaternion_yaw(message.pose.pose.orientation)};
 }
 
+Pose2d limit_pose_step(
+  const Pose2d & from, const Pose2d & to, double max_translation, double max_yaw)
+{
+  Pose2d limited = to;
+  const double dx = to.x - from.x;
+  const double dy = to.y - from.y;
+  const double distance = std::hypot(dx, dy);
+  if (distance > max_translation) {
+    const double scale = max_translation / distance;
+    limited.x = from.x + dx * scale;
+    limited.y = from.y + dy * scale;
+  }
+  const double yaw_delta = fused_odometry::wrap_angle(to.yaw - from.yaw);
+  const double limited_yaw_delta = std::clamp(yaw_delta, -max_yaw, max_yaw);
+  limited.yaw = fused_odometry::wrap_angle(from.yaw + limited_yaw_delta);
+  return limited;
+}
+
 double steady_seconds()
 {
   return std::chrono::duration<double>(
@@ -108,6 +126,16 @@ public:
     stationary_correction_time_constant_ = positive(
       "stationary_correction_time_constant_s", 0.08);
     loop_correction_time_constant_ = positive("loop_correction_time_constant_s", 1.25);
+    max_correction_step_ = positive("max_correction_step_m", 0.03);
+    max_correction_yaw_step_ = positive("max_correction_yaw_step_rad", 0.03);
+    moving_max_correction_step_ = positive(
+      "moving_max_correction_step_m", max_correction_step_);
+    moving_max_correction_yaw_step_ = positive(
+      "moving_max_correction_yaw_step_rad", max_correction_yaw_step_);
+    visual_recovery_max_correction_step_ = positive(
+      "visual_recovery_max_correction_step_m", moving_max_correction_step_);
+    visual_recovery_max_correction_yaw_step_ = positive(
+      "visual_recovery_max_correction_yaw_step_rad", moving_max_correction_yaw_step_);
     map_change_smoothing_window_ = positive("map_change_smoothing_window_s", 2.0);
     synchronization_tolerance_ = positive("synchronization_tolerance_s", 0.12);
     local_timeout_ = positive("local_timeout_s", 0.50);
@@ -115,7 +143,7 @@ public:
     fusion_status_timeout_ = positive("fusion_status_timeout_s", 0.80);
     stationary_max_linear_speed_ = positive("stationary_max_linear_speed_mps", 0.03);
     stationary_max_angular_speed_ = positive("stationary_max_angular_speed_radps", 0.12);
-    turn_hold_max_linear_speed_ = positive("turn_hold_max_linear_speed_mps", 0.03);
+    turn_hold_max_linear_speed_ = positive("turn_hold_max_linear_speed_mps", 0.05);
     turn_hold_max_translation_ = positive("turn_hold_max_translation_m", 0.04);
     turn_hold_entry_angular_speed_ = positive("turn_hold_entry_angular_speed_radps", 0.55);
     turn_hold_min_angular_speed_ = positive("turn_hold_min_angular_speed_radps", 0.12);
@@ -299,9 +327,6 @@ private:
     visual_received_at_ = visual_arrival;
     last_visual_stamp_ = visual_stamp;
     visual_stamp_received_ = true;
-    if (turn_hold_active_) {
-      return;
-    }
 
     if (!visual_pose_aligner_.initialized()) {
       // ORB-SLAM's first map has an arbitrary planar yaw and origin. Align
@@ -322,6 +347,10 @@ private:
       RCLCPP_WARN(
         get_logger(),
         "Visual tracking recovered; rebasing raw visual pose without jumping map->odom");
+      visual_recovery_blend_until_ = visual_arrival + visual_recovery_blend_duration_;
+    }
+    if (turn_hold_active_) {
+      return;
     }
     const Pose2d aligned_visual = visual_pose_aligner_.apply(latest_raw_visual_);
     desired_map_from_odom_ = fused_odometry::compose_pose(
@@ -460,28 +489,48 @@ private:
     {
       const double elapsed = std::max(0.0, current_time - last_update_at_);
       const bool recovery_blend = current_time <= visual_recovery_blend_until_;
+      const bool stationary = local_motion_is_stationary();
       // Never publish raw visual corrections directly. Even in the legacy
       // direct_visual_tracking mode, interpolate the map correction so
       // keyframe and feature-tracking jitter cannot pass into fused odometry.
       double time_constant = recovery_blend ?
-        visual_recovery_time_constant_ : (local_motion_is_stationary() ?
+        visual_recovery_time_constant_ : (stationary ?
         stationary_correction_time_constant_ : correction_time_constant_);
+      double max_correction_step = stationary ?
+        max_correction_step_ : moving_max_correction_step_;
+      double max_correction_yaw_step = stationary ?
+        max_correction_yaw_step_ : moving_max_correction_yaw_step_;
+      if (recovery_blend) {
+        max_correction_step = std::min(
+          max_correction_step, visual_recovery_max_correction_step_);
+        max_correction_yaw_step = std::min(
+          max_correction_yaw_step, visual_recovery_max_correction_yaw_step_);
+      }
       if (current_time <= map_change_active_until_) {
         time_constant = loop_correction_time_constant_;
       }
       const double fraction = 1.0 - std::exp(-elapsed / time_constant);
-      map_from_odom_ = fused_odometry::interpolate_pose(
+      const Pose2d proposed_map_from_odom = fused_odometry::interpolate_pose(
         map_from_odom_, desired_map_from_odom_, fraction);
+      map_from_odom_ = limit_pose_step(
+        map_from_odom_, proposed_map_from_odom,
+        max_correction_step, max_correction_yaw_step);
     }
     last_update_at_ = current_time;
 
-    Pose2d global_pose = fused_odometry::compose_pose(
-      map_from_odom_, message_pose(latest_local_));
+    const Pose2d local_pose = message_pose(latest_local_);
+    Pose2d global_pose = fused_odometry::compose_pose(map_from_odom_, local_pose);
     if (turn_hold_active_) {
-      global_pose.x = turn_anchor_global_.x;
-      global_pose.y = turn_anchor_global_.y;
+      const double dx = global_pose.x - turn_anchor_global_.x;
+      const double dy = global_pose.y - turn_anchor_global_.y;
+      const double translation = std::hypot(dx, dy);
+      if (translation > turn_hold_max_translation_) {
+        const double scale = turn_hold_max_translation_ / translation;
+        global_pose.x = turn_anchor_global_.x + dx * scale;
+        global_pose.y = turn_anchor_global_.y + dy * scale;
+      }
       map_from_odom_ = fused_odometry::compose_pose(
-        global_pose, fused_odometry::inverse_pose(message_pose(latest_local_)));
+        global_pose, fused_odometry::inverse_pose(local_pose));
     }
     rclcpp::Time publish_stamp = now();
     if (last_output_stamp_.nanoseconds() > 0 && publish_stamp <= last_output_stamp_) {
@@ -542,6 +591,12 @@ private:
   double correction_time_constant_{0.15};
   double stationary_correction_time_constant_{0.08};
   double loop_correction_time_constant_{1.25};
+  double max_correction_step_{0.03};
+  double max_correction_yaw_step_{0.03};
+  double moving_max_correction_step_{0.03};
+  double moving_max_correction_yaw_step_{0.03};
+  double visual_recovery_max_correction_step_{0.03};
+  double visual_recovery_max_correction_yaw_step_{0.03};
   double map_change_smoothing_window_{2.0};
   double synchronization_tolerance_{0.12};
   double local_timeout_{0.50};
@@ -549,7 +604,7 @@ private:
   double fusion_status_timeout_{0.80};
   double stationary_max_linear_speed_{0.03};
   double stationary_max_angular_speed_{0.12};
-  double turn_hold_max_linear_speed_{0.03};
+  double turn_hold_max_linear_speed_{0.05};
   double turn_hold_max_translation_{0.04};
   double turn_hold_entry_angular_speed_{0.55};
   double turn_hold_min_angular_speed_{0.12};

@@ -5,10 +5,12 @@ namespace fused_odometry {
 void FusionGateNode::wheel_callback(
     const nav_msgs::msg::Odometry::SharedPtr message) {
   const double velocity = message->twist.twist.linear.x;
+  const double lateral_velocity = message->twist.twist.linear.y;
   const double wheel_yaw_rate = message->twist.twist.angular.z;
   if (!FramePairMatches(message->header.frame_id, message->child_frame_id,
                         wheel_expected_frame_, wheel_expected_child_frame_) ||
-      !FiniteAndWithin(velocity, max_wheel_speed_)) {
+      !FiniteAndWithin(velocity, max_wheel_speed_) ||
+      !FiniteAndWithin(lateral_velocity, max_wheel_speed_)) {
     ++wheel_.invalid_samples;
     RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 2000,
@@ -35,6 +37,7 @@ void FusionGateNode::wheel_callback(
   const double effective_velocity = wheel_.vx_zeroed ? 0.0 : velocity;
   wheel_vx_window_.add(sample_time, effective_velocity);
   wheel_.velocity = effective_velocity;
+  wheel_.lateral_velocity = lateral_velocity;
 
   double residual = 0.0;
   bool compared = false;
@@ -116,6 +119,7 @@ void FusionGateNode::wheel_callback(
   output.child_frame_id = base_frame_;
   output.pose.pose.orientation.w = 1.0;
   output.twist.twist.linear.x = effective_velocity;
+  output.twist.twist.linear.y = lateral_velocity;
   output.pose.covariance.fill(0.0);
   output.twist.covariance.fill(0.0);
   for (std::size_t index = 0; index < 6; ++index) {
@@ -136,6 +140,7 @@ void FusionGateNode::wheel_callback(
           ? std::max(wheel_vx_variance_, input_vx_variance)
           : wheel_vx_variance_;
   output.twist.covariance[0] = base_vx_variance * residual_scale * turn_scale;
+  output.twist.covariance[7] = wheel_vy_variance_;
   const bool wheel_yaw_backup =
       fuse_wheel_yaw_ && wheel_.yaw.validated &&
       sample_time - wheel_.yaw.last_validated_at <= wheel_yaw_backup_time_ &&

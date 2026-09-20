@@ -9,7 +9,8 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
     throw std::invalid_argument(
         "route_frame and odom_child_frame must not be empty");
   }
-  odomTopic_ = declare_parameter<std::string>("odom_topic", "/odometry/fused");
+  odomTopic_ =
+      declare_parameter<std::string>("odom_topic", "/odometry/local_map");
   imuTopic_ = declare_parameter<std::string>("imu_topic", "/imu/control");
   trackingPointOffsetX_ =
       declare_parameter<double>("tracking_point_offset_x", 0.0);

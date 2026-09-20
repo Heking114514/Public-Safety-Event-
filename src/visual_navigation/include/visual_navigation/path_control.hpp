@@ -70,6 +70,22 @@ inline bool WaypointReached(
     std::max(radial, std::max(0.0, pass_lateral_tolerance));
 }
 
+inline bool WaypointEndpointReached(
+  const PathProjection & projection, double pass_longitudinal_tolerance,
+  double pass_lateral_tolerance)
+{
+  if (!projection.valid ||
+    !std::isfinite(projection.remaining) ||
+    !std::isfinite(projection.cross_track) ||
+    !std::isfinite(pass_longitudinal_tolerance) ||
+    !std::isfinite(pass_lateral_tolerance))
+  {
+    return false;
+  }
+  return projection.remaining <= std::max(0.0, pass_longitudinal_tolerance) &&
+    std::abs(projection.cross_track) <= std::max(0.0, pass_lateral_tolerance);
+}
+
 inline bool WaypointNeedsRecovery(
   const PathProjection & projection, double pass_longitudinal_tolerance,
   double pass_lateral_tolerance)
@@ -83,19 +99,24 @@ inline bool WaypointNeedsRecovery(
     std::abs(projection.cross_track) > std::max(0.0, pass_lateral_tolerance);
 }
 
-// Dense ordinary samples advance once passed longitudinally. Stop-required and
-// final waypoints keep the stricter radial/corridor arrival checks.
+// Dense ordinary samples advance once passed inside the path corridor. Stop
+// required waypoints use WaypointEndpointReached(), so radial tolerance cannot
+// start a turn before the incoming segment endpoint.
 inline bool ContinuousPathWaypointPassed(
   bool final_waypoint, bool requires_stop,
-  const PathProjection & projection, double pass_longitudinal_tolerance)
+  const PathProjection & projection, double pass_longitudinal_tolerance,
+  double pass_lateral_tolerance)
 {
   if (final_waypoint || requires_stop || !projection.valid ||
     !std::isfinite(projection.remaining) ||
-    !std::isfinite(pass_longitudinal_tolerance))
+    !std::isfinite(projection.cross_track) ||
+    !std::isfinite(pass_longitudinal_tolerance) ||
+    !std::isfinite(pass_lateral_tolerance))
   {
     return false;
   }
-  return projection.remaining <= std::max(0.0, pass_longitudinal_tolerance);
+  return projection.remaining <= std::max(0.0, pass_longitudinal_tolerance) &&
+    std::abs(projection.cross_track) <= std::max(0.0, pass_lateral_tolerance);
 }
 
 inline double EndpointApproachDistance(

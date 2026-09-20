@@ -41,15 +41,23 @@ WaypointNavigator::ControlFrame WaypointNavigator::BuildControlFrame(
       !controlState_.recovering_goal() &&
       visual_navigation::ContinuousPathWaypointPassed(
           frame.final_waypoint, frame.waypoint_requires_stop,
-          frame.path_projection, waypointPassLongitudinalTolerance_);
-  frame.waypoint_reached =
-      continuousWaypointPassed ||
-      (controlState_.recovering_goal()
-           ? frame.distance <= frame.target.tolerance
-           : visual_navigation::WaypointReached(
-                 frame.distance, frame.target.tolerance, frame.path_projection,
-                 waypointPassLongitudinalTolerance_,
-                 waypointPassLateralTolerance_));
+          frame.path_projection, waypointPassLongitudinalTolerance_,
+          std::max(frame.target.tolerance, waypointPassLateralTolerance_));
+  const double stopLongitudinalTolerance =
+      std::max(waypointPassLongitudinalTolerance_, brakingSafetyMargin_);
+  if (controlState_.recovering_goal()) {
+    frame.waypoint_reached = frame.distance <= frame.target.tolerance;
+  } else if (frame.final_waypoint) {
+    frame.waypoint_reached = visual_navigation::WaypointReached(
+        frame.distance, frame.target.tolerance, frame.path_projection,
+        waypointPassLongitudinalTolerance_, waypointPassLateralTolerance_);
+  } else if (frame.waypoint_requires_stop) {
+    frame.waypoint_reached = visual_navigation::WaypointEndpointReached(
+        frame.path_projection, stopLongitudinalTolerance,
+        std::max(frame.target.tolerance, waypointPassLateralTolerance_));
+  } else {
+    frame.waypoint_reached = continuousWaypointPassed;
+  }
   return frame;
 }
 
@@ -201,7 +209,8 @@ void WaypointNavigator::RunControl() {
       controlState_.in(visual_navigation::ControlPhase::RECOVER_GOAL);
   if (frame.waypoint_requires_stop && !recovering &&
       visual_navigation::WaypointNeedsRecovery(
-          frame.path_projection, waypointPassLongitudinalTolerance_,
+          frame.path_projection,
+          std::max(waypointPassLongitudinalTolerance_, brakingSafetyMargin_),
           waypointPassLateralTolerance_)) {
     ResetManeuver();
     if (controlState_.recovering_goal())

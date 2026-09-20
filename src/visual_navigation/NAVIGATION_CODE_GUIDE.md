@@ -12,7 +12,7 @@
 当前实现是一个轻量级固定航点导航系统：
 
 ```text
-融合里程计 /odometry/fused + /odometry/fusion_status
+导航里程计 /odometry/local_map + /odometry/fusion_status
 ORB-SLAM3 /tracking_state
                  │
                  ▼
@@ -138,7 +138,7 @@ waypoint_navigator
 
 ### 4.1 订阅话题
 
-#### `/odometry/fused`
+#### `/odometry/local_map`
 
 消息类型：
 
@@ -412,7 +412,7 @@ map
 导航节点会比较：
 
 ```text
-/odometry/fused.header.frame_id
+/odometry/local_map.header.frame_id
 route_frame
 ```
 
@@ -424,7 +424,7 @@ route_frame
 因此必须保证：
 
 ```text
-航点坐标系 == /odometry/fused 位姿坐标系
+航点坐标系 == /odometry/local_map 位姿坐标系
 ```
 
 仅修改 CSV、RViz 或消息中的 `frame_id` 字符串不会真正完成坐标转换。
@@ -505,8 +505,8 @@ linear.x > 0
 
 导航启动和运行监督依次检查：
 
-1. 是否收到过 `/odometry/fused`。
-2. 最近一次 `/odometry/fused` 到达时间是否超过 `odom_timeout`。
+1. 是否收到过 `/odometry/local_map`。
+2. 最近一次 `/odometry/local_map` 到达时间是否超过 `odom_timeout`。
 3. 里程计坐标系、平面位姿和四元数是否有效。
 4. 是否要求融合健康状态，以及状态是否新鲜、允许且非故障。
 5. 是否显式要求检查 `/tracking_state`；若要求，是否收到状态 `2` 或 `5`。
@@ -528,7 +528,7 @@ require_tracking_state: false
 abort_on_tracking_loss: false
 ```
 
-默认导航以 `/odometry/fused` 和 `/odometry/fusion_status` 作为定位接口；`/tracking_state` 仅在显式启用 `require_tracking_state` 时参与放行判断。若需要在 ORB 跟踪丢失后立即锁存任务，再将 `abort_on_tracking_loss` 设为 `true`。
+默认导航以 `/odometry/local_map` 和 `/odometry/fusion_status` 作为定位接口；`/tracking_state` 仅在显式启用 `require_tracking_state` 时参与放行判断。若需要在 ORB 跟踪丢失后立即锁存任务，再将 `abort_on_tracking_loss` 设为 `true`。
 
 ### 初始阶段没有定位
 
@@ -889,7 +889,7 @@ config/waypoint_navigation.yaml
 | --- | --- | --- |
 | `route_file` | 空 | CSV 航点文件路径，Launch 会覆盖 |
 | `route_frame` | `map` | 航点坐标系 |
-| `odom_topic` | `/odometry/fused` | 最终导航里程计输入 |
+| `odom_topic` | `/odometry/local_map` | 最终导航里程计输入；统一启动配置可切到 `/odometry/fused` |
 | `odom_child_frame` | `base_link` | 最终导航里程计必须声明的车体坐标系 |
 | `fusion_status_topic` | `/odometry/fusion_status` | 融合健康状态输入 |
 | `actuator_health_topic` | `/cup_car_serial/actuator_healthy` | 执行器健康输入 |
@@ -987,7 +987,7 @@ max_angular_speed
 
 可以：
 
-- 检查 `/odometry/fused.twist.twist.linear.x` 是否能在停车后回到零附近
+- 检查 `/odometry/local_map.twist.twist.linear.x` 是否能在停车后回到零附近
 - 减小 `effective_braking_deceleration`，使系统更早制动
 - 增大 `braking_control_delay` 或 `braking_safety_margin`
 - 适当增大 `pre_turn_minimum_stop_time`
@@ -1012,10 +1012,10 @@ max_angular_speed
 
 ### 15.5 经常触发里程计超时
 
-先检查 `/odometry/fused` 实际频率：
+先检查 `/odometry/local_map` 实际频率：
 
 ```bash
-ros2 topic hz /odometry/fused
+ros2 topic hz /odometry/local_map
 ```
 
 如果计算负载较高、偶尔超过 `0.40 s`，可以谨慎增大：
@@ -1055,7 +1055,7 @@ ros2 launch visual_navigation waypoint_navigation.launch.py \
 适用场景：
 
 - ORB-SLAM3 已经单独启动
-- 使用 rosbag 或模拟节点发布 `/odometry/fused`
+- 使用 rosbag 或模拟节点发布 `/odometry/local_map`
 - 单独调试控制器
 
 ### 16.2 启动导航节点（传感器和融合由外部启动）
@@ -1169,8 +1169,8 @@ w = angular.z
 
 ```bash
 ros2 topic echo /tracking_state
-ros2 topic echo /odometry/fused
-ros2 topic hz /odometry/fused
+ros2 topic echo /odometry/local_map
+ros2 topic hz /odometry/local_map
 ```
 
 ### 19.2 确认路线加载

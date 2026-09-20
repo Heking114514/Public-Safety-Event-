@@ -12,6 +12,11 @@ struct IntegratorConfig
   double left_encoder_counts_per_revolution{294912.0};
   double right_encoder_counts_per_revolution{294912.0};
   double wheel_track_m{0.1466};
+  // Position of base_link relative to the midpoint of the wheel axle,
+  // expressed in the vehicle body axes. Positive x is forward and positive y
+  // is left.
+  double base_offset_x_m{0.050};
+  double base_offset_y_m{0.0};
   double left_distance_scale{-1.000};
   double right_distance_scale{-1.000};
   double yaw_slip_scale{1.0};
@@ -55,6 +60,7 @@ struct OdometryState
   double y_m{0.0};
   double yaw_rad{0.0};
   double linear_velocity_mps{0.0};
+  double lateral_velocity_mps{0.0};
   double angular_velocity_radps{0.0};
 };
 
@@ -108,6 +114,8 @@ public:
   const OdometryState & state() const {return state_;}
   const OdometryUncertainty & uncertainty() const {return uncertainty_;}
   const IntegratorStatistics & statistics() const {return statistics_;}
+  double base_offset_x_m() const {return config_.base_offset_x_m;}
+  double base_offset_y_m() const {return config_.base_offset_y_m;}
   void reset_pose(double x_m = 0.0, double y_m = 0.0, double yaw_rad = 0.0);
 
   static const char * status_string(UpdateStatus status);
@@ -123,6 +131,8 @@ private:
   OdometryUncertainty uncertainty_;
   IntegratorStatistics statistics_;
   EncoderSample previous_;
+  double wheel_center_x_m_{0.0};
+  double wheel_center_y_m_{0.0};
   bool initialized_{false};
 };
 

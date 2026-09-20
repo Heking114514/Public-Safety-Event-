@@ -24,8 +24,11 @@ Outputs:
 
 - `/odometry/local` (`nav_msgs/Odometry`): continuous local EKF estimate in
   `odom`, driven by gated visual forward velocity and IMU yaw rate.
+- `/odometry/local_map` (`nav_msgs/Odometry`): start-aligned copy of
+  `/odometry/local` expressed as `map -> base_link`; this is the temporary
+  default navigation input while visual global correction is being recalibrated.
 - `/odometry/fused` (`nav_msgs/Odometry`): smoothed map-frame pose used by the
-  existing navigator and route editor.
+  visual-correction path; it remains published for recording and comparison.
 - `/odometry/fusion_status` (`std_msgs/String`, transient local):
   `WAITING_FOR_INITIALIZATION`, `FULL`,
   `DEGRADED_NO_VISION`, `DEGRADED_NO_IMU`, `DEGRADED_NO_WHEEL`,
@@ -141,8 +144,10 @@ relocalization jumps and are not odometry-fusion pose inputs.
 ## Frames
 
 The current planar measurement places `camera_link` 0.055 m forward of the
-geometric vehicle center: `base_link -> camera_link = (0.055, 0, 0)`. ORB, wheel
-odometry and processed BMI088 ATT publish the vehicle center as `base_link`.
+geometric vehicle center: `base_link -> camera_link = (0.055, 0, 0)`. The wheel
+axle midpoint is measured 0.050 m behind that center, so wheel odometry converts
+the axle pose to `base_link` with `base_offset_x_m: 0.050`. ORB, wheel odometry
+and processed BMI088 ATT publish the vehicle center as `base_link`.
 
 The local EKF broadcasts `odom -> base_link`; the correction node broadcasts
 `map -> odom`. ORB and wheel TF publication remain disabled to avoid duplicate
@@ -180,9 +185,11 @@ without any navigator or motor output:
 ros2 launch fused_odometry odometry_bringup.launch.py
 ```
 
-Bringup arguments are `serial_no`, `initial_reset`, `visualization`, `use_imu`,
-`use_slam_imu`, `equalize`, `use_wheel`, and `use_sim_time`. Their defaults match
-the current D455 setup. `use_imu:=false` also disables the D455 IMU streams;
+Bringup arguments are `serial_no`, `orb_settings_file`, `infra_profile`,
+`initial_reset`, `visualization`, `use_imu`, `use_slam_imu`, `equalize`,
+`use_wheel`, and `use_sim_time`. Their defaults match the current D455 setup.
+`infra_profile:=848x480x15` plus the RK3588 ORB settings YAML is the low-load
+trial profile. `use_imu:=false` also disables the D455 IMU streams;
 `use_wheel:=false` leaves wheel odometry out and produces a degraded status.
 Start `cup_car_serial cmd_vel_serial.launch.py` separately, or use the
 serial-navigation bringup, when the gate should receive BMI088 ATT.

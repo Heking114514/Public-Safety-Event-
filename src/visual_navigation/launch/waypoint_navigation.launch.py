@@ -80,7 +80,7 @@ def generate_launch_description():
                 description="Optional CSV route; empty waits for route_input_topic",
             ),
             DeclareLaunchArgument("route_frame", default_value="map"),
-            DeclareLaunchArgument("odom_topic", default_value="/odometry/fused"),
+            DeclareLaunchArgument("odom_topic", default_value="/odometry/local_map"),
             DeclareLaunchArgument(
                 "fusion_status_topic", default_value="/odometry/fusion_status"
             ),

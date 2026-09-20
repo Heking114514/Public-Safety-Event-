@@ -125,6 +125,38 @@ TEST(PathControl, PassCorridorCatchesTheRecordedEndpointNearMiss)
       projection, 0.01, 0.06));
 }
 
+TEST(PathControl, StopRequiredEndpointRejectsRadialEarlyArrival)
+{
+  const visual_navigation::PathProjection recorded_early_turn{
+    0.0367, -0.0100, true};
+  EXPECT_FALSE(visual_navigation::WaypointEndpointReached(
+      recorded_early_turn, 0.015, 0.045));
+}
+
+TEST(PathControl, StopRequiredEndpointAcceptsBrakeMarginInsideCorridor)
+{
+  const visual_navigation::PathProjection braked_at_endpoint{
+    0.0140, -0.0100, true};
+  EXPECT_TRUE(visual_navigation::WaypointEndpointReached(
+      braked_at_endpoint, 0.015, 0.045));
+}
+
+TEST(PathControl, StopRequiredEndpointRejectsLargeLateralMiss)
+{
+  const visual_navigation::PathProjection passed_outside_corridor{
+    -0.0050, 0.0600, true};
+  EXPECT_FALSE(visual_navigation::WaypointEndpointReached(
+      passed_outside_corridor, 0.015, 0.045));
+}
+
+TEST(PathControl, StopRequiredBrakeMarginLateralMissEntersRecovery)
+{
+  const visual_navigation::PathProjection braked_outside_corridor{
+    0.0140, 0.0600, true};
+  EXPECT_TRUE(visual_navigation::WaypointNeedsRecovery(
+      braked_outside_corridor, 0.015, 0.045));
+}
+
 TEST(PathControl, LargeLateralMissEntersRecoveryInsteadOfEscaping)
 {
   const auto projection = visual_navigation::ProjectOntoPathSegment(
@@ -135,38 +167,59 @@ TEST(PathControl, LargeLateralMissEntersRecoveryInsteadOfEscaping)
       projection, 0.01, 0.06));
 }
 
-TEST(PathControl, RecordedDenseCornerMissAdvancesPastOrdinarySample)
+TEST(PathControl, RecordedDenseCornerMissWaitsForCorridor)
 {
   const visual_navigation::PathProjection recorded_miss{-0.053, -0.141, true};
+  EXPECT_FALSE(visual_navigation::ContinuousPathWaypointPassed(
+      false, false, recorded_miss, 0.01, 0.06));
+}
+
+TEST(PathControl, ContinuousSampleAdvancesAfterPassedInsideCorridor)
+{
+  const visual_navigation::PathProjection centered{-0.012, 0.035, true};
   EXPECT_TRUE(visual_navigation::ContinuousPathWaypointPassed(
-      false, false, recorded_miss, 0.01));
+      false, false, centered, 0.01, 0.06));
 }
 
 TEST(PathControl, ContinuousSampleDoesNotAdvanceBeforeItIsPassed)
 {
   const visual_navigation::PathProjection still_ahead{0.020, 0.120, true};
   EXPECT_FALSE(visual_navigation::ContinuousPathWaypointPassed(
-      false, false, still_ahead, 0.01));
+      false, false, still_ahead, 0.01, 0.06));
+}
+
+TEST(PathControl, ContinuousSampleDoesNotAdvanceInsideRadialCircleBeforeEndpoint)
+{
+  const visual_navigation::PathProjection still_ahead_inside_radial{
+    0.039, 0.002, true};
+  EXPECT_FALSE(visual_navigation::ContinuousPathWaypointPassed(
+      false, false, still_ahead_inside_radial, 0.01, 0.045));
 }
 
 TEST(PathControl, StopAndFinalWaypointsKeepStrictArrivalSemantics)
 {
   const visual_navigation::PathProjection passed_with_large_miss{-0.050, 0.120, true};
   EXPECT_FALSE(visual_navigation::ContinuousPathWaypointPassed(
-      false, true, passed_with_large_miss, 0.01));
+      false, true, passed_with_large_miss, 0.01, 0.06));
   EXPECT_FALSE(visual_navigation::ContinuousPathWaypointPassed(
-      true, false, passed_with_large_miss, 0.01));
+      true, false, passed_with_large_miss, 0.01, 0.06));
 }
 
 TEST(PathControl, InvalidProjectionCannotAdvanceContinuousSample)
 {
   EXPECT_FALSE(visual_navigation::ContinuousPathWaypointPassed(
-      false, false, visual_navigation::PathProjection{-0.050, 0.120, false}, 0.01));
+      false, false,
+      visual_navigation::PathProjection{-0.050, 0.120, false}, 0.01, 0.06));
   EXPECT_FALSE(visual_navigation::ContinuousPathWaypointPassed(
       false, false,
       visual_navigation::PathProjection{
         std::numeric_limits<double>::quiet_NaN(), 0.120, true},
-      0.01));
+      0.01, 0.06));
+  EXPECT_FALSE(visual_navigation::ContinuousPathWaypointPassed(
+      false, false,
+      visual_navigation::PathProjection{
+        -0.050, std::numeric_limits<double>::quiet_NaN(), true},
+      0.01, 0.06));
 }
 
 TEST(PathControl, SignedApproachDistanceCannotGrowAfterEndpoint)

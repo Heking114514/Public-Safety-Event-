@@ -19,6 +19,7 @@ void FusionGateNode::mark_visual_interrupted() {
   visual_.accepted = false;
   visual_.velocity_valid = false;
   visual_.forward_velocity = 0.0;
+  visual_.lateral_velocity = 0.0;
   visual_.yaw_rate = 0.0;
   imu_.visual_residual = 0.0;
   imu_.robust_visual_residual = 0.0;
@@ -26,7 +27,9 @@ void FusionGateNode::mark_visual_interrupted() {
   visual_vx_window_.clear();
   visual_wz_window_.clear();
   raw_visual_vx_window_.clear();
+  raw_visual_vy_window_.clear();
   raw_visual_wz_window_.clear();
+  visual_vy_window_.clear();
   wheel_visual_residual_window_.clear();
   imu_visual_residual_window_.clear();
   raw_visual_.velocity_valid = false;
@@ -76,26 +79,35 @@ void FusionGateNode::raw_visual_callback(
           (std::cos(raw_visual_.last_increment_pose.yaw) * dx +
            std::sin(raw_visual_.last_increment_pose.yaw) * dy) /
           dt;
+      const double lateral_velocity =
+          (-std::sin(raw_visual_.last_increment_pose.yaw) * dx +
+           std::cos(raw_visual_.last_increment_pose.yaw) * dy) /
+          dt;
       const double yaw_rate = wrap_angle(current_raw_pose.yaw -
                                          raw_visual_.last_increment_pose.yaw) /
                               dt;
       raw_visual_.velocity_valid =
           finite(forward_velocity) && finite(yaw_rate) &&
-          std::abs(forward_velocity) <= max_wheel_speed_ &&
+          finite(lateral_velocity) &&
+          std::hypot(forward_velocity, lateral_velocity) <= max_wheel_speed_ &&
           std::abs(yaw_rate) <= max_imu_yaw_rate_;
       if (raw_visual_.velocity_valid) {
         const double sample_time = steady_seconds();
         raw_visual_vx_window_.add(sample_time, forward_velocity);
+        raw_visual_vy_window_.add(sample_time, lateral_velocity);
         raw_visual_wz_window_.add(sample_time, yaw_rate);
         raw_visual_.forward_velocity = forward_velocity;
+        raw_visual_.lateral_velocity = lateral_velocity;
         raw_visual_.yaw_rate = yaw_rate;
       } else {
         raw_visual_vx_window_.clear();
+        raw_visual_vy_window_.clear();
         raw_visual_wz_window_.clear();
       }
     } else {
       raw_visual_.velocity_valid = false;
       raw_visual_vx_window_.clear();
+      raw_visual_vy_window_.clear();
       raw_visual_wz_window_.clear();
     }
   }
@@ -197,14 +209,17 @@ void FusionGateNode::publish_raw_visual(const nav_msgs::msg::Odometry &message,
     output.twist.covariance[index * 6 + index] = 1.0e6;
   }
   visual_.forward_velocity = raw_visual_vx_window_.median();
+  visual_.lateral_velocity = raw_visual_vy_window_.median();
   visual_.yaw_rate = raw_visual_wz_window_.median();
   visual_.velocity_valid = true;
   visual_vx_window_.add(steady_seconds(), visual_.forward_velocity);
+  visual_vy_window_.add(steady_seconds(), visual_.lateral_velocity);
   visual_wz_window_.add(steady_seconds(), visual_.yaw_rate);
   output.twist.twist.linear.x = visual_.forward_velocity;
-  output.twist.twist.linear.y = 0.0;
+  output.twist.twist.linear.y = visual_.lateral_velocity;
   output.twist.twist.linear.z = 0.0;
   output.twist.covariance[0] = visual_vx_variance_ * position_scale;
+  output.twist.covariance[7] = visual_vy_variance_ * position_scale;
   visual_publisher_->publish(output);
 
   visual_.accepted = true;

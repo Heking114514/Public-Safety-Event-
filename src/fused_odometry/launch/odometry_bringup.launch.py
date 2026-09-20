@@ -13,7 +13,15 @@ def launch_file(package, name):
 
 
 def generate_launch_description():
+    orb_settings_default = os.path.join(
+        get_package_share_directory("orbslam3"),
+        "config",
+        "stereo-inertial",
+        "RealSense_D455.yaml",
+    )
     serial_no = LaunchConfiguration("serial_no")
+    orb_settings_file = LaunchConfiguration("orb_settings_file")
+    infra_profile = LaunchConfiguration("infra_profile")
     initial_reset = LaunchConfiguration("initial_reset")
     visualization = LaunchConfiguration("visualization")
     use_imu = LaunchConfiguration("use_imu")
@@ -48,6 +56,8 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument("serial_no", default_value="_038122250473"),
+        DeclareLaunchArgument("orb_settings_file", default_value=orb_settings_default),
+        DeclareLaunchArgument("infra_profile", default_value="848x480x30"),
         DeclareLaunchArgument("initial_reset", default_value="false"),
         DeclareLaunchArgument("visualization", default_value="false"),
         DeclareLaunchArgument("use_imu", default_value="true"),
@@ -67,6 +77,8 @@ def generate_launch_description():
             ),
             launch_arguments={
                 "serial_no": serial_no,
+                "settings_file": orb_settings_file,
+                "infra_profile": infra_profile,
                 "body_frame_id": "base_link",
                 "map_frame_id": "map",
                 "publish_tf": "false",

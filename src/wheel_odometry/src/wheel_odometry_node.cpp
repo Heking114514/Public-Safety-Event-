@@ -57,6 +57,9 @@ public:
       get_logger(), "Wheel odometry: %s -> %s (%s -> %s, TF %s)",
       input_topic_.c_str(), odom_topic_.c_str(), odom_frame_.c_str(), base_frame_.c_str(),
       publish_tf_ ? "enabled" : "disabled");
+    RCLCPP_INFO(
+      get_logger(), "Wheel axle midpoint -> base_link offset: (%.3f, %.3f) m",
+      integrator_.base_offset_x_m(), integrator_.base_offset_y_m());
   }
 
 private:
@@ -69,6 +72,8 @@ private:
     config.right_encoder_counts_per_revolution = positive_parameter(
       "right_encoder_counts_per_revolution", config.right_encoder_counts_per_revolution);
     config.wheel_track_m = positive_parameter("wheel_track_m", config.wheel_track_m);
+    config.base_offset_x_m = finite_parameter("base_offset_x_m", config.base_offset_x_m);
+    config.base_offset_y_m = finite_parameter("base_offset_y_m", config.base_offset_y_m);
     config.left_distance_scale = nonzero_parameter(
       "left_distance_scale", config.left_distance_scale);
     config.right_distance_scale = nonzero_parameter(
@@ -138,6 +143,15 @@ private:
     const double value = declare_parameter<double>(name, default_value);
     if (!std::isfinite(value) || value < 0.0) {
       throw std::invalid_argument(name + " must be finite and non-negative");
+    }
+    return value;
+  }
+
+  double finite_parameter(const std::string & name, double default_value)
+  {
+    const double value = declare_parameter<double>(name, default_value);
+    if (!std::isfinite(value)) {
+      throw std::invalid_argument(name + " must be finite");
     }
     return value;
   }
@@ -329,6 +343,7 @@ private:
     odometry.pose.pose.orientation.z = orientation.z();
     odometry.pose.pose.orientation.w = orientation.w();
     odometry.twist.twist.linear.x = state.linear_velocity_mps;
+    odometry.twist.twist.linear.y = state.lateral_velocity_mps;
     odometry.twist.twist.angular.z = state.angular_velocity_radps;
     odometry.pose.covariance[0] = uncertainty.pose_xy_variance;
     odometry.pose.covariance[7] = uncertainty.pose_xy_variance;

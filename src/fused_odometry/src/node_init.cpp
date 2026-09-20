@@ -57,8 +57,10 @@ FusionGateNode::FusionGateNode()
                   positive_count("residual_bad_samples", 3),
                   positive_count("residual_recovery_samples", 10)),
       visual_vx_window_(positive("consistency_window_s", 0.75)),
+      visual_vy_window_(get_parameter("consistency_window_s").as_double()),
       visual_wz_window_(get_parameter("consistency_window_s").as_double()),
       raw_visual_vx_window_(get_parameter("consistency_window_s").as_double()),
+      raw_visual_vy_window_(get_parameter("consistency_window_s").as_double()),
       raw_visual_wz_window_(get_parameter("consistency_window_s").as_double()),
       wheel_vx_window_(get_parameter("consistency_window_s").as_double()),
       wheel_visual_residual_window_(
@@ -156,6 +158,7 @@ FusionGateNode::FusionGateNode()
   wheel_yaw_backup_time_ = positive("wheel_yaw_backup_s", 2.0);
   fuse_wheel_yaw_ = declare_parameter<bool>("fuse_wheel_yaw", false);
   wheel_vx_variance_ = positive("wheel_vx_variance", 0.08);
+  wheel_vy_variance_ = positive("wheel_vy_variance", 0.20);
   wheel_turn_downweight_start_ =
       positive("wheel_turn_downweight_start_radps", 0.15);
   wheel_turn_full_downweight_ =
@@ -174,6 +177,7 @@ FusionGateNode::FusionGateNode()
   visual_xy_variance_ = positive("visual_xy_variance", 0.02);
   visual_yaw_variance_ = positive("visual_yaw_variance", 0.04);
   visual_vx_variance_ = positive("visual_vx_variance", 0.01);
+  visual_vy_variance_ = positive("visual_vy_variance", 0.02);
   recovery_samples_ = positive_count("visual_recovery_samples", 5);
   robust_min_samples_ = positive_count("robust_min_samples", 5);
 

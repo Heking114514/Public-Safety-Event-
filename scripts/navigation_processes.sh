@@ -65,14 +65,19 @@ is_user_gui_pid() {
     argv_has_sequence PROCESS_ARGV run visual_navigation route_editor.py
 }
 
-is_arena_planner_pid() {
+is_arena_planner_node_pid() {
   local pid="$1"
   read_process_argv "${pid}" || return 1
   local backend="${WORKSPACE_ROOT}/install/arena_path_planner/lib/arena_path_planner/arena_planner_node"
 
-  if [[ -e "${backend}" ]] && argv_contains_path PROCESS_ARGV "${backend}"; then
-    return 0
-  fi
+  [[ -e "${backend}" ]] || return 1
+  argv_contains_path PROCESS_ARGV "${backend}"
+}
+
+is_arena_planner_pid() {
+  local pid="$1"
+  is_arena_planner_node_pid "${pid}" && return 0
+  read_process_argv "${pid}" || return 1
   argv_has_sequence PROCESS_ARGV launch arena_path_planner arena_path_planner.launch.py
 }
 
@@ -86,12 +91,34 @@ process_start_time() {
   awk '{print $22}' "/proc/${pid}/stat"
 }
 
+process_is_running() {
+  local pid="$1"
+  local state
+
+  [[ "${pid}" =~ ^[0-9]+$ && -r "/proc/${pid}/stat" ]] || return 1
+  state="$(awk '{print $3}' "/proc/${pid}/stat" 2>/dev/null)" || return 1
+  [[ -n "${state}" && "${state}" != "Z" ]]
+}
+
 find_ros_processes() {
   local pattern
   pattern="/opt/ros/${ROS_DISTRO_NAME}/bin/ros2([[:space:]]|$)"
   pattern+="|/opt/ros/${ROS_DISTRO_NAME}/lib/[^[:space:]]+/[^[:space:]]+"
   pattern+="|${WORKSPACE_ROOT}/install/[^[:space:]]+/lib/[^[:space:]]+/[^[:space:]]+"
   "${PGREP_COMMAND}" -f "${pattern}" 2>/dev/null || true
+}
+
+find_arena_planner_node_processes() {
+  local -a discovered=()
+  local pid
+
+  mapfile -t discovered < <(find_ros_processes)
+  for pid in "${discovered[@]}"; do
+    [[ "${pid}" =~ ^[0-9]+$ ]] || continue
+    process_is_running "${pid}" || continue
+    is_arena_planner_node_pid "${pid}" || continue
+    printf '%s\n' "${pid}"
+  done
 }
 
 stop_arena_planner_processes() {

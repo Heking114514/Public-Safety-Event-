@@ -26,7 +26,8 @@ bool FusionGateNode::imu_healthy() const {
 bool FusionGateNode::raw_visual_increment_healthy() const {
   return raw_visual_.velocity_valid && tracking_fresh_and_good() &&
          raw_visual_.input.fresh(raw_visual_timeout_) &&
-         raw_visual_vx_window_.ready(robust_min_samples_);
+         raw_visual_vx_window_.ready(robust_min_samples_) &&
+         raw_visual_vy_window_.ready(robust_min_samples_);
 }
 
 void FusionGateNode::tracking_callback(

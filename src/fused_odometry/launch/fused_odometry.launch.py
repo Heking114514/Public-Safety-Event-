@@ -38,4 +38,11 @@ def generate_launch_description():
             output="screen",
             parameters=[config, {"use_sim_time": use_sim_time}],
         ),
+        Node(
+            package="fused_odometry",
+            executable="local_map_odometry_node",
+            name="local_map_odometry",
+            output="screen",
+            parameters=[config, {"use_sim_time": use_sim_time}],
+        ),
     ])

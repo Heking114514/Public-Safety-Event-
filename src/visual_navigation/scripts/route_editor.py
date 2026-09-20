@@ -54,7 +54,7 @@ def path_fingerprint(path):
 class RouteEditorNode(Node):
     def __init__(self, odom_callback):
         super().__init__("waypoint_route_editor")
-        self.declare_parameter("odom_topic", "/odometry/fused")
+        self.declare_parameter("odom_topic", "/odometry/local_map")
         self.declare_parameter(
             "route_input_topic", "/waypoint_navigation/route_input"
         )

@@ -33,6 +33,10 @@ USE_SERIAL="true"
 CAMERA_SERIAL=""
 USE_IMU="true"
 USE_SLAM_IMU="false"
+ODOM_TOPIC="/odometry/local_map"
+CAMERA_INFRA_PROFILE="848x480x30"
+ORB_SETTINGS_FILE=""
+RMW_IMPLEMENTATION_CONFIG=""
 EQUALIZE="true"
 VISUALIZATION="false"
 AUTOSTART="false"
@@ -62,6 +66,11 @@ fail() {
 source "${CONFIG_SHELL_HELPER}"
 load_navigation_config
 
+# Force the current test machine onto the low-load RK3588 trial profile by
+# default. Command-line overrides below can still be used for A/B checks.
+CAMERA_INFRA_PROFILE="848x480x15"
+ORB_SETTINGS_FILE="${WORKSPACE_ROOT}/src/orb_slam3/orbslam3_ros2/config/stereo-inertial/RealSense_D455_rk3588.yaml"
+
 usage() {
   cat <<'EOF'
 Usage: scripts/start_visual_navigation.sh [options]
@@ -73,6 +82,10 @@ Options:
   --no-serial               Run upper-computer algorithms without the controller
   --no-imu                  Disable the D455 IMU and IMU filter
   --slam-imu                Fuse raw D455 IMU measurements inside ORB-SLAM3
+  --rk3588-profile          Use 848x480x15 and the lighter ORB-SLAM3 RK3588 YAML
+  --camera-infra-profile P  D455 infrared profile, e.g. 848x480x15
+  --orb-settings-file FILE  ORB-SLAM3 camera/extractor YAML override
+  --rmw-implementation RMW  ROS 2 RMW override: rmw_fastrtps_cpp or rmw_cyclonedds_cpp
   --no-equalize             Disable CLAHE image enhancement before ORB-SLAM3
   --visualization           Enable the Pangolin window
   -a, --autostart           Load the configured CSV and start automatically
@@ -117,6 +130,28 @@ while (($# > 0)); do
     --slam-imu)
       USE_SLAM_IMU="true"
       shift
+      ;;
+    --rk3588-profile)
+      CAMERA_INFRA_PROFILE="848x480x15"
+      ORB_SETTINGS_FILE="${WORKSPACE_ROOT}/src/orb_slam3/orbslam3_ros2/config/stereo-inertial/RealSense_D455_rk3588.yaml"
+      shift
+      ;;
+    --camera-infra-profile)
+      (($# >= 2)) || fail "--camera-infra-profile requires a profile"
+      CAMERA_INFRA_PROFILE="$2"
+      shift 2
+      ;;
+    --orb-settings-file)
+      (($# >= 2)) || fail "--orb-settings-file requires a file"
+      ORB_SETTINGS_FILE="$2"
+      [[ "${ORB_SETTINGS_FILE}" = /* ]] ||
+        ORB_SETTINGS_FILE="${WORKSPACE_ROOT}/${ORB_SETTINGS_FILE}"
+      shift 2
+      ;;
+    --rmw-implementation)
+      (($# >= 2)) || fail "--rmw-implementation requires a package name"
+      RMW_IMPLEMENTATION_CONFIG="$2"
+      shift 2
       ;;
     --no-equalize)
       EQUALIZE="false"
@@ -174,6 +209,12 @@ done
   fail "build lock helper is missing: ${BUILD_LOCK_HELPER}"
 [[ "${BUILD_JOBS}" =~ ^[1-9][0-9]*$ ]] || fail "--jobs must be a positive integer"
 [[ "${SERIAL_BAUD_RATE}" =~ ^[0-9]+$ ]] || fail "--serial-baud must be an integer"
+[[ "${CAMERA_INFRA_PROFILE}" =~ ^[1-9][0-9]*x[1-9][0-9]*x[1-9][0-9]*$ ]] ||
+  fail "--camera-infra-profile must look like WIDTHxHEIGHTxFPS"
+case "${RMW_IMPLEMENTATION_CONFIG}" in
+  ""|rmw_fastrtps_cpp|rmw_cyclonedds_cpp) ;;
+  *) fail "--rmw-implementation must be rmw_fastrtps_cpp or rmw_cyclonedds_cpp" ;;
+esac
 [[ -f "${ORB_ROOT}/CMakeLists.txt" ]] || fail "ORB_SLAM3 submodule is missing; run: git submodule update --init --recursive"
 [[ "${USE_SLAM_IMU}" == "false" || "${USE_IMU}" == "true" ]] ||
   fail "--slam-imu requires D455 IMU; remove --no-imu"
@@ -188,6 +229,14 @@ fi
 set +u
 source "${ROS_SETUP}"
 set -u
+if [[ -n "${RMW_IMPLEMENTATION_CONFIG}" ]]; then
+  export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION_CONFIG}"
+  log "ROS middleware: RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION}"
+elif [[ -n "${RMW_IMPLEMENTATION:-}" ]]; then
+  log "ROS middleware: RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION} (environment)"
+else
+  log "ROS middleware: system default"
+fi
 
 [[ -x "/opt/ros/${ROS_DISTRO_NAME}/lib/robot_localization/ekf_node" ]] ||
   fail "robot_localization is missing; install ros-${ROS_DISTRO_NAME}-robot-localization"
@@ -332,6 +381,7 @@ runtime_artifacts() {
     "stereo_inertial=${WORKSPACE_ROOT}/install/orbslam3/lib/orbslam3/stereo-inertial"
     "fusion_gate=${WORKSPACE_ROOT}/install/fused_odometry/lib/fused_odometry/fusion_gate_node"
     "map_odom_correction=${WORKSPACE_ROOT}/install/fused_odometry/lib/fused_odometry/map_odom_correction_node"
+    "local_map_odometry=${WORKSPACE_ROOT}/install/fused_odometry/lib/fused_odometry/local_map_odometry_node"
     "waypoint_navigator=${WORKSPACE_ROOT}/install/visual_navigation/lib/visual_navigation/waypoint_navigator"
     "mission_typesupport=${WORKSPACE_ROOT}/install/mission_control_interfaces/lib/libmission_control_interfaces__rosidl_typesupport_cpp.so"
     "robot_localization_ekf=/opt/ros/${ROS_DISTRO_NAME}/lib/robot_localization/ekf_node"
@@ -483,12 +533,15 @@ fi
 prepare_camera_imu
 
 [[ -f "${WORKSPACE_ROOT}/install/setup.bash" ]] || fail "workspace setup was not generated"
+[[ -z "${ORB_SETTINGS_FILE}" || -f "${ORB_SETTINGS_FILE}" ]] ||
+  fail "ORB-SLAM3 settings file not found: ${ORB_SETTINGS_FILE}"
 # shellcheck disable=SC1091
 set +u
 source "${WORKSPACE_ROOT}/install/setup.bash"
 set -u
 
 export LD_LIBRARY_PATH="${ORB_ROOT}/lib:${DEPS_ROOT}/lib:${LD_LIBRARY_PATH:-}"
+RMW_IMPLEMENTATION_EFFECTIVE="${RMW_IMPLEMENTATION:-}"
 
 log "Starting decoupled odometry and navigation stacks"
 if [[ "${ROUTE_MODE}" == "csv" ]]; then
@@ -496,7 +549,8 @@ if [[ "${ROUTE_MODE}" == "csv" ]]; then
 else
   log "Route mode: planner GUI; run scripts/start_arena_planner.sh in terminal 2"
 fi
-log "IMU filter: ${USE_IMU}; SLAM IMU fusion: ${USE_SLAM_IMU}; CLAHE: ${EQUALIZE}; visualization: ${VISUALIZATION}; autostart: ${AUTOSTART}"
+log "IMU filter: ${USE_IMU}; SLAM IMU fusion: ${USE_SLAM_IMU}; odom_topic: ${ODOM_TOPIC}; CLAHE: ${EQUALIZE}; visualization: ${VISUALIZATION}; autostart: ${AUTOSTART}"
+log "Camera infra profile: ${CAMERA_INFRA_PROFILE}; ORB settings: ${ORB_SETTINGS_FILE:-launch default}"
 if [[ "${USE_SERIAL}" == "true" ]]; then
   log "Controller serial: ${SERIAL_DEVICE} at ${SERIAL_BAUD_RATE} baud"
   LAUNCH_FILE="visual_navigation_serial_bringup.launch.py"
@@ -518,11 +572,15 @@ ODOMETRY_LAUNCH_ARGS=(
   "use_slam_imu:=${USE_SLAM_IMU}"
   "equalize:=${EQUALIZE}"
   "use_wheel:=${USE_SERIAL}"
+  "infra_profile:=${CAMERA_INFRA_PROFILE}"
 )
+if [[ -n "${ORB_SETTINGS_FILE}" ]]; then
+  ODOMETRY_LAUNCH_ARGS+=("orb_settings_file:=${ORB_SETTINGS_FILE}")
+fi
 
 NAVIGATION_LAUNCH_ARGS=(
   "route_frame:=map"
-  "odom_topic:=/odometry/fused"
+  "odom_topic:=${ODOM_TOPIC}"
   "fusion_status_topic:=/odometry/fusion_status"
   "cmd_vel_topic:=/cmd_vel_nav"
   "require_actuator_health:=${REQUIRE_ACTUATOR_HEALTH}"
@@ -562,6 +620,9 @@ declare -a RUN_INPUT_FILES=(
 if [[ -n "${ROUTE_FILE}" ]]; then
   RUN_INPUT_FILES+=("route_file=${ROUTE_FILE}")
 fi
+if [[ -n "${ORB_SETTINGS_FILE}" ]]; then
+  RUN_INPUT_FILES+=("selected_orb_settings=${ORB_SETTINGS_FILE}")
+fi
 if [[ "${USE_IMU}" == "true" ]]; then
   RUN_INPUT_FILES+=(
     "imu_config=${WORKSPACE_ROOT}/install/imu_rpy_filter/share/imu_rpy_filter/config/imu_rpy_filter.yaml"
@@ -594,6 +655,10 @@ declare -a CREATE_RUN_ARGUMENTS=(
   --setting "require_actuator_health=${REQUIRE_ACTUATOR_HEALTH}"
   --setting "use_imu=${USE_IMU}"
   --setting "use_slam_imu=${USE_SLAM_IMU}"
+  --setting "odom_topic=${ODOM_TOPIC}"
+  --setting "camera_infra_profile=${CAMERA_INFRA_PROFILE}"
+  --setting "orb_settings_file=${ORB_SETTINGS_FILE}"
+  --setting "rmw_implementation=${RMW_IMPLEMENTATION_EFFECTIVE}"
   --setting "equalize=${EQUALIZE}"
   --setting "visualization=${VISUALIZATION}"
   --setting "autostart=${AUTOSTART}"
@@ -689,6 +754,7 @@ snapshot_runtime_parameters() {
     /fused_odometry_gate
     /fused_ekf
     /map_odom_correction
+    /local_map_odometry
     /waypoint_navigator
     /orbslam3_stereo_inertial
     /camera/camera

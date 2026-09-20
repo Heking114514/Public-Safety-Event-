@@ -67,7 +67,7 @@ ros2 pkg list | grep -E 'orbslam3|visual_navigation|cup_car_serial|realsense2_ca
 该包装脚本启动 C++ 规划服务后执行 `scripts/arena_route_frontend.py`；不要绕过它单独运行 GUI，否则界面没有规划服务可调用。
 两个入口共用工作空间构建锁，即使两个终端紧接着启动，也不会并发写入 `build/`、`install/` 和 `log/`。规划入口会等待旧后端完全退出后再发布新服务，但不会关闭已经打开的规划、路线或地图 GUI。
 
-统一入口的设备、传感器和构建默认值集中在 `config/navigation_startup.yaml`；录包保留数量和 topic 清单集中在 `config/navigation_recording.yaml`。两者分别由独立读取器校验，算法节点仍使用各功能包自己的 YAML，避免启动编排与融合、控制实现互相依赖。无参数 GUI 模式和 `--autostart` CSV 模式不允许由 YAML 改写，相关命令行选项优先于 YAML 默认值。
+统一入口的设备、传感器和构建默认值集中在 `config/navigation_startup.yaml`；录包保留数量和 topic 清单集中在 `config/navigation_recording.yaml`。两者分别由独立读取器校验，算法节点仍使用各功能包自己的 YAML，避免启动编排与融合、控制实现互相依赖。无参数 GUI 模式和 `--autostart` CSV 模式不允许由 YAML 改写，相关命令行选项优先于 YAML 默认值。`navigation_startup.odom_topic` 可在 `/odometry/local_map` 和 `/odometry/fused` 之间切换；导航和规划 GUI 会共用这个选择，录包仍同时保留两个 topic 便于对比。
 
 固定 CSV 自动运行时，先检查并编辑 `scripts/waypoints.csv`，再使用：
 
@@ -100,7 +100,7 @@ D455 图像和 IMU
   → ORB-SLAM3
   → /odometry/visual_raw、/tracking_state
   → 里程计融合
-  → /odometry/fused
+  → /odometry/local_map
   → waypoint_navigator
   → /cmd_vel_nav
   → 下位机桥接节点
@@ -252,12 +252,11 @@ data: 5    # OK_KLT
 ### 4.3 里程计和 TF
 
 ```bash
-ros2 topic hz /odometry/fused
-ros2 topic echo /odometry/fused --once
-ros2 run tf2_ros tf2_echo map base_link
+ros2 topic hz /odometry/local_map
+ros2 topic echo /odometry/local_map --once
 ```
 
-手动移动相机时，`/odometry/fused` 中的位置和姿态应合理变化。
+手动移动相机时，`/odometry/local_map` 中的位置和姿态应合理变化。
 
 ### 4.4 航点和导航状态
 
@@ -293,7 +292,7 @@ x,y,yaw,speed,tolerance,stop_time
 | `tolerance` | 到达容差 | m |
 | `stop_time` | 到达后停留时间 | s |
 
-航点和 `/odometry/fused` 必须使用同一个坐标系，当前均为 `map`。
+航点和 `/odometry/local_map` 必须使用同一个坐标系，当前均为 `map`。
 
 ## 5. 启动航点任务并查看速度
 
@@ -317,7 +316,7 @@ ros2 topic hz /cmd_vel_nav
 
 ### 5.2 终端 3：开始导航
 
-确认 `/odometry/fusion_status` 为允许导航的状态且 `/odometry/fused` 正常后执行。若显式启用了 `require_tracking_state`，还应确认 `/tracking_state` 为 `2` 或 `5`：
+确认 `/odometry/fusion_status` 为允许导航的状态且 `/odometry/local_map` 正常后执行。若显式启用了 `require_tracking_state`，还应确认 `/tracking_state` 为 `2` 或 `5`：
 
 ```bash
 cd /path/to/your/workspace
@@ -836,7 +835,7 @@ ros2 bag play latest_navigation_bag
 
 - [ ] 左右红外图像约 30 Hz，IMU 约 200 Hz。
 - [ ] `/tracking_state` 为 `2` 或 `5`。
-- [ ] `/odometry/fused` 持续发布并随小车运动变化。
+- [ ] `/odometry/local_map` 持续发布并随小车运动变化。
 - [ ] `/waypoint_path` 正确显示 CSV 路线或手动标点路线。
 - [ ] `--autostart` 模式加载 `scripts/waypoints.csv`，健康检查通过后进入 `FOLLOWING`。
 - [ ] `/cmd_vel_nav` 输出合理的 `linear.x` 和 `angular.z`。
@@ -874,7 +873,7 @@ source /opt/ros/humble/setup.bash
 source /path/to/your/workspace/install/setup.bash
 ```
 
-### 一直没有 `/odometry/fused`
+### 一直没有 `/odometry/local_map`
 
 ```bash
 ros2 topic echo /tracking_state
@@ -890,10 +889,10 @@ ros2 topic hz /camera/camera/imu
 ```bash
 ros2 topic echo /waypoint_navigation/status --once
 ros2 topic echo /tracking_state --once
-ros2 topic echo /odometry/fused --once
+ros2 topic echo /odometry/local_map --once
 ```
 
-默认情况下，导航节点依据融合状态、`/odometry/fused` 新鲜度和位姿有效性决定是否输出非零速度；最近一次定位有效后的短暂异常可在宽限期内按配置降速，允许的 `DEGRADED_*` 状态也会按各自配置降速。只有显式启用 `require_tracking_state` 时，才额外要求 `/tracking_state` 为 `2` 或 `5`。
+默认情况下，导航节点依据融合状态、`/odometry/local_map` 新鲜度和位姿有效性决定是否输出非零速度；最近一次定位有效后的短暂异常可在宽限期内按配置降速，允许的 `DEGRADED_*` 状态也会按各自配置降速。只有显式启用 `require_tracking_state` 时，才额外要求 `/tracking_state` 为 `2` 或 `5`。
 
 ### 手动发布后小车不动
 

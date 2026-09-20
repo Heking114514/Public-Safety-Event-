@@ -47,7 +47,11 @@ from road_coverage import RoadCoverageLedger
 
 
 SERVICE_NAME = "/arena_path_planner/plan"
-ODOMETRY_TOPIC = "/odometry/fused"
+ODOMETRY_TOPIC_CHOICES = {"/odometry/local_map", "/odometry/fused"}
+ODOMETRY_TOPIC = os.environ.get("NAVIGATION_ODOM_TOPIC", "/odometry/local_map")
+if ODOMETRY_TOPIC not in ODOMETRY_TOPIC_CHOICES:
+    choices = ", ".join(sorted(ODOMETRY_TOPIC_CHOICES))
+    raise SystemExit(f"NAVIGATION_ODOM_TOPIC must be one of: {choices}")
 ODOMETRY_TIMEOUT_S = 0.5
 ROUTE_ACK_TIMEOUT_MS = 1500
 ROUTE_FAILURE_COOLDOWN_S = 5.0
@@ -108,6 +112,7 @@ class PlannerClient(Node):
         self.odom_subscription = self.create_subscription(
             Odometry, ODOMETRY_TOPIC, self._handle_odometry, qos_profile_sensor_data
         )
+        self.get_logger().info(f"Planner frontend odometry topic: {ODOMETRY_TOPIC}")
         self.route_ack_subscription = self.create_subscription(
             UInt64,
             ROUTE_ACK_TOPIC,

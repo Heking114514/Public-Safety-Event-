@@ -13,7 +13,8 @@ fused_odometry_gate:
     diagnostics_topic: /diagnostics
 
     world_frame: map
-    # The sanitized wheel stream contributes only body-forward vx.
+    # The sanitized wheel stream contributes body-forward vx for distance and
+    # geometry-derived vy for the base_link lever arm during pivots.
     wheel_frame: odom
     base_frame: base_link
     visual_expected_frame: map
@@ -86,13 +87,18 @@ fused_odometry_gate:
 
     visual_xy_variance: 0.02
     visual_yaw_variance: 0.04
-    # Raw ORB frame-to-frame speed is the primary local velocity observation.
-    visual_vx_variance: 0.01
-    # Wheel vx is low-weight, diagnostic-gated translation. Wheel yaw remains
-    # disabled because the current encoder turn scale is not trusted.
-    wheel_vx_variance: 0.08
-    # Encoder vx is downweighted during observed turns. During an observed
-    # in-place turn, publish zero center velocity instead of integrating bias.
+    # ORB frame-to-frame speed is useful for outage detection, but the latest
+    # arena bags show it dragging /odometry/local_map away from the physical
+    # chassis. Keep it as a weak longitudinal aid and do not fuse visual vy.
+    visual_vx_variance: 0.06
+    visual_vy_variance: 0.30
+    # Wheel vx is the primary short-term distance source. Its yaw remains
+    # diagnostic-only, but the 50 mm axle-to-base_link lever arm publishes a
+    # real body-centre vy during pivots and is fused with moderate confidence.
+    wheel_vx_variance: 0.02
+    wheel_vy_variance: 0.04
+    # Encoder vx is downweighted during observed turns. The 50 mm axle-to-body
+    # offset is retained as fused vy so base_link follows the real pivot arc.
     wheel_turn_downweight_start_radps: 0.15
     wheel_turn_full_downweight_radps: 0.60
     wheel_turn_covariance_scale: 100.0
@@ -124,6 +130,8 @@ fused_ekf:
     # Local odometry intentionally excludes absolute ORB pose. Loop closure
     # updates map->odom in map_odom_correction without moving odom->base_link.
     odom0: /fusion/input/visual_odom
+    # ORB longitudinal velocity is only a weak short-term aid. Do not fuse its
+    # lateral velocity: bag diagnostics show visual vy distorts the pivot centre.
     odom0_config: [false, false, false,
                    false, false, false,
                    true, false, false,
@@ -138,7 +146,7 @@ fused_ekf:
     odom1: /fusion/input/wheel_odom
     odom1_config: [false, false, false,
                    false, false, false,
-                   true, false, false,
+                   true, true, false,
                    false, false, false,
                    false, false, false]
     odom1_queue_size: 10
@@ -182,20 +190,38 @@ map_odom_correction:
     # smoothed before they update map->odom; true no longer bypasses filtering.
     direct_visual_tracking: false
     visual_recovery_gap_s: 0.20
-    visual_recovery_time_constant_s: 0.25
-    visual_recovery_blend_duration_s: 0.80
+    visual_recovery_time_constant_s: 1.50
+    visual_recovery_blend_duration_s: 2.50
+    # base_link is the geometric centre, 50 mm ahead of the wheel axle. Its
+    # real circular translation is carried by local odometry; keep visual
+    # map->odom correction frozen during the pivot so ORB jitter is not applied
+    # as a global jump.
     hold_global_xy_during_turn: true
     # The IMU owns short-term angular continuity in odom. ORB supplies the
     # long-term yaw correction through map->odom, exactly like its XY update.
     publish_tf: true
     publish_frequency: 30.0
-    # Raw ORB is stable in the latest bag; keep normal fused output close to
-    # vision instead of accumulating 8-11cm of local-EKF lag while moving.
-    correction_time_constant_s: 0.15
-    # Once measured local motion is stationary, remove local-EKF residual motion
-    # quickly so /odometry/fused cannot keep sliding while raw ORB is stable.
-    stationary_correction_time_constant_s: 0.08
-    loop_correction_time_constant_s: 1.25
+    # While driving, let local wheel/IMU propagation own short-term scale. Visual
+    # pose still trims global drift, but slowly enough that it should not stretch
+    # one straight segment and compress the next.
+    correction_time_constant_s: 1.60
+    # Once measured local motion is stationary or nearly stopped, settle the
+    # remaining map correction before the next lane segment starts.
+    stationary_correction_time_constant_s: 0.25
+    loop_correction_time_constant_s: 2.00
+    # Hard cap the map->odom correction applied per publish cycle. This keeps
+    # recovered ORB origin shifts from appearing as meter-scale fused jumps.
+    max_correction_step_m: 0.03
+    max_correction_yaw_step_rad: 0.03
+    # Tighter moving caps keep visual corrections from changing apparent odometry
+    # scale during a straight run. Stationary/low-speed correction keeps using the
+    # broader caps above.
+    moving_max_correction_step_m: 0.012
+    moving_max_correction_yaw_step_rad: 0.015
+    # Recovery from tracking loss is the riskiest moment for origin shifts, so it
+    # is capped even harder while the recovery blend is active.
+    visual_recovery_max_correction_step_m: 0.008
+    visual_recovery_max_correction_yaw_step_rad: 0.010
     map_change_smoothing_window_s: 2.0
     # Pair visual and local poses by measurement time. Interior samples are
     # interpolated; a visual sample briefly ahead of local history is queued.
@@ -205,9 +231,12 @@ map_odom_correction:
     fusion_status_timeout_s: 0.80
     stationary_max_linear_speed_mps: 0.03
     stationary_max_angular_speed_radps: 0.12
-    # ORB can report XY motion during measured in-place 90-degree turns. Hold
-    # global XY through the turn, then preserve later visual increments.
-    turn_hold_max_linear_speed_mps: 0.03
+    # ORB can report XY motion during measured in-place 90-degree turns. During a
+    # detected pivot, pause visual global correction but still let bounded local
+    # odometry translation through so repeated turns do not erase real creep.
+    # Allow the expected 0.050 m * 0.75 rad/s = 0.038 m/s body-centre
+    # tangential speed while still rejecting real forward translation.
+    turn_hold_max_linear_speed_mps: 0.05
     turn_hold_max_translation_m: 0.10
     turn_hold_entry_angular_speed_radps: 0.07
     turn_hold_min_angular_speed_radps: 0.02
@@ -215,3 +244,14 @@ map_odom_correction:
     # pivots. Hold through short measurement gaps, then release before normal
     # lane following can accumulate meaningful forward displacement.
     turn_hold_release_delay_s: 0.30
+
+local_map_odometry:
+  ros__parameters:
+    input_topic: /odometry/local
+    output_topic: /odometry/local_map
+    input_frame: odom
+    output_frame: map
+    base_frame: base_link
+    # This is an Odometry-only bridge for navigation input. Publishing a direct
+    # map -> base_link TF would compete with the existing map/odom/base_link tree.
+    publish_tf: false

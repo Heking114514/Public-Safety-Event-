@@ -30,6 +30,10 @@ load_navigation_config() {
   CAMERA_SERIAL="${settings[camera_serial]#_}"
   USE_IMU="${settings[use_imu]}"
   USE_SLAM_IMU="${settings[use_slam_imu]}"
+  ODOM_TOPIC="${settings[odom_topic]}"
+  CAMERA_INFRA_PROFILE="${settings[camera_infra_profile]}"
+  ORB_SETTINGS_FILE="${settings[orb_settings_file]}"
+  RMW_IMPLEMENTATION_CONFIG="${settings[rmw_implementation]}"
   EQUALIZE="${settings[equalize]}"
   VISUALIZATION="${settings[visualization]}"
   BUILD_IF_NEEDED="${settings[build_if_needed]}"
@@ -43,4 +47,7 @@ load_navigation_config() {
 
   [[ "${DEFAULT_AUTOSTART_ROUTE}" = /* ]] ||
     DEFAULT_AUTOSTART_ROUTE="${WORKSPACE_ROOT}/${DEFAULT_AUTOSTART_ROUTE}"
+  if [[ -n "${ORB_SETTINGS_FILE}" && "${ORB_SETTINGS_FILE}" != /* ]]; then
+    ORB_SETTINGS_FILE="${WORKSPACE_ROOT}/${ORB_SETTINGS_FILE}"
+  fi
 }

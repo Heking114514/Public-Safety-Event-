@@ -39,6 +39,10 @@ class NavigationConfigTest(unittest.TestCase):
         self.assertNotIn("route_mode", settings)
         self.assertEqual("3", settings["retain_bags"])
         self.assertEqual("scripts/waypoints.csv", settings["default_autostart_route"])
+        self.assertEqual("/odometry/fused", settings["odom_topic"])
+        self.assertEqual("848x480x30", settings["camera_infra_profile"])
+        self.assertEqual("", settings["orb_settings_file"])
+        self.assertEqual("", settings["rmw_implementation"])
         self.assertEqual(len(topics), len(set(topics)))
         required = {
             "/camera/camera/infra1/camera_info",
@@ -47,6 +51,7 @@ class NavigationConfigTest(unittest.TestCase):
             "/odometry/visual_raw",
             "/wheel/odom",
             "/imu/control",
+            "/odometry/local_map",
             "/odometry/fused",
             "/cmd_vel_nav",
             "/cup_car_serial/control_telemetry",
@@ -79,6 +84,30 @@ class NavigationConfigTest(unittest.TestCase):
             self.assertEqual(2, result.returncode)
             self.assertIn("unknown startup keys: autostart", result.stderr)
 
+            startup_data = yaml.safe_load(STARTUP.read_text(encoding="utf-8"))
+            startup_data["navigation_startup"]["odom_topic"] = "/bad/odom"
+            bad_startup = root / "bad_odom_startup.yaml"
+            bad_startup.write_text(yaml.safe_dump(startup_data), encoding="utf-8")
+            result, _ = read_records(startup=bad_startup)
+            self.assertEqual(2, result.returncode)
+            self.assertIn("odom_topic must be one of", result.stderr)
+
+            startup_data = yaml.safe_load(STARTUP.read_text(encoding="utf-8"))
+            startup_data["navigation_startup"]["camera_infra_profile"] = "848x480"
+            bad_startup = root / "bad_camera_profile_startup.yaml"
+            bad_startup.write_text(yaml.safe_dump(startup_data), encoding="utf-8")
+            result, _ = read_records(startup=bad_startup)
+            self.assertEqual(2, result.returncode)
+            self.assertIn("camera_infra_profile must look like", result.stderr)
+
+            startup_data = yaml.safe_load(STARTUP.read_text(encoding="utf-8"))
+            startup_data["navigation_startup"]["rmw_implementation"] = "rmw_missing_cpp"
+            bad_startup = root / "bad_rmw_startup.yaml"
+            bad_startup.write_text(yaml.safe_dump(startup_data), encoding="utf-8")
+            result, _ = read_records(startup=bad_startup)
+            self.assertEqual(2, result.returncode)
+            self.assertIn("rmw_implementation must be one of", result.stderr)
+
             recording_data = yaml.safe_load(RECORDING.read_text(encoding="utf-8"))
             recording_data["navigation_recording"]["topics"].append(
                 recording_data["navigation_recording"]["topics"][0]
@@ -88,6 +117,20 @@ class NavigationConfigTest(unittest.TestCase):
             result, _ = read_records(recording=bad_recording)
             self.assertEqual(2, result.returncode)
             self.assertIn("recording topics must be unique", result.stderr)
+
+    def test_odom_topic_can_switch_to_fused_for_comparison(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            startup_data = yaml.safe_load(STARTUP.read_text(encoding="utf-8"))
+            startup_data["navigation_startup"]["odom_topic"] = "/odometry/fused"
+            startup = root / "startup.yaml"
+            startup.write_text(yaml.safe_dump(startup_data), encoding="utf-8")
+
+            result, records = read_records(startup=startup)
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        settings = {key: value for key, value in records if key != "topic"}
+        self.assertEqual("/odometry/fused", settings["odom_topic"])
 
     def test_shell_loader_does_not_execute_configuration_text(self):
         with tempfile.TemporaryDirectory() as temporary:

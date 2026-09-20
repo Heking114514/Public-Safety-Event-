@@ -13,6 +13,7 @@ navigation_recording:
     - /orbslam3/map_change
     - /wheel/odom
     - /odometry/local
+    - /odometry/local_map
     - /odometry/fused
     - /fusion/input/visual_odom
     - /fusion/input/wheel_odom

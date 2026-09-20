@@ -14,6 +14,10 @@ wheel_odometry_node:
     left_encoder_counts_per_revolution: 294912.0
     right_encoder_counts_per_revolution: 294912.0
     wheel_track_m: 0.1466
+    # The wheel axle midpoint is 50 mm behind the geometric base_link centre.
+    # Offsets are base_link relative to the axle midpoint, in body axes.
+    base_offset_x_m: 0.050
+    base_offset_y_m: 0.000
     # Encoder counts decrease during ROS-forward wheel motion on this chassis;
     # keep the physical CPR positive and express polarity as signed scales.
     left_distance_scale: -1.0

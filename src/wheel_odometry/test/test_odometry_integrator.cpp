@@ -17,6 +17,8 @@ TEST(OdometryIntegratorConfig, DefaultsMatchMeasuredChassis)
   const IntegratorConfig config;
   EXPECT_DOUBLE_EQ(config.wheel_radius_m, 0.0302);
   EXPECT_DOUBLE_EQ(config.wheel_track_m, 0.1466);
+  EXPECT_DOUBLE_EQ(config.base_offset_x_m, 0.050);
+  EXPECT_DOUBLE_EQ(config.base_offset_y_m, 0.0);
   EXPECT_DOUBLE_EQ(config.left_encoder_counts_per_revolution, 294912.0);
   EXPECT_DOUBLE_EQ(config.right_encoder_counts_per_revolution, 294912.0);
   EXPECT_DOUBLE_EQ(config.left_distance_scale, -1.0);
@@ -31,6 +33,8 @@ IntegratorConfig test_config()
   config.left_encoder_counts_per_revolution = 1925.0;
   config.right_encoder_counts_per_revolution = 1925.0;
   config.wheel_track_m = 0.254;
+  config.base_offset_x_m = 0.0;
+  config.base_offset_y_m = 0.0;
   config.left_distance_scale = 1.0;
   config.right_distance_scale = 1.0;
   config.max_wheel_speed_mps = 10.0;
@@ -101,6 +105,29 @@ TEST(OdometryIntegrator, UsesMidpointHeadingForArc)
   EXPECT_NEAR(integrator.state().x_m, center_distance * std::cos(delta_yaw / 2.0), 1.0e-12);
   EXPECT_NEAR(integrator.state().y_m, center_distance * std::sin(delta_yaw / 2.0), 1.0e-12);
   EXPECT_NEAR(integrator.state().yaw_rad, delta_yaw, 1.0e-12);
+}
+
+TEST(OdometryIntegrator, ConvertsWheelAxlePoseToOffsetBaseLink)
+{
+  IntegratorConfig config = test_config();
+  config.base_offset_x_m = 0.05;
+  OdometryIntegrator integrator(config);
+  integrator.update(sample(0, 1, 0, 0));
+
+  ASSERT_TRUE(integrator.update(sample(1000, 2, -1000, 1000)).publish);
+  const double wheel_distance =
+    1000.0 * 2.0 * kPi * 0.0325 / 1925.0;
+  const double delta_yaw = 2.0 * wheel_distance / config.wheel_track_m;
+  EXPECT_NEAR(
+    integrator.state().x_m,
+    config.base_offset_x_m * (std::cos(delta_yaw) - 1.0), 1.0e-12);
+  EXPECT_NEAR(
+    integrator.state().y_m,
+    config.base_offset_x_m * std::sin(delta_yaw), 1.0e-12);
+  EXPECT_NEAR(
+    integrator.state().lateral_velocity_mps,
+    config.base_offset_x_m * delta_yaw, 1.0e-12);
+  EXPECT_NEAR(integrator.state().linear_velocity_mps, 0.0, 1.0e-12);
 }
 
 TEST(OdometryIntegrator, ModelsTurnSlipWithoutChangingPhysicalWheelTrack)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish deterministic fake fused odometry for isolated navigation tests."""
+"""Publish deterministic fake navigation odometry for isolated tests."""
 
 from __future__ import annotations
 
@@ -91,12 +91,12 @@ def resolve_initial_pose(args: argparse.Namespace) -> PlanarPose:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Publish fake /odometry/fused samples in map->base_link. By default "
+            "Publish fake /odometry/local_map samples in map->base_link. By default "
             "the pose is the arena-map start pose, which appears in the GUI at "
             "the configured arena start."
         )
     )
-    parser.add_argument("--topic", default="/odometry/fused")
+    parser.add_argument("--topic", default="/odometry/local_map")
     parser.add_argument("--frame-id", default="map")
     parser.add_argument("--child-frame-id", default="base_link")
     parser.add_argument("--rate-hz", type=float, default=20.0)

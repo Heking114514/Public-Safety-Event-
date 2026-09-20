@@ -124,6 +124,7 @@ private:
     std::size_t realign_count{0};
     std::size_t rejected_recoveries{0};
     double forward_velocity{0.0};
+    double lateral_velocity{0.0};
     double yaw_rate{0.0};
     double yaw_disagreement_scale{1.0};
     double ramp_started_at{0.0};
@@ -137,6 +138,7 @@ private:
     bool increment_pose_valid{false};
     std::size_t invalid_samples{0};
     double forward_velocity{0.0};
+    double lateral_velocity{0.0};
     double yaw_rate{0.0};
     Pose2d last_increment_pose{};
     rclcpp::Time last_increment_stamp;
@@ -160,6 +162,7 @@ private:
     bool vx_zeroed{false};
     std::size_t invalid_samples{0};
     double velocity{0.0};
+    double lateral_velocity{0.0};
     double residual{0.0};
     double vx_turn_scale{1.0};
   };
@@ -222,8 +225,10 @@ private:
 
   ResidualGate wheel_gate_;
   RobustWindow visual_vx_window_;
+  RobustWindow visual_vy_window_;
   RobustWindow visual_wz_window_;
   RobustWindow raw_visual_vx_window_;
+  RobustWindow raw_visual_vy_window_;
   RobustWindow raw_visual_wz_window_;
   RobustWindow wheel_vx_window_;
   RobustWindow wheel_visual_residual_window_;
@@ -291,6 +296,8 @@ private:
   double visual_xy_variance_{0.02};
   double visual_yaw_variance_{0.04};
   double visual_vx_variance_{0.01};
+  double visual_vy_variance_{0.02};
+  double wheel_vy_variance_{0.20};
   std::size_t recovery_samples_{5};
   std::size_t robust_min_samples_{5};
 

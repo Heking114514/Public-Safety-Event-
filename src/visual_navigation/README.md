@@ -1,6 +1,6 @@
 # visual_navigation
 
-该功能包使用通用融合里程计 `/odometry/fused` 和字符串健康状态 `/odometry/fusion_status`，按照收到的路线依次导航，并通过 `/cmd_vel_nav` 输出速度命令。它不依赖具体的视觉、IMU、轮速或融合实现。
+该功能包默认使用起点对齐后的本地里程计 `/odometry/local_map` 和字符串健康状态 `/odometry/fusion_status`，按照收到的路线依次导航，并通过 `/cmd_vel_nav` 输出速度命令。统一启动入口可通过 `config/navigation_startup.yaml` 的 `odom_topic` 在 `/odometry/local_map` 和 `/odometry/fused` 之间切换。它不依赖具体的视觉、IMU、轮速或融合实现。
 
 详细文档：
 
@@ -21,7 +21,7 @@
 
 | 话题 | 类型 | 用途 |
 | --- | --- | --- |
-| `/odometry/fused` | `nav_msgs/msg/Odometry` | 融合后的当前位姿 |
+| `/odometry/local_map` | `nav_msgs/msg/Odometry` | 当前导航位姿，`map -> base_link` |
 | `/odometry/fusion_status` | `std_msgs/msg/String` | `WAITING_FOR_INITIALIZATION`、`FULL`、允许的 `DEGRADED_*` 或 `FAULT_*` |
 | `/imu/control` | `sensor_msgs/msg/Imu` | fusion gate 校正后的 `base_link` 平面角速度，用于转弯阻尼与到点判断 |
 | `/cup_car_serial/actuator_healthy` | `std_msgs/msg/Bool` | 控制遥测健康状态，串口 bringup 强制启用；异常时停车等待并在恢复后续跑 |
@@ -97,8 +97,8 @@ x,y,yaw,speed,tolerance,stop_time
 1.0,1.0,1.570796,0.15,0.12,1.0
 ```
 
-航点必须与 `/odometry/fused.header.frame_id` 使用同一坐标系，且默认要求
-`/odometry/fused.child_frame_id` 为 `base_link`（可通过 `odom_child_frame` 配置）。
+航点必须与 `/odometry/local_map.header.frame_id` 使用同一坐标系，且默认要求
+`/odometry/local_map.child_frame_id` 为 `base_link`（可通过 `odom_child_frame` 配置）。
 节点不做 TF 转换；任一 frame 为空或不一致时会丢弃该样本并保留上一条有效里程计。
 如果合法样本持续缺失并超过 `odom_timeout`，车辆才会停车等待；收到下一条合法样本后
 自动恢复。

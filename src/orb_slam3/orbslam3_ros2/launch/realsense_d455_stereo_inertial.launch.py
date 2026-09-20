@@ -9,11 +9,13 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description():
     package_share = FindPackageShare("orbslam3")
     vocabulary = PathJoinSubstitution([package_share, "vocabulary", "ORBvoc.txt"])
-    settings = PathJoinSubstitution(
+    default_settings = PathJoinSubstitution(
         [package_share, "config", "stereo-inertial", "RealSense_D455.yaml"]
     )
 
     serial_no = LaunchConfiguration("serial_no")
+    settings_file = LaunchConfiguration("settings_file")
+    infra_profile = LaunchConfiguration("infra_profile")
     body_frame_id = LaunchConfiguration("body_frame_id")
     map_frame_id = LaunchConfiguration("map_frame_id")
     visualization = LaunchConfiguration("visualization")
@@ -43,8 +45,8 @@ def generate_launch_description():
                 "enable_infra1": True,
                 "enable_infra2": True,
                 "depth_module.emitter_enabled": 0,
-                "depth_module.infra_profile": "848x480x30",
-                "depth_module.depth_profile": "848x480x30",
+                "depth_module.infra_profile": ParameterValue(infra_profile, value_type=str),
+                "depth_module.depth_profile": ParameterValue(infra_profile, value_type=str),
                 "depth_module.infra1_format": "Y8",
                 "depth_module.infra2_format": "Y8",
                 "enable_gyro": ParameterValue(enable_imu, value_type=bool),
@@ -68,7 +70,7 @@ def generate_launch_description():
         executable="stereo-inertial",
         name="orbslam3_stereo_inertial",
         output="screen",
-        arguments=[vocabulary, settings, "false", equalize, visualization, use_slam_imu],
+        arguments=[vocabulary, settings_file, "false", equalize, visualization, use_slam_imu],
         parameters=[
             {
                 "map_frame_id": map_frame_id,
@@ -103,6 +105,16 @@ def generate_launch_description():
                 "serial_no",
                 default_value="_038122250473",
                 description="RealSense serial prefixed with '_' so ROS keeps it as a string",
+            ),
+            DeclareLaunchArgument(
+                "settings_file",
+                default_value=default_settings,
+                description="ORB-SLAM3 stereo-inertial camera and extractor settings file",
+            ),
+            DeclareLaunchArgument(
+                "infra_profile",
+                default_value="848x480x30",
+                description="D455 infrared stream profile, e.g. 848x480x30 or 848x480x15",
             ),
             DeclareLaunchArgument("body_frame_id", default_value="camera_link"),
             DeclareLaunchArgument("map_frame_id", default_value="map"),

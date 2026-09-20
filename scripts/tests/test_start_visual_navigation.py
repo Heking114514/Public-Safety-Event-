@@ -67,6 +67,7 @@ if [[ "$1" == "node" && "$2" == "list" ]]; then
     /fused_odometry_gate \
     /fused_ekf \
     /map_odom_correction \
+    /local_map_odometry \
     /waypoint_navigator \
     /orbslam3_stereo_inertial \
     /camera/camera
@@ -236,6 +237,28 @@ exit 2
             failed_manifest["effective_settings"]["route_source"],
         )
         self.assertEqual(
+            "/odometry/fused", failed_manifest["effective_settings"]["odom_topic"]
+        )
+        self.assertEqual(
+            "848x480x15",
+            failed_manifest["effective_settings"]["camera_infra_profile"],
+        )
+        rk_settings = (
+            WORKSPACE
+            / "src"
+            / "orb_slam3"
+            / "orbslam3_ros2"
+            / "config"
+            / "stereo-inertial"
+            / "RealSense_D455_rk3588.yaml"
+        )
+        self.assertEqual(
+            str(rk_settings), failed_manifest["effective_settings"]["orb_settings_file"]
+        )
+        self.assertEqual(
+            "", failed_manifest["effective_settings"]["rmw_implementation"]
+        )
+        self.assertEqual(
             self.arguments()[1:], failed_manifest["raw_argv"]
         )
         self.assertEqual(
@@ -271,7 +294,14 @@ exit 2
             if event.startswith("ros2 launch visual_navigation ")
         )
         self.assertIn("autostart:=false", navigation_launch)
+        self.assertIn("odom_topic:=/odometry/fused", navigation_launch)
         self.assertNotIn("route_file:=", navigation_launch)
+        odometry_launch = next(
+            event for event in first_events
+            if event.startswith("ros2 launch fused_odometry ")
+        )
+        self.assertIn("infra_profile:=848x480x15", odometry_launch)
+        self.assertIn(f"orb_settings_file:={rk_settings}", odometry_launch)
 
         second_event_start = len(first_events)
         second_failed = subprocess.run(
@@ -444,6 +474,43 @@ exit 2
             if event.startswith("ros2 launch visual_navigation ")
         )
         self.assertIn("require_actuator_health:=false", launch_event)
+
+    def test_default_profile_selects_lighter_camera_and_orb_settings(self):
+        arguments = self.arguments()
+        result = subprocess.run(
+            arguments,
+            env=self.environment(MOCK_BAG_EXIT="37"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(37, result.returncode, result.stderr)
+
+        manifest = self.latest_manifest()
+        settings = manifest["effective_settings"]
+        rk_settings = (
+            WORKSPACE
+            / "src"
+            / "orb_slam3"
+            / "orbslam3_ros2"
+            / "config"
+            / "stereo-inertial"
+            / "RealSense_D455_rk3588.yaml"
+        )
+        self.assertEqual("848x480x15", settings["camera_infra_profile"])
+        self.assertEqual(str(rk_settings), settings["orb_settings_file"])
+        self.assertEqual(
+            str(rk_settings),
+            manifest["runtime_inputs"]["selected_orb_settings"]["path"],
+        )
+        odometry_launch = next(
+            event
+            for event in self.events.read_text().splitlines()
+            if event.startswith("ros2 launch fused_odometry ")
+        )
+        self.assertIn("infra_profile:=848x480x15", odometry_launch)
+        self.assertIn(f"orb_settings_file:={rk_settings}", odometry_launch)
 
     def test_serial_bringup_hardcodes_actuator_gate(self):
         launch = (
