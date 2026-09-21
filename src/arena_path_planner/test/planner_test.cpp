@@ -1016,5 +1016,39 @@ TEST(ArenaPlanner, PlansIncrementalTaskTunnelAndGapFillLayers)
   EXPECT_NE(layered.message.find("layered mode is disabled"), std::string::npos);
 }
 
+TEST(ArenaPlanner, PlansFromRecoveredLaunchJunctionCandidate)
+{
+  const PlannerConfig config = ArenaPlanner::LoadConfig(ConfigPath());
+  const ArenaPlanner planner(config);
+  const Pose recovered_replan_start{{1.6, 4.1}, -std::acos(-1.0)};
+
+  const PlanResult result = planner.Plan(
+    recovered_replan_start, config.default_targets, config.default_labels, "layer1");
+
+  ASSERT_TRUE(result.success) << result.message;
+  ASSERT_FALSE(result.points.empty());
+  ExpectExecutableInitialTurn(planner, recovered_replan_start, result);
+  ExpectNoBlockedReversal(planner, result);
+  ExpectTurnsAtJunctions(planner, result);
+}
+
+TEST(ArenaPlanner, StaticCachePrewarmDoesNotBreakDefaultLayerOneRequest)
+{
+  const PlannerConfig config = ArenaPlanner::LoadConfig(ConfigPath());
+  const ArenaPlanner planner(config);
+  for (const char * mode : {"layer1", "layer2", "layer3"}) {
+    const PlanResult prewarm = planner.Plan(
+      config.default_start, config.default_targets, config.default_labels, mode);
+    ASSERT_TRUE(prewarm.success) << mode << ": " << prewarm.message;
+  }
+
+  const PlanResult result = planner.Plan(
+    config.default_start, config.default_targets, config.default_labels, "layer1");
+  ASSERT_TRUE(result.success) << result.message;
+  ASSERT_FALSE(result.points.empty());
+  ExpectNoBlockedReversal(planner, result);
+  ExpectTurnsAtJunctions(planner, result);
+}
+
 }  // namespace
 }  // namespace arena_path_planner

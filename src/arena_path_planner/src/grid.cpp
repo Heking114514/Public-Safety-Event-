@@ -552,7 +552,8 @@ ArenaPlanner::GridPath ArenaPlanner::AStar(
     if (config_.turns_at_junctions_only &&
         change >= config_.in_place_turn_heading_threshold &&
         !IsTurnJunction(start, kTurnJunctionOperatingTolerance)) {
-      return false;
+      return config_.allow_in_place_turns &&
+             RotationIsFree(start, initial_heading, departure);
     }
     const bool must_fit_rotation =
         change > kNearReversalThreshold || !config_.allow_in_place_turns;

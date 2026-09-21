@@ -14,9 +14,11 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace arena_path_planner
@@ -25,6 +27,8 @@ namespace
 {
 
 constexpr double kStartProjectionMaxDistance = 0.08;
+constexpr double kStartRecoveryMaxDistance = 0.12;
+constexpr double kStartRecoveryAnchorProjectionDistance = 0.05;
 
 geometry_msgs::msg::Quaternion QuaternionFromYaw(double yaw)
 {
@@ -81,6 +85,99 @@ bool RouteHasUnsafeInPlaceTurn(
     }
   }
   return false;
+}
+
+bool RouteResultIsUsable(const ArenaPlanner & planner, const PlanResult & result)
+{
+  if (!result.success || result.headings.size() != result.points.size()) {
+    return false;
+  }
+  for (std::size_t index = 0; index < result.points.size(); ++index) {
+    if (!std::isfinite(result.points[index].x) ||
+      !std::isfinite(result.points[index].y) ||
+      !std::isfinite(result.headings[index]))
+    {
+      return false;
+    }
+  }
+  for (std::size_t index = 1; index < result.points.size(); ++index) {
+    if (!planner.SegmentIsFree(result.points[index - 1], result.points[index])) {
+      return false;
+    }
+  }
+  return planner.RouteTurnsAreAllowed(result.points) &&
+         (planner.config().allow_in_place_turns ||
+         !RouteHasUnsafeInPlaceTurn(
+           planner, result, planner.config().in_place_turn_heading_threshold));
+}
+
+bool TryRecoverStartAndPlan(
+  const ArenaPlanner & planner, const Pose & requested_start,
+  const std::vector<Point> & targets, const std::vector<std::string> & labels,
+  const std::string & mode, const std::vector<std::string> & covered_edges,
+  const std::vector<RoadInterval> & covered_intervals, Pose & recovered_start,
+  PlanResult & recovered_result)
+{
+  const double pi = std::acos(-1.0);
+  std::vector<double> candidate_yaws;
+  const auto add_candidate_yaw = [&candidate_yaws](double yaw) {
+      const auto same_yaw = [yaw](double existing) {
+          return std::abs(NormalizeAngle(existing - yaw)) <= 1.0e-6;
+        };
+      if (std::none_of(candidate_yaws.begin(), candidate_yaws.end(), same_yaw)) {
+        candidate_yaws.push_back(yaw);
+      }
+    };
+  add_candidate_yaw(requested_start.yaw);
+  add_candidate_yaw(-pi);
+  add_candidate_yaw(-0.5 * pi);
+  add_candidate_yaw(0.0);
+  add_candidate_yaw(0.5 * pi);
+
+  std::vector<Point> anchors{planner.config().default_start.position};
+  anchors.insert(
+    anchors.end(), planner.config().turn_junctions.begin(),
+    planner.config().turn_junctions.end());
+  anchors.insert(
+    anchors.end(), planner.config().inspection_nodes.begin(),
+    planner.config().inspection_nodes.end());
+
+  bool found = false;
+  double best_score = std::numeric_limits<double>::infinity();
+  for (const Point & anchor : anchors) {
+    if (Distance(anchor, requested_start.position) >
+      kStartRecoveryMaxDistance + kStartRecoveryAnchorProjectionDistance)
+    {
+      continue;
+    }
+    for (double yaw : candidate_yaws) {
+      Pose candidate;
+      if (!planner.ProjectToNearestFreePose(
+          {anchor, yaw}, kStartRecoveryAnchorProjectionDistance, candidate))
+      {
+        continue;
+      }
+      const double correction = Distance(candidate.position, requested_start.position);
+      if (correction > kStartRecoveryMaxDistance) {
+        continue;
+      }
+      PlanResult result = planner.Plan(
+        candidate, targets, labels, mode, covered_edges, covered_intervals);
+      if (!RouteResultIsUsable(planner, result)) {
+        continue;
+      }
+      const double heading_correction =
+        std::abs(NormalizeAngle(candidate.yaw - requested_start.yaw));
+      const double score = correction + 0.01 * heading_correction;
+      if (!found || score < best_score) {
+        found = true;
+        best_score = score;
+        recovered_start = candidate;
+        recovered_result = std::move(result);
+      }
+    }
+  }
+  return found;
 }
 
 }  // namespace
@@ -301,6 +398,7 @@ private:
     }
     Pose planning_start = start;
     bool start_was_projected = false;
+    bool start_was_recovered = false;
     // A few centimetres of fused-pose drift must not make replanning stop the
     // mission at a lane boundary. Do not use this escape hatch when a dynamic
     // obstacle alone covers an otherwise valid start: that may be a real block.
@@ -332,7 +430,34 @@ private:
     result = active_planner->Plan(
       planning_start, targets, labels, mode, request->covered_edges,
       covered_intervals);
-    if (result.success && start_was_projected) {
+    if (!result.success) {
+      Pose recovered_start;
+      PlanResult recovered_result;
+      if (TryRecoverStartAndPlan(
+          *active_planner, start, targets, labels, mode,
+          request->covered_edges, covered_intervals, recovered_start,
+          recovered_result))
+      {
+        const double correction = Distance(start.position, recovered_start.position);
+        const double heading_correction =
+          std::abs(NormalizeAngle(recovered_start.yaw - start.yaw));
+        planning_start = recovered_start;
+        start_was_projected = true;
+        start_was_recovered = true;
+        result = std::move(recovered_result);
+        result.message += "; start pose recovered " +
+          std::to_string(correction) + " m, " +
+          std::to_string(Degrees(heading_correction)) + " deg";
+        RCLCPP_WARN(
+          get_logger(),
+          "recovered replan start (%.3f, %.3f, %.1f deg) as (%.3f, %.3f, %.1f deg), %.3f m and %.1f deg away",
+          start.position.x, start.position.y, Degrees(start.yaw),
+          planning_start.position.x, planning_start.position.y,
+          Degrees(planning_start.yaw), correction,
+          Degrees(heading_correction));
+      }
+    }
+    if (result.success && start_was_projected && !start_was_recovered) {
       const double correction = Distance(start.position, planning_start.position);
       result.message += "; start pose projected " +
         std::to_string(correction) + " m onto nearby free space";

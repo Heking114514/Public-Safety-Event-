@@ -47,6 +47,8 @@ class NavigationConfigTest(unittest.TestCase):
         required = {
             "/camera/camera/infra1/camera_info",
             "/camera/camera/infra2/camera_info",
+            "/camera/camera/infra1/image_rect_raw",
+            "/camera/camera/infra2/image_rect_raw",
             "/camera/camera/imu",
             "/odometry/visual_raw",
             "/wheel/odom",
@@ -63,13 +65,12 @@ class NavigationConfigTest(unittest.TestCase):
             "/tf_static",
         }
         self.assertTrue(required.issubset(topics))
-        bulk_sensor_topics = [
+        point_cloud_topics = [
             topic for topic in topics
-            if "/image" in topic.lower()
-            or "pointcloud" in topic.lower()
+            if "pointcloud" in topic.lower()
             or topic.lower().endswith("/points")
         ]
-        self.assertEqual([], bulk_sensor_topics)
+        self.assertEqual([], point_cloud_topics)
         self.assertNotIn("/fusion/input/imu", topics)
         self.assertNotIn("/path", topics)
 
