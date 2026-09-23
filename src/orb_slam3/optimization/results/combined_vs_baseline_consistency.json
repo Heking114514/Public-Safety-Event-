@@ -1,0 +1,28 @@
+{
+  "baseline": "baseline_rgb_paced",
+  "candidate": "combined_rgb_paced",
+  "frames": 2431,
+  "state_mismatch_count": 0,
+  "first_mismatches": [],
+  "joint_OK_count": 1077,
+  "baseline_process_cpu_s": 132.504859707,
+  "candidate_process_cpu_s": 115.282372578,
+  "process_cpu_reduction_percent": 12.997626779186112,
+  "all_backends_completed": true,
+  "trajectory_warning": "Baseline/candidate consistency only, not ground-truth ATE or quality acceptance. Monocular arbitrary scale and backend schedule can differ.",
+  "segments": [
+    {
+      "frame_first": 618,
+      "frame_last": 1694,
+      "n": 1077,
+      "direct_camera_center_rmse_baseline_units": 0.034150110832250995,
+      "direct_camera_center_max_baseline_units": 0.07208913711792476,
+      "candidate_to_baseline_sim3_scale": 1.1083318967969968,
+      "sim3_center_rmse_baseline_units": 0.017828806612392216,
+      "sim3_center_max_baseline_units": 0.03786418454342109,
+      "sim3_rotation_rmse_degrees": 2.145902223507115,
+      "baseline_path_length_arbitrary_units": 0.851439671509926,
+      "candidate_path_length_arbitrary_units": 0.752002466849444
+    }
+  ]
+}

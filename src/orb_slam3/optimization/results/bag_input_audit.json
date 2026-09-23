@@ -1,0 +1,162 @@
+{
+  "bag": "/media/hjh/E1/rosbag_recording/navigation_runs/20260923T135935.356089Z_39a8ddbcb33a/bag",
+  "metadata_sha256": "d1499524b335c1cde1fb2bf56ddc75934725af011073ec49829e5f2295e719fb",
+  "duration_seconds": 164.383057508,
+  "topics": {
+    "/arena_path_planner/navigation_path": {
+      "type": "nav_msgs/msg/Path",
+      "count": 7
+    },
+    "/arena_path_planner/map": {
+      "type": "nav_msgs/msg/OccupancyGrid",
+      "count": 1
+    },
+    "/arena_path_planner/arena_path": {
+      "type": "nav_msgs/msg/Path",
+      "count": 7
+    },
+    "/odometry/visual_raw": {
+      "type": "nav_msgs/msg/Odometry",
+      "count": 1960
+    },
+    "/odometry/visual_continuous": {
+      "type": "nav_msgs/msg/Odometry",
+      "count": 1960
+    },
+    "/orbslam3/map_change": {
+      "type": "std_msgs/msg/UInt64",
+      "count": 0
+    },
+    "/waypoint_path": {
+      "type": "nav_msgs/msg/Path",
+      "count": 3
+    },
+    "/camera/camera/imu": {
+      "type": "sensor_msgs/msg/Imu",
+      "count": 32792
+    },
+    "/cup_car_serial/control_telemetry": {
+      "type": "mission_control_interfaces/msg/ControlTelemetry",
+      "count": 1644
+    },
+    "/cup_car_serial/actuator_tracking_status": {
+      "type": "std_msgs/msg/String",
+      "count": 2
+    },
+    "/tracking_state": {
+      "type": "std_msgs/msg/Int32",
+      "count": 2191
+    },
+    "/odometry/fused": {
+      "type": "nav_msgs/msg/Odometry",
+      "count": 4687
+    },
+    "/diagnostics": {
+      "type": "diagnostic_msgs/msg/DiagnosticArray",
+      "count": 2675
+    },
+    "/rosout": {
+      "type": "rcl_interfaces/msg/Log",
+      "count": 349
+    },
+    "/parameter_events": {
+      "type": "rcl_interfaces/msg/ParameterEvent",
+      "count": 47
+    },
+    "/odometry/local_map": {
+      "type": "nav_msgs/msg/Odometry",
+      "count": 3387
+    },
+    "/cup_car_serial/rx": {
+      "type": "std_msgs/msg/String",
+      "count": 34296
+    },
+    "/imu/control": {
+      "type": "sensor_msgs/msg/Imu",
+      "count": 8220
+    },
+    "/tf_static": {
+      "type": "tf2_msgs/msg/TFMessage",
+      "count": 3
+    },
+    "/wheel/odom": {
+      "type": "nav_msgs/msg/Odometry",
+      "count": 8219
+    },
+    "/waypoint_navigation/route_ack": {
+      "type": "std_msgs/msg/UInt64",
+      "count": 1
+    },
+    "/fusion/input/visual_odom": {
+      "type": "nav_msgs/msg/Odometry",
+      "count": 1824
+    },
+    "/waypoint_navigation/motion_hold_state": {
+      "type": "mission_control_interfaces/msg/MotionHoldState",
+      "count": 1
+    },
+    "/cmd_vel_nav": {
+      "type": "geometry_msgs/msg/Twist",
+      "count": 4930
+    },
+    "/waypoint_navigation/current_waypoint": {
+      "type": "std_msgs/msg/Int32",
+      "count": 13
+    },
+    "/tf": {
+      "type": "tf2_msgs/msg/TFMessage",
+      "count": 8074
+    },
+    "/odometry/local": {
+      "type": "nav_msgs/msg/Odometry",
+      "count": 3387
+    },
+    "/cup_car_serial/actuator_healthy": {
+      "type": "std_msgs/msg/Bool",
+      "count": 3288
+    },
+    "/waypoint_navigation/status": {
+      "type": "std_msgs/msg/String",
+      "count": 107
+    },
+    "/odometry/fusion_status": {
+      "type": "std_msgs/msg/String",
+      "count": 1643
+    },
+    "/waypoint_navigation/route_input": {
+      "type": "nav_msgs/msg/Path",
+      "count": 3
+    },
+    "/fusion/input/wheel_odom": {
+      "type": "nav_msgs/msg/Odometry",
+      "count": 7157
+    },
+    "/cup_car_serial/encoder_ticks": {
+      "type": "std_msgs/msg/Int32MultiArray",
+      "count": 8220
+    },
+    "/camera/camera/color/image_raw": {
+      "type": "sensor_msgs/msg/Image",
+      "count": 2431
+    },
+    "/cup_car_serial/connected": {
+      "type": "std_msgs/msg/Bool",
+      "count": 1645
+    },
+    "/camera/camera/color/camera_info": {
+      "type": "sensor_msgs/msg/CameraInfo",
+      "count": 2449
+    },
+    "/odometry/landmark_corrected": {
+      "type": "nav_msgs/msg/Odometry",
+      "count": 4687
+    }
+  },
+  "missing_stereo_images": [
+    "/camera/camera/infra1/image_rect_raw",
+    "/camera/camera/infra2/image_rect_raw"
+  ],
+  "stereo_images_present": false,
+  "stereo_certified": false,
+  "note": "Topic presence alone does not verify timestamps or calibration."
+}

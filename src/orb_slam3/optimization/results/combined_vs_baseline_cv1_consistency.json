@@ -1,0 +1,57 @@
+{
+  "baseline": "baseline_rgb_paced_cv1",
+  "candidate": "combined_rgb_paced_cv1",
+  "frames": 2431,
+  "state_mismatch_count": 15,
+  "first_mismatches": [
+    1824,
+    1825,
+    1826,
+    1827,
+    1828,
+    1829,
+    1830,
+    1831,
+    2124,
+    2125,
+    2126,
+    2168,
+    2169,
+    2170,
+    2171
+  ],
+  "joint_OK_count": 1369,
+  "baseline_process_cpu_s": 85.337819308,
+  "candidate_process_cpu_s": 86.685054514,
+  "process_cpu_reduction_percent": -1.5787082643131445,
+  "all_backends_completed": true,
+  "trajectory_warning": "Baseline/candidate consistency only, not ground-truth ATE or quality acceptance. Monocular arbitrary scale and backend schedule can differ.",
+  "segments": [
+    {
+      "frame_first": 618,
+      "frame_last": 1694,
+      "n": 1077,
+      "direct_camera_center_rmse_baseline_units": 0.04286218959918416,
+      "direct_camera_center_max_baseline_units": 0.08754383414404554,
+      "candidate_to_baseline_sim3_scale": 1.2091102509299314,
+      "sim3_center_rmse_baseline_units": 0.003316956985263956,
+      "sim3_center_max_baseline_units": 0.01527747014772472,
+      "sim3_rotation_rmse_degrees": 0.5500384459130485,
+      "baseline_path_length_arbitrary_units": 0.9088461612920802,
+      "candidate_path_length_arbitrary_units": 0.7624997467193468
+    },
+    {
+      "frame_first": 1832,
+      "frame_last": 2123,
+      "n": 292,
+      "direct_camera_center_rmse_baseline_units": 0.3402107962972043,
+      "direct_camera_center_max_baseline_units": 0.5569187256823824,
+      "candidate_to_baseline_sim3_scale": 1.5754112715922024,
+      "sim3_center_rmse_baseline_units": 0.07390725670304683,
+      "sim3_center_max_baseline_units": 0.20853137387177986,
+      "sim3_rotation_rmse_degrees": 24.310342316834728,
+      "baseline_path_length_arbitrary_units": 1.6025854215157347,
+      "candidate_path_length_arbitrary_units": 0.9388536470698631
+    }
+  ]
+}

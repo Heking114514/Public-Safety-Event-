@@ -1,0 +1,2 @@
+run=0 frames=2431 features=800 levels=6 keypoints=1606529 thread_ms=3.64733 process_ms=3.64745 hash=6004e927758aea37
+run=0 frames=2431 features=800 levels=6 keypoints=1606529 thread_ms=3.71766 process_ms=3.71781 hash=6004e927758aea37

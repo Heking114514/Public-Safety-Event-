@@ -1,0 +1,4 @@
+frames=2431 features=800 levels=6 threads=1
+run=0 frames=2431 keypoints=1606529 baseline_thread_ms=3.99763 candidate_thread_ms=3.66497 reduction=8.32137% baseline_process_ms=3.99778 candidate_process_ms=3.66513
+run=1 frames=2431 keypoints=1606529 baseline_thread_ms=4.03164 candidate_thread_ms=3.69105 reduction=8.44791% baseline_process_ms=4.03181 candidate_process_ms=3.69122
+run=2 frames=2431 keypoints=1606529 baseline_thread_ms=4.07609 candidate_thread_ms=3.69726 reduction=9.29389% baseline_process_ms=4.07625 candidate_process_ms=3.69742

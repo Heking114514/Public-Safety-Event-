@@ -1,0 +1,2 @@
+bag_frames=2431 cases=2761 keypoints=1825584 exact=PASS
+all_cases=2993 keypoints=1988159 bit_exact=PASS

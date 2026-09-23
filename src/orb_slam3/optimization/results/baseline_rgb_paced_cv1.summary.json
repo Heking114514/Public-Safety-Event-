@@ -1,0 +1,22 @@
+{
+  "purpose": "monocular shared-module exploration; not stereo accuracy or CPU acceptance",
+  "frames": 2431,
+  "sensor": "MONOCULAR RGB",
+  "width": 640,
+  "height": 480,
+  "pace": 1,
+  "recorded_span_s": 163.043261528,
+  "cv_default_threads": 16,
+  "cv_effective_threads": 1,
+  "opencv_optimized": true,
+  "process_cpu_s": 85.337819308,
+  "main_thread_cpu_s": 31.47326393,
+  "tracking_calls_thread_cpu_s": 31.400410583,
+  "tracking_cpu_median_ms": 11.219339,
+  "tracking_cpu_p95_ms": 21.734178,
+  "wall_s": 163.306918337,
+  "drain_wall_s": 0.25908371,
+  "backend_drained": true,
+  "backend_finished": true,
+  "tracking_state_counts": {"0":2,"1":971,"2":1369,"3":89}
+}
