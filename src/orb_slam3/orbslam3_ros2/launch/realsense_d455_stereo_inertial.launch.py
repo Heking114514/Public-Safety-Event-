@@ -16,6 +16,7 @@ def generate_launch_description():
     serial_no = LaunchConfiguration("serial_no")
     settings_file = LaunchConfiguration("settings_file")
     infra_profile = LaunchConfiguration("infra_profile")
+    color_profile = LaunchConfiguration("color_profile")
     body_frame_id = LaunchConfiguration("body_frame_id")
     map_frame_id = LaunchConfiguration("map_frame_id")
     visualization = LaunchConfiguration("visualization")
@@ -40,7 +41,9 @@ def generate_launch_description():
             {
                 "serial_no": ParameterValue(serial_no, value_type=str),
                 "initial_reset": ParameterValue(initial_reset, value_type=bool),
-                "enable_color": False,
+                "enable_color": True,
+                "rgb_camera.color_profile": ParameterValue(color_profile, value_type=str),
+                "rgb_camera.color_format": "RGB8",
                 "enable_depth": ParameterValue(enable_depth, value_type=bool),
                 "enable_infra1": True,
                 "enable_infra2": True,
@@ -115,6 +118,11 @@ def generate_launch_description():
                 "infra_profile",
                 default_value="848x480x30",
                 description="D455 infrared stream profile, e.g. 848x480x30 or 848x480x15",
+            ),
+            DeclareLaunchArgument(
+                "color_profile",
+                default_value="640x480x15",
+                description="D455 RGB stream profile for recognition recording",
             ),
             DeclareLaunchArgument("body_frame_id", default_value="camera_link"),
             DeclareLaunchArgument("map_frame_id", default_value="map"),

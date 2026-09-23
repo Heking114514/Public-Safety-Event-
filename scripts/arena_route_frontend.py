@@ -47,7 +47,11 @@ from road_coverage import RoadCoverageLedger
 
 
 SERVICE_NAME = "/arena_path_planner/plan"
-ODOMETRY_TOPIC_CHOICES = {"/odometry/local_map", "/odometry/fused"}
+ODOMETRY_TOPIC_CHOICES = {
+    "/odometry/local_map",
+    "/odometry/fused",
+    "/odometry/landmark_corrected",
+}
 ODOMETRY_TOPIC = os.environ.get("NAVIGATION_ODOM_TOPIC", "/odometry/local_map")
 if ODOMETRY_TOPIC not in ODOMETRY_TOPIC_CHOICES:
     choices = ", ".join(sorted(ODOMETRY_TOPIC_CHOICES))

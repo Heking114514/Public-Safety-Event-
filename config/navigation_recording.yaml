@@ -1,13 +1,11 @@
 # Topics needed for localization output, fusion, controller, actuator, planner
-# diagnosis, and stereo image replay. Point clouds remain excluded because they
-# grow much faster than the rectified stereo images needed for ORB-SLAM3 review.
+# diagnosis, and RGB recognition review. Point clouds and infrared image streams
+# remain excluded to keep navigation bags smaller.
 navigation_recording:
   retain_bags: 3
   topics:
-    - /camera/camera/infra1/camera_info
-    - /camera/camera/infra2/camera_info
-    - /camera/camera/infra1/image_rect_raw
-    - /camera/camera/infra2/image_rect_raw
+    - /camera/camera/color/camera_info
+    - /camera/camera/color/image_raw
     - /camera/camera/imu
     - /odometry/visual_continuous
     - /odometry/visual_raw

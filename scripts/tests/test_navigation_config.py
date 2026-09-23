@@ -39,16 +39,14 @@ class NavigationConfigTest(unittest.TestCase):
         self.assertNotIn("route_mode", settings)
         self.assertEqual("3", settings["retain_bags"])
         self.assertEqual("scripts/waypoints.csv", settings["default_autostart_route"])
-        self.assertEqual("/odometry/fused", settings["odom_topic"])
+        self.assertEqual("/odometry/landmark_corrected", settings["odom_topic"])
         self.assertEqual("848x480x30", settings["camera_infra_profile"])
         self.assertEqual("", settings["orb_settings_file"])
         self.assertEqual("", settings["rmw_implementation"])
         self.assertEqual(len(topics), len(set(topics)))
         required = {
-            "/camera/camera/infra1/camera_info",
-            "/camera/camera/infra2/camera_info",
-            "/camera/camera/infra1/image_rect_raw",
-            "/camera/camera/infra2/image_rect_raw",
+            "/camera/camera/color/camera_info",
+            "/camera/camera/color/image_raw",
             "/camera/camera/imu",
             "/odometry/visual_raw",
             "/wheel/odom",
@@ -71,6 +69,8 @@ class NavigationConfigTest(unittest.TestCase):
             or topic.lower().endswith("/points")
         ]
         self.assertEqual([], point_cloud_topics)
+        self.assertNotIn("/camera/camera/infra1/image_rect_raw", topics)
+        self.assertNotIn("/camera/camera/infra2/image_rect_raw", topics)
         self.assertNotIn("/fusion/input/imu", topics)
         self.assertNotIn("/path", topics)
 
@@ -132,6 +132,21 @@ class NavigationConfigTest(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         settings = {key: value for key, value in records if key != "topic"}
         self.assertEqual("/odometry/fused", settings["odom_topic"])
+
+    def test_odom_topic_allows_landmark_corrected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            startup_data = yaml.safe_load(STARTUP.read_text(encoding="utf-8"))
+            startup_data["navigation_startup"]["odom_topic"] = (
+                "/odometry/landmark_corrected"
+            )
+            startup = root / "startup.yaml"
+            startup.write_text(yaml.safe_dump(startup_data), encoding="utf-8")
+            result, records = read_records(startup=startup)
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        settings = {key: value for key, value in records if key != "topic"}
+        self.assertEqual("/odometry/landmark_corrected", settings["odom_topic"])
 
     def test_shell_loader_does_not_execute_configuration_text(self):
         with tempfile.TemporaryDirectory() as temporary:

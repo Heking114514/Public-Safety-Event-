@@ -9,10 +9,9 @@ navigation_startup:
   camera_serial: ""
   use_imu: true
   use_slam_imu: false
-  # Navigation pose input. Switch this between:
-  #   /odometry/local_map - start-aligned local EKF, bypasses visual global correction
-  #   /odometry/fused - visual-corrected fused output, kept for comparison
-  odom_topic: /odometry/fused
+  # Navigation pose input. Use the landmark-corrected stream by default.
+  # Pass --fused-odom (or --odom-topic /odometry/fused) for a direct fallback.
+  odom_topic: /odometry/landmark_corrected
   # RK3588 trial values:
   #   camera_infra_profile: 848x480x15
   #   orb_settings_file: src/orb_slam3/orbslam3_ros2/config/stereo-inertial/RealSense_D455_rk3588.yaml

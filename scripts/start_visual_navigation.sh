@@ -19,13 +19,35 @@ STARTUP_CONFIG="${NAVIGATION_STARTUP_CONFIG:-${WORKSPACE_ROOT}/config/navigation
 RECORDING_CONFIG="${NAVIGATION_RECORDING_CONFIG:-${WORKSPACE_ROOT}/config/navigation_recording.yaml}"
 DEFAULT_AUTOSTART_ROUTE="${SCRIPT_DIR}/waypoints.csv"
 BUILD_MANIFEST="${NAVIGATION_BUILD_MANIFEST:-${WORKSPACE_ROOT}/build/navigation_runtime_manifest.json}"
-RUNS_ROOT="${NAVIGATION_RUNS_ROOT:-${WORKSPACE_ROOT}/navigation_runs}"
-LATEST_RUN="${NAVIGATION_LATEST_RUN:-${WORKSPACE_ROOT}/latest_navigation_run}"
-LATEST_BAG="${NAVIGATION_LATEST_BAG:-${WORKSPACE_ROOT}/latest_navigation_bag}"
+DEFAULT_RECORDING_ROOT=""
+for candidate in /media/hjh/E/rosbag_recording /media/hjh/Data/rosbag_recording; do
+  candidate_parent="$(dirname -- "${candidate}")"
+  if [[ -d "${candidate_parent}" ]]; then
+    mkdir -p -- "${candidate}" 2>/dev/null || true
+    if [[ -d "${candidate}" && -w "${candidate}" ]]; then
+      DEFAULT_RECORDING_ROOT="${candidate}"
+      break
+    fi
+  fi
+done
+if [[ -n "${DEFAULT_RECORDING_ROOT}" ]]; then
+  RUNS_ROOT="${NAVIGATION_RUNS_ROOT:-${DEFAULT_RECORDING_ROOT}/navigation_runs}"
+  LATEST_RUN="${NAVIGATION_LATEST_RUN:-${DEFAULT_RECORDING_ROOT}/latest_navigation_run}"
+  LATEST_BAG="${NAVIGATION_LATEST_BAG:-${DEFAULT_RECORDING_ROOT}/latest_navigation_bag}"
+else
+  RUNS_ROOT="${NAVIGATION_RUNS_ROOT:-${WORKSPACE_ROOT}/navigation_runs}"
+  LATEST_RUN="${NAVIGATION_LATEST_RUN:-${WORKSPACE_ROOT}/latest_navigation_run}"
+  LATEST_BAG="${NAVIGATION_LATEST_BAG:-${WORKSPACE_ROOT}/latest_navigation_bag}"
+fi
 ROS2_COMMAND="${NAVIGATION_ROS2_COMMAND:-ros2}"
 PGREP_COMMAND="${NAVIGATION_PGREP_COMMAND:-pgrep}"
 CMAKE_COMMAND="${NAVIGATION_CMAKE_COMMAND:-cmake}"
 COLCON_COMMAND="${NAVIGATION_COLCON_COMMAND:-colcon}"
+ROSBAG_COMPRESSION_MODE="${NAVIGATION_ROSBAG_COMPRESSION_MODE:-file}"
+ROSBAG_COMPRESSION_FORMAT="${NAVIGATION_ROSBAG_COMPRESSION_FORMAT:-zstd}"
+ROSBAG_COMPRESSION_QUEUE_SIZE="${NAVIGATION_ROSBAG_COMPRESSION_QUEUE_SIZE:-4}"
+ROSBAG_COMPRESSION_THREADS="${NAVIGATION_ROSBAG_COMPRESSION_THREADS:-2}"
+ROSBAG_MAX_BAG_SIZE="${NAVIGATION_ROSBAG_MAX_BAG_SIZE:-1073741824}"
 
 SERIAL_DEVICE="auto"
 SERIAL_BAUD_RATE="115200"
@@ -33,7 +55,12 @@ USE_SERIAL="true"
 CAMERA_SERIAL=""
 USE_IMU="true"
 USE_SLAM_IMU="false"
-ODOM_TOPIC="/odometry/local_map"
+ODOM_TOPIC="/odometry/landmark_corrected"
+DEFAULT_VISION_CORRECTION_MAP="${WORKSPACE_ROOT}/src/arena_path_planner/config/arena_map.yaml"
+VISION_CORRECTION_MAP_FILE="${NAVIGATION_VISION_CORRECTION_MAP_FILE:-${DEFAULT_VISION_CORRECTION_MAP}}"
+VISION_CORRECTION_IMAGE_TOPIC="${NAVIGATION_VISION_CORRECTION_IMAGE_TOPIC:-/camera/camera/color/image_raw}"
+VISION_CORRECTION_FUSED_TOPIC="${NAVIGATION_VISION_CORRECTION_FUSED_TOPIC:-/odometry/fused}"
+VISION_CORRECTION_OUTPUT_TOPIC="${NAVIGATION_VISION_CORRECTION_OUTPUT_TOPIC:-/odometry/landmark_corrected}"
 CAMERA_INFRA_PROFILE="848x480x30"
 ORB_SETTINGS_FILE=""
 RMW_IMPLEMENTATION_CONFIG=""
@@ -61,6 +88,10 @@ fail() {
   exit 1
 }
 
+if [[ -z "${NAVIGATION_RUNS_ROOT:-}" && -z "${DEFAULT_RECORDING_ROOT}" ]]; then
+  fail "no writable external rosbag directory found; mount /media/hjh/E or /media/hjh/Data writable, or set NAVIGATION_RUNS_ROOT"
+fi
+
 # shellcheck disable=SC1090
 [[ -f "${CONFIG_SHELL_HELPER}" ]] || fail "navigation config shell helper is missing: ${CONFIG_SHELL_HELPER}"
 source "${CONFIG_SHELL_HELPER}"
@@ -82,6 +113,8 @@ Options:
   --no-serial               Run upper-computer algorithms without the controller
   --no-imu                  Disable the D455 IMU and IMU filter
   --slam-imu                Fuse raw D455 IMU measurements inside ORB-SLAM3
+  --odom-topic TOPIC        Navigation odometry topic (local_map, fused, or landmark_corrected)
+  --fused-odom              Bypass vision correction and navigate from /odometry/fused
   --rk3588-profile          Use 848x480x15 and the lighter ORB-SLAM3 RK3588 YAML
   --camera-infra-profile P  D455 infrared profile, e.g. 848x480x15
   --orb-settings-file FILE  ORB-SLAM3 camera/extractor YAML override
@@ -129,6 +162,15 @@ while (($# > 0)); do
       ;;
     --slam-imu)
       USE_SLAM_IMU="true"
+      shift
+      ;;
+    --odom-topic)
+      (($# >= 2)) || fail "--odom-topic requires a topic"
+      ODOM_TOPIC="$2"
+      shift 2
+      ;;
+    --fused-odom)
+      ODOM_TOPIC="/odometry/fused"
       shift
       ;;
     --rk3588-profile)
@@ -211,6 +253,28 @@ done
 [[ "${SERIAL_BAUD_RATE}" =~ ^[0-9]+$ ]] || fail "--serial-baud must be an integer"
 [[ "${CAMERA_INFRA_PROFILE}" =~ ^[1-9][0-9]*x[1-9][0-9]*x[1-9][0-9]*$ ]] ||
   fail "--camera-infra-profile must look like WIDTHxHEIGHTxFPS"
+case "${ODOM_TOPIC}" in
+  /odometry/local_map|/odometry/fused|/odometry/landmark_corrected) ;;
+  *) fail "--odom-topic must be /odometry/local_map, /odometry/fused, or /odometry/landmark_corrected" ;;
+esac
+if [[ "${ODOM_TOPIC}" == "/odometry/landmark_corrected" ]]; then
+  [[ -f "${VISION_CORRECTION_MAP_FILE}" ]] ||
+    fail "vision correction map file not found: ${VISION_CORRECTION_MAP_FILE}"
+fi
+case "${ROSBAG_COMPRESSION_MODE}" in
+  none|file|message) ;;
+  *) fail "NAVIGATION_ROSBAG_COMPRESSION_MODE must be none, file, or message" ;;
+esac
+case "${ROSBAG_COMPRESSION_FORMAT}" in
+  zstd|fake_comp) ;;
+  *) fail "NAVIGATION_ROSBAG_COMPRESSION_FORMAT must be zstd or fake_comp" ;;
+esac
+[[ "${ROSBAG_COMPRESSION_QUEUE_SIZE}" =~ ^[1-9][0-9]*$ ]] ||
+  fail "NAVIGATION_ROSBAG_COMPRESSION_QUEUE_SIZE must be a positive integer"
+[[ "${ROSBAG_COMPRESSION_THREADS}" =~ ^[0-9]+$ ]] ||
+  fail "NAVIGATION_ROSBAG_COMPRESSION_THREADS must be a non-negative integer"
+[[ "${ROSBAG_MAX_BAG_SIZE}" =~ ^[0-9]+$ ]] ||
+  fail "NAVIGATION_ROSBAG_MAX_BAG_SIZE must be a non-negative integer"
 case "${RMW_IMPLEMENTATION_CONFIG}" in
   ""|rmw_fastrtps_cpp|rmw_cyclonedds_cpp) ;;
   *) fail "--rmw-implementation must be rmw_fastrtps_cpp or rmw_cyclonedds_cpp" ;;
@@ -218,6 +282,20 @@ esac
 [[ -f "${ORB_ROOT}/CMakeLists.txt" ]] || fail "ORB_SLAM3 submodule is missing; run: git submodule update --init --recursive"
 [[ "${USE_SLAM_IMU}" == "false" || "${USE_IMU}" == "true" ]] ||
   fail "--slam-imu requires D455 IMU; remove --no-imu"
+
+declare -a ROSBAG_RECORD_OPTIONS=()
+if ((ROSBAG_MAX_BAG_SIZE > 0)); then
+  ROSBAG_RECORD_OPTIONS+=(--max-bag-size "${ROSBAG_MAX_BAG_SIZE}")
+fi
+if [[ "${ROSBAG_COMPRESSION_MODE}" != "none" ]]; then
+  ROSBAG_RECORD_OPTIONS+=(
+    --compression-mode "${ROSBAG_COMPRESSION_MODE}"
+    --compression-format "${ROSBAG_COMPRESSION_FORMAT}"
+    --compression-queue-size "${ROSBAG_COMPRESSION_QUEUE_SIZE}"
+    --compression-threads "${ROSBAG_COMPRESSION_THREADS}"
+  )
+fi
+
 if [[ "${ROUTE_MODE}" == "csv" ]]; then
   [[ -f "${ROUTE_FILE}" ]] || fail "autostart route is missing: ${ROUTE_FILE}"
   ROUTE_FILE="$(readlink -f -- "${ROUTE_FILE}")" ||
@@ -353,6 +431,9 @@ build_orb_slam3() {
 build_ros_packages() {
   log "Building ROS 2 nodes"
   local packages=(mission_control_interfaces imu_rpy_filter wheel_odometry fused_odometry visual_navigation)
+  if [[ -d "${WORKSPACE_ROOT}/src/vision_correction" ]]; then
+    packages+=(vision_correction)
+  fi
   if [[ "${USE_SERIAL}" == "true" ]]; then
     packages+=(cup_car_serial)
   fi
@@ -394,6 +475,13 @@ runtime_artifacts() {
     "waypoint_launch=${WORKSPACE_ROOT}/install/visual_navigation/share/visual_navigation/launch/waypoint_navigation.launch.py"
     "navigation_config=${WORKSPACE_ROOT}/install/visual_navigation/share/visual_navigation/config/waypoint_navigation.yaml"
   )
+  if [[ "${ODOM_TOPIC}" == "/odometry/landmark_corrected" ]]; then
+    RUNTIME_ARTIFACTS+=(
+      "vision_correction_node=${WORKSPACE_ROOT}/install/vision_correction/lib/vision_correction/vision_correction_node"
+      "vision_correction_launch=${WORKSPACE_ROOT}/install/vision_correction/share/vision_correction/launch/vision_correction.launch.py"
+      "vision_correction_config=${WORKSPACE_ROOT}/install/vision_correction/share/vision_correction/config/vision_correction.yaml"
+    )
+  fi
   if [[ "${USE_IMU}" == "true" ]]; then
     RUNTIME_ARTIFACTS+=(
       "imu_rpy_filter=${WORKSPACE_ROOT}/install/imu_rpy_filter/lib/imu_rpy_filter/imu_rpy_filter_node"
@@ -551,6 +639,11 @@ else
 fi
 log "IMU filter: ${USE_IMU}; SLAM IMU fusion: ${USE_SLAM_IMU}; odom_topic: ${ODOM_TOPIC}; CLAHE: ${EQUALIZE}; visualization: ${VISUALIZATION}; autostart: ${AUTOSTART}"
 log "Camera infra profile: ${CAMERA_INFRA_PROFILE}; ORB settings: ${ORB_SETTINGS_FILE:-launch default}"
+VISION_CORRECTION_STATUS="bypassed"
+if [[ "${ODOM_TOPIC}" == "/odometry/landmark_corrected" ]]; then
+  VISION_CORRECTION_STATUS="enabled"
+fi
+log "Vision correction: ${VISION_CORRECTION_STATUS}; map: ${VISION_CORRECTION_MAP_FILE}"
 if [[ "${USE_SERIAL}" == "true" ]]; then
   log "Controller serial: ${SERIAL_DEVICE} at ${SERIAL_BAUD_RATE} baud"
   LAUNCH_FILE="visual_navigation_serial_bringup.launch.py"
@@ -563,6 +656,13 @@ else
   REQUIRE_ACTUATOR_HEALTH="false"
 fi
 log "Actuator health gate: require_actuator_health=${REQUIRE_ACTUATOR_HEALTH}"
+
+VISION_CORRECTION_LAUNCH_ARGS=(
+  "map_file:=${VISION_CORRECTION_MAP_FILE}"
+  "image_topic:=${VISION_CORRECTION_IMAGE_TOPIC}"
+  "fused_topic:=${VISION_CORRECTION_FUSED_TOPIC}"
+  "output_topic:=${VISION_CORRECTION_OUTPUT_TOPIC}"
+)
 
 ODOMETRY_LAUNCH_ARGS=(
   "serial_no:=_${CAMERA_SERIAL}"
@@ -617,6 +717,14 @@ declare -a RUN_INPUT_FILES=(
   "waypoint_launch=${WORKSPACE_ROOT}/install/visual_navigation/share/visual_navigation/launch/waypoint_navigation.launch.py"
   "navigation_config=${WORKSPACE_ROOT}/install/visual_navigation/share/visual_navigation/config/waypoint_navigation.yaml"
 )
+if [[ "${ODOM_TOPIC}" == "/odometry/landmark_corrected" ]]; then
+  RUN_INPUT_FILES+=(
+    "vision_correction_node=${WORKSPACE_ROOT}/install/vision_correction/lib/vision_correction/vision_correction_node"
+    "vision_correction_launch=${WORKSPACE_ROOT}/install/vision_correction/share/vision_correction/launch/vision_correction.launch.py"
+    "vision_correction_config=${WORKSPACE_ROOT}/install/vision_correction/share/vision_correction/config/vision_correction.yaml"
+    "vision_correction_map=${VISION_CORRECTION_MAP_FILE}"
+  )
+fi
 if [[ -n "${ROUTE_FILE}" ]]; then
   RUN_INPUT_FILES+=("route_file=${ROUTE_FILE}")
 fi
@@ -656,6 +764,11 @@ declare -a CREATE_RUN_ARGUMENTS=(
   --setting "use_imu=${USE_IMU}"
   --setting "use_slam_imu=${USE_SLAM_IMU}"
   --setting "odom_topic=${ODOM_TOPIC}"
+  --setting "vision_correction_enabled=$([[ "${ODOM_TOPIC}" == "/odometry/landmark_corrected" ]] && printf true || printf false)"
+  --setting "vision_correction_map_file=${VISION_CORRECTION_MAP_FILE}"
+  --setting "vision_correction_image_topic=${VISION_CORRECTION_IMAGE_TOPIC}"
+  --setting "vision_correction_fused_topic=${VISION_CORRECTION_FUSED_TOPIC}"
+  --setting "vision_correction_output_topic=${VISION_CORRECTION_OUTPUT_TOPIC}"
   --setting "camera_infra_profile=${CAMERA_INFRA_PROFILE}"
   --setting "orb_settings_file=${ORB_SETTINGS_FILE}"
   --setting "rmw_implementation=${RMW_IMPLEMENTATION_EFFECTIVE}"
@@ -667,6 +780,12 @@ declare -a CREATE_RUN_ARGUMENTS=(
   --setting "build_enabled=${BUILD_IF_NEEDED}"
   --setting "build_jobs=${BUILD_JOBS}"
   --setting "bag_retention=${RETAIN_BAGS}"
+  --setting "bag_runs_root=${RUNS_ROOT}"
+  --setting "bag_compression_mode=${ROSBAG_COMPRESSION_MODE}"
+  --setting "bag_compression_format=${ROSBAG_COMPRESSION_FORMAT}"
+  --setting "bag_compression_queue_size=${ROSBAG_COMPRESSION_QUEUE_SIZE}"
+  --setting "bag_compression_threads=${ROSBAG_COMPRESSION_THREADS}"
+  --setting "bag_max_bag_size=${ROSBAG_MAX_BAG_SIZE}"
   --setting "launch_file=${LAUNCH_FILE}"
   --setting "route_source=${ROUTE_SOURCE}"
 )
@@ -866,6 +985,16 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+if [[ "${ODOM_TOPIC}" == "/odometry/landmark_corrected" ]]; then
+  log "Starting vision correction before fused odometry"
+  "${ROS2_COMMAND}" launch vision_correction vision_correction.launch.py \
+    "${VISION_CORRECTION_LAUNCH_ARGS[@]}" {RUN_LOCK_FD}>&- &
+  STACK_PIDS+=("$!")
+  # Let the correction launch process enter its executor before publishers
+  # and navigation are started. This also keeps startup ordering deterministic.
+  sleep 0.2
+fi
+
 "${ROS2_COMMAND}" launch fused_odometry odometry_bringup.launch.py \
   "${ODOMETRY_LAUNCH_ARGS[@]}" {RUN_LOCK_FD}>&- &
 STACK_PIDS+=("$!")
@@ -876,6 +1005,7 @@ STACK_PIDS+=("$!")
 
 log "Recording latest navigation data: ${ROSBAG_OUTPUT}"
 "${ROS2_COMMAND}" bag record --output "${ROSBAG_OUTPUT}" \
+  "${ROSBAG_RECORD_OPTIONS[@]}" \
   "${ROSBAG_TOPICS[@]}" {RUN_LOCK_FD}>&- &
 STACK_PIDS+=("$!")
 "${RUN_MANIFEST_HELPER}" mark-running --run-dir "${RUN_DIR}" ||

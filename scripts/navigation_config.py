@@ -33,7 +33,11 @@ STARTUP_KEYS = {
     "build_jobs": int,
     "default_autostart_route": str,
 }
-ODOM_TOPIC_CHOICES = {"/odometry/local_map", "/odometry/fused"}
+ODOM_TOPIC_CHOICES = {
+    "/odometry/local_map",
+    "/odometry/fused",
+    "/odometry/landmark_corrected",
+}
 RMW_IMPLEMENTATION_CHOICES = {"", "rmw_fastrtps_cpp", "rmw_cyclonedds_cpp"}
 CAMERA_PROFILE_PATTERN = re.compile(r"^[1-9][0-9]*x[1-9][0-9]*x[1-9][0-9]*$")
 

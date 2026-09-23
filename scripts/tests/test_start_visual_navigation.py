@@ -237,7 +237,8 @@ exit 2
             failed_manifest["effective_settings"]["route_source"],
         )
         self.assertEqual(
-            "/odometry/fused", failed_manifest["effective_settings"]["odom_topic"]
+            "/odometry/landmark_corrected",
+            failed_manifest["effective_settings"]["odom_topic"]
         )
         self.assertEqual(
             "848x480x15",
@@ -265,6 +266,18 @@ exit 2
             "038122250473", failed_manifest["effective_settings"]["camera_serial"]
         )
         self.assertEqual("3", failed_manifest["effective_settings"]["bag_retention"])
+        self.assertEqual(
+            str(self.runs), failed_manifest["effective_settings"]["bag_runs_root"]
+        )
+        self.assertEqual(
+            "file", failed_manifest["effective_settings"]["bag_compression_mode"]
+        )
+        self.assertEqual(
+            "zstd", failed_manifest["effective_settings"]["bag_compression_format"]
+        )
+        self.assertEqual(
+            "1073741824", failed_manifest["effective_settings"]["bag_max_bag_size"]
+        )
         runtime_inputs = failed_manifest["runtime_inputs"]
         self.assertEqual(
             str(WORKSPACE / "config" / "navigation_startup.yaml"),
@@ -294,8 +307,27 @@ exit 2
             if event.startswith("ros2 launch visual_navigation ")
         )
         self.assertIn("autostart:=false", navigation_launch)
-        self.assertIn("odom_topic:=/odometry/fused", navigation_launch)
+        self.assertIn("odom_topic:=/odometry/landmark_corrected", navigation_launch)
         self.assertNotIn("route_file:=", navigation_launch)
+        vision_launch_index = next(
+            index for index, event in enumerate(first_events)
+            if event.startswith("ros2 launch vision_correction ")
+        )
+        odometry_launch_index = next(
+            index for index, event in enumerate(first_events)
+            if event.startswith("ros2 launch fused_odometry ")
+        )
+        navigation_launch_index = first_events.index(navigation_launch)
+        self.assertLess(vision_launch_index, odometry_launch_index)
+        self.assertLess(vision_launch_index, navigation_launch_index)
+        vision_launch = first_events[vision_launch_index]
+        self.assertIn(
+            "map_file:=" + str(WORKSPACE / "src/arena_path_planner/config/arena_map.yaml"),
+            vision_launch,
+        )
+        self.assertIn("image_topic:=/camera/camera/color/image_raw", vision_launch)
+        self.assertIn("fused_topic:=/odometry/fused", vision_launch)
+        self.assertIn("output_topic:=/odometry/landmark_corrected", vision_launch)
         odometry_launch = next(
             event for event in first_events
             if event.startswith("ros2 launch fused_odometry ")
@@ -447,12 +479,40 @@ exit 2
         self.assertIn("autostart:=true", navigation_launch)
         self.assertIn(f"route_file:={expected_route}", navigation_launch)
         bag_record = next(event for event in events if event.startswith("ros2 bag record "))
-        self.assertIn("/camera/camera/infra1/image_rect_raw", bag_record)
-        self.assertIn("/camera/camera/infra2/image_rect_raw", bag_record)
-        self.assertIn("/camera/camera/infra1/camera_info", bag_record)
+        self.assertIn("--max-bag-size 1073741824", bag_record)
+        self.assertIn("--compression-mode file", bag_record)
+        self.assertIn("--compression-format zstd", bag_record)
+        self.assertIn("/camera/camera/color/image_raw", bag_record)
+        self.assertIn("/camera/camera/color/camera_info", bag_record)
+        self.assertNotIn("/camera/camera/infra1/image_rect_raw", bag_record)
+        self.assertNotIn("/camera/camera/infra2/image_rect_raw", bag_record)
         self.assertIn("/parameter_events", bag_record)
         self.assertIn("/rosout", bag_record)
         self.assertNotIn("/fusion/input/imu", bag_record)
+
+    def test_fused_odom_option_bypasses_vision_correction(self):
+        result = subprocess.run(
+            self.arguments() + ["--fused-odom"],
+            env=self.environment(MOCK_BAG_EXIT="37"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(37, result.returncode, result.stderr)
+        manifest = self.latest_manifest()
+        self.assertEqual(
+            "/odometry/fused", manifest["effective_settings"]["odom_topic"]
+        )
+        events = self.events.read_text().splitlines()
+        self.assertFalse(
+            any(event.startswith("ros2 launch vision_correction ") for event in events)
+        )
+        navigation_launch = next(
+            event for event in events
+            if event.startswith("ros2 launch visual_navigation ")
+        )
+        self.assertIn("odom_topic:=/odometry/fused", navigation_launch)
 
     def test_navigation_entry_records_explicit_actuator_gate(self):
         result = subprocess.run(
