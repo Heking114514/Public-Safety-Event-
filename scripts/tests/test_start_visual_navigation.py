@@ -237,7 +237,7 @@ exit 2
             failed_manifest["effective_settings"]["route_source"],
         )
         self.assertEqual(
-            "/odometry/landmark_corrected",
+            "/odometry/fused",
             failed_manifest["effective_settings"]["odom_topic"]
         )
         self.assertEqual(
@@ -307,27 +307,14 @@ exit 2
             if event.startswith("ros2 launch visual_navigation ")
         )
         self.assertIn("autostart:=false", navigation_launch)
-        self.assertIn("odom_topic:=/odometry/landmark_corrected", navigation_launch)
+        self.assertIn("odom_topic:=/odometry/fused", navigation_launch)
         self.assertNotIn("route_file:=", navigation_launch)
-        vision_launch_index = next(
-            index for index, event in enumerate(first_events)
-            if event.startswith("ros2 launch vision_correction ")
+        self.assertFalse(
+            any(
+                event.startswith("ros2 launch vision_correction ")
+                for event in first_events
+            )
         )
-        odometry_launch_index = next(
-            index for index, event in enumerate(first_events)
-            if event.startswith("ros2 launch fused_odometry ")
-        )
-        navigation_launch_index = first_events.index(navigation_launch)
-        self.assertLess(vision_launch_index, odometry_launch_index)
-        self.assertLess(vision_launch_index, navigation_launch_index)
-        vision_launch = first_events[vision_launch_index]
-        self.assertIn(
-            "map_file:=" + str(WORKSPACE / "src/arena_path_planner/config/arena_map.yaml"),
-            vision_launch,
-        )
-        self.assertIn("image_topic:=/camera/camera/color/image_raw", vision_launch)
-        self.assertIn("fused_topic:=/odometry/fused", vision_launch)
-        self.assertIn("output_topic:=/odometry/landmark_corrected", vision_launch)
         odometry_launch = next(
             event for event in first_events
             if event.startswith("ros2 launch fused_odometry ")

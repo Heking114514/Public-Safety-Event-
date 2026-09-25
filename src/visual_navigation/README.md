@@ -1,6 +1,6 @@
 # visual_navigation
 
-该功能包默认使用起点对齐后的本地里程计 `/odometry/local_map` 和字符串健康状态 `/odometry/fusion_status`，按照收到的路线依次导航，并通过 `/cmd_vel_nav` 输出速度命令。统一启动入口可通过 `config/navigation_startup.yaml` 的 `odom_topic` 在 `/odometry/local_map` 和 `/odometry/fused` 之间切换。它不依赖具体的视觉、IMU、轮速或融合实现。
+该功能包默认使用起点对齐后的本地里程计 `/odometry/local_map` 和字符串健康状态 `/odometry/fusion_status`，按照收到的路线依次导航，并通过 `/cmd_vel_nav` 输出速度命令。统一启动入口通过 `config/navigation_startup.yaml` 的 `odom_topic` 选择位姿来源，默认是 `/odometry/fused`；传 `--odom-topic /odometry/landmark_corrected` 可改用 `vision_correction` 的地标修正流。它不依赖具体的视觉、IMU、轮速或融合实现。
 
 详细文档：
 

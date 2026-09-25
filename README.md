@@ -67,7 +67,7 @@ ros2 pkg list | grep -E 'orbslam3|visual_navigation|cup_car_serial|realsense2_ca
 该包装脚本启动 C++ 规划服务后执行 `scripts/arena_route_frontend.py`；不要绕过它单独运行 GUI，否则界面没有规划服务可调用。
 两个入口共用工作空间构建锁，即使两个终端紧接着启动，也不会并发写入 `build/`、`install/` 和 `log/`。规划入口会等待旧后端完全退出后再发布新服务，但不会关闭已经打开的规划、路线或地图 GUI。
 
-统一入口的设备、传感器和构建默认值集中在 `config/navigation_startup.yaml`；录包保留数量和 topic 清单集中在 `config/navigation_recording.yaml`。两者分别由独立读取器校验，算法节点仍使用各功能包自己的 YAML，避免启动编排与融合、控制实现互相依赖。无参数 GUI 模式和 `--autostart` CSV 模式不允许由 YAML 改写，相关命令行选项优先于 YAML 默认值。`navigation_startup.odom_topic` 可在 `/odometry/local_map` 和 `/odometry/fused` 之间切换；导航和规划 GUI 会共用这个选择，录包仍同时保留两个 topic 便于对比。
+统一入口的设备、传感器和构建默认值集中在 `config/navigation_startup.yaml`；录包保留数量和 topic 清单集中在 `config/navigation_recording.yaml`。两者分别由独立读取器校验，算法节点仍使用各功能包自己的 YAML，避免启动编排与融合、控制实现互相依赖。无参数 GUI 模式和 `--autostart` CSV 模式不允许由 YAML 改写，相关命令行选项优先于 YAML 默认值。`navigation_startup.odom_topic` 默认是 `/odometry/fused`，导航、控制与规划 GUI 共用这个选择；传 `--odom-topic /odometry/landmark_corrected` 可切回地标修正流，此时会额外启动 `vision_correction_node`。录包仍同时保留融合与修正两个 topic 便于对比。
 
 固定 CSV 自动运行时，先检查并编辑 `scripts/waypoints.csv`，再使用：
 

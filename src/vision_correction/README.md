@@ -2,6 +2,11 @@
 
 Realtime RGB landmark correction for `/odometry/fused`.
 
+Not part of the default navigation path. The unified entry
+(`scripts/start_visual_navigation.sh`) defaults to `odom_topic=/odometry/fused`
+and only starts this node when explicitly asked for the corrected stream, so the
+correction runs solely through the opt-in paths documented below.
+
 The node subscribes to:
 
 - `/camera/camera/color/image_raw`

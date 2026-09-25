@@ -52,7 +52,7 @@ ODOMETRY_TOPIC_CHOICES = {
     "/odometry/fused",
     "/odometry/landmark_corrected",
 }
-ODOMETRY_TOPIC = os.environ.get("NAVIGATION_ODOM_TOPIC", "/odometry/local_map")
+ODOMETRY_TOPIC = os.environ.get("NAVIGATION_ODOM_TOPIC", "/odometry/fused")
 if ODOMETRY_TOPIC not in ODOMETRY_TOPIC_CHOICES:
     choices = ", ".join(sorted(ODOMETRY_TOPIC_CHOICES))
     raise SystemExit(f"NAVIGATION_ODOM_TOPIC must be one of: {choices}")

@@ -39,7 +39,7 @@ class NavigationConfigTest(unittest.TestCase):
         self.assertNotIn("route_mode", settings)
         self.assertEqual("3", settings["retain_bags"])
         self.assertEqual("scripts/waypoints.csv", settings["default_autostart_route"])
-        self.assertEqual("/odometry/landmark_corrected", settings["odom_topic"])
+        self.assertEqual("/odometry/fused", settings["odom_topic"])
         self.assertEqual("848x480x30", settings["camera_infra_profile"])
         self.assertEqual("", settings["orb_settings_file"])
         self.assertEqual("", settings["rmw_implementation"])

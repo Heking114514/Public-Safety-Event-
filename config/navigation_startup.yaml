@@ -9,9 +9,10 @@ navigation_startup:
   camera_serial: ""
   use_imu: true
   use_slam_imu: false
-  # Navigation pose input. Use the landmark-corrected stream by default.
-  # Pass --fused-odom (or --odom-topic /odometry/fused) for a direct fallback.
-  odom_topic: /odometry/landmark_corrected
+  # Navigation pose input. Navigation and control consume the fused stream by
+  # default; pass --odom-topic /odometry/landmark_corrected to opt back into
+  # vision correction, which also starts vision_correction_node.
+  odom_topic: /odometry/fused
   # RK3588 trial values:
   #   camera_infra_profile: 848x480x15
   #   orb_settings_file: src/orb_slam3/orbslam3_ros2/config/stereo-inertial/RealSense_D455_rk3588.yaml
