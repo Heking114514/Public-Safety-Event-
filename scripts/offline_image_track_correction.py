@@ -10,6 +10,7 @@ import math
 import sqlite3
 import subprocess
 import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,6 +25,12 @@ import yaml  # noqa: E402
 from nav_msgs.msg import Odometry  # noqa: E402
 from rclpy.serialization import deserialize_message, serialize_message  # noqa: E402
 from sensor_msgs.msg import CameraInfo, Image  # noqa: E402
+from tf2_msgs.msg import TFMessage  # noqa: E402
+
+VISION_SOURCE = Path(__file__).resolve().parents[1] / "src" / "vision_correction"
+if str(VISION_SOURCE) not in sys.path:
+    sys.path.insert(0, str(VISION_SOURCE))
+from vision_correction import road_detector  # noqa: E402
 
 
 DEFAULT_BAG = Path("/media/hjh/Data/rosbag_recording/latest_navigation_bag")
@@ -81,6 +88,8 @@ class CameraModel:
     y: float = 0.0
     z: float = 0.121
     pitch_down: float = 0.0
+    distortion: np.ndarray | None = None
+    color_to_base: np.ndarray | None = None
 
 
 @dataclass
@@ -213,21 +222,207 @@ def load_odometry(db_paths: list[Path], topic: str) -> list[PoseSample]:
     return samples
 
 
-def load_camera_model(db_paths: list[Path], topic: str, fallback: CameraModel) -> CameraModel:
+def quaternion_matrix(q) -> np.ndarray:
+    norm = math.sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w)
+    if norm <= 1.0e-12:
+        return np.eye(3, dtype=np.float64)
+    x = q.x / norm
+    y = q.y / norm
+    z = q.z / norm
+    w = q.w / norm
+    return np.array(
+        [
+            [
+                1.0 - 2.0 * (y * y + z * z),
+                2.0 * (x * y - z * w),
+                2.0 * (x * z + y * w),
+            ],
+            [
+                2.0 * (x * y + z * w),
+                1.0 - 2.0 * (x * x + z * z),
+                2.0 * (y * z - x * w),
+            ],
+            [
+                2.0 * (x * z - y * w),
+                2.0 * (y * z + x * w),
+                1.0 - 2.0 * (x * x + y * y),
+            ],
+        ],
+        dtype=np.float64,
+    )
+
+
+def load_static_transforms(
+    db_paths: list[Path],
+    topic: str,
+) -> dict[tuple[str, str], tuple[np.ndarray, np.ndarray]]:
+    result: dict[tuple[str, str], tuple[np.ndarray, np.ndarray]] = {}
+    for timestamp_ns, data in iter_topic(db_paths, topic):
+        del timestamp_ns
+        message = deserialize_message(data, TFMessage)
+        for transform in message.transforms:
+            parent = transform.header.frame_id.lstrip("/")
+            child = transform.child_frame_id.lstrip("/")
+            if not parent or not child:
+                continue
+            translation = np.array(
+                [
+                    float(transform.transform.translation.x),
+                    float(transform.transform.translation.y),
+                    float(transform.transform.translation.z),
+                ],
+                dtype=np.float64,
+            )
+            result[(parent, child)] = (
+                translation,
+                quaternion_matrix(transform.transform.rotation),
+            )
+    return result
+
+
+def compose_transform(
+    first: tuple[np.ndarray, np.ndarray],
+    second: tuple[np.ndarray, np.ndarray],
+) -> tuple[np.ndarray, np.ndarray]:
+    first_translation, first_rotation = first
+    second_translation, second_rotation = second
+    return (
+        first_translation + first_rotation @ second_translation,
+        first_rotation @ second_rotation,
+    )
+
+
+def lookup_transform(
+    transforms: dict[tuple[str, str], tuple[np.ndarray, np.ndarray]],
+    parent: str,
+    child: str,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    direct = transforms.get((parent, child))
+    if direct is not None:
+        return direct
+    reverse = transforms.get((child, parent))
+    if reverse is None:
+        return None
+    translation, rotation = reverse
+    return -rotation.T @ translation, rotation.T
+
+
+def load_camera_model(
+    db_paths: list[Path],
+    topic: str,
+    fallback: CameraModel,
+    tf_topic: str = "/tf_static",
+) -> CameraModel:
     for timestamp_ns, data in iter_topic(db_paths, topic):
         del timestamp_ns
         msg = deserialize_message(data, CameraInfo)
-        fx = float(msg.p[0] if msg.p[0] > 0.0 else msg.k[0])
-        fy = float(msg.p[5] if msg.p[5] > 0.0 else msg.k[4])
-        cx = float(msg.p[2] if msg.p[2] != 0.0 else msg.k[2])
-        cy = float(msg.p[6] if msg.p[6] != 0.0 else msg.k[5])
+        fx = float(msg.k[0])
+        fy = float(msg.k[4])
+        cx = float(msg.k[2])
+        cy = float(msg.k[5])
         if fx > 0.0 and fy > 0.0 and math.isfinite(cx) and math.isfinite(cy):
             fallback.fx = fx
             fallback.fy = fy
             fallback.cx = cx
             fallback.cy = cy
+            fallback.distortion = np.asarray(msg.d, dtype=np.float64)
+            fallback.color_to_base = road_detector.DEFAULT_OPTICAL_TO_BASE.copy()
+
+            transforms = load_static_transforms(db_paths, tf_topic) if tf_topic else {}
+            base_to_link = lookup_transform(
+                transforms,
+                "base_link",
+                "camera_link",
+            )
+            link_to_color = lookup_transform(
+                transforms,
+                "camera_link",
+                "camera_color_frame",
+            )
+            color_to_optical = lookup_transform(
+                transforms,
+                "camera_color_frame",
+                "camera_color_optical_frame",
+            )
+            if base_to_link is not None:
+                link_translation, link_rotation = base_to_link
+                camera_translation = np.array(
+                    [
+                        link_translation[0],
+                        link_translation[1],
+                        fallback.z + link_translation[2],
+                    ],
+                    dtype=np.float64,
+                )
+                optical_to_base = link_rotation @ road_detector.DEFAULT_OPTICAL_TO_BASE
+                if link_to_color is not None:
+                    color_translation, color_rotation = link_to_color
+                    camera_translation += link_rotation @ color_translation
+                    optical_to_base = (
+                        link_rotation
+                        @ color_rotation
+                        @ road_detector.DEFAULT_OPTICAL_TO_BASE
+                    )
+                    if color_to_optical is not None:
+                        camera_translation += (
+                            link_rotation
+                            @ color_rotation
+                            @ color_to_optical[0]
+                        )
+                        optical_to_base = (
+                            link_rotation
+                            @ color_rotation
+                            @ color_to_optical[1]
+                        )
+                fallback.x = float(camera_translation[0])
+                fallback.y = float(camera_translation[1])
+                fallback.z = float(camera_translation[2])
+                fallback.color_to_base = optical_to_base
             return fallback
     return fallback
+
+
+def camera_geometry(camera: CameraModel) -> road_detector.CameraGeometry:
+    return road_detector.CameraGeometry(
+        fx=float(camera.fx),
+        fy=float(camera.fy),
+        cx=float(camera.cx),
+        cy=float(camera.cy),
+        camera_x=float(camera.x),
+        camera_y=float(camera.y),
+        camera_z=float(camera.z),
+        distortion=camera.distortion,
+        color_to_base=camera.color_to_base,
+    )
+
+
+def image_to_bgr(message: Image) -> np.ndarray | None:
+    data = np.frombuffer(message.data, dtype=np.uint8)
+    if message.encoding in ("rgb8", "bgr8"):
+        channels = 3
+        row_width = message.step // channels
+        image = data.reshape((message.height, row_width, channels))[
+            :, : message.width
+        ]
+        if message.encoding == "rgb8":
+            return cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+        return image.copy()
+    if message.encoding in ("mono8", "8UC1"):
+        image = data.reshape((message.height, message.step))[:, : message.width]
+        return cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    if message.encoding in ("rgba8", "bgra8"):
+        channels = 4
+        row_width = message.step // channels
+        image = data.reshape((message.height, row_width, channels))[
+            :, : message.width
+        ]
+        code = (
+            cv2.COLOR_RGBA2BGR
+            if message.encoding == "rgba8"
+            else cv2.COLOR_BGRA2BGR
+        )
+        return cv2.cvtColor(image, code)
+    return None
 
 
 def interpolate_pose(samples: list[PoseSample], stamp: float, tolerance: float) -> PoseSample | None:
@@ -377,62 +572,28 @@ def image_to_gray(msg: Image) -> np.ndarray | None:
     return None
 
 
-def detect_ground_segments(gray: np.ndarray, camera: CameraModel, args) -> tuple[list[GroundSegment], np.ndarray]:
-    denoised = cv2.bilateralFilter(gray, 7, 45, 45)
-    blackhat_kernel = cv2.getStructuringElement(
-        cv2.MORPH_RECT, (args.blackhat_size, args.blackhat_size)
+def detect_ground_segments(
+    bgr: np.ndarray,
+    camera: CameraModel,
+    args,
+) -> tuple[list[GroundSegment], np.ndarray]:
+    detected, mask, _, _ = road_detector.detect_ground_segments(
+        bgr if bgr.ndim == 3 else cv2.cvtColor(bgr, cv2.COLOR_GRAY2BGR),
+        camera_geometry(camera),
+        args,
     )
-    blackhat = cv2.morphologyEx(denoised, cv2.MORPH_BLACKHAT, blackhat_kernel)
-    mask = cv2.threshold(blackhat, args.blackhat_threshold, 255, cv2.THRESH_BINARY)[1]
-    if args.use_fixed_dark:
-        fixed = cv2.threshold(denoised, args.max_dark_value, 255, cv2.THRESH_BINARY_INV)[1]
-        mask = cv2.bitwise_or(mask, fixed)
-    if args.use_adaptive_dark:
-        adaptive = cv2.adaptiveThreshold(
-            denoised,
-            255,
-            cv2.ADAPTIVE_THRESH_MEAN_C,
-            cv2.THRESH_BINARY_INV,
-            args.adaptive_block_size | 1,
-            args.adaptive_c,
+    segments = [
+        GroundSegment(
+            item.ax,
+            item.ay,
+            item.bx,
+            item.by,
+            item.length,
+            item.yaw,
         )
-        mask = cv2.bitwise_or(mask, adaptive)
-    roi_top = int(round(mask.shape[0] * args.roi_top_fraction))
-    mask[:roi_top, :] = 0
-    roi_bottom = int(round(mask.shape[0] * args.roi_bottom_fraction))
-    if roi_bottom < mask.shape[0]:
-        mask[max(0, roi_bottom) :, :] = 0
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (args.morphology_size, args.morphology_size))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-    lines = cv2.HoughLinesP(
-        mask,
-        1.0,
-        np.pi / 180.0,
-        args.hough_threshold,
-        minLineLength=args.min_line_length_px,
-        maxLineGap=args.max_line_gap_px,
-    )
-    limits = {
-        "min_ray_down_z": args.min_ray_down_z,
-        "min_x": args.min_ground_x,
-        "max_x": args.max_ground_x,
-        "max_abs_y": args.max_abs_ground_y,
-    }
-    segments: list[GroundSegment] = []
-    if lines is None:
-        return segments, mask
-    for raw in lines[:, 0, :]:
-        p1 = project_pixel(camera, float(raw[0]), float(raw[1]), limits)
-        p2 = project_pixel(camera, float(raw[2]), float(raw[3]), limits)
-        if p1 is None or p2 is None:
-            continue
-        length = math.hypot(p2[0] - p1[0], p2[1] - p1[1])
-        if length < args.min_ground_segment_length:
-            continue
-        segments.append(GroundSegment(p1[0], p1[1], p2[0], p2[1], length, math.atan2(p2[1] - p1[1], p2[0] - p1[0])))
-    segments.sort(key=lambda segment: segment.length, reverse=True)
-    return segments[: args.max_segments], mask
+        for item in detected
+    ]
+    return segments, mask
 
 
 def match_segments(
@@ -572,11 +733,12 @@ def process_images(db_paths: list[Path], fused: list[PoseSample], features: list
             continue
         frame_dt = 0.0 if previous_frame_stamp is None else max(0.0, stamp - previous_frame_stamp)
         previous_frame_stamp = stamp
-        gray = image_to_gray(msg)
-        if gray is None:
+        bgr = image_to_bgr(msg)
+        if bgr is None:
             continue
+        bgr = road_detector.undistort_bgr(bgr, camera_geometry(camera))
         current = corrected_pose(fused_pose, ox, oy, oyaw)
-        segments, mask = detect_ground_segments(gray, camera, args)
+        segments, mask = detect_ground_segments(bgr, camera, args)
         fit = match_segments(current, segments, features, args)
         rx = fit.residual_x
         ry = fit.residual_y
@@ -638,7 +800,7 @@ def process_images(db_paths: list[Path], fused: list[PoseSample], features: list
             )
         )
         if debug_written < args.debug_images and (matches > 0 or debug_written == 0):
-            overlay = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+            overlay = bgr.copy()
             overlay[mask > 0] = (0, 0, 255)
             cv2.imwrite(str(out_debug / f"debug_{debug_written:02d}_{matches:02d}.png"), overlay)
             debug_written += 1
@@ -825,33 +987,41 @@ def parse_args():
     parser.add_argument("--output-odom-topic", default="/odometry/definitely_correct")
     parser.add_argument("--overwrite-output-bag", action="store_true")
     parser.add_argument("--fused-topic", default="/odometry/fused")
-    parser.add_argument("--left-image-topic", default="/camera/camera/infra1/image_rect_raw")
-    parser.add_argument("--left-camera-info-topic", default="/camera/camera/infra1/camera_info")
+    parser.add_argument("--left-image-topic", default="/camera/camera/color/image_raw")
+    parser.add_argument("--left-camera-info-topic", default="/camera/camera/color/camera_info")
     parser.add_argument("--sync-tolerance", type=float, default=0.12)
     parser.add_argument("--image-stride", type=int, default=1)
     parser.add_argument("--camera-x", type=float, default=0.055)
     parser.add_argument("--camera-y", type=float, default=0.0)
     parser.add_argument("--camera-z", type=float, default=0.121)
     parser.add_argument("--camera-pitch-down", type=float, default=0.0)
-    parser.add_argument("--roi-top-fraction", type=float, default=0.56)
-    parser.add_argument("--roi-bottom-fraction", type=float, default=0.90)
+    parser.add_argument("--roi-top-fraction", type=float, default=0.0)
+    parser.add_argument("--roi-bottom-fraction", type=float, default=1.0)
+    parser.add_argument("--detector", default="rgb_and_local")
+    parser.add_argument("--rgb-dark-percentile", type=float, default=88.0)
+    parser.add_argument("--rgb-dark-margin", type=float, default=30.0)
+    parser.add_argument("--rgb-dark-min-threshold", type=float, default=18.0)
+    parser.add_argument("--rgb-dark-max-threshold", type=float, default=90.0)
+    parser.add_argument("--local-dark-delta", type=float, default=16.0)
+    parser.add_argument("--local-dark-sigma", type=float, default=11.0)
+    parser.add_argument("--max-color-spread", type=float, default=35.0)
     parser.add_argument("--max-dark-value", type=int, default=92)
     parser.add_argument("--use-fixed-dark", action="store_true")
     parser.add_argument("--use-adaptive-dark", action="store_true")
     parser.add_argument("--adaptive-block-size", type=int, default=31)
     parser.add_argument("--adaptive-c", type=float, default=6.0)
-    parser.add_argument("--blackhat-size", type=int, default=31)
-    parser.add_argument("--blackhat-threshold", type=int, default=20)
-    parser.add_argument("--morphology-size", type=int, default=5)
-    parser.add_argument("--hough-threshold", type=int, default=22)
-    parser.add_argument("--min-line-length-px", type=int, default=20)
+    parser.add_argument("--blackhat-size", type=int, default=25)
+    parser.add_argument("--blackhat-threshold", type=int, default=10)
+    parser.add_argument("--morphology-size", type=int, default=3)
+    parser.add_argument("--hough-threshold", type=int, default=14)
+    parser.add_argument("--min-line-length-px", type=int, default=12)
     parser.add_argument("--max-line-gap-px", type=int, default=12)
     parser.add_argument("--min-ray-down-z", type=float, default=0.025)
-    parser.add_argument("--min-ground-x", type=float, default=0.12)
-    parser.add_argument("--max-ground-x", type=float, default=0.80)
-    parser.add_argument("--max-abs-ground-y", type=float, default=0.38)
+    parser.add_argument("--min-ground-x", type=float, default=0.08)
+    parser.add_argument("--max-ground-x", type=float, default=1.60)
+    parser.add_argument("--max-abs-ground-y", type=float, default=0.65)
     parser.add_argument("--min-ground-segment-length", type=float, default=0.045)
-    parser.add_argument("--max-segments", type=int, default=28)
+    parser.add_argument("--max-segments", type=int, default=60)
     parser.add_argument("--max-match-distance", type=float, default=0.08)
     parser.add_argument("--max-match-angle", type=float, default=0.42)
     parser.add_argument("--angle-weight", type=float, default=0.05)
@@ -886,11 +1056,8 @@ def main():
         db_paths,
         args.left_camera_info_topic,
         CameraModel(x=args.camera_x, y=args.camera_y, z=args.camera_z, pitch_down=args.camera_pitch_down),
+        tf_topic="/tf_static",
     )
-    camera.x = args.camera_x
-    camera.y = args.camera_y
-    camera.z = args.camera_z
-    camera.pitch_down = args.camera_pitch_down
     features = load_map_features(args.map)
     rows = process_images(db_paths, fused, features, camera, args)
     write_outputs(rows, features, args, topics)

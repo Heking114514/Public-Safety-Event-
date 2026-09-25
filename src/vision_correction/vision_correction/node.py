@@ -37,6 +37,8 @@ from rclpy.qos import (
 from sensor_msgs.msg import CameraInfo, Image
 from tf2_msgs.msg import TFMessage
 
+from . import road_detector
+
 try:
     from ament_index_python.packages import get_package_share_directory
 except ImportError:  # pragma: no cover - only useful outside a ROS install
@@ -221,11 +223,14 @@ class VisionCorrectionNode(Node):
         self._fy = 0.0
         self._cx = 0.0
         self._cy = 0.0
+        self._distortion = np.zeros(5, dtype=np.float64)
         self._have_camera_info = False
         self._transforms: dict[
             tuple[str, str], tuple[np.ndarray, np.ndarray]
         ] = {}
-        self._color_to_base = np.eye(3, dtype=np.float64)
+        # CameraInfo for the RGB stream uses the ROS optical convention.
+        self._color_to_base = road_detector.DEFAULT_OPTICAL_TO_BASE.copy()
+        self._camera_frame_id = "camera_color_optical_frame"
         self._camera_x = float(self.get_parameter("camera_x_m").value)
         self._camera_y = float(self.get_parameter("camera_y_m").value)
         self._camera_z = float(self.get_parameter("camera_height_m").value)
@@ -239,6 +244,8 @@ class VisionCorrectionNode(Node):
         self._last_visual_stamp = 0.0
         self._visual_worker_stop = threading.Event()
         self._target_offset = np.zeros(3, dtype=np.float64)
+        self._visual_candidate_offset: Optional[np.ndarray] = None
+        self._visual_candidate_since = 0.0
         self._offset = np.zeros(3, dtype=np.float64)
         self._offset_velocity = np.zeros(3, dtype=np.float64)
         self._smoothed_fused: Optional[Pose] = None
@@ -315,27 +322,55 @@ class VisionCorrectionNode(Node):
             "publish_rate": 0.0,
             "timeout": 0.5,
             "visual_timeout_s": 1.0,
+            "visual_stability_s": 0.5,
+            "visual_stability_position_m": 0.08,
             "image_processing_interval_s": 0.15,
             "map_frame": "map",
             "base_frame": "base_link",
-            "detector": "rgb_or_local",
+            "detector": "rgb_and_local",
             "rgb_threshold": 60,
-            "local_delta": 20,
-            "local_sigma": 18.0,
+            "rgb_dark_percentile": 88.0,
+            "rgb_dark_margin": 30.0,
+            "rgb_dark_min_threshold": 18.0,
+            "rgb_dark_max_threshold": 90.0,
+            "local_delta": 16.0,
+            "local_dark_delta": 16.0,
+            "local_sigma": 11.0,
+            "local_dark_sigma": 11.0,
+            "blackhat_size": 25,
+            "blackhat_threshold": 10.0,
+            "max_color_spread": 35.0,
             "morphology_size": 3,
-            "roi_top_fraction": 0.58,
-            "roi_bottom_fraction": 0.96,
+            "min_ground_x_m": 0.08,
+            "roi_top_fraction": 0.0,
+            "roi_bottom_fraction": 1.0,
+            "ground_grid_resolution_m": 0.01,
+            "ground_morphology_size_px": 3,
+            "ground_hough_threshold": 10,
+            "ground_max_line_gap_m": 0.10,
+            "min_line_support_fraction": 0.50,
             "hough_threshold": 14,
             "min_line_length_px": 12,
             "max_line_gap_px": 12,
             "min_ground_segment_length_m": 0.035,
+            "line_merge_angle_rad": 0.14,
+            "line_merge_distance_m": 0.045,
+            "line_merge_gap_m": 0.18,
             "max_ground_x_m": 1.60,
-            "max_abs_ground_y_m": 0.90,
+            "max_abs_ground_y_m": 0.65,
+            "min_ray_down_z": 0.025,
+            "min_component_area": 8,
+            "max_component_area_fraction": 0.04,
+            "min_component_width": 3,
+            "min_component_height": 2,
+            "max_segments": 60,
             "max_landmark_match_distance_m": 0.30,
             "corner_angle_tolerance_rad": 0.30,
             "landmark_line_extension_m": 0.075,
             "landmark_connection_radius_m": 0.055,
             "landmark_merge_radius_m": 0.065,
+            "min_landmark_arm_length_m": 0.10,
+            "max_observed_landmark_arms": 2,
             "map_landmark_merge_radius_m": 0.035,
             "max_correction_speed_mps": 0.20,
             "max_correction_acceleration_mps2": 0.60,
@@ -433,13 +468,20 @@ class VisionCorrectionNode(Node):
         return landmarks
 
     def _on_camera_info(self, message: CameraInfo) -> None:
-        fx = float(message.p[0] if message.p[0] > 0.0 else message.k[0])
-        fy = float(message.p[5] if message.p[5] > 0.0 else message.k[4])
-        cx = float(message.p[2] if message.p[2] != 0.0 else message.k[2])
-        cy = float(message.p[6] if message.p[6] != 0.0 else message.k[5])
+        # The subscribed topic is image_raw, so K/D describe the actual input
+        # image. P belongs to the rectified image model and is only valid for
+        # image_rect topics.
+        fx = float(message.k[0])
+        fy = float(message.k[4])
+        cx = float(message.k[2])
+        cy = float(message.k[5])
         if fx > 0.0 and fy > 0.0:
             self._fx, self._fy, self._cx, self._cy = fx, fy, cx, cy
+            self._distortion = np.asarray(message.d, dtype=np.float64)
+            if message.header.frame_id:
+                self._camera_frame_id = message.header.frame_id.lstrip("/")
             self._have_camera_info = True
+            self._update_camera_transform()
 
     def _on_tf_static(self, message: TFMessage) -> None:
         for transform in message.transforms:
@@ -477,34 +519,50 @@ class VisionCorrectionNode(Node):
         camera_link = self._lookup_transform(base, "camera_link")
         if camera_link is None:
             return
-        color = None
-        for frame in (
-            "camera_color_frame",
-            "camera_color_optical_frame",
-            "camera_rgb_frame",
-        ):
-            color = self._lookup_transform("camera_link", frame)
-            if color is not None:
-                break
-        if color is None:
-            self._camera_x = float(camera_link[0][0])
-            self._camera_y = float(camera_link[0][1])
-            self._color_to_base = camera_link[1]
-            return
         link_translation, link_rotation = camera_link
-        color_translation, color_rotation = color
-        self._camera_x = float(
-            link_translation[0] + link_rotation[0, :] @ color_translation
+        camera_translation = np.array(
+            [
+                link_translation[0],
+                link_translation[1],
+                float(self.get_parameter("camera_height_m").value)
+                + link_translation[2],
+            ],
+            dtype=np.float64,
         )
-        self._camera_y = float(
-            link_translation[1] + link_rotation[1, :] @ color_translation
+        optical_to_base = (
+            link_rotation @ road_detector.DEFAULT_OPTICAL_TO_BASE
         )
-        self._camera_z = float(
-            self.get_parameter("camera_height_m").value
-            + link_translation[2]
-            + (link_rotation @ color_translation)[2]
-        )
-        self._color_to_base = link_rotation @ color_rotation
+
+        color = self._lookup_transform("camera_link", "camera_color_frame")
+        if color is not None:
+            color_translation, color_rotation = color
+            camera_translation += link_rotation @ color_translation
+            optical_to_base = (
+                link_rotation
+                @ color_rotation
+                @ road_detector.DEFAULT_OPTICAL_TO_BASE
+            )
+            color_optical = self._lookup_transform(
+                "camera_color_frame",
+                "camera_color_optical_frame",
+            )
+            if color_optical is not None:
+                optical_translation, optical_rotation = color_optical
+                camera_translation += (
+                    link_rotation
+                    @ color_rotation
+                    @ optical_translation
+                )
+                optical_to_base = (
+                    link_rotation
+                    @ color_rotation
+                    @ optical_rotation
+                )
+
+        self._camera_x = float(camera_translation[0])
+        self._camera_y = float(camera_translation[1])
+        self._camera_z = float(camera_translation[2])
+        self._color_to_base = optical_to_base
 
     def _on_image(self, message: Image) -> None:
         stamp = stamp_seconds(message, self.get_clock().now().nanoseconds * 1.0e-9)
@@ -542,19 +600,46 @@ class VisionCorrectionNode(Node):
             bgr = self._image_to_bgr(message)
             if bgr is None:
                 return
+            bgr = road_detector.undistort_bgr(bgr, self._camera_geometry())
             segments = self._detect_segments(bgr)
             observed = self._detect_landmarks(segments)
             if not observed:
+                with self._lock:
+                    self._visual_candidate_offset = None
+                    self._visual_candidate_since = 0.0
                 return
             fused_pose = self._pose_from_odom(fused, fused_stamp)
             match = self._match_landmarks(fused_pose, observed)
             if match is None:
+                with self._lock:
+                    self._visual_candidate_offset = None
+                    self._visual_candidate_since = 0.0
                 return
             target_x, target_y = match
+            candidate_offset = np.array(
+                [target_x - fused_pose.x, target_y - fused_pose.y, 0.0],
+                dtype=np.float64,
+            )
             with self._lock:
-                self._target_offset[0] = target_x - fused_pose.x
-                self._target_offset[1] = target_y - fused_pose.y
-                self._target_offset[2] = 0.0
+                stability_distance = float(
+                    self.get_parameter("visual_stability_position_m").value
+                )
+                if (
+                    self._visual_candidate_offset is None
+                    or np.linalg.norm(
+                        candidate_offset[:2]
+                        - self._visual_candidate_offset[:2]
+                    )
+                    > stability_distance
+                ):
+                    self._visual_candidate_offset = candidate_offset
+                    self._visual_candidate_since = stamp
+                    return
+                if stamp - self._visual_candidate_since < float(
+                    self.get_parameter("visual_stability_s").value
+                ):
+                    return
+                self._target_offset[:] = candidate_offset
                 self._last_visual_stamp = stamp
         except (ValueError, cv2.error) as error:
             self._throttled_warning(f"visual processing skipped: {error}")
@@ -586,6 +671,8 @@ class VisionCorrectionNode(Node):
                 > float(self.get_parameter("visual_timeout_s").value)
             ):
                 self._target_offset *= 0.0
+                self._visual_candidate_offset = None
+                self._visual_candidate_since = 0.0
 
             dt_filter = (
                 0.0
@@ -746,98 +833,78 @@ class VisionCorrectionNode(Node):
             return cv2.cvtColor(image, code)
         return None
 
+    def _camera_geometry(self) -> road_detector.CameraGeometry:
+        return road_detector.CameraGeometry(
+            fx=self._fx,
+            fy=self._fy,
+            cx=self._cx,
+            cy=self._cy,
+            camera_x=self._camera_x,
+            camera_y=self._camera_y,
+            camera_z=self._camera_z,
+            distortion=self._distortion,
+            color_to_base=self._color_to_base,
+        )
+
+    def _detector_parameters(self) -> dict[str, object]:
+        names = (
+            "detector",
+            "rgb_threshold",
+            "rgb_dark_percentile",
+            "rgb_dark_margin",
+            "rgb_dark_min_threshold",
+            "rgb_dark_max_threshold",
+            "local_delta",
+            "local_dark_delta",
+            "local_sigma",
+            "local_dark_sigma",
+            "blackhat_size",
+            "blackhat_threshold",
+            "max_color_spread",
+            "morphology_size",
+            "min_ground_x_m",
+            "roi_top_fraction",
+            "roi_bottom_fraction",
+            "ground_grid_resolution_m",
+            "ground_morphology_size_px",
+            "ground_hough_threshold",
+            "ground_max_line_gap_m",
+            "min_line_support_fraction",
+            "hough_threshold",
+            "min_line_length_px",
+            "max_line_gap_px",
+            "min_ray_down_z",
+            "min_ground_segment_length_m",
+            "line_merge_angle_rad",
+            "line_merge_distance_m",
+            "line_merge_gap_m",
+            "max_ground_x_m",
+            "max_abs_ground_y_m",
+            "min_component_area",
+            "max_component_area_fraction",
+            "min_component_width",
+            "min_component_height",
+            "max_segments",
+        )
+        return {name: self.get_parameter(name).value for name in names}
+
     def _detect_segments(self, bgr: np.ndarray) -> list[Segment]:
-        detector = str(self.get_parameter("detector").value)
-        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-        rgb_mask = np.all(
-            rgb <= int(self.get_parameter("rgb_threshold").value),
-            axis=2,
-        ).astype(np.uint8) * 255
-        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-        sigma = max(1.0, float(self.get_parameter("local_sigma").value))
-        background = cv2.GaussianBlur(gray, (0, 0), sigmaX=sigma, sigmaY=sigma)
-        difference = cv2.subtract(background, gray)
-        local_mask = cv2.threshold(
-            difference,
-            int(self.get_parameter("local_delta").value),
-            255,
-            cv2.THRESH_BINARY,
-        )[1]
-        if detector == "rgb_dark":
-            mask = rgb_mask
-        elif detector == "local_dark":
-            mask = local_mask
-        else:
-            mask = cv2.bitwise_or(rgb_mask, local_mask)
-
-        height = mask.shape[0]
-        top = int(height * float(self.get_parameter("roi_top_fraction").value))
-        bottom = int(height * float(self.get_parameter("roi_bottom_fraction").value))
-        mask[:top, :] = 0
-        mask[max(0, bottom) :, :] = 0
-        kernel_size = max(1, int(self.get_parameter("morphology_size").value))
-        kernel = cv2.getStructuringElement(
-            cv2.MORPH_RECT,
-            (kernel_size, kernel_size),
+        detected, _, _, _ = road_detector.detect_ground_segments(
+            bgr,
+            self._camera_geometry(),
+            self._detector_parameters(),
         )
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-        lines = cv2.HoughLinesP(
-            mask,
-            1.0,
-            np.pi / 180.0,
-            int(self.get_parameter("hough_threshold").value),
-            minLineLength=int(self.get_parameter("min_line_length_px").value),
-            maxLineGap=int(self.get_parameter("max_line_gap_px").value),
-        )
-        if lines is None:
-            return []
-        result = []
-        for raw in lines[:, 0, :]:
-            first = self._project_pixel(float(raw[0]), float(raw[1]))
-            second = self._project_pixel(float(raw[2]), float(raw[3]))
-            if first is None or second is None:
-                continue
-            length = math.hypot(second[0] - first[0], second[1] - first[1])
-            if length < float(self.get_parameter("min_ground_segment_length_m").value):
-                continue
-            result.append(
-                Segment(
-                    first[0],
-                    first[1],
-                    second[0],
-                    second[1],
-                    length,
-                    math.atan2(second[1] - first[1], second[0] - first[0]),
-                )
+        return [
+            Segment(
+                item.ax,
+                item.ay,
+                item.bx,
+                item.by,
+                item.length,
+                item.yaw,
             )
-        result.sort(key=lambda item: item.length, reverse=True)
-        return result[:60]
-
-    def _project_pixel(self, u: float, v: float) -> Optional[tuple[float, float]]:
-        ray_color = np.array(
-            [
-                1.0,
-                -(u - self._cx) / self._fx,
-                -(v - self._cy) / self._fy,
-            ],
-            dtype=np.float64,
-        )
-        ray_base = self._color_to_base @ ray_color
-        if ray_base[2] >= -0.025:
-            return None
-        scale = -self._camera_z / ray_base[2]
-        if scale <= 0.0 or not math.isfinite(scale):
-            return None
-        x = self._camera_x + scale * ray_base[0]
-        y = self._camera_y + scale * ray_base[1]
-        if (
-            x < 0.05
-            or x > float(self.get_parameter("max_ground_x_m").value)
-            or abs(y) > float(self.get_parameter("max_abs_ground_y_m").value)
-        ):
-            return None
-        return float(x), float(y)
+            for item in detected
+        ]
 
     def _detect_landmarks(self, segments: list[Segment]) -> list[Landmark]:
         candidates: list[Landmark] = []
@@ -849,6 +916,12 @@ class VisionCorrectionNode(Node):
         )
         connection = float(
             self.get_parameter("landmark_connection_radius_m").value
+        )
+        min_arm_length = float(
+            self.get_parameter("min_landmark_arm_length_m").value
+        )
+        max_arms = int(
+            self.get_parameter("max_observed_landmark_arms").value
         )
         for index, first in enumerate(segments):
             for second in segments[index + 1 :]:
@@ -868,11 +941,23 @@ class VisionCorrectionNode(Node):
                     if point_segment_distance(x, y, segment) <= connection
                     and -0.2 <= line_projection(segment, x, y) <= 1.2
                 ]
-                dirs = cluster_angles(
-                    [segment.yaw for segment in nearby],
-                    angle_tolerance,
-                )
+                arm_angles: list[float] = []
+                arm_lengths: list[float] = []
+                for segment in nearby:
+                    projection = line_projection(segment, x, y)
+                    if projection < 0.5:
+                        endpoint_x, endpoint_y = segment.ax, segment.ay
+                    else:
+                        endpoint_x, endpoint_y = segment.bx, segment.by
+                    arm_length = math.hypot(endpoint_x - x, endpoint_y - y)
+                    if arm_length < min_arm_length:
+                        continue
+                    arm_angles.append(math.atan2(endpoint_y - y, endpoint_x - x))
+                    arm_lengths.append(arm_length)
+                dirs = cluster_angles(arm_angles, angle_tolerance)
                 if len(dirs) < 2:
+                    continue
+                if len(dirs) > max_arms or len(arm_lengths) < 2:
                     continue
                 candidate = Landmark(x, y, dirs, len(dirs))
                 if any(

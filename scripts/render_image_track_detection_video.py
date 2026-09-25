@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,6 +15,11 @@ from rclpy.serialization import deserialize_message
 from sensor_msgs.msg import Image
 
 import offline_image_track_correction as correction
+
+VISION_SOURCE = Path(__file__).resolve().parents[1] / "src" / "vision_correction"
+if str(VISION_SOURCE) not in sys.path:
+    sys.path.insert(0, str(VISION_SOURCE))
+from vision_correction import road_detector
 
 
 DEFAULT_BAG = Path("/media/hjh/Data/rosbag_recording/latest_navigation_bag")
@@ -54,6 +60,20 @@ def image_to_bgr(message: Image) -> np.ndarray | None:
     return None
 
 
+def camera_geometry(camera) -> road_detector.CameraGeometry:
+    return road_detector.CameraGeometry(
+        fx=float(camera.fx),
+        fy=float(camera.fy),
+        cx=float(camera.cx),
+        cy=float(camera.cy),
+        camera_x=float(getattr(camera, "camera_x", getattr(camera, "x", 0.055))),
+        camera_y=float(getattr(camera, "camera_y", getattr(camera, "y", 0.0))),
+        camera_z=float(getattr(camera, "camera_z", getattr(camera, "z", 0.121))),
+        distortion=getattr(camera, "distortion", None),
+        color_to_base=getattr(camera, "color_to_base", None),
+    )
+
+
 def filter_components(mask: np.ndarray, args) -> np.ndarray:
     count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
     output = np.zeros_like(mask)
@@ -70,93 +90,48 @@ def filter_components(mask: np.ndarray, args) -> np.ndarray:
     return output
 
 
-def detect_mask(bgr: np.ndarray, args) -> np.ndarray:
-    if args.detector == "rgb_dark":
-        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-        mask = np.all(rgb <= args.rgb_threshold, axis=2).astype(np.uint8) * 255
-    elif args.detector == "local_dark":
-        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-        sigma = max(1.0, args.local_sigma)
-        background = cv2.GaussianBlur(gray, (0, 0), sigmaX=sigma, sigmaY=sigma)
-        difference = cv2.subtract(background, gray)
-        mask = cv2.threshold(difference, args.local_delta, 255, cv2.THRESH_BINARY)[1]
-    elif args.detector in ("rgb_and_local", "rgb_or_local"):
-        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-        rgb_mask = np.all(rgb <= args.rgb_threshold, axis=2).astype(np.uint8) * 255
-        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-        sigma = max(1.0, args.local_sigma)
-        background = cv2.GaussianBlur(gray, (0, 0), sigmaX=sigma, sigmaY=sigma)
-        difference = cv2.subtract(background, gray)
-        local_mask = cv2.threshold(difference, args.local_delta, 255, cv2.THRESH_BINARY)[1]
-        if args.detector == "rgb_and_local":
-            mask = cv2.bitwise_and(rgb_mask, local_mask)
-        else:
-            mask = cv2.bitwise_or(rgb_mask, local_mask)
-    else:
-        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-        denoised = cv2.bilateralFilter(gray, 7, 45, 45)
-        blackhat_kernel = cv2.getStructuringElement(
-            cv2.MORPH_RECT, (args.blackhat_size, args.blackhat_size)
+def detect_mask(
+    bgr: np.ndarray,
+    args,
+    camera=None,
+) -> np.ndarray:
+    if camera is None:
+        camera = correction.CameraModel(
+            fx=float(getattr(args, "camera_fx", 382.622)),
+            fy=float(getattr(args, "camera_fy", 382.103)),
+            cx=float(getattr(args, "camera_cx", 318.010)),
+            cy=float(getattr(args, "camera_cy", 247.032)),
+            x=float(getattr(args, "camera_x", 0.055)),
+            y=float(getattr(args, "camera_y", 0.0)),
+            z=float(getattr(args, "camera_z", 0.121)),
+            color_to_base=np.eye(3, dtype=np.float64),
         )
-        blackhat = cv2.morphologyEx(denoised, cv2.MORPH_BLACKHAT, blackhat_kernel)
-        mask = cv2.threshold(blackhat, args.blackhat_threshold, 255, cv2.THRESH_BINARY)[1]
-
-    roi_top = int(round(mask.shape[0] * args.roi_top_fraction))
-    mask[:roi_top, :] = 0
-    roi_bottom = int(round(mask.shape[0] * args.roi_bottom_fraction))
-    if roi_bottom < mask.shape[0]:
-        mask[max(0, roi_bottom) :, :] = 0
-
-    kernel = cv2.getStructuringElement(
-        cv2.MORPH_RECT, (args.morphology_size, args.morphology_size)
+    mask, _, _ = road_detector.build_black_line_mask(
+        bgr,
+        camera_geometry(camera),
+        args,
     )
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-    return filter_components(mask, args)
+    return mask
 
 
 def detect_segments(bgr: np.ndarray, camera: correction.CameraModel, args) -> tuple[list[DetectedSegment], np.ndarray]:
-    mask = detect_mask(bgr, args)
-
-    lines = cv2.HoughLinesP(
-        mask,
-        1.0,
-        np.pi / 180.0,
-        args.hough_threshold,
-        minLineLength=args.min_line_length_px,
-        maxLineGap=args.max_line_gap_px,
+    detected_ground, mask, _, _ = road_detector.detect_ground_segments(
+        bgr,
+        camera_geometry(camera),
+        args,
     )
-    if lines is None:
-        return [], mask
-
-    limits = {
-        "min_ray_down_z": args.min_ray_down_z,
-        "min_x": args.min_ground_x,
-        "max_x": args.max_ground_x,
-        "max_abs_y": args.max_abs_ground_y,
-    }
     detected: list[DetectedSegment] = []
-    for raw in lines[:, 0, :]:
-        p1 = correction.project_pixel(camera, float(raw[0]), float(raw[1]), limits)
-        p2 = correction.project_pixel(camera, float(raw[2]), float(raw[3]), limits)
-        if p1 is None or p2 is None:
-            continue
-        length = math.hypot(p2[0] - p1[0], p2[1] - p1[1])
-        if length < args.min_ground_segment_length:
-            continue
+    for line in detected_ground:
         ground = correction.GroundSegment(
-            p1[0],
-            p1[1],
-            p2[0],
-            p2[1],
-            length,
-            math.atan2(p2[1] - p1[1], p2[0] - p1[0]),
+            line.ax,
+            line.ay,
+            line.bx,
+            line.by,
+            line.length,
+            line.yaw,
         )
-        detected.append(
-            DetectedSegment((int(raw[0]), int(raw[1]), int(raw[2]), int(raw[3])), ground)
-        )
-    detected.sort(key=lambda segment: segment.ground.length, reverse=True)
-    return detected[: args.max_segments], mask
+        detected.append(DetectedSegment(line.image_line, ground))
+    return detected, mask
 
 
 def match_segments(
@@ -223,10 +198,36 @@ def draw_camera_panel(
     red[:, :, 2] = 255
     panel = np.where(mask[:, :, None] > 0, cv2.addWeighted(panel, 0.45, red, 0.55, 0), panel)
 
+    camera = getattr(args, "_road_camera", None)
+    if camera is not None:
+        polygon = road_detector.ground_roi_polygon(mask.shape, camera, args)
+        if polygon:
+            cv2.polylines(
+                panel,
+                [np.asarray(polygon, dtype=np.int32)],
+                True,
+                (255, 255, 0),
+                2,
+                cv2.LINE_AA,
+            )
     roi_top = int(round(mask.shape[0] * args.roi_top_fraction))
     roi_bottom = int(round(mask.shape[0] * args.roi_bottom_fraction))
-    cv2.line(panel, (0, roi_top), (panel.shape[1] - 1, roi_top), (255, 255, 0), 1)
-    cv2.line(panel, (0, roi_bottom), (panel.shape[1] - 1, roi_bottom), (255, 255, 0), 1)
+    if roi_top > 0:
+        cv2.line(
+            panel,
+            (0, roi_top),
+            (panel.shape[1] - 1, roi_top),
+            (255, 255, 0),
+            1,
+        )
+    if roi_bottom < mask.shape[0]:
+        cv2.line(
+            panel,
+            (0, roi_bottom),
+            (panel.shape[1] - 1, roi_bottom),
+            (255, 255, 0),
+            1,
+        )
 
     for segment in detected:
         x1, y1, x2, y2 = segment.image_line
@@ -238,7 +239,8 @@ def draw_camera_panel(
     put_text(panel, f"frame={frame_index} t={stamp:.3f}", 12, 24)
     put_text(
         panel,
-        f"segments={len(detected)} matched={matched} detector={args.detector} rgb<={args.rgb_threshold}",
+        f"segments={len(detected)} matched={matched} detector={args.detector} "
+        f"rgb-margin={args.rgb_dark_margin:.0f}",
         12,
         48,
     )
@@ -364,37 +366,49 @@ def parse_args():
     parser.add_argument("--camera-y", type=float, default=0.0)
     parser.add_argument("--camera-z", type=float, default=0.121)
     parser.add_argument("--camera-pitch-down", type=float, default=0.0)
-    parser.add_argument("--roi-top-fraction", type=float, default=0.60)
-    parser.add_argument("--roi-bottom-fraction", type=float, default=0.94)
+    parser.add_argument(
+        "--roi-top-fraction",
+        type=float,
+        default=0.0,
+        help="Optional extra horizontal ceiling; 0 uses only the projected ground ROI.",
+    )
+    parser.add_argument("--roi-bottom-fraction", type=float, default=1.0)
     parser.add_argument(
         "--detector",
         choices=("rgb_dark", "local_dark", "rgb_and_local", "rgb_or_local", "blackhat"),
-        default="rgb_or_local",
+        default="rgb_and_local",
     )
     parser.add_argument("--rgb-threshold", type=int, default=60)
-    parser.add_argument("--local-delta", type=int, default=20)
-    parser.add_argument("--local-sigma", type=float, default=18.0)
+    parser.add_argument("--rgb-dark-percentile", type=float, default=88.0)
+    parser.add_argument("--rgb-dark-margin", type=float, default=30.0)
+    parser.add_argument("--rgb-dark-min-threshold", type=float, default=18.0)
+    parser.add_argument("--rgb-dark-max-threshold", type=float, default=90.0)
+    parser.add_argument("--local-delta", type=float, default=16.0)
+    parser.add_argument("--local-dark-delta", type=float, default=16.0)
+    parser.add_argument("--local-sigma", type=float, default=11.0)
+    parser.add_argument("--local-dark-sigma", type=float, default=11.0)
     parser.add_argument("--min-component-area", type=int, default=8)
-    parser.add_argument("--max-component-area-fraction", type=float, default=0.18)
-    parser.add_argument("--min-component-width", type=int, default=4)
-    parser.add_argument("--min-component-height", type=int, default=4)
+    parser.add_argument("--max-component-area-fraction", type=float, default=0.04)
+    parser.add_argument("--min-component-width", type=int, default=3)
+    parser.add_argument("--min-component-height", type=int, default=2)
     parser.add_argument("--max-dark-value", type=int, default=92)
     parser.add_argument("--use-fixed-dark", action="store_true")
     parser.add_argument("--use-adaptive-dark", action="store_true")
     parser.add_argument("--adaptive-block-size", type=int, default=31)
     parser.add_argument("--adaptive-c", type=float, default=6.0)
-    parser.add_argument("--blackhat-size", type=int, default=31)
-    parser.add_argument("--blackhat-threshold", type=int, default=20)
+    parser.add_argument("--blackhat-size", type=int, default=25)
+    parser.add_argument("--blackhat-threshold", type=float, default=10.0)
+    parser.add_argument("--max-color-spread", type=float, default=35.0)
     parser.add_argument("--morphology-size", type=int, default=3)
     parser.add_argument("--hough-threshold", type=int, default=14)
     parser.add_argument("--min-line-length-px", type=int, default=12)
     parser.add_argument("--max-line-gap-px", type=int, default=12)
     parser.add_argument("--min-ray-down-z", type=float, default=0.025)
-    parser.add_argument("--min-ground-x", type=float, default=0.05)
-    parser.add_argument("--max-ground-x", type=float, default=1.50)
-    parser.add_argument("--max-abs-ground-y", type=float, default=0.80)
+    parser.add_argument("--min-ground-x", type=float, default=0.08)
+    parser.add_argument("--max-ground-x", type=float, default=1.60)
+    parser.add_argument("--max-abs-ground-y", type=float, default=0.65)
     parser.add_argument("--min-ground-segment-length", type=float, default=0.035)
-    parser.add_argument("--max-segments", type=int, default=40)
+    parser.add_argument("--max-segments", type=int, default=60)
     parser.add_argument("--max-match-distance", type=float, default=0.08)
     parser.add_argument("--max-match-angle", type=float, default=0.42)
     parser.add_argument("--angle-weight", type=float, default=0.05)
@@ -422,11 +436,8 @@ def main():
             z=args.camera_z,
             pitch_down=args.camera_pitch_down,
         ),
+        tf_topic="/tf_static",
     )
-    camera.x = args.camera_x
-    camera.y = args.camera_y
-    camera.z = args.camera_z
-    camera.pitch_down = args.camera_pitch_down
     features = correction.load_map_features(args.map)
 
     writer = None
@@ -446,6 +457,9 @@ def main():
             bgr = image_to_bgr(msg)
             if bgr is None:
                 continue
+            camera_geometry_value = camera_geometry(camera)
+            bgr = road_detector.undistort_bgr(bgr, camera_geometry_value)
+            args._road_camera = camera_geometry_value
             detected, mask = detect_segments(bgr, camera, args)
             match_segments(pose, detected, features, args)
             frame = make_video_frame(bgr, mask, detected, pose, features, stamp, written, args)

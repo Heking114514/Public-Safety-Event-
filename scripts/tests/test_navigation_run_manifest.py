@@ -71,7 +71,7 @@ class NavigationRunManifestTest(unittest.TestCase):
         )
         return result.stdout.strip()
 
-    def create_run(self, build_id, *argv):
+    def create_run_arguments(self, build_id, *argv):
         arguments = [
             "create-run",
             "--workspace", self.root,
@@ -87,7 +87,10 @@ class NavigationRunManifestTest(unittest.TestCase):
         ]
         for token in argv:
             arguments.append(f"--argv={token}")
-        return Path(self.helper(*arguments).stdout.strip())
+        return arguments
+
+    def create_run(self, build_id, *argv):
+        return Path(self.helper(*self.create_run_arguments(build_id, *argv)).stdout.strip())
 
     def finalize_run(self, run, exit_code=0, metadata=True):
         bag = run / "bag"
@@ -427,6 +430,46 @@ class NavigationRunManifestTest(unittest.TestCase):
         self.assertFalse((old_run / "bag").exists())
         self.assertFalse(manifest["bag"]["present"])
         self.assertTrue(all((run / "bag").is_dir() for run in runs))
+
+    @staticmethod
+    def write_stale_windows_link(path, target):
+        """Write the ntfs-3g/Interix pseudo-link format: a plain file holding
+        magic bytes followed by the UTF-16LE target path and a NUL terminator."""
+        path.write_bytes(b"IntxLNK\x01" + str(target).encode("utf-16-le") + b"\x00\x00")
+
+    def test_stale_windows_pseudo_links_are_replaced_not_rejected(self):
+        # An NTFS volume last written through ntfs-3g leaves pseudo-links that
+        # the ntfs3 kernel driver reports as regular files. Both compatibility
+        # paths must remain usable instead of aborting the run manifest.
+        build_id = self.record_build()
+        first = self.create_run(build_id)
+        self.assertTrue(first.is_dir())
+
+        latest_run = self.root / "latest_navigation_run"
+        latest_bag = self.root / "latest_navigation_bag"
+        latest_run.unlink()
+        self.write_stale_windows_link(latest_run, first)
+        self.write_stale_windows_link(latest_bag, first / "bag")
+        self.assertTrue(latest_run.is_file())
+        self.assertFalse(latest_run.is_symlink())
+
+        second = self.create_run(build_id)
+        self.assertNotEqual(first, second)
+        self.assertTrue(latest_run.is_symlink())
+        self.assertEqual(second, latest_run.resolve())
+        self.assertFalse(latest_bag.exists())
+
+    def test_create_run_still_refuses_genuine_regular_file(self):
+        build_id = self.record_build()
+        latest_run = self.root / "latest_navigation_run"
+        latest_run.write_text("unrelated content\n", encoding="utf-8")
+
+        result = self.helper(
+            *self.create_run_arguments(build_id), check=False
+        )
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("refusing to replace non-symlink path", result.stderr)
+        self.assertEqual("unrelated content\n", latest_run.read_text())
 
 
 if __name__ == "__main__":

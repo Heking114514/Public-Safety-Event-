@@ -299,18 +299,12 @@ def load_camera_calibration(
     if info is None:
         raise RuntimeError(f"no camera info on {camera_info_topic}")
 
+    # The RGB topic is image_raw. Use K/D for that image; P belongs to the
+    # rectified image model and must not silently replace K here.
     fx = float(info.k[0])
     fy = float(info.k[4])
     cx = float(info.k[2])
     cy = float(info.k[5])
-    if info.p[0] > 0.0:
-        fx = float(info.p[0])
-    if info.p[5] > 0.0:
-        fy = float(info.p[5])
-    if info.p[2] != 0.0:
-        cx = float(info.p[2])
-    if info.p[6] != 0.0:
-        cy = float(info.p[6])
 
     static = load_static_transforms(db_paths, tf_topic)
     base_to_link = quaternion_rotation_from_static(static, "base_link", "camera_link")
@@ -318,6 +312,11 @@ def load_camera_calibration(
         static,
         "camera_link",
         "camera_color_frame",
+    )
+    color_to_optical = quaternion_rotation_from_static(
+        static,
+        "camera_color_frame",
+        "camera_color_optical_frame",
     )
 
     # camera_x/camera_y/camera_z are fallback physical coordinates. When the
@@ -327,9 +326,9 @@ def load_camera_calibration(
         [args.camera_x, args.camera_y, args.camera_z],
         dtype=np.float64,
     )
-    color_to_base = np.eye(3, dtype=np.float64)
+    base_to_link_rotation = np.eye(3, dtype=np.float64)
     if base_to_link is not None:
-        link_translation, link_rotation = base_to_link
+        link_translation, base_to_link_rotation = base_to_link
         camera_translation = np.array(
             [
                 link_translation[0],
@@ -338,11 +337,22 @@ def load_camera_calibration(
             ],
             dtype=np.float64,
         )
-        color_to_base = link_rotation
+
+    base_to_color_rotation = base_to_link_rotation
     if link_to_color is not None:
         color_translation, color_rotation = link_to_color
-        camera_translation += color_to_base @ color_translation
-        color_to_base = color_to_base @ color_rotation
+        camera_translation += base_to_link_rotation @ color_translation
+        base_to_color_rotation = base_to_link_rotation @ color_rotation
+
+    if color_to_optical is not None:
+        optical_translation, optical_rotation = color_to_optical
+        camera_translation += base_to_color_rotation @ optical_translation
+        color_to_base = base_to_color_rotation @ optical_rotation
+    else:
+        color_to_base = (
+            base_to_color_rotation
+            @ road_detector.DEFAULT_OPTICAL_TO_BASE
+        )
 
     return CameraCalibration(
         fx=fx,
@@ -456,15 +466,15 @@ def project_pixel(
     v: float,
     args,
 ) -> tuple[float, float] | None:
-    ray_color = np.array(
+    ray_optical = np.array(
         [
+            (u - calibration.cx) / calibration.fx,
+            (v - calibration.cy) / calibration.fy,
             1.0,
-            -(u - calibration.cx) / calibration.fx,
-            -(v - calibration.cy) / calibration.fy,
         ],
         dtype=np.float64,
     )
-    ray_base = calibration.color_to_base @ ray_color
+    ray_base = calibration.color_to_base @ ray_optical
     if ray_base[2] >= -args.min_ray_down_z:
         return None
     scale = -calibration.camera_z / ray_base[2]
@@ -485,7 +495,7 @@ def ground_to_pixel(
     x: float,
     y: float,
 ) -> tuple[float, float] | None:
-    ray_base = np.array(
+    point_base = np.array(
         [
             x - calibration.camera_x,
             y - calibration.camera_y,
@@ -493,11 +503,11 @@ def ground_to_pixel(
         ],
         dtype=np.float64,
     )
-    ray_color = calibration.color_to_base.T @ ray_base
-    if ray_color[0] <= 1.0e-6:
+    ray_optical = calibration.color_to_base.T @ point_base
+    if ray_optical[2] <= 1.0e-6:
         return None
-    u = calibration.cx - calibration.fx * ray_color[1] / ray_color[0]
-    v = calibration.cy - calibration.fy * ray_color[2] / ray_color[0]
+    u = calibration.cx + calibration.fx * ray_optical[0] / ray_optical[2]
+    v = calibration.cy + calibration.fy * ray_optical[1] / ray_optical[2]
     return float(u), float(v)
 
 
@@ -741,7 +751,40 @@ def detect_ground_lines(
     depth_m: np.ndarray | None = None,
     depth_calibration: DepthCalibration | None = None,
 ) -> tuple[list[GroundLine], np.ndarray]:
-    mask = detector.detect_mask(bgr, args)
+    if depth_m is None or depth_calibration is None:
+        camera = detector.road_detector.CameraGeometry(
+            fx=calibration.fx,
+            fy=calibration.fy,
+            cx=calibration.cx,
+            cy=calibration.cy,
+            camera_x=calibration.camera_x,
+            camera_y=calibration.camera_y,
+            camera_z=calibration.camera_z,
+            distortion=calibration.distortion,
+            color_to_base=calibration.color_to_base,
+        )
+        detected, mask, _, _ = detector.road_detector.detect_ground_segments(
+            bgr,
+            camera,
+            args,
+        )
+        result = [
+            GroundLine(
+                item.image_line,
+                correction.GroundSegment(
+                    item.ax,
+                    item.ay,
+                    item.bx,
+                    item.by,
+                    item.length,
+                    item.yaw,
+                ),
+            )
+            for item in detected
+        ]
+        return result, mask
+
+    mask = detector.detect_mask(bgr, args, calibration)
     raw_lines = cv2.HoughLinesP(
         mask,
         1.0,
@@ -806,9 +849,10 @@ def connected_arm_directions(
     y: float,
     lines: list[GroundLine],
     args,
-) -> tuple[tuple[float, ...], int]:
+) -> tuple[tuple[float, ...], int, float]:
     angles: list[float] = []
     support_lines = 0
+    arm_lengths: list[float] = []
     for line in lines:
         segment = line.ground
         projection = line_projection(segment, x, y)
@@ -820,10 +864,20 @@ def connected_arm_directions(
         support_lines += 1
         if args.landmark_endpoint_fraction <= projection <= 1.0 - args.landmark_endpoint_fraction:
             angles.extend((segment.yaw, wrap_angle(segment.yaw + math.pi)))
+            arm_lengths.extend(
+                (
+                    0.5 * segment.length,
+                    0.5 * segment.length,
+                )
+            )
         elif projection < 0.5:
-            angles.append(math.atan2(segment.ay - y, segment.ax - x))
+            angle = math.atan2(segment.ay - y, segment.ax - x)
+            angles.append(angle)
+            arm_lengths.append(math.hypot(segment.ax - x, segment.ay - y))
         else:
-            angles.append(math.atan2(segment.by - y, segment.bx - x))
+            angle = math.atan2(segment.by - y, segment.bx - x)
+            angles.append(angle)
+            arm_lengths.append(math.hypot(segment.bx - x, segment.by - y))
     return (
         tuple(
             sorted(
@@ -834,6 +888,7 @@ def connected_arm_directions(
             )
         ),
         support_lines,
+        min(arm_lengths) if arm_lengths else 0.0,
     )
 
 
@@ -896,8 +951,17 @@ def detect_observed_landmarks(
                 continue
             if point_segment_distance(x, y, second.ground) > args.landmark_line_extension:
                 continue
-            dirs, support_lines = connected_arm_directions(x, y, lines, args)
+            dirs, support_lines, shortest_arm = connected_arm_directions(
+                x,
+                y,
+                lines,
+                args,
+            )
             if len(dirs) < args.min_landmark_arms:
+                continue
+            if len(dirs) > args.max_observed_arms:
+                continue
+            if shortest_arm < args.min_landmark_arm_length:
                 continue
             image_point = ground_to_pixel(calibration, x, y)
             if image_point is None:
@@ -2038,33 +2102,49 @@ def parse_args():
     parser.add_argument("--camera-x", type=float, default=0.055)
     parser.add_argument("--camera-y", type=float, default=0.0)
     parser.add_argument("--camera-z", type=float, default=0.121)
-    parser.add_argument("--roi-top-fraction", type=float, default=0.58)
-    parser.add_argument("--roi-bottom-fraction", type=float, default=0.96)
+    parser.add_argument("--roi-top-fraction", type=float, default=0.0)
+    parser.add_argument("--roi-bottom-fraction", type=float, default=1.0)
     parser.add_argument(
         "--detector",
         choices=("rgb_dark", "local_dark", "rgb_and_local", "rgb_or_local", "blackhat"),
-        default="rgb_or_local",
+        default="rgb_and_local",
     )
     parser.add_argument("--rgb-threshold", type=int, default=60)
-    parser.add_argument("--local-delta", type=int, default=20)
-    parser.add_argument("--local-sigma", type=float, default=18.0)
-    parser.add_argument("--min-component-area", type=int, default=6)
-    parser.add_argument("--max-component-area-fraction", type=float, default=0.18)
-    parser.add_argument("--min-component-width", type=int, default=4)
-    parser.add_argument("--min-component-height", type=int, default=4)
+    parser.add_argument("--rgb-dark-percentile", type=float, default=88.0)
+    parser.add_argument("--rgb-dark-margin", type=float, default=30.0)
+    parser.add_argument("--rgb-dark-min-threshold", type=float, default=18.0)
+    parser.add_argument("--rgb-dark-max-threshold", type=float, default=90.0)
+    parser.add_argument("--local-delta", type=float, default=16.0)
+    parser.add_argument("--local-dark-delta", type=float, default=16.0)
+    parser.add_argument("--local-sigma", type=float, default=11.0)
+    parser.add_argument("--local-dark-sigma", type=float, default=11.0)
+    parser.add_argument("--max-color-spread", type=float, default=35.0)
+    parser.add_argument("--min-component-area", type=int, default=8)
+    parser.add_argument("--max-component-area-fraction", type=float, default=0.04)
+    parser.add_argument("--min-component-width", type=int, default=3)
+    parser.add_argument("--min-component-height", type=int, default=2)
     parser.add_argument("--morphology-size", type=int, default=3)
-    parser.add_argument("--blackhat-size", type=int, default=31)
-    parser.add_argument("--blackhat-threshold", type=int, default=20)
+    parser.add_argument("--blackhat-size", type=int, default=25)
+    parser.add_argument("--blackhat-threshold", type=int, default=10)
     parser.add_argument("--hough-threshold", type=int, default=14)
     parser.add_argument("--min-line-length-px", type=int, default=12)
     parser.add_argument("--max-line-gap-px", type=int, default=12)
     parser.add_argument("--min-ray-down-z", type=float, default=0.025)
-    parser.add_argument("--min-ground-x", type=float, default=0.05)
+    parser.add_argument("--min-ground-x", type=float, default=0.15)
     parser.add_argument("--max-ground-x", type=float, default=1.60)
-    parser.add_argument("--max-abs-ground-y", type=float, default=0.90)
-    parser.add_argument("--min-ground-segment-length", type=float, default=0.035)
+    parser.add_argument("--max-abs-ground-y", type=float, default=0.65)
+    parser.add_argument("--ground-grid-resolution", type=float, default=0.01)
+    parser.add_argument("--ground-morphology-size", type=int, default=3)
+    parser.add_argument("--ground-hough-threshold", type=int, default=10)
+    parser.add_argument("--ground-max-line-gap", type=float, default=0.10)
+    parser.add_argument("--min-line-support-fraction", type=float, default=0.50)
+    parser.add_argument("--min-ground-segment-length", type=float, default=0.06)
+    parser.add_argument("--line-merge-angle-rad", type=float, default=0.14)
+    parser.add_argument("--line-merge-distance-m", type=float, default=0.045)
+    parser.add_argument("--line-merge-gap-m", type=float, default=0.18)
     parser.add_argument("--max-raw-lines", type=int, default=100)
     parser.add_argument("--max-merged-lines", type=int, default=45)
+    parser.add_argument("--max-segments", type=int, default=60)
     parser.add_argument("--line-merge-angle", type=float, default=0.14)
     parser.add_argument("--line-merge-distance", type=float, default=0.045)
     parser.add_argument("--line-merge-gap", type=float, default=0.22)
@@ -2082,7 +2162,8 @@ def parse_args():
     parser.add_argument("--max-landmark-match-distance", type=float, default=0.30)
     parser.add_argument("--max-direction-error", type=float, default=0.40)
     parser.add_argument("--direction-weight", type=float, default=0.22)
-    parser.add_argument("--max-observed-arms", type=int, default=4)
+    parser.add_argument("--min-landmark-arm-length", type=float, default=0.10)
+    parser.add_argument("--max-observed-arms", type=int, default=2)
     parser.add_argument("--extra-arm-weight", type=float, default=1.25)
     parser.add_argument("--extra-support-penalty", type=float, default=0.22)
     parser.add_argument("--match-score-scale", type=float, default=0.12)

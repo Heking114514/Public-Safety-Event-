@@ -13,21 +13,50 @@ vision_correction_node:
     publish_rate: 0.0
     timeout: 0.5
     visual_timeout_s: 1.0
+    visual_stability_s: 0.5
+    visual_stability_position_m: 0.08
     image_processing_interval_s: 0.15
     map_frame: map
     base_frame: base_link
-    detector: rgb_or_local
+    detector: rgb_and_local
     rgb_threshold: 60
-    local_delta: 20
-    local_sigma: 18.0
+    rgb_dark_percentile: 88.0
+    rgb_dark_margin: 30.0
+    rgb_dark_min_threshold: 18.0
+    rgb_dark_max_threshold: 90.0
+    local_delta: 16.0
+    local_dark_delta: 16.0
+    local_sigma: 11.0
+    local_dark_sigma: 11.0
+    blackhat_size: 25
+    blackhat_threshold: 10.0
+    max_color_spread: 35.0
     morphology_size: 3
-    roi_top_fraction: 0.58
-    roi_bottom_fraction: 0.96
+    roi_top_fraction: 0.0
+    roi_bottom_fraction: 1.0
     hough_threshold: 14
     min_line_length_px: 12
     max_line_gap_px: 12
+    min_ray_down_z: 0.025
+    min_ground_x_m: 0.15
     max_ground_x_m: 1.60
-    max_abs_ground_y_m: 0.90
+    max_abs_ground_y_m: 0.65
+    ground_grid_resolution_m: 0.01
+    ground_morphology_size_px: 3
+    ground_hough_threshold: 10
+    ground_max_line_gap_m: 0.10
+    min_line_support_fraction: 0.50
+    min_ground_segment_length_m: 0.06
+    line_merge_angle_rad: 0.14
+    line_merge_distance_m: 0.045
+    line_merge_gap_m: 0.18
+    min_component_area: 8
+    max_component_area_fraction: 0.04
+    min_component_width: 3
+    min_component_height: 2
+    max_segments: 60
+    min_landmark_arm_length_m: 0.10
+    max_observed_landmark_arms: 2
     max_landmark_match_distance_m: 0.30
     correction_tau_s: 0.70
     correction_damping: 1.0
