@@ -30,7 +30,7 @@ KeyFrameTrajectory.txt
 navigation_runs/
 latest_navigation_run
 latest_navigation_bag
-analysis_bags/
+analysis_bags
 
 # --- Temp files ---
 .workspace-build.lock

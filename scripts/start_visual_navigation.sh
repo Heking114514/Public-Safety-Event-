@@ -19,12 +19,69 @@ STARTUP_CONFIG="${NAVIGATION_STARTUP_CONFIG:-${WORKSPACE_ROOT}/config/navigation
 RECORDING_CONFIG="${NAVIGATION_RECORDING_CONFIG:-${WORKSPACE_ROOT}/config/navigation_recording.yaml}"
 DEFAULT_AUTOSTART_ROUTE="${SCRIPT_DIR}/waypoints.csv"
 BUILD_MANIFEST="${NAVIGATION_BUILD_MANIFEST:-${WORKSPACE_ROOT}/build/navigation_runtime_manifest.json}"
+log() {
+  printf '[visual-navigation] %s\n' "$*"
+}
+
+fail() {
+  printf '[visual-navigation] ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+# Mount an external recording volume. A reboot drops NTFS mounts, so the
+# recording root can be missing even though the drive is attached. Windows fast
+# startup also leaves the volume dirty, which makes a plain mount refuse; the
+# `force` option mounts a dirty volume without writing to it, so it is tried
+# before the repairing ntfsfix fallback. The mountpoint name matches the NTFS
+# volume label, so it doubles as the /dev/disk/by-label lookup key.
+mount_recording_volume() {
+  local label="$1" mountpoint="$2" device="/dev/disk/by-label/$1"
+  [[ -e "${device}" ]] || return 1
+  # udisks creates the mountpoint itself. Pre-creating it makes udisks fall back
+  # to a numbered path such as /media/hjh/Data1, which this script does not look
+  # at, so the directory is only made for the sudo path below.
+  if command -v udisksctl >/dev/null 2>&1; then
+    udisksctl mount -b "${device}" >/dev/null 2>&1 || true
+    if mountpoint -q -- "${mountpoint}"; then
+      return 0
+    fi
+  fi
+  if [[ ! -d "${mountpoint}" ]]; then
+    mkdir -p -- "${mountpoint}" 2>/dev/null \
+      || sudo mkdir -p -- "${mountpoint}" >/dev/null 2>&1 \
+      || return 1
+  fi
+  sudo mount -t ntfs3 -o force "${device}" "${mountpoint}" >/dev/null 2>&1 || true
+  if mountpoint -q -- "${mountpoint}"; then
+    return 0
+  fi
+  sudo ntfsfix "${device}" >/dev/null 2>&1 || true
+  sudo mount -t ntfs3 "${device}" "${mountpoint}" >/dev/null 2>&1 || true
+  if mountpoint -q -- "${mountpoint}"; then
+    return 0
+  fi
+  return 1
+}
+
 DEFAULT_RECORDING_ROOT=""
 for candidate in /media/hjh/E/rosbag_recording /media/hjh/Data/rosbag_recording; do
   candidate_parent="$(dirname -- "${candidate}")"
   if [[ -d "${candidate_parent}" ]]; then
     mkdir -p -- "${candidate}" 2>/dev/null || true
     if [[ -d "${candidate}" && -w "${candidate}" ]]; then
+      DEFAULT_RECORDING_ROOT="${candidate}"
+      break
+    fi
+  fi
+  # The volume is not usable, so mount it rather than aborting. Skipped when the
+  # caller pinned NAVIGATION_RUNS_ROOT, which makes the external volume
+  # unnecessary and keeps tests and one-off runs free of sudo prompts.
+  if [[ -z "${NAVIGATION_RUNS_ROOT:-}" ]] \
+    && mount_recording_volume "$(basename -- "${candidate_parent}")" "${candidate_parent}" \
+    && mountpoint -q -- "${candidate_parent}"; then
+    mkdir -p -- "${candidate}" 2>/dev/null || true
+    if [[ -d "${candidate}" && -w "${candidate}" ]]; then
+      log "mounted ${candidate_parent} for recording"
       DEFAULT_RECORDING_ROOT="${candidate}"
       break
     fi
@@ -78,15 +135,6 @@ BUILD_JOBS="2"
 RETAIN_BAGS="3"
 ROSBAG_OUTPUT=""
 ROSBAG_TOPICS=()
-
-log() {
-  printf '[visual-navigation] %s\n' "$*"
-}
-
-fail() {
-  printf '[visual-navigation] ERROR: %s\n' "$*" >&2
-  exit 1
-}
 
 if [[ -z "${NAVIGATION_RUNS_ROOT:-}" && -z "${DEFAULT_RECORDING_ROOT}" ]]; then
   fail "no writable external rosbag directory found; mount /media/hjh/E or /media/hjh/Data writable, or set NAVIGATION_RUNS_ROOT"
