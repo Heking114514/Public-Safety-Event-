@@ -1377,6 +1377,8 @@ def cross_track_plot(segment_rows: list[dict[str, Any]], output_path: Path) -> N
 def pass_diagnostics_plot(
     pass_rows: list[dict[str, Any]], output_path: Path
 ) -> None:
+    if not pass_rows:
+        return
     routes = sorted({int(row["route"]) for row in pass_rows})
     figure, axes = plt.subplots(
         len(routes),

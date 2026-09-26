@@ -41,7 +41,7 @@ rosbag 不在仓库里，在**外接 NTFS 硬盘**上，路径是
 包是 zstd 压缩的，本机 rosbag2 没有 zstd 解压插件，**不能直接打开**，先解压：
 
 ```bash
-# 最新一份，解压 + 出视频 + 写 manifest
+# 最新一份，解压 + 分析 + 出视频 + 写 manifest
 python3 scripts/export_rosbag.py
 
 # 指定 run_id 前缀
@@ -49,17 +49,23 @@ python3 scripts/export_rosbag.py 20260926T033028
 
 # 指定 bag 目录
 python3 scripts/export_rosbag.py /media/hjh/E/rosbag_recording/navigation_runs/<run_id>/bag
+
+# 只解压和分析，不出视频
+python3 scripts/export_rosbag.py --no-video
 ```
 
 输出到 `<录制盘>/rosbag_recording/bag_exports/<run_id>/`：
 
 - `decompressed/` —— 解压后的 `.db3`，**带一份重写过的 `metadata.yaml`，可以直接当 bag 打开**
+- `analysis/` —— 路线分段、里程计、路口推进、转弯中心的 csv + `summary.json` + png
 - `<run_id>.mp4` —— 相机画面，H.264，Ubuntu 直接能播
-- `export_manifest.json` —— 话题表、消息数、视频信息
+- `export_manifest.json` —— 话题表、消息数、视频信息、分析状态
 
-解压**不会删除原始 `.db3.zstd`**。
+解压**不会删除原始 `.db3.zstd`**。分析就是调 `scripts/analyze_navigation_bag.py`，
+约 37 秒，纯里程计/路线几何计算，不依赖地图；包里没有路线时自动标记为 skipped。
+`--no-analysis` 可跳过。
 
-拿到 `decompressed/` 后就能跑分析：
+要单独重跑分析：
 
 ```bash
 python3 scripts/analyze_navigation_bag.py \

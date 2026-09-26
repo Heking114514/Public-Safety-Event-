@@ -2,15 +2,16 @@
 """One-click export of a recorded navigation rosbag.
 
 Mounts the recording volume when it is not mounted, decompresses the raw
-sqlite bags into a cache directory, renders the recorded camera stream to an
-Ubuntu-playable MP4, and writes a JSON manifest describing every output. No
-navigation analysis is performed.
+sqlite bags into a cache directory, runs the route/odometry analysis, renders
+the recorded camera stream to an Ubuntu-playable MP4, and writes a JSON
+manifest describing every output.
 
 Examples:
   python3 scripts/export_rosbag.py                     # newest run on the volume
   python3 scripts/export_rosbag.py 20260925T120110     # run id prefix
   python3 scripts/export_rosbag.py /path/to/bag        # explicit bag directory
-  python3 scripts/export_rosbag.py --no-video          # decompress + manifest only
+  python3 scripts/export_rosbag.py --no-video          # skip the camera video
+  python3 scripts/export_rosbag.py --no-analysis       # skip the analysis
 """
 
 from __future__ import annotations
@@ -35,6 +36,10 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import offline_image_track_correction as correction
+
+# The route/odometry analysis lives in its own script; export only invokes it so
+# the CSV/PNG summary is produced alongside the decompressed bag.
+ANALYZE_SCRIPT = SCRIPT_DIR / "analyze_navigation_bag.py"
 
 
 class ExportError(RuntimeError):
@@ -322,6 +327,30 @@ def write_decompressed_metadata(
     return target
 
 
+def run_analysis(cache_dir: Path, output_dir: Path) -> dict:
+    """Run the existing route/odometry analysis over the decompressed cache.
+
+    scripts/analyze_navigation_bag.py holds the analysis itself; this only
+    invokes it, so there is one implementation of the segment and turn maths.
+    """
+    if not ANALYZE_SCRIPT.is_file():
+        log(f"analysis : {ANALYZE_SCRIPT.name} is missing, skipping")
+        return {"status": "unavailable"}
+    log(f"analyzing -> {output_dir.name}/ (route segments, odometry, turns)")
+    result = subprocess.run(
+        [
+            sys.executable, str(ANALYZE_SCRIPT), str(cache_dir),
+            "--output-dir", str(output_dir),
+        ],
+    )
+    if result.returncode == 0:
+        return {"status": "ok", "output_dir": str(output_dir)}
+    if result.returncode == 3:
+        # Bags recorded without a route have no segments to report.
+        return {"status": "skipped", "detail": "no route messages in bag"}
+    return {"status": "failed", "returncode": result.returncode}
+
+
 def topic_table(db_paths: list[Path]) -> dict[str, dict]:
     table: dict[str, dict] = {}
     for db_path in db_paths:
@@ -340,6 +369,7 @@ def build_manifest(
     video: dict | None,
     image_topic: str,
     metadata_path: Path | None = None,
+    analysis: dict | None = None,
 ) -> dict:
     manifest: dict = {
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(
@@ -354,6 +384,7 @@ def build_manifest(
             {"path": str(path), "bytes": path.stat().st_size} for path in db_paths
         ],
         "topics": topic_table(db_paths),
+        "analysis": analysis,
         "video": video,
     }
     if run_dir and (run_dir / "run_manifest.json").is_file():
@@ -405,7 +436,12 @@ def parse_args() -> argparse.Namespace:
         help="stop after this many written frames (default: 0, no limit)",
     )
     parser.add_argument(
-        "--no-video", action="store_true", help="decompress and write the manifest only"
+        "--no-video", action="store_true", help="skip the camera video render"
+    )
+    parser.add_argument(
+        "--no-analysis",
+        action="store_true",
+        help="skip the route/odometry analysis (analysis/ CSV and PNG output)",
     )
     parser.add_argument(
         "--mount-only",
@@ -463,6 +499,11 @@ def main() -> int:
         if metadata_path is not None:
             log(f"metadata : {metadata_path.name} (cache opens directly as a bag)")
 
+        analysis = None
+        if not args.no_analysis:
+            analysis = run_analysis(cache_dir, output_dir / "analysis")
+            log(f"analysis : {analysis['status']}")
+
         video = None
         if not args.no_video:
             topics = topic_table(db_paths)
@@ -486,7 +527,7 @@ def main() -> int:
 
         manifest = build_manifest(
             bag_dir, run_dir, db_paths, cache_dir, video, args.image_topic,
-            metadata_path,
+            metadata_path, analysis,
         )
         manifest_path = output_dir / "export_manifest.json"
         manifest_path.write_text(

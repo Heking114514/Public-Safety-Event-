@@ -18,9 +18,12 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 try:
+    from geometry_msgs.msg import PoseStamped
+    from nav_msgs.msg import Path as RosPath
     from rclpy.serialization import serialize_message
     import rosbag2_py
     from sensor_msgs.msg import Image
+    from std_msgs.msg import Int32, String
 
     HAVE_ROS = shutil.which("zstd") is not None
 except ImportError:
@@ -28,10 +31,17 @@ except ImportError:
 
 
 IMAGE_TOPIC = "/camera/camera/color/image_raw"
+ROUTE_TOPIC = "/waypoint_navigation/route_input"
+WAYPOINT_TOPIC = "/waypoint_navigation/current_waypoint"
+STATUS_TOPIC = "/waypoint_navigation/status"
 
 
-def write_camera_bag(bag_dir, frames, width=64, height=48):
-    """Write a zstd-compressed bag holding `frames` rgb8 camera images."""
+def write_camera_bag(bag_dir, frames, width=64, height=48, routes=True):
+    """Write a zstd-compressed bag holding `frames` rgb8 camera images.
+
+    With `routes`, a short route plus waypoint/status traffic is recorded too,
+    so scripts/analyze_navigation_bag.py has segments to report.
+    """
     staging = bag_dir.parent / "staging"
     storage = rosbag2_py.StorageOptions(uri=str(staging), storage_id="sqlite3")
     converter = rosbag2_py.ConverterOptions(
@@ -39,11 +49,20 @@ def write_camera_bag(bag_dir, frames, width=64, height=48):
     )
     writer = rosbag2_py.SequentialWriter()
     writer.open(storage, converter)
-    writer.create_topic(
-        rosbag2_py.TopicMetadata(
-            name=IMAGE_TOPIC, type="sensor_msgs/msg/Image", serialization_format="cdr"
+    topics = {IMAGE_TOPIC: "sensor_msgs/msg/Image"}
+    if routes:
+        topics.update({
+            ROUTE_TOPIC: "nav_msgs/msg/Path",
+            WAYPOINT_TOPIC: "std_msgs/msg/Int32",
+            STATUS_TOPIC: "std_msgs/msg/String",
+        })
+    for name, topic_type in topics.items():
+        writer.create_topic(
+            rosbag2_py.TopicMetadata(
+                name=name, type=topic_type, serialization_format="cdr"
+            )
         )
-    )
+
     for index in range(frames):
         image = Image()
         image.height = height
@@ -55,6 +74,25 @@ def write_camera_bag(bag_dir, frames, width=64, height=48):
         writer.write(
             IMAGE_TOPIC, serialize_message(image), 1_000_000_000 + index * 33_333_333
         )
+
+    if routes:
+        route = RosPath()
+        for index in range(3):
+            pose = PoseStamped()
+            pose.pose.position.x = 0.5 * index
+            pose.pose.position.y = 0.0
+            pose.pose.orientation.w = 1.0
+            route.poses.append(pose)
+        writer.write(ROUTE_TOPIC, serialize_message(route), 1_000_000_000)
+
+        for index in range(3):
+            stamp = 1_000_000_000 + (index + 1) * 200_000_000
+            waypoint = Int32()
+            waypoint.data = index
+            writer.write(WAYPOINT_TOPIC, serialize_message(waypoint), stamp)
+            status = String()
+            status.data = "FOLLOWING" if index else "BRAKING_AT_WAYPOINT"
+            writer.write(STATUS_TOPIC, serialize_message(status), stamp)
     del writer
 
     # rosbag2 writes a complete metadata.yaml beside the staged .db3 files.
@@ -147,7 +185,8 @@ class ExportRosbagTest(unittest.TestCase):
             messages += 1
 
         self.assertEqual(12, seen[IMAGE_TOPIC])
-        self.assertEqual(12, messages)
+        # 12 images plus the route, three waypoints and three status messages.
+        self.assertEqual(19, messages)
 
     def test_no_video_skips_rendering_but_still_writes_manifest(self):
         result = self.export("--no-video")
@@ -156,6 +195,34 @@ class ExportRosbagTest(unittest.TestCase):
         manifest = json.loads((self.out / "export_manifest.json").read_text())
         self.assertIsNone(manifest["video"])
         self.assertFalse(list(self.out.glob("*.mp4")))
+
+    def test_analysis_runs_against_the_decompressed_cache(self):
+        result = self.export("--no-video")
+        self.assertEqual(0, result.returncode, result.stdout)
+
+        manifest = json.loads((self.out / "export_manifest.json").read_text())
+        self.assertEqual("ok", manifest["analysis"]["status"])
+        analysis_dir = self.out / "analysis"
+        self.assertTrue((analysis_dir / "summary.json").is_file())
+        self.assertTrue((analysis_dir / "segments.csv").is_file())
+
+    def test_no_analysis_skips_the_route_analysis(self):
+        result = self.export("--no-analysis")
+        self.assertEqual(0, result.returncode, result.stdout)
+
+        manifest = json.loads((self.out / "export_manifest.json").read_text())
+        self.assertIsNone(manifest["analysis"])
+        self.assertFalse((self.out / "analysis").exists())
+
+    def test_route_less_bag_marks_the_analysis_skipped(self):
+        shutil.rmtree(self.bag)
+        write_camera_bag(self.bag, frames=4, routes=False)
+
+        result = self.export("--no-video")
+        self.assertEqual(0, result.returncode, result.stdout)
+
+        manifest = json.loads((self.out / "export_manifest.json").read_text())
+        self.assertEqual("skipped", manifest["analysis"]["status"])
 
     def test_stride_and_max_frames_bound_the_written_video(self):
         result = self.export("--stride", "2", "--max-frames", "3")
