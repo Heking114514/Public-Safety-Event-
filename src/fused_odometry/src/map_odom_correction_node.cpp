@@ -108,6 +108,8 @@ public:
     initial_map_x_ = declare_parameter<double>("initial_map_x", 0.0);
     initial_map_y_ = declare_parameter<double>("initial_map_y", 0.0);
     initial_map_yaw_ = declare_parameter<double>("initial_map_yaw", 0.0);
+    use_absolute_visual_correction_ = declare_parameter<bool>(
+      "use_absolute_visual_correction", false);
     publish_tf_ = declare_parameter<bool>("publish_tf", true);
     const bool deprecated_direct_visual_tracking =
       declare_parameter<bool>("direct_visual_tracking", false);
@@ -180,6 +182,9 @@ public:
       "Global correction ready: %s -> %s -> %s, local=%s visual=%s output=%s",
       map_frame_.c_str(), odom_frame_.c_str(), base_frame_.c_str(),
       local_topic_.c_str(), visual_topic_.c_str(), output_topic_.c_str());
+    RCLCPP_INFO(
+      get_logger(), "Absolute visual map correction: %s",
+      use_absolute_visual_correction_ ? "ENABLED" : "DISABLED (start-aligned local)");
   }
 
 private:
@@ -227,6 +232,17 @@ private:
     latest_local_ = *message;
     local_received_ = true;
     local_received_at_ = steady_seconds();
+    if (!use_absolute_visual_correction_ && !correction_valid_) {
+      // Keep /odometry/fused usable without pretending that ORB's arbitrary
+      // absolute XY is a map measurement. This is the same start alignment as
+      // local_map_odometry, while preserving the public fused topic/TF pair.
+      map_from_odom_ = fused_odometry::compose_pose(
+        {initial_map_x_, initial_map_y_, initial_map_yaw_},
+        fused_odometry::inverse_pose(message_pose(*message)));
+      desired_map_from_odom_ = map_from_odom_;
+      correction_valid_ = true;
+      last_update_at_ = local_received_at_;
+    }
     if (pending_visual_) {
       const auto pending = *pending_visual_;
       process_visual(pending);
@@ -284,6 +300,9 @@ private:
 
   void process_visual(const nav_msgs::msg::Odometry & message)
   {
+    if (!use_absolute_visual_correction_) {
+      return;
+    }
     if (message.header.frame_id != map_frame_ || message.child_frame_id != base_frame_ ||
       !valid_pose(message.pose.pose))
     {
@@ -377,7 +396,7 @@ private:
 
   void update_turn_hold(double current_time)
   {
-    if (!hold_global_xy_during_turn_) {
+    if (!use_absolute_visual_correction_ || !hold_global_xy_during_turn_) {
       return;
     }
     const auto & twist = latest_local_.twist.twist;
@@ -461,9 +480,11 @@ private:
       return;
     }
 
-    update_turn_hold(current_time);
+    if (use_absolute_visual_correction_) {
+      update_turn_hold(current_time);
+    }
 
-    if (turn_hold_active_ &&
+    if (use_absolute_visual_correction_ && turn_hold_active_ &&
       (current_time - last_turn_motion_at_ >= turn_hold_release_delay_ ||
       std::hypot(
         message_pose(latest_local_).x - turn_anchor_local_.x,
@@ -482,7 +503,7 @@ private:
     }
 
     const auto authority_time = fused_odometry::FusionStatusAuthority::Clock::now();
-    if (!turn_hold_active_ && desired_valid_ &&
+    if (use_absolute_visual_correction_ && !turn_hold_active_ && desired_valid_ &&
       current_time - visual_received_at_ <= visual_timeout_ &&
       fusion_status_authority_.visual_correction_allowed(
         authority_time, fusion_status_timeout_))
@@ -551,15 +572,19 @@ private:
     // both state uncertainties instead of relabeling local covariance as map
     // covariance after applying the visual correction.
     output.pose.covariance.fill(0.0);
+    const double visual_xy_contribution =
+      use_absolute_visual_correction_ && visual_pair_valid_ ? visual_xy_variance_ : 0.0;
+    const double visual_yaw_contribution =
+      use_absolute_visual_correction_ && visual_pair_valid_ ? visual_yaw_variance_ : 0.0;
     output.pose.covariance[0] = finite_covariance(latest_local_.pose.covariance[0], 0.0) +
-      visual_xy_variance_;
+      visual_xy_contribution;
     output.pose.covariance[7] = finite_covariance(latest_local_.pose.covariance[7], 0.0) +
-      visual_xy_variance_;
+      visual_xy_contribution;
     output.pose.covariance[14] = 1.0e6;
     output.pose.covariance[21] = 1.0e6;
     output.pose.covariance[28] = 1.0e6;
     output.pose.covariance[35] = finite_covariance(latest_local_.pose.covariance[35], 0.0) +
-      visual_yaw_variance_;
+      visual_yaw_contribution;
     publisher_->publish(output);
 
     if (tf_broadcaster_) {
@@ -582,6 +607,7 @@ private:
   std::string map_frame_;
   std::string odom_frame_;
   std::string base_frame_;
+  bool use_absolute_visual_correction_{false};
   bool publish_tf_{true};
   bool hold_global_xy_during_turn_{false};
   double publish_frequency_{30.0};

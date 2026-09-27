@@ -153,7 +153,7 @@ TEST(FusionHealthMonitor, WheelSlipRemainsDiagnosticDuringHealthyVisualFusion)
   const auto result = monitor.evaluate(input, {});
 
   EXPECT_EQ(result.motion_fault, fused_odometry::MotionFault::kSlip);
-  EXPECT_FALSE(result.wheel_healthy);
+  EXPECT_TRUE(result.wheel_healthy);
   EXPECT_EQ(result.mode, fused_odometry::FusionMode::kFull);
 }
 
@@ -168,7 +168,7 @@ TEST(FusionHealthMonitor, EncoderFailureRemainsDiagnosticDuringHealthyVisualFusi
   const auto result = monitor.evaluate(input, {});
 
   EXPECT_EQ(result.motion_fault, fused_odometry::MotionFault::kEncoderFailure);
-  EXPECT_FALSE(result.wheel_healthy);
+  EXPECT_TRUE(result.wheel_healthy);
   EXPECT_EQ(result.mode, fused_odometry::FusionMode::kFull);
 }
 

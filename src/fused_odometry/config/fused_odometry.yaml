@@ -87,22 +87,24 @@ fused_odometry_gate:
 
     visual_xy_variance: 0.02
     visual_yaw_variance: 0.04
-    # ORB frame-to-frame speed is useful for outage detection, but the latest
-    # arena bags show it dragging /odometry/local_map away from the physical
-    # chassis. Keep it as a weak longitudinal aid and do not fuse visual vy.
+    # ORB frame-to-frame speed remains available for tracking diagnostics, but
+    # the latest arena bags show it dragging /odometry/local_map away from the
+    # physical chassis. It is not a local EKF motion source.
     visual_vx_variance: 0.06
     visual_vy_variance: 0.30
     # Wheel vx is the primary short-term distance source. Its yaw remains
     # diagnostic-only, but the 50 mm axle-to-base_link lever arm publishes a
     # real body-centre vy during pivots and is fused with moderate confidence.
+    wheel_base_offset_x_m: 0.050
     wheel_vx_variance: 0.02
     wheel_vy_variance: 0.04
-    # Encoder vx is downweighted during observed turns. The 50 mm axle-to-body
-    # offset is retained as fused vy so base_link follows the real pivot arc.
+    # Encoder vx is downweighted during observed turns. Only near-zero commanded
+    # motion is treated as an in-place turn; slow moving arcs such as the 0.06 m/s
+    # rectangle test must keep their forward distance.
     wheel_turn_downweight_start_radps: 0.15
     wheel_turn_full_downweight_radps: 0.60
     wheel_turn_covariance_scale: 100.0
-    wheel_in_place_max_linear_speed_mps: 0.10
+    wheel_in_place_max_linear_speed_mps: 0.02
     wheel_in_place_min_yaw_rate_radps: 0.07
     wheel_wz_variance: 0.50
     # BMI088 ATT is already filtered and bias-corrected by the lower controller.
@@ -127,14 +129,14 @@ fused_ekf:
     base_link_frame: base_link
     world_frame: odom
 
-    # Local odometry intentionally excludes absolute ORB pose. Loop closure
-    # updates map->odom in map_odom_correction without moving odom->base_link.
-    odom0: /fusion/input/visual_odom
-    # ORB longitudinal velocity is only a weak short-term aid. Do not fuse its
-    # lateral velocity: bag diagnostics show visual vy distorts the pivot centre.
+    # Local odometry must not integrate ORB frame-to-frame motion. The latest
+    # bags show false visual translation during in-place turns, so visual
+    # odometry is kept for health/global-correction diagnostics only.
+
+    odom0: /fusion/input/wheel_odom
     odom0_config: [false, false, false,
                    false, false, false,
-                   true, false, false,
+                   true, true, false,
                    false, false, false,
                    false, false, false]
     odom0_queue_size: 10
@@ -142,18 +144,6 @@ fused_ekf:
     odom0_differential: false
     odom0_relative: false
     odom0_twist_rejection_threshold: 100.0
-
-    odom1: /fusion/input/wheel_odom
-    odom1_config: [false, false, false,
-                   false, false, false,
-                   true, true, false,
-                   false, false, false,
-                   false, false, false]
-    odom1_queue_size: 10
-    odom1_nodelay: true
-    odom1_differential: false
-    odom1_relative: false
-    odom1_twist_rejection_threshold: 100.0
 
     imu0: /imu/control
     imu0_config: [false, false, false,
@@ -186,6 +176,10 @@ map_odom_correction:
     initial_map_x: 0.0
     initial_map_y: 0.0
     initial_map_yaw: 0.0
+    # ORB's absolute XY is not an arena truth source. Keep the public fused
+    # stream start-aligned and local by default; enable this only when a
+    # separately validated global landmark source is connected.
+    use_absolute_visual_correction: false
     # Deprecated compatibility parameter. Visual corrections are always
     # smoothed before they update map->odom; true no longer bypasses filtering.
     direct_visual_tracking: false

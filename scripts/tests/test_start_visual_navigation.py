@@ -69,6 +69,7 @@ if [[ "$1" == "node" && "$2" == "list" ]]; then
     /map_odom_correction \
     /local_map_odometry \
     /waypoint_navigator \
+    /rectangle_primitive_controller \
     /orbslam3_stereo_inertial \
     /camera/camera
   exit 0
@@ -241,6 +242,12 @@ exit 2
             failed_manifest["effective_settings"]["odom_topic"]
         )
         self.assertEqual(
+            "0.0", failed_manifest["effective_settings"]["tracking_point_offset_x"]
+        )
+        self.assertEqual(
+            "0.0", failed_manifest["effective_settings"]["tracking_point_offset_y"]
+        )
+        self.assertEqual(
             "848x480x15",
             failed_manifest["effective_settings"]["camera_infra_profile"],
         )
@@ -308,6 +315,8 @@ exit 2
         )
         self.assertIn("autostart:=false", navigation_launch)
         self.assertIn("odom_topic:=/odometry/fused", navigation_launch)
+        self.assertIn("tracking_point_offset_x:=0.0", navigation_launch)
+        self.assertIn("tracking_point_offset_y:=0.0", navigation_launch)
         self.assertNotIn("route_file:=", navigation_launch)
         self.assertFalse(
             any(
@@ -500,6 +509,99 @@ exit 2
             if event.startswith("ros2 launch visual_navigation ")
         )
         self.assertIn("odom_topic:=/odometry/fused", navigation_launch)
+
+    def test_primitive_rectangle_mode_owns_command_topic_without_waypoint_navigator(self):
+        result = subprocess.run(
+            self.arguments() + ["--primitive-rectangle-test"],
+            env=self.environment(MOCK_BAG_EXIT="37"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(37, result.returncode, result.stderr)
+
+        manifest = self.latest_manifest()
+        settings = manifest["effective_settings"]
+        self.assertEqual("primitive_rectangle", settings["control_mode"])
+        self.assertFalse(settings["enable_waypoint_navigation"])
+        self.assertEqual(
+            "primitive_controller:/cmd_vel_nav", settings["route_source"]
+        )
+
+        events = self.events.read_text().splitlines()
+        navigation_launch = next(
+            event
+            for event in events
+            if event.startswith("ros2 launch visual_navigation ")
+        )
+        self.assertIn("enable_waypoint_navigation:=false", navigation_launch)
+        primitive_launch = next(
+            event
+            for event in events
+            if event.startswith("ros2 launch rectangle_odometry_test ")
+        )
+        self.assertIn("enable:=true", primitive_launch)
+        self.assertIn("cmd_vel_topic:=/cmd_vel_nav", primitive_launch)
+
+    def test_navigation_parameters_file_override_is_recorded_and_launched(self):
+        parameters_file = WORKSPACE / "src" / "rectangle_odometry_test" / "config" / "slow_arc_navigation.yaml"
+        result = subprocess.run(
+            self.arguments()
+            + ["--navigation-parameters-file", str(parameters_file)],
+            env=self.environment(MOCK_BAG_EXIT="37"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(37, result.returncode, result.stderr)
+        manifest = self.latest_manifest()
+        self.assertEqual(
+            str(parameters_file),
+            manifest["effective_settings"]["navigation_parameters_file"],
+        )
+        self.assertEqual(
+            str(parameters_file),
+            manifest["runtime_inputs"]["navigation_parameters"]["path"],
+        )
+        navigation_launch = next(
+            event
+            for event in self.events.read_text().splitlines()
+            if event.startswith("ros2 launch visual_navigation ")
+        )
+        self.assertIn(f"parameters_file:={parameters_file}", navigation_launch)
+
+    def test_tracking_point_offset_override_is_recorded_and_launched(self):
+        result = subprocess.run(
+            self.arguments()
+            + [
+                "--tracking-point-offset-x",
+                "0.04",
+                "--tracking-point-offset-y",
+                "0.01",
+            ],
+            env=self.environment(MOCK_BAG_EXIT="37"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(37, result.returncode, result.stderr)
+        manifest = self.latest_manifest()
+        self.assertEqual(
+            "0.04", manifest["effective_settings"]["tracking_point_offset_x"]
+        )
+        self.assertEqual(
+            "0.01", manifest["effective_settings"]["tracking_point_offset_y"]
+        )
+        navigation_launch = next(
+            event
+            for event in self.events.read_text().splitlines()
+            if event.startswith("ros2 launch visual_navigation ")
+        )
+        self.assertIn("tracking_point_offset_x:=0.04", navigation_launch)
+        self.assertIn("tracking_point_offset_y:=0.01", navigation_launch)
 
     def test_navigation_entry_records_explicit_actuator_gate(self):
         result = subprocess.run(

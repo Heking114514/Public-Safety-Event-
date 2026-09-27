@@ -12,6 +12,9 @@ def generate_launch_description():
     route_file = LaunchConfiguration("route_file")
     route_frame = LaunchConfiguration("route_frame")
     odom_topic = LaunchConfiguration("odom_topic")
+    parameters_file = LaunchConfiguration("parameters_file")
+    tracking_point_offset_x = LaunchConfiguration("tracking_point_offset_x")
+    tracking_point_offset_y = LaunchConfiguration("tracking_point_offset_y")
     fusion_status_topic = LaunchConfiguration("fusion_status_topic")
     actuator_health_topic = LaunchConfiguration("actuator_health_topic")
     actuator_health_timeout = LaunchConfiguration("actuator_health_timeout")
@@ -20,6 +23,7 @@ def generate_launch_description():
     cmd_vel_topic = LaunchConfiguration("cmd_vel_topic")
     route_input_topic = LaunchConfiguration("route_input_topic")
     autostart = LaunchConfiguration("autostart")
+    enable_waypoint_navigation = LaunchConfiguration("enable_waypoint_navigation")
     serial_device = LaunchConfiguration("serial_device")
     serial_baud_rate = LaunchConfiguration("serial_baud_rate")
     serial_send_rate_hz = LaunchConfiguration("serial_send_rate_hz")
@@ -38,6 +42,9 @@ def generate_launch_description():
             "route_file": route_file,
             "route_frame": route_frame,
             "odom_topic": odom_topic,
+            "parameters_file": parameters_file,
+            "tracking_point_offset_x": tracking_point_offset_x,
+            "tracking_point_offset_y": tracking_point_offset_y,
             "fusion_status_topic": fusion_status_topic,
             "actuator_health_topic": actuator_health_topic,
             "require_actuator_health": "true",
@@ -47,6 +54,7 @@ def generate_launch_description():
             "cmd_vel_topic": cmd_vel_topic,
             "route_input_topic": route_input_topic,
             "autostart": autostart,
+            "enable_waypoint_navigation": enable_waypoint_navigation,
         }.items(),
     )
     serial_bridge = Node(
@@ -85,6 +93,14 @@ def generate_launch_description():
             DeclareLaunchArgument("route_frame", default_value="map"),
             DeclareLaunchArgument("odom_topic", default_value="/odometry/local_map"),
             DeclareLaunchArgument(
+                "parameters_file",
+                default_value=PathJoinSubstitution(
+                    [package_share, "config", "waypoint_navigation.yaml"]
+                ),
+            ),
+            DeclareLaunchArgument("tracking_point_offset_x", default_value="0.0"),
+            DeclareLaunchArgument("tracking_point_offset_y", default_value="0.0"),
+            DeclareLaunchArgument(
                 "fusion_status_topic", default_value="/odometry/fusion_status"
             ),
             DeclareLaunchArgument(
@@ -104,6 +120,7 @@ def generate_launch_description():
                 default_value="/waypoint_navigation/route_input",
             ),
             DeclareLaunchArgument("autostart", default_value="false"),
+            DeclareLaunchArgument("enable_waypoint_navigation", default_value="true"),
             DeclareLaunchArgument("serial_device", default_value="auto"),
             DeclareLaunchArgument("serial_baud_rate", default_value="115200"),
             DeclareLaunchArgument("serial_send_rate_hz", default_value="20.0"),

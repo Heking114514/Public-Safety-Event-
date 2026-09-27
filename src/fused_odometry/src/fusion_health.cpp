@@ -57,9 +57,9 @@ FusionHealthSnapshot FusionHealthMonitor::evaluate(
   result.motion_fault = motion_classifier_.update(
     input.now_seconds, input.wheel_velocity, input.visual_velocity,
     input.wheel_measurement_fresh, input.visual_motion_valid);
-  const bool wheel_fault = result.motion_fault == MotionFault::kSlip ||
-    result.motion_fault == MotionFault::kEncoderFailure;
-  result.wheel_healthy = input.wheel_available && !wheel_fault;
+  // Motion faults describe disagreement with the visual diagnostic stream.
+  // They must not relabel a fresh wheel source as unavailable.
+  result.wheel_healthy = input.wheel_available;
 
   if (input.visual_yaw_valid) {
     result.measured_yaw_rate = std::max(

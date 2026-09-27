@@ -289,7 +289,7 @@ private:
   double wheel_turn_downweight_start_{0.15};
   double wheel_turn_full_downweight_{0.60};
   double wheel_turn_covariance_scale_{100.0};
-  double wheel_in_place_max_linear_speed_{0.10};
+  double wheel_in_place_max_linear_speed_{0.02};
   double wheel_in_place_min_yaw_rate_{0.30};
   double wheel_wz_variance_{0.5};
   double imu_wz_variance_{0.015};
@@ -297,6 +297,7 @@ private:
   double visual_yaw_variance_{0.04};
   double visual_vx_variance_{0.01};
   double visual_vy_variance_{0.02};
+  double wheel_base_offset_x_{0.05};
   double wheel_vy_variance_{0.20};
   std::size_t recovery_samples_{5};
   std::size_t robust_min_samples_{5};

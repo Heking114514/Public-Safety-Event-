@@ -142,15 +142,17 @@ TEST(WheelVelocityTurnWeight, UsesFreshImuOnly)
 TEST(WheelVelocityTurnWeight, ZeroesObservedInPlaceTurnsOnly)
 {
   EXPECT_TRUE(fused_odometry::zero_wheel_vx_during_in_place_turn(
-      0.0, 0.90, true, true, 0.10, 0.30));
+      0.0, 0.90, true, true, 0.02, 0.07));
   EXPECT_TRUE(fused_odometry::zero_wheel_vx_during_in_place_turn(
-      -0.08, -0.30, true, true, 0.10, 0.30));
+      -0.008, -0.30, true, true, 0.02, 0.07));
   EXPECT_FALSE(fused_odometry::zero_wheel_vx_during_in_place_turn(
-      0.20, 0.90, true, true, 0.10, 0.30));
+      0.06, 0.42, true, true, 0.02, 0.07));
   EXPECT_FALSE(fused_odometry::zero_wheel_vx_during_in_place_turn(
-      0.0, 0.90, true, false, 0.10, 0.30));
+      0.20, 0.90, true, true, 0.02, 0.07));
   EXPECT_FALSE(fused_odometry::zero_wheel_vx_during_in_place_turn(
-      0.0, 0.90, false, true, 0.10, 0.30));
+      0.0, 0.90, true, false, 0.02, 0.07));
+  EXPECT_FALSE(fused_odometry::zero_wheel_vx_during_in_place_turn(
+      0.0, 0.90, false, true, 0.02, 0.07));
 }
 
 TEST(ResidualGate, RejectsAndRecoversWithHysteresis)

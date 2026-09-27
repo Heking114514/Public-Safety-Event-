@@ -38,8 +38,10 @@ void FusionGateNode::publish_status() {
       current_time - initialization_started_at_ >= initialization_timeout_;
   health_input.vision = vision;
   health_input.wheel_measurement_fresh = wheel_measurement_fresh;
-  health_input.wheel_available =
-      wheel_measurement_fresh && !wheel_gate_.rejected();
+  // Wheel availability is a source/freshness property. Visual residuals and
+  // the contextual motion classifier remain diagnostics and must not remove
+  // the independent wheel stream from dead-reckoning decisions.
+  health_input.wheel_available = wheel_measurement_fresh;
   health_input.imu = imu;
   health_input.wheel_yaw_backup = wheel_yaw_backup;
   health_input.visual_realigned = current_time <= visual_.realigned_until;

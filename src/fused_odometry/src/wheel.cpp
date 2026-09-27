@@ -35,9 +35,13 @@ void FusionGateNode::wheel_callback(
       velocity, imu_.yaw_rate, true, imu_fresh,
       wheel_in_place_max_linear_speed_, wheel_in_place_min_yaw_rate_);
   const double effective_velocity = wheel_.vx_zeroed ? 0.0 : velocity;
+  const double effective_lateral_velocity =
+      imu_fresh && finite(imu_.yaw_rate)
+          ? wheel_base_offset_x_ * imu_.yaw_rate
+          : lateral_velocity;
   wheel_vx_window_.add(sample_time, effective_velocity);
   wheel_.velocity = effective_velocity;
-  wheel_.lateral_velocity = lateral_velocity;
+  wheel_.lateral_velocity = effective_lateral_velocity;
 
   double residual = 0.0;
   bool compared = false;
@@ -103,15 +107,6 @@ void FusionGateNode::wheel_callback(
   }
   wheel_.input.update();
   wheel_.residual = compared ? residual : 0.0;
-  const bool stationary_visual_conflict =
-      raw_visual_reference &&
-      std::abs(raw_visual_vx_window_.median()) <= visual_stationary_speed_ &&
-      std::abs(effective_velocity) > stationary_wheel_reject_speed_;
-  if (wheel_gate_.rejected() || stationary_visual_conflict ||
-      !visual_.ever_accepted ||
-      health_monitor_.motion_fault() != MotionFault::kNone) {
-    return;
-  }
 
   nav_msgs::msg::Odometry output;
   output.header = message->header;
@@ -119,16 +114,13 @@ void FusionGateNode::wheel_callback(
   output.child_frame_id = base_frame_;
   output.pose.pose.orientation.w = 1.0;
   output.twist.twist.linear.x = effective_velocity;
-  output.twist.twist.linear.y = lateral_velocity;
+  output.twist.twist.linear.y = effective_lateral_velocity;
   output.pose.covariance.fill(0.0);
   output.twist.covariance.fill(0.0);
   for (std::size_t index = 0; index < 6; ++index) {
     output.pose.covariance[index * 6 + index] = 1.0e6;
     output.twist.covariance[index * 6 + index] = 1.0e6;
   }
-  const double residual_scale =
-      compared ? wheel_gate_.covariance_scale(residual, wheel_soft_residual_)
-               : 2.0;
   const double turn_scale = wheel_vx_turn_covariance_scale(
       imu_.yaw_rate, imu_fresh,
       wheel_turn_downweight_start_, wheel_turn_full_downweight_,
@@ -139,7 +131,9 @@ void FusionGateNode::wheel_callback(
       finite(input_vx_variance) && input_vx_variance > 0.0
           ? std::max(wheel_vx_variance_, input_vx_variance)
           : wheel_vx_variance_;
-  output.twist.covariance[0] = base_vx_variance * residual_scale * turn_scale;
+  // Visual disagreement is diagnostic only. It must not downweight or
+  // suppress the independent wheel measurement that the local EKF relies on.
+  output.twist.covariance[0] = base_vx_variance * turn_scale;
   output.twist.covariance[7] = wheel_vy_variance_;
   const bool wheel_yaw_backup =
       fuse_wheel_yaw_ && wheel_.yaw.validated &&
@@ -166,7 +160,7 @@ void FusionGateNode::wheel_callback(
   }
   if (wheel_.vx_zeroed) {
     output.twist.twist.linear.x = 0.0;
-    output.twist.covariance[0] = base_vx_variance * residual_scale;
+    output.twist.covariance[0] = base_vx_variance;
   }
   wheel_publisher_->publish(output);
 }

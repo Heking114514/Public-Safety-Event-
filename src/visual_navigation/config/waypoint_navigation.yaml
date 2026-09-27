@@ -12,7 +12,9 @@ waypoint_navigator:
     # Consume the fusion gate's bias-corrected/base_link yaw rate. The raw
     # filtered IMU is used only as the gate input and must not drive control.
     imu_topic: "/imu/control"
-    # /odometry/fused is already expressed at base_link by the measured TF.
+    # Keep the navigation control point at base_link. Rounded-corner routes are
+    # generated as the base_link centerline; pivot-center compensation can be
+    # enabled from the launch script for A/B checks.
     tracking_point_offset_x: 0.0
     tracking_point_offset_y: 0.0
     fusion_status_topic: "/odometry/fusion_status"

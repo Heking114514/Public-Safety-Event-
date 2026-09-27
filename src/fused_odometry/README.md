@@ -23,12 +23,14 @@ Inputs:
 Outputs:
 
 - `/odometry/local` (`nav_msgs/Odometry`): continuous local EKF estimate in
-  `odom`, driven by gated visual forward velocity and IMU yaw rate.
+  `odom`, driven by sanitized wheel body velocity and BMI088 yaw rate. ORB
+  frame-to-frame velocity is not integrated into this state.
 - `/odometry/local_map` (`nav_msgs/Odometry`): start-aligned copy of
   `/odometry/local` expressed as `map -> base_link`; this is the temporary
   default navigation input while visual global correction is being recalibrated.
-- `/odometry/fused` (`nav_msgs/Odometry`): smoothed map-frame pose used by the
-  visual-correction path; it remains published for recording and comparison.
+- `/odometry/fused` (`nav_msgs/Odometry`): public map-frame pose. By default it
+  is only the start-aligned local EKF pose; absolute ORB XY correction is
+  opt-in and remains available for a separately validated global source.
 - `/odometry/fusion_status` (`std_msgs/String`, transient local):
   `WAITING_FOR_INITIALIZATION`, `FULL`,
   `DEGRADED_NO_VISION`, `DEGRADED_NO_IMU`, `DEGRADED_NO_WHEEL`,
@@ -41,6 +43,8 @@ Outputs:
   EKF and navigation control.
 
 The gate publishes sanitized visual and wheel inputs below `/fusion/input/*`.
+The visual stream is retained for tracking health and future trusted landmark
+correction; it is not a local translation source.
 The control IMU is intentionally public at `/imu/control` so that
 navigation damping and EKF prediction use the same yaw-rate sample.
 
@@ -54,6 +58,13 @@ ATT from `cup_car_serial`.
 `/odometry/fused` publishes a map-frame pose. Its position and yaw covariance
 include both the local odometry covariance and the accepted visual correction
 covariance; the local covariance is not relabeled as global covariance.
+
+`use_absolute_visual_correction` is `false` by default. This is intentional:
+the current ORB absolute XY stream is not an arena-map truth measurement and can
+report false translation during in-place turns. With the default, `/odometry/fused`
+keeps the same start alignment and local motion as `/odometry/local_map`, while
+preserving the fused topic and `map -> odom` TF contract. Enable the parameter
+only after a trusted landmark/corner source has been validated.
 
 Turn-position holding is enabled by default (`hold_global_xy_during_turn:
 true`). It is released if local odometry measures more than
@@ -76,42 +87,42 @@ global vision-health decision.
 
 ## Behavior
 
-`robot_localization` performs the local planar EKF from gated visual forward
-velocity, low-weight wheel `vx`, and processed BMI088 yaw/yaw-rate. Wheel yaw
-does not modify this state. A separate correction node combines gated ORB pose with the local
-estimate to publish `map -> odom` and `/odometry/fused`. Normal visual drift is
-corrected with the configured 0.15-second time constant; when a verified ORB
-map change is active, the correction uses 1.25 seconds so PID control never
-receives a loop-closure jump. Stationary correction and visual recovery use
-their separate configured time constants.
+`robot_localization` performs the local planar EKF from gated wheel `vx`/`vy`
+and processed BMI088 yaw/yaw-rate. ORB frame-to-frame velocity is not fused:
+the latest arena bags contain false forward motion during in-place turns.
+Wheel yaw does not modify this state. The correction node publishes `map ->
+odom` and `/odometry/fused`; by default that transform is fixed at the start
+alignment, so the public stream is a wheel/IMU local pose with the existing
+map-frame contract.
+When `use_absolute_visual_correction` is explicitly enabled, the node can
+smooth a trusted global pose source with the configured correction time
+constants. The current ORB absolute pose is not trusted by default.
 The gate independently validates
 finite values, expected frames, monotonic timestamps and source freshness. It
-uses median/MAD residual windows, recovery hysteresis, and adaptive measurement
-covariance. IMU yaw rate is the primary short-term rotation source: it is removed
-only for an invalid frame/value, implausible magnitude, non-monotonic timestamp,
-or timeout. IMU/visual disagreement increases visual yaw covariance instead of
-interrupting `/imu/control`, because visual angular rate can lag during a
-rapid turn. Wheel residuals retain hard rejection and recovery hysteresis. Wheel
-covariance supplied by the encoder node remains the lower bound before adaptive
-inflation. The upper computer does not relearn BMI088 gyro bias; it trusts the
-lower-controller processed ATT sample and only validates the frame, timestamp and
-bounds.
+uses median/MAD residual windows for diagnostics. IMU yaw rate is the primary
+short-term rotation source: it is removed only for an invalid frame/value,
+implausible magnitude, non-monotonic timestamp, or timeout. IMU/visual
+disagreement increases visual yaw covariance instead of interrupting
+`/imu/control`, because visual angular rate can lag during a rapid turn. The
+upper computer does not relearn BMI088 gyro bias; it trusts the lower-controller
+processed ATT sample and only validates the frame, timestamp and bounds.
 
 Wheel and visual forward motion are classified only after a configurable dwell:
 wheel motion without visual motion is `WHEEL_SLIP`; visual motion without wheel
-motion is `ENCODER_FAILURE`. Slip and encoder failure remain visible in
-diagnostics, but do not change `FULL` or navigation speed while visual odometry
-and IMU are healthy. A missing or residual-rejected wheel source is handled the
-same way. With healthy visual odometry but no IMU, the mode is always
+motion is `ENCODER_FAILURE`. These remain diagnostics only. A fresh,
+frame-valid wheel sample is still published to the local EKF, including a
+zeroed forward velocity plus the 50 mm lever-arm lateral velocity during an
+in-place turn. Visual residuals do not suppress the wheel stream or inflate its
+EKF covariance. With healthy visual odometry but no IMU, the mode is always
 `DEGRADED_NO_IMU`, independent of wheel health. Wheel faults and loss still set
 the diagnostic level to `WARN`; recovery has a separate dwell to prevent rapid
 state toggling.
 
-During visual loss, the local EKF continues from wheel `vx` and BMI088 yaw/yaw-rate
-while the configured time/distance limits bound this open-loop period. Fusion
-status is infrastructure health only: allowed degraded states do not lower
-navigation speed. `FAULT`, stale status, invalid odometry, or exceeded
-dead-reckoning limits stop navigation and wait for recovery.
+During visual loss, the local EKF continues from wheel `vx`/`vy` and BMI088
+yaw/yaw-rate while the configured time/distance limits bound this open-loop
+period. Fusion status is infrastructure health only: allowed degraded states do
+not lower navigation speed. `FAULT`, stale status, invalid odometry, or
+exceeded dead-reckoning limits stop navigation and wait for recovery.
 
 At startup the gate publishes `WAITING_FOR_INITIALIZATION` while ORB warms up
 and accumulates coherent visual increments. Navigation treats this state as a
@@ -125,6 +136,11 @@ bag showed a large encoder turn-scale error, `fuse_wheel_yaw` remains false.
 Wheel yaw is diagnostic-only in the default EKF profile. If both vision and IMU
 disappear, the fusion becomes `FAULT` instead of attempting an unreliable blind
 turn. Linear acceleration is never fused.
+
+The wheel gate only zeroes forward velocity for a true near-stationary pivot.
+The default `wheel_in_place_max_linear_speed_mps` is `0.02`, so slow moving arcs
+such as `0.06 m/s` rectangle turns keep their encoder distance instead of being
+misclassified as in-place rotation.
 
 After five good recovery frames, the gate accepts the configured raw visual
 topic. An existing raw-to-fused SE(2) alignment is checked against the current

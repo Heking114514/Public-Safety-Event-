@@ -113,6 +113,9 @@ CAMERA_SERIAL=""
 USE_IMU="true"
 USE_SLAM_IMU="false"
 ODOM_TOPIC="/odometry/fused"
+NAVIGATION_PARAMETERS_FILE="${NAVIGATION_PARAMETERS_FILE:-}"
+TRACKING_POINT_OFFSET_X="${NAVIGATION_TRACKING_POINT_OFFSET_X:-0.0}"
+TRACKING_POINT_OFFSET_Y="${NAVIGATION_TRACKING_POINT_OFFSET_Y:-0.0}"
 DEFAULT_VISION_CORRECTION_MAP="${WORKSPACE_ROOT}/src/arena_path_planner/config/arena_map.yaml"
 VISION_CORRECTION_MAP_FILE="${NAVIGATION_VISION_CORRECTION_MAP_FILE:-${DEFAULT_VISION_CORRECTION_MAP}}"
 VISION_CORRECTION_IMAGE_TOPIC="${NAVIGATION_VISION_CORRECTION_IMAGE_TOPIC:-/camera/camera/color/image_raw}"
@@ -127,6 +130,8 @@ AUTOSTART="false"
 ROUTE_MODE="planner"
 ROUTE_FILE=""
 ROUTE_SOURCE="planner:/waypoint_navigation/route_input"
+CONTROL_MODE="waypoint"
+ENABLE_WAYPOINT_NAVIGATION="true"
 BUILD_IF_NEEDED="true"
 CHECK_CAMERA="true"
 FORCE_CAMERA_RESET="false"
@@ -163,6 +168,12 @@ Options:
   --slam-imu                Fuse raw D455 IMU measurements inside ORB-SLAM3
   --odom-topic TOPIC        Navigation odometry topic (local_map, fused, or landmark_corrected)
   --fused-odom              Bypass vision correction and navigate from /odometry/fused
+  --navigation-parameters-file FILE
+                            Waypoint navigator parameter override YAML
+  --tracking-point-offset-x METERS
+                            Forward offset from tracking point to odom base_link (default: 0.0)
+  --tracking-point-offset-y METERS
+                            Left offset from tracking point to odom base_link (default: 0.0)
   --rk3588-profile          Use 848x480x15 and the lighter ORB-SLAM3 RK3588 YAML
   --camera-infra-profile P  D455 infrared profile, e.g. 848x480x15
   --orb-settings-file FILE  ORB-SLAM3 camera/extractor YAML override
@@ -170,6 +181,8 @@ Options:
   --no-equalize             Disable CLAHE image enhancement before ORB-SLAM3
   --visualization           Enable the Pangolin window
   -a, --autostart           Load the configured CSV and start automatically
+  --primitive-rectangle-test
+                            Run the experimental A*/action-primitive 1.8 m rectangle controller instead of waypoint navigation
   --no-build                Use only a build verified against current source
   --skip-camera-check       Launch without checking for a connected D455
   --reset-camera            Force a D455 firmware reset before opening streams
@@ -221,6 +234,23 @@ while (($# > 0)); do
       ODOM_TOPIC="/odometry/fused"
       shift
       ;;
+    --navigation-parameters-file)
+      (($# >= 2)) || fail "--navigation-parameters-file requires a YAML file"
+      NAVIGATION_PARAMETERS_FILE="$2"
+      [[ "${NAVIGATION_PARAMETERS_FILE}" = /* ]] ||
+        NAVIGATION_PARAMETERS_FILE="${WORKSPACE_ROOT}/${NAVIGATION_PARAMETERS_FILE}"
+      shift 2
+      ;;
+    --tracking-point-offset-x)
+      (($# >= 2)) || fail "--tracking-point-offset-x requires a value in meters"
+      TRACKING_POINT_OFFSET_X="$2"
+      shift 2
+      ;;
+    --tracking-point-offset-y)
+      (($# >= 2)) || fail "--tracking-point-offset-y requires a value in meters"
+      TRACKING_POINT_OFFSET_Y="$2"
+      shift 2
+      ;;
     --rk3588-profile)
       CAMERA_INFRA_PROFILE="848x480x15"
       ORB_SETTINGS_FILE="${WORKSPACE_ROOT}/src/orb_slam3/orbslam3_ros2/config/stereo-inertial/RealSense_D455_rk3588.yaml"
@@ -255,6 +285,14 @@ while (($# > 0)); do
       AUTOSTART="true"
       ROUTE_MODE="csv"
       ROUTE_FILE="${DEFAULT_AUTOSTART_ROUTE}"
+      shift
+      ;;
+    --primitive-rectangle-test)
+      CONTROL_MODE="primitive_rectangle"
+      ENABLE_WAYPOINT_NAVIGATION="false"
+      AUTOSTART="false"
+      ROUTE_MODE="primitive_rectangle"
+      ROUTE_SOURCE="primitive_controller:/cmd_vel_nav"
       shift
       ;;
     --no-build)
@@ -305,6 +343,14 @@ case "${ODOM_TOPIC}" in
   /odometry/local_map|/odometry/fused|/odometry/landmark_corrected) ;;
   *) fail "--odom-topic must be /odometry/local_map, /odometry/fused, or /odometry/landmark_corrected" ;;
 esac
+[[ "${TRACKING_POINT_OFFSET_X}" =~ ^-?[0-9]+([.][0-9]+)?$ ]] ||
+  fail "--tracking-point-offset-x must be a finite decimal number"
+[[ "${TRACKING_POINT_OFFSET_Y}" =~ ^-?[0-9]+([.][0-9]+)?$ ]] ||
+  fail "--tracking-point-offset-y must be a finite decimal number"
+if [[ -n "${NAVIGATION_PARAMETERS_FILE}" ]]; then
+  [[ -f "${NAVIGATION_PARAMETERS_FILE}" ]] ||
+    fail "navigation parameters file not found: ${NAVIGATION_PARAMETERS_FILE}"
+fi
 if [[ "${ODOM_TOPIC}" == "/odometry/landmark_corrected" ]]; then
   [[ -f "${VISION_CORRECTION_MAP_FILE}" ]] ||
     fail "vision correction map file not found: ${VISION_CORRECTION_MAP_FILE}"
@@ -479,6 +525,9 @@ build_orb_slam3() {
 build_ros_packages() {
   log "Building ROS 2 nodes"
   local packages=(mission_control_interfaces imu_rpy_filter wheel_odometry fused_odometry visual_navigation)
+  if [[ -d "${WORKSPACE_ROOT}/src/rectangle_odometry_test" ]]; then
+    packages+=(rectangle_odometry_test)
+  fi
   if [[ -d "${WORKSPACE_ROOT}/src/vision_correction" ]]; then
     packages+=(vision_correction)
   fi
@@ -523,6 +572,12 @@ runtime_artifacts() {
     "waypoint_launch=${WORKSPACE_ROOT}/install/visual_navigation/share/visual_navigation/launch/waypoint_navigation.launch.py"
     "navigation_config=${WORKSPACE_ROOT}/install/visual_navigation/share/visual_navigation/config/waypoint_navigation.yaml"
   )
+  if [[ "${CONTROL_MODE}" == "primitive_rectangle" ]]; then
+    RUNTIME_ARTIFACTS+=(
+      "primitive_controller=${WORKSPACE_ROOT}/install/rectangle_odometry_test/lib/rectangle_odometry_test/primitive_controller_node"
+      "primitive_rectangle_launch=${WORKSPACE_ROOT}/install/rectangle_odometry_test/share/rectangle_odometry_test/launch/primitive_rectangle_test.launch.py"
+    )
+  fi
   if [[ "${ODOM_TOPIC}" == "/odometry/landmark_corrected" ]]; then
     RUNTIME_ARTIFACTS+=(
       "vision_correction_node=${WORKSPACE_ROOT}/install/vision_correction/lib/vision_correction/vision_correction_node"
@@ -680,12 +735,16 @@ export LD_LIBRARY_PATH="${ORB_ROOT}/lib:${DEPS_ROOT}/lib:${LD_LIBRARY_PATH:-}"
 RMW_IMPLEMENTATION_EFFECTIVE="${RMW_IMPLEMENTATION:-}"
 
 log "Starting decoupled odometry and navigation stacks"
-if [[ "${ROUTE_MODE}" == "csv" ]]; then
+if [[ "${CONTROL_MODE}" == "primitive_rectangle" ]]; then
+  log "Control mode: experimental A*/action primitives; waypoint navigator disabled"
+elif [[ "${ROUTE_MODE}" == "csv" ]]; then
   log "Route mode: CSV autostart (${ROUTE_FILE})"
 else
   log "Route mode: planner GUI; run scripts/start_arena_planner.sh in terminal 2"
 fi
 log "IMU filter: ${USE_IMU}; SLAM IMU fusion: ${USE_SLAM_IMU}; odom_topic: ${ODOM_TOPIC}; CLAHE: ${EQUALIZE}; visualization: ${VISUALIZATION}; autostart: ${AUTOSTART}"
+log "Navigation tracking point offset: x=${TRACKING_POINT_OFFSET_X} m, y=${TRACKING_POINT_OFFSET_Y} m"
+log "Navigation parameters: ${NAVIGATION_PARAMETERS_FILE:-package default}"
 log "Camera infra profile: ${CAMERA_INFRA_PROFILE}; ORB settings: ${ORB_SETTINGS_FILE:-launch default}"
 VISION_CORRECTION_STATUS="bypassed"
 if [[ "${ODOM_TOPIC}" == "/odometry/landmark_corrected" ]]; then
@@ -729,11 +788,17 @@ fi
 NAVIGATION_LAUNCH_ARGS=(
   "route_frame:=map"
   "odom_topic:=${ODOM_TOPIC}"
+  "tracking_point_offset_x:=${TRACKING_POINT_OFFSET_X}"
+  "tracking_point_offset_y:=${TRACKING_POINT_OFFSET_Y}"
   "fusion_status_topic:=/odometry/fusion_status"
   "cmd_vel_topic:=/cmd_vel_nav"
   "require_actuator_health:=${REQUIRE_ACTUATOR_HEALTH}"
   "autostart:=${AUTOSTART}"
+  "enable_waypoint_navigation:=${ENABLE_WAYPOINT_NAVIGATION}"
 )
+if [[ -n "${NAVIGATION_PARAMETERS_FILE}" ]]; then
+  NAVIGATION_LAUNCH_ARGS+=("parameters_file:=${NAVIGATION_PARAMETERS_FILE}")
+fi
 if [[ -n "${ROUTE_FILE}" ]]; then
   NAVIGATION_LAUNCH_ARGS+=("route_file:=${ROUTE_FILE}")
 fi
@@ -765,6 +830,16 @@ declare -a RUN_INPUT_FILES=(
   "waypoint_launch=${WORKSPACE_ROOT}/install/visual_navigation/share/visual_navigation/launch/waypoint_navigation.launch.py"
   "navigation_config=${WORKSPACE_ROOT}/install/visual_navigation/share/visual_navigation/config/waypoint_navigation.yaml"
 )
+if [[ "${CONTROL_MODE}" == "primitive_rectangle" ]]; then
+  RUN_INPUT_FILES+=(
+    "primitive_controller_source=${WORKSPACE_ROOT}/src/rectangle_odometry_test/rectangle_odometry_test/primitive_controller.py"
+    "primitive_node_source=${WORKSPACE_ROOT}/src/rectangle_odometry_test/rectangle_odometry_test/primitive_node.py"
+    "primitive_rectangle_launch=${WORKSPACE_ROOT}/src/rectangle_odometry_test/launch/primitive_rectangle_test.launch.py"
+  )
+fi
+if [[ -n "${NAVIGATION_PARAMETERS_FILE}" ]]; then
+  RUN_INPUT_FILES+=("navigation_parameters=${NAVIGATION_PARAMETERS_FILE}")
+fi
 if [[ "${ODOM_TOPIC}" == "/odometry/landmark_corrected" ]]; then
   RUN_INPUT_FILES+=(
     "vision_correction_node=${WORKSPACE_ROOT}/install/vision_correction/lib/vision_correction/vision_correction_node"
@@ -812,6 +887,9 @@ declare -a CREATE_RUN_ARGUMENTS=(
   --setting "use_imu=${USE_IMU}"
   --setting "use_slam_imu=${USE_SLAM_IMU}"
   --setting "odom_topic=${ODOM_TOPIC}"
+  --setting "navigation_parameters_file=${NAVIGATION_PARAMETERS_FILE}"
+  --setting "tracking_point_offset_x=${TRACKING_POINT_OFFSET_X}"
+  --setting "tracking_point_offset_y=${TRACKING_POINT_OFFSET_Y}"
   --setting "vision_correction_enabled=$([[ "${ODOM_TOPIC}" == "/odometry/landmark_corrected" ]] && printf true || printf false)"
   --setting "vision_correction_map_file=${VISION_CORRECTION_MAP_FILE}"
   --setting "vision_correction_image_topic=${VISION_CORRECTION_IMAGE_TOPIC}"
@@ -836,6 +914,8 @@ declare -a CREATE_RUN_ARGUMENTS=(
   --setting "bag_max_bag_size=${ROSBAG_MAX_BAG_SIZE}"
   --setting "launch_file=${LAUNCH_FILE}"
   --setting "route_source=${ROUTE_SOURCE}"
+  --setting "control_mode=${CONTROL_MODE}"
+  --setting "enable_waypoint_navigation=${ENABLE_WAYPOINT_NAVIGATION}"
 )
 for argument in "${ORIGINAL_ARGV[@]}"; do
   CREATE_RUN_ARGUMENTS+=("--argv=${argument}")
@@ -922,10 +1002,14 @@ snapshot_runtime_parameters() {
     /fused_ekf
     /map_odom_correction
     /local_map_odometry
-    /waypoint_navigator
     /orbslam3_stereo_inertial
     /camera/camera
   )
+  if [[ "${CONTROL_MODE}" == "primitive_rectangle" ]]; then
+    active_nodes+=(/rectangle_primitive_controller)
+  else
+    active_nodes+=(/waypoint_navigator)
+  fi
   local node
   if [[ "${USE_IMU}" == "true" ]]; then
     active_nodes+=(/imu_rpy_filter)
@@ -1050,6 +1134,16 @@ STACK_PIDS+=("$!")
 "${ROS2_COMMAND}" launch visual_navigation "${LAUNCH_FILE}" \
   "${NAVIGATION_LAUNCH_ARGS[@]}" {RUN_LOCK_FD}>&- &
 STACK_PIDS+=("$!")
+
+if [[ "${CONTROL_MODE}" == "primitive_rectangle" ]]; then
+  "${ROS2_COMMAND}" launch rectangle_odometry_test primitive_rectangle_test.launch.py \
+    "enable:=true" \
+    "odom_topic:=${ODOM_TOPIC}" \
+    "cmd_vel_topic:=/cmd_vel_nav" \
+    "require_actuator_health:=${REQUIRE_ACTUATOR_HEALTH}" \
+    {RUN_LOCK_FD}>&- &
+  STACK_PIDS+=("$!")
+fi
 
 log "Recording latest navigation data: ${ROSBAG_OUTPUT}"
 "${ROS2_COMMAND}" bag record --output "${ROSBAG_OUTPUT}" \

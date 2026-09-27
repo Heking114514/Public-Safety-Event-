@@ -1,0 +1,19 @@
+waypoint_navigator:
+  ros__parameters:
+    # Keep straight segments slightly faster and let curvature limiting slow
+    # the 0.25 m radius corners before their angular command reaches the cap.
+    default_speed: 0.04
+    max_linear_speed: 0.04
+    max_angular_speed: 0.12
+    max_path_angular_speed: 0.12
+    min_path_angular_speed: 0.02
+    path_angular_activation_error: 0.02
+    path_yaw_response_threshold: 0.02
+    max_linear_acceleration: 0.08
+    max_linear_deceleration: 0.12
+    max_angular_acceleration: 0.25
+    max_angular_deceleration: 0.35
+    max_lateral_acceleration: 0.0036
+    cross_track_minimum_speed: 0.01
+    waypoint_recovery_speed: 0.02
+    waypoint_recovery_max_angular_speed: 0.10

@@ -169,7 +169,7 @@ FusionGateNode::FusionGateNode()
   }
   wheel_turn_covariance_scale_ = positive("wheel_turn_covariance_scale", 100.0);
   wheel_in_place_max_linear_speed_ =
-      positive("wheel_in_place_max_linear_speed_mps", 0.10);
+      positive("wheel_in_place_max_linear_speed_mps", 0.02);
   wheel_in_place_min_yaw_rate_ =
       positive("wheel_in_place_min_yaw_rate_radps", 0.30);
   wheel_wz_variance_ = positive("wheel_wz_variance", 0.50);
@@ -178,6 +178,7 @@ FusionGateNode::FusionGateNode()
   visual_yaw_variance_ = positive("visual_yaw_variance", 0.04);
   visual_vx_variance_ = positive("visual_vx_variance", 0.01);
   visual_vy_variance_ = positive("visual_vy_variance", 0.02);
+  wheel_base_offset_x_ = positive("wheel_base_offset_x_m", 0.05);
   recovery_samples_ = positive_count("visual_recovery_samples", 5);
   robust_min_samples_ = positive_count("robust_min_samples", 5);
 

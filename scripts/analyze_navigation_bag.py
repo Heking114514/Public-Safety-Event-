@@ -1130,6 +1130,8 @@ def segment_plot(
     ylabel: str,
     include_micro: bool = True,
 ) -> None:
+    if not segment_rows:
+        return
     routes = sorted({int(row["route"]) for row in segment_rows})
     figure, axes = plt.subplots(
         len(routes),
@@ -1199,6 +1201,8 @@ def segment_plot(
 
 
 def error_plot(segment_rows: list[dict[str, Any]], output_path: Path) -> None:
+    if not segment_rows:
+        return
     routes = sorted({int(row["route"]) for row in segment_rows})
     figure, axes = plt.subplots(
         len(routes),
@@ -1253,6 +1257,8 @@ def error_plot(segment_rows: list[dict[str, Any]], output_path: Path) -> None:
 def fused_state_breakdown_plot(
     segment_rows: list[dict[str, Any]], output_path: Path
 ) -> None:
+    if not segment_rows:
+        return
     routes = sorted({int(row["route"]) for row in segment_rows})
     figure, axes = plt.subplots(
         len(routes),
@@ -1319,6 +1325,8 @@ def fused_state_breakdown_plot(
 
 
 def cross_track_plot(segment_rows: list[dict[str, Any]], output_path: Path) -> None:
+    if not segment_rows:
+        return
     routes = sorted({int(row["route"]) for row in segment_rows})
     figure, axes = plt.subplots(
         len(routes),
@@ -1667,6 +1675,15 @@ def main() -> int:
     waypoint_rows_all: list[dict[str, Any]] = []
     pass_rows_all: list[dict[str, Any]] = []
     aligned_routes: list[tuple[RouteSnapshot, dict[str, list[PoseSample]]]] = []
+    # The status stream stops updating once the navigator settles into
+    # FOLLOWING, so the last route's window is bounded by the end of the
+    # recorded data instead of by the last status message.
+    recording_end_s = max(
+        [sample.time_s for samples in odometry.values() for sample in samples]
+        + [event.time_s for event in status_events]
+        + [event.time_s for event in waypoint_events],
+        default=0.0,
+    )
     route_end_times = [
         routes[index + 1].time_s if index + 1 < len(routes) else float("inf")
         for index in range(len(routes))
@@ -1676,10 +1693,7 @@ def main() -> int:
     ):
         route_end = route_end_time
         if not math.isfinite(route_end):
-            route_end = max(
-                [event.time_s for event in status_events if event.time_s >= route.time_s]
-                or [route.time_s + 1.0]
-            )
+            route_end = max(route.time_s, recording_end_s)
         rows, aligned = build_segments(
             route_index,
             route,

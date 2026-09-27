@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-09-27
+
+- 为 `rectangle_odometry_test` 增加独立的 A*/差速动作原语矩形实验模式。
+  统一启动脚本新增 `--primitive-rectangle-test`，实验模式接管 `/cmd_vel_nav`
+  并关闭 `waypoint_navigator`，使用 `/odometry/fused` 闭环重规划和安全门控；
+  默认导航控制链不变。
+- 导航默认继续以 `base_link` 为控制点；启动脚本新增 `--tracking-point-offset-x/y` 并写入 run manifest，便于只在原地 pivot A/B 测试时切到轮轴参考。
+- 矩形测试包新增 `corner_mode:=arc`，用密集普通航点生成 `base_link` 中心圆角闭环路线，并将直线段按 `straight_step_m` 拆分，避免第一段长直线提前套用圆弧曲率。
+- 根据 2026-09-27 实车 rosbag 的 `0.15 m/s`、`0.65 rad/s` 弯道命令和约 `0.12 m` 横向误差，增加独立慢速圆弧测试 profile；统一启动脚本支持记录式透传 `--navigation-parameters-file`，不改变生产导航默认参数。
+- 将矩形圆角测试恢复为 `0.25 m` 半径；测试 profile 让直线保持 `0.04 m/s`，通过曲率限速让圆角降到约 `0.03 m/s`，避免整条路线过慢。
+- 调整 `rectangle_odometry_test` 的 primitive 矩形控制：收紧转弯目标航向判定，
+  接通规划/重规划容差参数，并在实际航向未达到当前转弯目标时保留低速角向修正，
+  避免执行器转角不足后提前恢复直行。
+- 将 primitive 控制逻辑与 ROS2 适配节点拆分，避免单文件超过工程规范限制；
+  运行入口和参数保持不变。
+- 按矩形实车测试调慢 primitive 转弯：直线动作默认提升到 `0.06 m/s`，
+  曲率动作改为 `3/6/12°`、原地转动步长改为 `6°`；直线段增加
+  `1.5°` 死区、`1.5` 增益和 `8°/s` 限幅的小角度航向闭环，弯道补偿限速改为
+  `10~25°/s`。
+- 修复融合层把矩形测试 `0.06 m/s` 边走边转误判为原地转弯的问题：
+  `wheel_in_place_max_linear_speed_mps` 收紧到 `0.02`，保留真正 pivot 的轮速清零保护。
+
 ## 2026-09-16
 
 - 修复视觉导航启动脚本的残留清理顺序：构建完成后先停止旧导航 ROS 进程，再等待 `.navigation.lock` 释放，避免上一次启动残留导致新启动直接报 lock 占用。

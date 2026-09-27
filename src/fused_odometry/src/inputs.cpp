@@ -12,11 +12,7 @@ bool FusionGateNode::vision_healthy() const {
 }
 
 bool FusionGateNode::wheel_healthy() const {
-  const MotionFault motion_fault = health_monitor_.motion_fault();
-  const bool classified_bad = motion_fault == MotionFault::kSlip ||
-                              motion_fault == MotionFault::kEncoderFailure;
-  return wheel_.input.fresh(wheel_timeout_) && !wheel_gate_.rejected() &&
-         !classified_bad;
+  return wheel_.input.fresh(wheel_timeout_);
 }
 
 bool FusionGateNode::imu_healthy() const {

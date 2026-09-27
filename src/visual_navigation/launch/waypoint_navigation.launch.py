@@ -15,6 +15,8 @@ def generate_launch_description():
     route_file = LaunchConfiguration("route_file")
     route_frame = LaunchConfiguration("route_frame")
     odom_topic = LaunchConfiguration("odom_topic")
+    tracking_point_offset_x = LaunchConfiguration("tracking_point_offset_x")
+    tracking_point_offset_y = LaunchConfiguration("tracking_point_offset_y")
     fusion_status_topic = LaunchConfiguration("fusion_status_topic")
     actuator_health_topic = LaunchConfiguration("actuator_health_topic")
     require_actuator_health = LaunchConfiguration("require_actuator_health")
@@ -37,6 +39,12 @@ def generate_launch_description():
                 "route_file": ParameterValue(route_file, value_type=str),
                 "route_frame": ParameterValue(route_frame, value_type=str),
                 "odom_topic": ParameterValue(odom_topic, value_type=str),
+                "tracking_point_offset_x": ParameterValue(
+                    tracking_point_offset_x, value_type=float
+                ),
+                "tracking_point_offset_y": ParameterValue(
+                    tracking_point_offset_y, value_type=float
+                ),
                 "fusion_status_topic": ParameterValue(
                     fusion_status_topic, value_type=str
                 ),
@@ -81,6 +89,8 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument("route_frame", default_value="map"),
             DeclareLaunchArgument("odom_topic", default_value="/odometry/local_map"),
+            DeclareLaunchArgument("tracking_point_offset_x", default_value="0.0"),
+            DeclareLaunchArgument("tracking_point_offset_y", default_value="0.0"),
             DeclareLaunchArgument(
                 "fusion_status_topic", default_value="/odometry/fusion_status"
             ),
