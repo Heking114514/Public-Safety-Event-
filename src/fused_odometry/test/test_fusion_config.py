@@ -2,6 +2,7 @@ from pathlib import Path
 import re
 
 import yaml
+from vehicle_config import parameters_for
 
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "fused_odometry.yaml"
@@ -111,9 +112,11 @@ def test_visual_lateral_velocity_is_not_fused_into_local_ekf():
 
 def test_wheel_distance_has_stronger_weight_than_visual_speed():
     parameters = load_parameters("fused_odometry_gate")
+    physical_parameters = parameters_for("fused_odometry")
     assert parameters["wheel_vx_variance"] < parameters["visual_vx_variance"]
     assert parameters["wheel_vy_variance"] < parameters["visual_vy_variance"]
-    assert parameters["wheel_base_offset_x_m"] == 0.05
+    assert "wheel_base_offset_x_m" not in parameters
+    assert physical_parameters["wheel_base_offset_x_m"] == 0.05
 
 
 def test_moving_arc_is_not_classified_as_in_place_turn():

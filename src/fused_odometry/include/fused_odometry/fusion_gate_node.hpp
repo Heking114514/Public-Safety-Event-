@@ -297,7 +297,7 @@ private:
   double visual_yaw_variance_{0.04};
   double visual_vx_variance_{0.01};
   double visual_vy_variance_{0.02};
-  double wheel_base_offset_x_{0.05};
+  double wheel_base_offset_x_{std::numeric_limits<double>::quiet_NaN()};
   double wheel_vy_variance_{0.20};
   std::size_t recovery_samples_{5};
   std::size_t robust_min_samples_{5};

@@ -59,6 +59,8 @@ WaypointNavigator::RunBrake(const ControlFrame &frame) {
       : NormalizeAngle(frame.path_heading +
                        (reverseSegmentActive_ ? kPi : 0.0));
   const double plannedTurnError = NormalizeAngle(nextHeading - arrivalHeading);
+  stoppedTurnArrivalHeading_ = arrivalHeading;
+  stoppedTurnTargetHeading_ = nextHeading;
   stoppedAtPlannedTurn_ =
       frame.target.turn_junction && !plannedReverse &&
       std::abs(plannedTurnError) >= 0.70;

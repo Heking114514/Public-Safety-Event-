@@ -12,8 +12,12 @@ from typing import Any
 
 import cv2
 import numpy as np
+from vehicle_config import load_vehicle_physical_config
 
 from . import geometry as road_detector
+
+
+_VEHICLE_PHYSICAL = load_vehicle_physical_config()
 
 
 TRACK = "TRACK"
@@ -41,6 +45,9 @@ class TrackerConfig:
     control_max_abs_y_m: float = 0.36
     green_excess_threshold: float = 8.0
     min_green_channel: float = 25.0
+    floor_green_min_ratio: float = 0.345
+    floor_green_min_opponent: float = 0.035
+    floor_green_max_lab_a: float = 127.0
     white_margin_over_green: float = 28.0
     min_white_value: float = 18.0
     max_white_value: float = 175.0
@@ -48,7 +55,7 @@ class TrackerConfig:
     max_white_green_excess: float = 14.0
     max_white_green_ratio: float = 0.365
     max_white_green_opponent: float = 0.090
-    min_white_lab_a: float = 122.0
+    min_white_lab_a: float = 128.0
     ground_close_size: int = 5
     ground_open_size: int = 3
     green_open_size: int = 3
@@ -62,7 +69,7 @@ class TrackerConfig:
     branch_side_extent_m: float = 0.12
     heading_branch_exclusion_span_m: float = 0.22
     road_width_m: float = 0.20
-    vehicle_width_m: float = 0.1535
+    vehicle_width_m: float = _VEHICLE_PHYSICAL.width_m
     road_edge_margin_m: float = 0.010
     min_observed_road_width_m: float = 0.12
     min_recovery_road_width_m: float = 0.12
@@ -108,9 +115,42 @@ class TrackObservation:
     depth_control_rows: int = 0
     depth_valid_fraction: float = 0.0
     depth_reject_reason: str = ""
+    branch_x_m: float = 0.0
+    branch_left_extent_m: float = 0.0
+    branch_right_extent_m: float = 0.0
     # A recoverable observation is deliberately not drive-valid: it may only
     # produce an in-place correction, never forward motion.
     can_recover: bool = False
+
+
+@dataclass(frozen=True)
+class BranchGeometry:
+    state: str = TRACK
+    branch_x_m: float = 0.0
+    left_extent_m: float = 0.0
+    right_extent_m: float = 0.0
+
+
+@dataclass(frozen=True)
+class RoadInterval:
+    left_y_m: float
+    right_y_m: float
+    center_y_m: float
+    width_m: float
+    pixels: int
+
+
+@dataclass(frozen=True)
+class RoadSlice:
+    x_m: float
+    center_y_m: float
+    left_y_m: float
+    right_y_m: float
+    width_m: float
+    full_left_y_m: float
+    full_right_y_m: float
+    full_width_m: float
+    interval_count: int
 
 
 def _parameter(params: Any, name: str, default: Any) -> Any:
@@ -170,6 +210,7 @@ def _unsafe_observation(
     depth_control_rows: int = 0,
     depth_valid_fraction: float = 0.0,
     depth_reject_reason: str = "",
+    branch: BranchGeometry = BranchGeometry(),
 ) -> TrackObservation:
     can_recover = (
         math.isfinite(lateral)
@@ -208,6 +249,9 @@ def _unsafe_observation(
         depth_control_rows=depth_control_rows,
         depth_valid_fraction=depth_valid_fraction,
         depth_reject_reason=depth_reject_reason,
+        branch_x_m=branch.branch_x_m,
+        branch_left_extent_m=branch.left_extent_m,
+        branch_right_extent_m=branch.right_extent_m,
         can_recover=can_recover,
     )
 
@@ -229,9 +273,10 @@ def _image_masks(
     green_opponent = (
         2.0 * rgb[:, :, 1] - rgb[:, :, 0] - rgb[:, :, 2]
     ) / rgb_sum
+    lab_a = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)[:, :, 1]
     valid = roi != 0
 
-    green = (
+    strong_green = (
         valid
         & (
             green_excess
@@ -242,6 +287,26 @@ def _image_masks(
             >= float(_parameter(params, "min_green_channel", 25.0))
         )
     )
+    floor_green = (
+        valid
+        & (
+            rgb[:, :, 1]
+            >= float(_parameter(params, "min_green_channel", 25.0))
+        )
+        & (
+            green_ratio
+            >= float(_parameter(params, "floor_green_min_ratio", 0.345))
+        )
+        & (
+            green_opponent
+            >= float(_parameter(params, "floor_green_min_opponent", 0.035))
+        )
+        & (
+            lab_a
+            <= float(_parameter(params, "floor_green_max_lab_a", 127.0))
+        )
+    )
+    green = strong_green | floor_green
     green_values = mean[green]
     green_baseline = float(np.median(green_values)) if green_values.size else 0.0
     white_threshold = float(
@@ -262,9 +327,8 @@ def _image_masks(
             <= float(_parameter(params, "max_white_green_opponent", 0.090))
         )
     )
-    min_lab_a = float(_parameter(params, "min_white_lab_a", 122.0))
+    min_lab_a = float(_parameter(params, "min_white_lab_a", 128.0))
     if min_lab_a > 0.0:
-        lab_a = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)[:, :, 1]
         white_neutral &= lab_a >= min_lab_a
     white = (
         valid
@@ -323,32 +387,179 @@ def _ground_masks(
     return ground_white, ground_green, grid, green_fraction
 
 
+def _row_intervals(
+    columns: np.ndarray,
+    y_values: np.ndarray,
+) -> list[RoadInterval]:
+    if columns.size == 0:
+        return []
+    runs = np.split(columns, np.flatnonzero(np.diff(columns) > 1) + 1)
+    intervals: list[RoadInterval] = []
+    for run in runs:
+        if run.size == 0:
+            continue
+        left = float(y_values[run[0]])
+        right = float(y_values[run[-1]])
+        intervals.append(
+            RoadInterval(
+                left_y_m=left,
+                right_y_m=right,
+                center_y_m=0.5 * (left + right),
+                width_m=max(0.0, right - left),
+                pixels=int(run.size),
+            )
+        )
+    return intervals
+
+
+def _select_row_interval(
+    intervals: list[RoadInterval],
+    previous_center: float | None,
+) -> RoadInterval | None:
+    if not intervals:
+        return None
+    if previous_center is None or not math.isfinite(previous_center):
+        return min(intervals, key=lambda interval: abs(interval.center_y_m))
+
+    containing = [
+        interval
+        for interval in intervals
+        if interval.left_y_m <= previous_center <= interval.right_y_m
+    ]
+    if containing:
+        return min(
+            containing,
+            key=lambda interval: abs(interval.center_y_m - previous_center),
+        )
+    return min(
+        intervals,
+        key=lambda interval: min(
+            abs(interval.left_y_m - previous_center),
+            abs(interval.right_y_m - previous_center),
+        ),
+    )
+
+
+def _clip_wide_interval(
+    interval: RoadInterval,
+    previous_center: float | None,
+    params: Any,
+) -> RoadInterval:
+    max_span = float(_parameter(params, "control_max_road_span_m", 0.32))
+    if max_span <= 0.0 or interval.width_m <= max_span:
+        return interval
+
+    nominal_width = max(
+        float(_parameter(params, "road_width_m", 0.20)),
+        float(_parameter(params, "min_observed_road_width_m", 0.12)),
+    )
+    selected_width = min(interval.width_m, max_span, nominal_width)
+    half_width = 0.5 * selected_width
+    if previous_center is not None and math.isfinite(previous_center):
+        center = previous_center
+    else:
+        center = min(
+            interval.right_y_m - half_width,
+            max(interval.left_y_m + half_width, 0.0),
+        )
+    center = min(
+        interval.right_y_m - half_width,
+        max(interval.left_y_m + half_width, center),
+    )
+    left = max(interval.left_y_m, center - half_width)
+    right = min(interval.right_y_m, center + half_width)
+    return RoadInterval(
+        left_y_m=left,
+        right_y_m=right,
+        center_y_m=0.5 * (left + right),
+        width_m=max(0.0, right - left),
+        pixels=interval.pixels,
+    )
+
+
+def _road_slices(
+    component: np.ndarray,
+    grid: road_detector.GroundGrid,
+    params: Any,
+    min_x_m: float,
+    max_x_m: float,
+    max_abs_y_m: float | None = None,
+) -> list[RoadSlice]:
+    if component.size == 0 or grid.width <= 0 or grid.height <= 0:
+        return []
+    y_values = grid.y_min + (np.arange(grid.width) + 0.5) * grid.resolution
+    allowed = np.ones(grid.width, dtype=bool)
+    if max_abs_y_m is not None and math.isfinite(float(max_abs_y_m)):
+        allowed &= np.abs(y_values) <= float(max_abs_y_m)
+
+    slices: list[RoadSlice] = []
+    previous_center: float | None = None
+    for row in range(component.shape[0]):
+        x = grid.x_min + (row + 0.5) * grid.resolution
+        if x < min_x_m or x > max_x_m:
+            continue
+        columns = np.flatnonzero((component[row] != 0) & allowed)
+        intervals = _row_intervals(columns, y_values)
+        if not intervals:
+            continue
+        full_left = min(interval.left_y_m for interval in intervals)
+        full_right = max(interval.right_y_m for interval in intervals)
+        full_width = max(0.0, float(full_right - full_left))
+        if full_width <= float(_parameter(params, "control_max_road_span_m", 0.32)):
+            intervals = [
+                RoadInterval(
+                    left_y_m=float(full_left),
+                    right_y_m=float(full_right),
+                    center_y_m=0.5 * float(full_left + full_right),
+                    width_m=full_width,
+                    pixels=int(columns.size),
+                )
+            ]
+        selected = _select_row_interval(intervals, previous_center)
+        if selected is None:
+            continue
+        clipped = _clip_wide_interval(selected, previous_center, params)
+        previous_center = clipped.center_y_m
+        slices.append(
+            RoadSlice(
+                x_m=float(x),
+                center_y_m=clipped.center_y_m,
+                left_y_m=clipped.left_y_m,
+                right_y_m=clipped.right_y_m,
+                width_m=clipped.width_m,
+                full_left_y_m=float(full_left),
+                full_right_y_m=float(full_right),
+                full_width_m=full_width,
+                interval_count=len(intervals),
+            )
+        )
+    return slices
+
+
 def _row_centres(
     component: np.ndarray,
     grid: road_detector.GroundGrid,
     params: Any,
 ) -> list[tuple[float, float, float, float, float]]:
-    y_values = grid.y_min + (np.arange(grid.width) + 0.5) * grid.resolution
     minimum = float(_parameter(params, "heading_min_x_m", 0.22))
     maximum = float(_parameter(params, "heading_max_x_m", 0.85))
-    rows: list[tuple[float, float, float, float, float]] = []
-    for row in range(component.shape[0]):
-        x = grid.x_min + (row + 0.5) * grid.resolution
-        if x < minimum or x > maximum:
-            continue
-        columns = np.flatnonzero(component[row] != 0)
-        if columns.size == 0:
-            continue
-        rows.append(
-            (
-                x,
-                float(np.median(y_values[columns])),
-                float(y_values[columns[0]]),
-                float(y_values[columns[-1]]),
-                float(y_values[columns[-1]] - y_values[columns[0]]),
-            )
+    return [
+        (
+            row.x_m,
+            row.center_y_m,
+            row.full_left_y_m,
+            row.full_right_y_m,
+            row.full_width_m,
         )
-    return rows
+        for row in _road_slices(
+            component,
+            grid,
+            params,
+            minimum,
+            maximum,
+            max_abs_y_m=None,
+        )
+    ]
 
 
 def _estimate_heading(
@@ -381,60 +592,41 @@ def _control_geometry(
     grid: road_detector.GroundGrid,
     params: Any,
 ) -> tuple[float, float, float, float, int, int]:
-    y_values = grid.y_min + (np.arange(grid.width) + 0.5) * grid.resolution
     min_x = float(_parameter(params, "control_min_x_m", 0.16))
     max_x = float(_parameter(params, "control_max_x_m", 0.55))
     max_y = float(_parameter(params, "control_max_abs_y_m", 0.52))
-    allowed = np.abs(y_values) <= max_y
-    rows: list[tuple[float, float, float, float]] = []
-    control_pixels = 0
-    control_rows = 0
-    for row in range(component.shape[0]):
-        x = grid.x_min + (row + 0.5) * grid.resolution
-        if x < min_x or x > max_x:
-            continue
-        columns = np.flatnonzero((component[row] != 0) & allowed)
-        if columns.size == 0:
-            continue
-        control_rows += 1
-        control_pixels += int(columns.size)
-        rows.append(
-            (
-                x,
-                float(np.median(y_values[columns])),
-                float(y_values[columns[0]]),
-                float(y_values[columns[-1]]),
-            )
-        )
-    if not rows:
+    slices = _road_slices(
+        component,
+        grid,
+        params,
+        min_x,
+        max_x,
+        max_abs_y_m=max_y,
+    )
+    control_pixels = int(sum(row.width_m / grid.resolution for row in slices))
+    control_rows = len(slices)
+    if not slices:
         return 0.0, 0.0, 0.0, 0.0, control_pixels, control_rows
 
-    # A crossing can make one connected component span most of the image.
-    # Wide rows are not a usable estimate of the current lane centre. Keep
-    # the narrow forward trunk and evaluate it at a fixed near-field distance
-    # so a far horizontal branch cannot pull the car off the road.
-    max_span = float(_parameter(params, "control_max_road_span_m", 0.32))
-    trunk = [row for row in rows if row[3] - row[2] <= max_span]
-    fit_rows = trunk if len(trunk) >= 3 else rows
     reference_x = float(
         _parameter(params, "control_reference_x_m", 0.24)
     )
-    x = np.asarray([row[0] for row in fit_rows], dtype=np.float64)
-    y = np.asarray([row[1] for row in fit_rows], dtype=np.float64)
-    if len(fit_rows) >= 2 and np.ptp(x) > 1.0e-6:
+    x = np.asarray([row.x_m for row in slices], dtype=np.float64)
+    y = np.asarray([row.center_y_m for row in slices], dtype=np.float64)
+    if len(slices) >= 2 and np.ptp(x) > 1.0e-6:
         slope, intercept = np.polyfit(x, y, 1)
         lateral = float(slope * reference_x + intercept)
     else:
         lateral = min(
-            fit_rows,
-            key=lambda row: abs(row[0] - reference_x),
-        )[1]
-    nearest = min(fit_rows, key=lambda row: abs(row[0] - reference_x))
+            slices,
+            key=lambda row: abs(row.x_m - reference_x),
+        ).center_y_m
+    nearest = min(slices, key=lambda row: abs(row.x_m - reference_x))
     return (
         lateral,
-        nearest[2],
-        nearest[3],
-        nearest[3] - nearest[2],
+        nearest.left_y_m,
+        nearest.right_y_m,
+        nearest.width_m,
         control_pixels,
         control_rows,
     )
@@ -699,7 +891,7 @@ def _select_component(
         area = int(stats[label, cv2.CC_STAT_AREA])
         if area < int(_parameter(params, "min_component_area", 60)):
             continue
-        control = component[min_row : max_row + 1, :]
+        control = component[min_row:max_row + 1, :]
         pixels = int(np.count_nonzero(control[:, allowed]))
         rows = int(np.count_nonzero(np.any(control[:, allowed], axis=1)))
         if pixels == 0:
@@ -714,14 +906,16 @@ def _select_component(
     return labels == best[1], int(stats[best[1], cv2.CC_STAT_AREA]), best[2], best[3]
 
 
-def _classify_branch(
+def _branch_geometry(
     rows: list[tuple[float, float, float, float, float]],
     params: Any,
-) -> str:
+) -> BranchGeometry:
     if len(rows) < 2:
-        return TRACK
+        return BranchGeometry()
     x = np.asarray([row[0] for row in rows], dtype=np.float64)
     y = np.asarray([row[1] for row in rows], dtype=np.float64)
+    if np.ptp(x) <= 1.0e-6:
+        return BranchGeometry()
     slope, intercept = np.polyfit(x, y, 1)
     wide = [
         row
@@ -729,7 +923,7 @@ def _classify_branch(
         if row[4] >= float(_parameter(params, "branch_span_m", 0.42))
     ]
     if not wide:
-        return TRACK
+        return BranchGeometry()
     branch_x = float(np.median([row[0] for row in wide]))
     selected = [row for row in rows if abs(row[0] - branch_x) <= 0.08]
     limit = float(_parameter(params, "branch_side_extent_m", 0.18))
@@ -739,13 +933,26 @@ def _classify_branch(
         center = slope * row[0] + intercept
         left = max(left, row[3] - center)
         right = max(right, center - row[2])
+    state = TRACK
     if left >= limit and right >= limit:
-        return JUNCTION
-    if left >= limit:
-        return LEFT_BRANCH
-    if right >= limit:
-        return RIGHT_BRANCH
-    return TRACK
+        state = JUNCTION
+    elif left >= limit:
+        state = LEFT_BRANCH
+    elif right >= limit:
+        state = RIGHT_BRANCH
+    return BranchGeometry(
+        state=state,
+        branch_x_m=branch_x,
+        left_extent_m=float(left),
+        right_extent_m=float(right),
+    )
+
+
+def _classify_branch(
+    rows: list[tuple[float, float, float, float, float]],
+    params: Any,
+) -> str:
+    return _branch_geometry(rows, params).state
 
 
 def observe(
@@ -818,7 +1025,8 @@ def observe(
     ) = _control_geometry(component_u8, grid, params)
     rows = _row_centres(component_u8, grid, params)
     heading = _estimate_heading(rows, params)
-    state = _classify_branch(rows, params)
+    branch = _branch_geometry(rows, params)
+    state = branch.state
     lateral_source = "rgb_ground"
     depth_reject_reason = ""
     depth_lateral = 0.0
@@ -884,6 +1092,7 @@ def observe(
             depth_control_rows=depth_control_rows,
             depth_valid_fraction=depth_valid_fraction,
             depth_reject_reason=depth_reject_reason,
+            branch=branch,
         )
     if abs(lateral) > params.max_center_jump_m:
         return TrackObservation(
@@ -909,6 +1118,9 @@ def observe(
             depth_control_rows=depth_control_rows,
             depth_valid_fraction=depth_valid_fraction,
             depth_reject_reason=depth_reject_reason,
+            branch_x_m=branch.branch_x_m,
+            branch_left_extent_m=branch.left_extent_m,
+            branch_right_extent_m=branch.right_extent_m,
         )
 
     confidence = float(
@@ -944,4 +1156,7 @@ def observe(
         depth_control_rows=depth_control_rows,
         depth_valid_fraction=depth_valid_fraction,
         depth_reject_reason=depth_reject_reason,
+        branch_x_m=branch.branch_x_m,
+        branch_left_extent_m=branch.left_extent_m,
+        branch_right_extent_m=branch.right_extent_m,
     )

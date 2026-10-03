@@ -44,6 +44,7 @@ from mission_execution import (
 )
 from obstacle_mapping import ObstacleMappingState, TimedBoolEventGate
 from road_coverage import RoadCoverageLedger
+from vehicle_physical import VEHICLE_PHYSICAL
 
 
 SERVICE_NAME = "/arena_path_planner/plan"
@@ -397,8 +398,8 @@ class ArenaFrontend:
         self.tasks = list(config["tasks"].items())
         self.width_m = float(self.arena["width_m"])
         self.height_m = float(self.arena["height_m"])
-        self.vehicle_length_m = float(self.arena.get("vehicle_length_m", 0.1485))
-        self.vehicle_width_m = float(self.arena.get("vehicle_width_m", 0.1535))
+        self.vehicle_length_m = VEHICLE_PHYSICAL.length_m
+        self.vehicle_width_m = VEHICLE_PHYSICAL.width_m
         self.safety_margin_m = float(self.arena.get("safety_margin_m", 0.040))
         self.vehicle_x = float(self.start_config["position_m"][0])
         self.vehicle_y = float(self.start_config["position_m"][1])

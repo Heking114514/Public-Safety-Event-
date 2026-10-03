@@ -1,0 +1,698 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Loopback Navigation GUI</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f4ef;
+      --panel: #ffffff;
+      --ink: #17202a;
+      --muted: #68727f;
+      --line: #d8d2c7;
+      --road: #e7efe4;
+      --wall: #59636d;
+      --vehicle: #f28c28;
+      --route: #1267a6;
+      --waypoint: #d64545;
+      --planner: #6554c0;
+      --trail: #1f2933;
+      --ok: #1d8a55;
+      --warn: #b76e00;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      overflow: hidden;
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 320px;
+      min-height: 100vh;
+    }
+
+    .stage {
+      position: relative;
+      min-width: 0;
+      background: #ebe7df;
+      border-right: 1px solid var(--line);
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100vh;
+    }
+
+    .toolbar {
+      position: absolute;
+      left: 16px;
+      top: 16px;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      padding: 8px;
+      background: rgba(255, 255, 255, 0.88);
+      border: 1px solid rgba(216, 210, 199, 0.9);
+      border-radius: 8px;
+      backdrop-filter: blur(8px);
+    }
+
+    button {
+      height: 34px;
+      border: 1px solid #c9c1b4;
+      background: #fffdf8;
+      color: var(--ink);
+      border-radius: 6px;
+      padding: 0 10px;
+      font: inherit;
+      cursor: pointer;
+    }
+
+    button:hover { border-color: #918777; }
+    button.active { background: #213547; color: #fff; border-color: #213547; }
+
+    .side {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      min-width: 0;
+      padding: 18px;
+      background: var(--panel);
+      overflow-y: auto;
+      height: 100vh;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 20px;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.35;
+      margin-top: 6px;
+      overflow-wrap: anywhere;
+    }
+
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--warn);
+      flex: 0 0 auto;
+    }
+
+    .dot.online { background: var(--ok); }
+
+    .section {
+      border-top: 1px solid var(--line);
+      padding-top: 14px;
+    }
+
+    .section h2 {
+      margin: 0 0 10px;
+      font-size: 13px;
+      font-weight: 700;
+      color: #344150;
+      letter-spacing: 0;
+    }
+
+    .metric {
+      display: grid;
+      grid-template-columns: 132px minmax(0, 1fr);
+      gap: 8px;
+      align-items: baseline;
+      min-height: 26px;
+      font-size: 13px;
+    }
+
+    .metric span:first-child { color: var(--muted); }
+    .metric span:last-child {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      overflow-wrap: anywhere;
+    }
+
+    .legend {
+      display: grid;
+      gap: 8px;
+      font-size: 13px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 22px;
+    }
+
+    .swatch {
+      width: 22px;
+      height: 4px;
+      border-radius: 2px;
+      background: currentColor;
+      flex: 0 0 auto;
+    }
+
+    .empty {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      color: var(--muted);
+      background: rgba(255, 255, 255, 0.8);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px 14px;
+      font-size: 14px;
+      pointer-events: none;
+    }
+
+    @media (max-width: 860px) {
+      body { overflow: auto; }
+      .app { grid-template-columns: 1fr; }
+      .stage { border-right: 0; border-bottom: 1px solid var(--line); }
+      canvas { height: 62vh; }
+      .side { height: auto; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <section class="stage">
+      <canvas id="scene"></canvas>
+      <div class="toolbar">
+        <button id="fit">Fit</button>
+        <button id="follow" class="active">Follow</button>
+        <button id="grid" class="active">Grid</button>
+      </div>
+      <div id="empty" class="empty">等待仿真话题数据</div>
+    </section>
+    <aside class="side">
+      <header>
+        <h1>Loopback Navigation GUI</h1>
+        <div class="subtitle">http://127.0.0.1:8765</div>
+      </header>
+
+      <div class="status-row">
+        <span id="conn-dot" class="dot"></span>
+        <span id="conn-text">connecting</span>
+      </div>
+
+      <section class="section">
+        <h2>车辆</h2>
+        <div class="metric"><span>x</span><span id="pose-x">--</span></div>
+        <div class="metric"><span>y</span><span id="pose-y">--</span></div>
+        <div class="metric"><span>yaw</span><span id="pose-yaw">--</span></div>
+        <div class="metric"><span>速度</span><span id="twist">--</span></div>
+        <div class="metric"><span>指令</span><span id="cmd">--</span></div>
+      </section>
+
+      <section class="section">
+        <h2>导航</h2>
+        <div class="metric"><span>状态</span><span id="nav-status">--</span></div>
+        <div class="metric"><span>规划请求</span><span id="mission-status">--</span></div>
+        <div class="metric"><span>当前点</span><span id="waypoint">--</span></div>
+        <div class="metric"><span>执行路径</span><span id="path-count">--</span></div>
+        <div class="metric"><span>规划路径</span><span id="planner-count">--</span></div>
+        <div class="metric"><span>地图</span><span id="map-info">--</span></div>
+      </section>
+
+      <section class="section">
+        <h2>轮速反馈</h2>
+        <div class="metric"><span>目标左/右</span><span id="target-wheels">--</span></div>
+        <div class="metric"><span>测量左/右</span><span id="measured-wheels">--</span></div>
+        <div class="metric"><span>指令年龄</span><span id="cmd-age">--</span></div>
+      </section>
+
+      <section class="section">
+        <h2>图例</h2>
+        <div class="legend">
+          <div class="legend-item" style="color: var(--route)"><span class="swatch"></span><span>导航路径</span></div>
+          <div class="legend-item" style="color: var(--waypoint)"><span class="swatch"></span><span>控制器执行路径</span></div>
+          <div class="legend-item" style="color: var(--planner)"><span class="swatch"></span><span>场地覆盖路径</span></div>
+          <div class="legend-item" style="color: var(--trail)"><span class="swatch"></span><span>小车轨迹</span></div>
+        </div>
+      </section>
+    </aside>
+  </main>
+
+  <script>
+    const canvas = document.getElementById("scene");
+    const ctx = canvas.getContext("2d");
+    const empty = document.getElementById("empty");
+    const state = {};
+    let scale = 180;
+    let offsetX = 0;
+    let offsetY = 0;
+    let follow = true;
+    let showGrid = true;
+    let fitted = false;
+
+    const els = {
+      dot: document.getElementById("conn-dot"),
+      conn: document.getElementById("conn-text"),
+      poseX: document.getElementById("pose-x"),
+      poseY: document.getElementById("pose-y"),
+      poseYaw: document.getElementById("pose-yaw"),
+      twist: document.getElementById("twist"),
+      cmd: document.getElementById("cmd"),
+      navStatus: document.getElementById("nav-status"),
+      missionStatus: document.getElementById("mission-status"),
+      waypoint: document.getElementById("waypoint"),
+      pathCount: document.getElementById("path-count"),
+      plannerCount: document.getElementById("planner-count"),
+      mapInfo: document.getElementById("map-info"),
+      targetWheels: document.getElementById("target-wheels"),
+      measuredWheels: document.getElementById("measured-wheels"),
+      cmdAge: document.getElementById("cmd-age")
+    };
+
+    function resize() {
+      const rect = canvas.getBoundingClientRect();
+      const ratio = window.devicePixelRatio || 1;
+      canvas.width = Math.max(1, Math.floor(rect.width * ratio));
+      canvas.height = Math.max(1, Math.floor(rect.height * ratio));
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      fitView(false);
+      draw();
+    }
+
+    function worldToScreen(point) {
+      return {
+        x: point.x_m * scale + offsetX,
+        y: -point.y_m * scale + offsetY
+      };
+    }
+
+    function screenToWorld(x, y) {
+      return {
+        x_m: (x - offsetX) / scale,
+        y_m: -(y - offsetY) / scale
+      };
+    }
+
+    function collectBounds() {
+      const points = [];
+      for (const key of ["waypoint_path", "navigation_path", "arena_path"]) {
+        for (const pose of state[key]?.poses || []) points.push(pose);
+      }
+      for (const point of state.trail || []) points.push(point);
+      if (state.pose) points.push(state.pose);
+      if (state.map && !state.arena_layout) {
+        const m = state.map;
+        points.push(m.origin);
+        points.push({
+          x_m: m.origin.x_m + m.width * m.resolution_m,
+          y_m: m.origin.y_m + m.height * m.resolution_m
+        });
+      }
+      const layout = state.arena_layout;
+      if (layout) {
+        for (const field of ["free_regions", "staging_regions", "obstacles"]) {
+          for (const polygon of layout[field] || []) {
+            for (const point of polygon) points.push(point);
+          }
+        }
+        for (const edge of layout.inspection_edges || []) {
+          points.push(edge.from, edge.to);
+        }
+        for (const task of layout.tasks || []) points.push(task);
+        if (layout.start) points.push(layout.start);
+      }
+      if (!points.length) return null;
+      let minX = points[0].x_m, maxX = points[0].x_m;
+      let minY = points[0].y_m, maxY = points[0].y_m;
+      for (const p of points) {
+        minX = Math.min(minX, p.x_m);
+        maxX = Math.max(maxX, p.x_m);
+        minY = Math.min(minY, p.y_m);
+        maxY = Math.max(maxY, p.y_m);
+      }
+      return { minX, maxX, minY, maxY };
+    }
+
+    function fitView(force) {
+      if (!force && fitted && !follow) return;
+      const bounds = collectBounds();
+      if (!bounds) return;
+      const rect = canvas.getBoundingClientRect();
+      const widthM = Math.max(0.35, bounds.maxX - bounds.minX);
+      const heightM = Math.max(0.35, bounds.maxY - bounds.minY);
+      const margin = 52;
+      scale = Math.min(
+        (rect.width - margin * 2) / widthM,
+        (rect.height - margin * 2) / heightM
+      );
+      scale = Math.max(40, Math.min(520, scale));
+      const centerX = (bounds.minX + bounds.maxX) * 0.5;
+      const centerY = (bounds.minY + bounds.maxY) * 0.5;
+      offsetX = rect.width * 0.5 - centerX * scale;
+      offsetY = rect.height * 0.5 + centerY * scale;
+      fitted = true;
+    }
+
+    function drawGrid(rect) {
+      if (!showGrid) return;
+      const stepM = scale > 220 ? 0.1 : scale > 100 ? 0.2 : 0.5;
+      const topLeft = screenToWorld(0, 0);
+      const bottomRight = screenToWorld(rect.width, rect.height);
+      const startX = Math.floor(topLeft.x_m / stepM) * stepM;
+      const endX = Math.ceil(bottomRight.x_m / stepM) * stepM;
+      const startY = Math.floor(bottomRight.y_m / stepM) * stepM;
+      const endY = Math.ceil(topLeft.y_m / stepM) * stepM;
+      ctx.strokeStyle = "rgba(90, 99, 109, 0.16)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let x = startX; x <= endX; x += stepM) {
+        const p = worldToScreen({ x_m: x, y_m: 0 });
+        ctx.moveTo(p.x, 0);
+        ctx.lineTo(p.x, rect.height);
+      }
+      for (let y = startY; y <= endY; y += stepM) {
+        const p = worldToScreen({ x_m: 0, y_m: y });
+        ctx.moveTo(0, p.y);
+        ctx.lineTo(rect.width, p.y);
+      }
+      ctx.stroke();
+    }
+
+    function drawMap() {
+      if (state.arena_layout) {
+        drawArenaLayout();
+        return;
+      }
+      const m = state.map;
+      if (!m || !m.data) return;
+      const resPx = Math.max(1, m.resolution_m * scale);
+      for (let row = 0; row < m.height; row++) {
+        for (let col = 0; col < m.width; col++) {
+          const value = m.data[row * m.width + col];
+          if (value < 0) continue;
+          if (value >= 70) ctx.fillStyle = "rgba(55, 63, 72, 0.82)";
+          else if (value > 0) ctx.fillStyle = "rgba(183, 110, 0, 0.28)";
+          else ctx.fillStyle = "rgba(176, 207, 169, 0.33)";
+          const x = m.origin.x_m + col * m.resolution_m;
+          const y = m.origin.y_m + (row + 1) * m.resolution_m;
+          const p = worldToScreen({ x_m: x, y_m: y });
+          ctx.fillRect(p.x, p.y, resPx + 0.5, resPx + 0.5);
+        }
+      }
+    }
+
+    function drawArenaLayout() {
+      const layout = state.arena_layout;
+      if (!layout) return;
+      for (const polygon of layout.free_regions || []) {
+        drawPolygon(polygon, "rgba(176, 207, 169, 0.42)", "rgba(79, 111, 82, 0.42)", 1.5);
+      }
+      for (const polygon of layout.staging_regions || []) {
+        drawPolygon(polygon, "rgba(151, 190, 214, 0.30)", "rgba(69, 116, 143, 0.42)", 1.5);
+      }
+      for (const edge of layout.inspection_edges || []) {
+        const a = worldToScreen(edge.from);
+        const b = worldToScreen(edge.to);
+        ctx.save();
+        ctx.strokeStyle = edge.tunnel ? "rgba(85, 86, 97, 0.48)" : "rgba(79, 111, 82, 0.38)";
+        ctx.lineWidth = edge.tunnel ? 3 : 2;
+        ctx.setLineDash(edge.tunnel ? [7, 5] : []);
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+        ctx.restore();
+      }
+      for (const polygon of layout.obstacles || []) {
+        drawPolygon(polygon, "rgba(55, 63, 72, 0.84)", "rgba(30, 35, 40, 0.92)", 1.5);
+      }
+      for (const task of layout.tasks || []) {
+        const p = worldToScreen(task);
+        ctx.fillStyle = "#fffdf8";
+        ctx.strokeStyle = "#774040";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = "#17202a";
+        ctx.font = "11px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(task.label, p.x, p.y - 13);
+      }
+      for (const point of layout.turn_junctions || []) {
+        const p = worldToScreen(point);
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(Math.PI / 4);
+        ctx.fillStyle = "#f28c28";
+        ctx.fillRect(-5, -5, 10, 10);
+        ctx.restore();
+      }
+      if (layout.start) {
+        const p = worldToScreen(layout.start);
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(-layout.start.yaw_rad);
+        ctx.fillStyle = "#213547";
+        ctx.beginPath();
+        ctx.moveTo(12, 0);
+        ctx.lineTo(-8, -7);
+        ctx.lineTo(-8, 7);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+
+    function drawPolygon(points, fill, stroke, lineWidth) {
+      if (!points?.length) return;
+      ctx.beginPath();
+      points.forEach((point, index) => {
+        const p = worldToScreen(point);
+        if (index === 0) ctx.moveTo(p.x, p.y);
+        else ctx.lineTo(p.x, p.y);
+      });
+      ctx.closePath();
+      ctx.fillStyle = fill;
+      ctx.fill();
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = lineWidth;
+      ctx.stroke();
+    }
+
+    function drawPath(path, color, width, dashed) {
+      if (!path?.poses?.length) return;
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = width;
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      if (dashed) ctx.setLineDash([8, 6]);
+      ctx.beginPath();
+      path.poses.forEach((pose, i) => {
+        const p = worldToScreen(pose);
+        if (i === 0) ctx.moveTo(p.x, p.y);
+        else ctx.lineTo(p.x, p.y);
+      });
+      ctx.stroke();
+      ctx.setLineDash([]);
+      for (const pose of path.poses) {
+        if (Math.abs(pose.z_m || 0) < 0.0005) continue;
+        const p = worldToScreen(pose);
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 4.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    function drawTrail() {
+      const trail = state.trail || [];
+      if (trail.length < 2) return;
+      ctx.strokeStyle = "rgba(31, 41, 51, 0.72)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      trail.forEach((point, i) => {
+        const p = worldToScreen(point);
+        if (i === 0) ctx.moveTo(p.x, p.y);
+        else ctx.lineTo(p.x, p.y);
+      });
+      ctx.stroke();
+    }
+
+    function drawVehicle() {
+      if (!state.pose || !state.vehicle) return;
+      const pose = state.pose;
+      const v = state.vehicle;
+      const center = worldToScreen(pose);
+      const length = Math.max(0.03, v.length_m * scale);
+      const width = Math.max(0.03, v.width_m * scale);
+      ctx.save();
+      ctx.translate(center.x, center.y);
+      ctx.rotate(-pose.yaw_rad);
+      ctx.fillStyle = "rgba(242, 140, 40, 0.82)";
+      ctx.strokeStyle = "#5c3512";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.rect(-length / 2, -width / 2, length, width);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "#213547";
+      ctx.beginPath();
+      ctx.moveTo(length / 2 + 12, 0);
+      ctx.lineTo(length / 2 - 6, -9);
+      ctx.lineTo(length / 2 - 6, 9);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = "rgba(255,255,255,0.82)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(-length / 2, 0);
+      ctx.lineTo(length / 2, 0);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function draw() {
+      const rect = canvas.getBoundingClientRect();
+      ctx.clearRect(0, 0, rect.width, rect.height);
+      ctx.fillStyle = "#ebe7df";
+      ctx.fillRect(0, 0, rect.width, rect.height);
+      drawGrid(rect);
+      drawMap();
+      drawPath(state.arena_path, getCss("--planner"), 3, true);
+      drawPath(state.navigation_path, getCss("--route"), 4, false);
+      drawPath(state.waypoint_path, getCss("--waypoint"), 2.5, false);
+      drawTrail();
+      drawVehicle();
+      empty.style.display = state.pose || state.map || state.arena_layout ? "none" : "block";
+    }
+
+    function getCss(name) {
+      return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    }
+
+    function fmt(value, digits = 3) {
+      return Number.isFinite(value) ? value.toFixed(digits) : "--";
+    }
+
+    function updateMetrics() {
+      const pose = state.pose;
+      els.poseX.textContent = pose ? `${fmt(pose.x_m)} m` : "--";
+      els.poseY.textContent = pose ? `${fmt(pose.y_m)} m` : "--";
+      els.poseYaw.textContent = pose ? `${fmt(pose.yaw_rad * 180 / Math.PI, 1)} deg` : "--";
+      const twist = state.twist || {};
+      const cmd = state.cmd || {};
+      els.twist.textContent = `${fmt(twist.linear_x_mps, 3)} m/s, ${fmt(twist.angular_z_rps, 3)} rad/s`;
+      els.cmd.textContent = `${fmt(cmd.linear_x_mps, 3)} m/s, ${fmt(cmd.angular_z_rps, 3)} rad/s`;
+      els.navStatus.textContent = state.navigator_status || "--";
+      els.missionStatus.textContent = state.mission_status || "--";
+      els.waypoint.textContent = Number.isInteger(state.current_waypoint) ? state.current_waypoint : "--";
+      els.pathCount.textContent = `${state.waypoint_path?.poses?.length || 0} poses`;
+      els.plannerCount.textContent = `${state.navigation_path?.poses?.length || 0} poses`;
+      els.mapInfo.textContent = state.arena_layout
+        ? `${fmt(state.arena_layout.width_m, 1)} x ${fmt(state.arena_layout.height_m, 1)} m`
+        : (state.map ? `${state.map.width} x ${state.map.height}, ${fmt(state.map.resolution_m, 3)} m` : "--");
+      const t = state.telemetry || {};
+      els.targetWheels.textContent = `${fmt(t.target_left_mps, 3)} / ${fmt(t.target_right_mps, 3)} m/s`;
+      els.measuredWheels.textContent = `${fmt(t.measured_left_mps, 3)} / ${fmt(t.measured_right_mps, 3)} m/s`;
+      els.cmdAge.textContent = Number.isFinite(t.command_age_ms) ? `${t.command_age_ms} ms` : "--";
+    }
+
+    function mergeState(patch) {
+      Object.assign(state, patch);
+      if (follow) fitView(false);
+      updateMetrics();
+      draw();
+    }
+
+    function connectEvents() {
+      const events = new EventSource("/events");
+      events.onopen = () => {
+        els.dot.classList.add("online");
+        els.conn.textContent = "connected";
+      };
+      events.onmessage = (event) => {
+        const payload = JSON.parse(event.data);
+        mergeState(payload.state || {});
+      };
+      events.onerror = () => {
+        els.dot.classList.remove("online");
+        els.conn.textContent = "reconnecting";
+      };
+    }
+
+    document.getElementById("fit").addEventListener("click", () => {
+      follow = false;
+      document.getElementById("follow").classList.remove("active");
+      fitView(true);
+      draw();
+    });
+    document.getElementById("follow").addEventListener("click", (event) => {
+      follow = !follow;
+      event.currentTarget.classList.toggle("active", follow);
+      fitView(true);
+      draw();
+    });
+    document.getElementById("grid").addEventListener("click", (event) => {
+      showGrid = !showGrid;
+      event.currentTarget.classList.toggle("active", showGrid);
+      draw();
+    });
+
+    let drag = null;
+    canvas.addEventListener("pointerdown", (event) => {
+      drag = { x: event.clientX, y: event.clientY, ox: offsetX, oy: offsetY };
+      canvas.setPointerCapture(event.pointerId);
+      follow = false;
+      document.getElementById("follow").classList.remove("active");
+    });
+    canvas.addEventListener("pointermove", (event) => {
+      if (!drag) return;
+      offsetX = drag.ox + event.clientX - drag.x;
+      offsetY = drag.oy + event.clientY - drag.y;
+      draw();
+    });
+    canvas.addEventListener("pointerup", () => { drag = null; });
+    canvas.addEventListener("wheel", (event) => {
+      event.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const mouse = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+      const before = screenToWorld(mouse.x, mouse.y);
+      const zoom = event.deltaY < 0 ? 1.12 : 0.89;
+      scale = Math.max(30, Math.min(900, scale * zoom));
+      offsetX = mouse.x - before.x_m * scale;
+      offsetY = mouse.y + before.y_m * scale;
+      follow = false;
+      document.getElementById("follow").classList.remove("active");
+      draw();
+    }, { passive: false });
+
+    window.addEventListener("resize", resize);
+    resize();
+    connectEvents();
+  </script>
+</body>
+</html>

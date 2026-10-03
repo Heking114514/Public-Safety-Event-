@@ -8,6 +8,10 @@ from typing import Any, Optional
 
 import cv2
 import numpy as np
+from vehicle_config import camera_link_rotation_matrix, load_vehicle_physical_config
+
+
+_VEHICLE_PHYSICAL = load_vehicle_physical_config()
 
 
 DEFAULT_OPTICAL_TO_BASE = np.array(
@@ -18,6 +22,10 @@ DEFAULT_OPTICAL_TO_BASE = np.array(
     ],
     dtype=np.float64,
 )
+DEFAULT_MOUNTED_OPTICAL_TO_BASE = (
+    np.asarray(camera_link_rotation_matrix(_VEHICLE_PHYSICAL), dtype=np.float64)
+    @ DEFAULT_OPTICAL_TO_BASE
+)
 
 
 @dataclass(frozen=True)
@@ -26,9 +34,9 @@ class CameraGeometry:
     fy: float
     cx: float
     cy: float
-    camera_x: float = 0.055
-    camera_y: float = 0.0
-    camera_z: float = 0.121
+    camera_x: float = _VEHICLE_PHYSICAL.camera_x_m
+    camera_y: float = _VEHICLE_PHYSICAL.camera_y_m
+    camera_z: float = _VEHICLE_PHYSICAL.camera_z_m
     distortion: Optional[np.ndarray] = None
     color_to_base: Optional[np.ndarray] = None
 
@@ -44,10 +52,10 @@ class CameraGeometry:
 
     def rotation(self) -> np.ndarray:
         if self.color_to_base is None:
-            return DEFAULT_OPTICAL_TO_BASE
+            return DEFAULT_MOUNTED_OPTICAL_TO_BASE
         rotation = np.asarray(self.color_to_base, dtype=np.float64)
         if rotation.shape != (3, 3):
-            return DEFAULT_OPTICAL_TO_BASE
+            return DEFAULT_MOUNTED_OPTICAL_TO_BASE
         return rotation
 
 

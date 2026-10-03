@@ -77,7 +77,8 @@ source "${PROCESS_HELPER}"
 
 log "Waiting for exclusive workspace build access"
 acquire_workspace_build_lock || fail "无法获取工作空间构建锁"
-(cd "${WORKSPACE_DIR}" && colcon build --symlink-install --packages-select arena_path_planner)
+(cd "${WORKSPACE_DIR}" &&
+  colcon build --symlink-install --packages-select vehicle_config arena_path_planner)
 release_workspace_build_lock
 set +u
 source "${WORKSPACE_DIR}/install/setup.bash"

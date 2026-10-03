@@ -13,6 +13,7 @@ setup(
             "share/" + package_name + "/launch",
             [
                 "launch/pure_line_following.launch.py",
+                "launch/pure_line_recognition.launch.py",
                 "launch/pure_line_following_serial.launch.py",
             ],
         ),
@@ -28,6 +29,8 @@ setup(
     entry_points={
         "console_scripts": [
             "pure_line_following_node = pure_line_following.node:main",
+            "pure_line_recognition_node = pure_line_following.recognition_node:main",
+            "pure_line_debug_viewer = pure_line_following.debug_viewer:main",
         ],
     },
 )

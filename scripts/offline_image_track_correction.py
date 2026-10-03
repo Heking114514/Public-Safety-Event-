@@ -31,6 +31,11 @@ VISION_SOURCE = Path(__file__).resolve().parents[1] / "src" / "vision_correction
 if str(VISION_SOURCE) not in sys.path:
     sys.path.insert(0, str(VISION_SOURCE))
 from vision_correction import road_detector  # noqa: E402
+from vehicle_physical import VEHICLE_PHYSICAL  # noqa: E402
+from vehicle_config import (  # noqa: E402
+    complete_mount_translation,
+    rpy_rotation_matrix,
+)
 
 
 DEFAULT_BAG = Path("/media/hjh/Data/rosbag_recording/latest_navigation_bag")
@@ -84,12 +89,22 @@ class CameraModel:
     fy: float = 427.893615722656
     cx: float = 421.134613037109
     cy: float = 242.897872924805
-    x: float = 0.055
-    y: float = 0.0
-    z: float = 0.121
-    pitch_down: float = 0.0
+    x: float = VEHICLE_PHYSICAL.camera_x_m
+    y: float = VEHICLE_PHYSICAL.camera_y_m
+    z: float = VEHICLE_PHYSICAL.camera_z_m
+    roll: float = VEHICLE_PHYSICAL.camera_roll_rad
+    pitch_down: float = VEHICLE_PHYSICAL.camera_pitch_rad
+    yaw: float = VEHICLE_PHYSICAL.camera_yaw_rad
     distortion: np.ndarray | None = None
     color_to_base: np.ndarray | None = None
+
+
+def mounted_optical_to_base(camera: CameraModel) -> np.ndarray:
+    link_to_base = np.asarray(
+        rpy_rotation_matrix(camera.roll, camera.pitch_down, camera.yaw),
+        dtype=np.float64,
+    )
+    return link_to_base @ road_detector.DEFAULT_OPTICAL_TO_BASE
 
 
 @dataclass
@@ -326,7 +341,7 @@ def load_camera_model(
             fallback.cx = cx
             fallback.cy = cy
             fallback.distortion = np.asarray(msg.d, dtype=np.float64)
-            fallback.color_to_base = road_detector.DEFAULT_OPTICAL_TO_BASE.copy()
+            fallback.color_to_base = mounted_optical_to_base(fallback)
 
             transforms = load_static_transforms(db_paths, tf_topic) if tf_topic else {}
             base_to_link = lookup_transform(
@@ -346,12 +361,13 @@ def load_camera_model(
             )
             if base_to_link is not None:
                 link_translation, link_rotation = base_to_link
-                camera_translation = np.array(
-                    [
-                        link_translation[0],
-                        link_translation[1],
-                        fallback.z + link_translation[2],
-                    ],
+                configured_translation = np.array(
+                    [fallback.x, fallback.y, fallback.z], dtype=np.float64
+                )
+                camera_translation = np.asarray(
+                    complete_mount_translation(
+                        link_translation, configured_translation
+                    ),
                     dtype=np.float64,
                 )
                 optical_to_base = link_rotation @ road_detector.DEFAULT_OPTICAL_TO_BASE
@@ -541,24 +557,7 @@ def transform_segment(pose: PoseSample, segment: GroundSegment) -> GroundSegment
 
 
 def project_pixel(camera: CameraModel, u: float, v: float, limits) -> tuple[float, float] | None:
-    x_opt = (u - camera.cx) / camera.fx
-    y_opt = (v - camera.cy) / camera.fy
-    ray_x = 1.0
-    ray_y = -x_opt
-    ray_z = -y_opt
-    cp = math.cos(camera.pitch_down)
-    sp = math.sin(camera.pitch_down)
-    ray_x, ray_z = cp * ray_x + sp * ray_z, -sp * ray_x + cp * ray_z
-    if ray_z >= -limits["min_ray_down_z"]:
-        return None
-    scale = -camera.z / ray_z
-    if scale <= 0.0 or not math.isfinite(scale):
-        return None
-    x = camera.x + scale * ray_x
-    y = camera.y + scale * ray_y
-    if not (limits["min_x"] <= x <= limits["max_x"] and abs(y) <= limits["max_abs_y"]):
-        return None
-    return x, y
+    return road_detector.project_pixel(camera_geometry(camera), u, v, limits)
 
 
 def image_to_gray(msg: Image) -> np.ndarray | None:
@@ -991,10 +990,20 @@ def parse_args():
     parser.add_argument("--left-camera-info-topic", default="/camera/camera/color/camera_info")
     parser.add_argument("--sync-tolerance", type=float, default=0.12)
     parser.add_argument("--image-stride", type=int, default=1)
-    parser.add_argument("--camera-x", type=float, default=0.055)
-    parser.add_argument("--camera-y", type=float, default=0.0)
-    parser.add_argument("--camera-z", type=float, default=0.121)
-    parser.add_argument("--camera-pitch-down", type=float, default=0.0)
+    parser.add_argument("--camera-x", type=float, default=VEHICLE_PHYSICAL.camera_x_m)
+    parser.add_argument("--camera-y", type=float, default=VEHICLE_PHYSICAL.camera_y_m)
+    parser.add_argument("--camera-z", type=float, default=VEHICLE_PHYSICAL.camera_z_m)
+    parser.add_argument(
+        "--camera-roll", type=float, default=VEHICLE_PHYSICAL.camera_roll_rad
+    )
+    parser.add_argument(
+        "--camera-pitch-down",
+        type=float,
+        default=VEHICLE_PHYSICAL.camera_pitch_rad,
+    )
+    parser.add_argument(
+        "--camera-yaw", type=float, default=VEHICLE_PHYSICAL.camera_yaw_rad
+    )
     parser.add_argument("--roi-top-fraction", type=float, default=0.0)
     parser.add_argument("--roi-bottom-fraction", type=float, default=1.0)
     parser.add_argument("--detector", default="rgb_and_local")
@@ -1055,7 +1064,14 @@ def main():
     camera = load_camera_model(
         db_paths,
         args.left_camera_info_topic,
-        CameraModel(x=args.camera_x, y=args.camera_y, z=args.camera_z, pitch_down=args.camera_pitch_down),
+        CameraModel(
+            x=args.camera_x,
+            y=args.camera_y,
+            z=args.camera_z,
+            roll=args.camera_roll,
+            pitch_down=args.camera_pitch_down,
+            yaw=args.camera_yaw,
+        ),
         tf_topic="/tf_static",
     )
     features = load_map_features(args.map)

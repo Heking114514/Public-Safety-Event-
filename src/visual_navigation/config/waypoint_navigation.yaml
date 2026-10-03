@@ -12,11 +12,8 @@ waypoint_navigator:
     # Consume the fusion gate's bias-corrected/base_link yaw rate. The raw
     # filtered IMU is used only as the gate input and must not drive control.
     imu_topic: "/imu/control"
-    # Keep the navigation control point at base_link. Rounded-corner routes are
-    # generated as the base_link centerline; pivot-center compensation can be
-    # enabled from the launch script for A/B checks.
-    tracking_point_offset_x: 0.0
-    tracking_point_offset_y: 0.0
+    # The default tracking point comes from vehicle_physical.yaml. Launch
+    # arguments may temporarily override it for controlled A/B checks.
     fusion_status_topic: "/odometry/fusion_status"
     actuator_health_topic: "/cup_car_serial/actuator_healthy"
     # Used only to confirm that both wheels stopped; it is not fused into pose.
@@ -32,8 +29,8 @@ waypoint_navigator:
     route_ack_topic: "/waypoint_navigation/route_ack"
 
     control_frequency: 30.0
-    default_speed: 0.15
-    max_linear_speed: 0.15
+    default_speed: 0.05
+    max_linear_speed: 0.05
     max_angular_speed: 0.75
     # The instantaneous limit is also constrained by max_lateral_acceleration.
     # This higher ceiling lets a slow, planned corner turn decisively without
@@ -42,13 +39,13 @@ waypoint_navigator:
     min_path_angular_speed: 0.12
     path_angular_activation_error: 0.05
     path_yaw_response_threshold: 0.04
-    max_linear_acceleration: 0.40
+    max_linear_acceleration: 0.25
     max_linear_deceleration: 0.80
-    # Physical stopping model used to keep 0.15 m/s cruise speed without
+    # Physical stopping model used to keep the 0.05 m/s HTML approach speed without
     # carrying residual forward velocity into a waypoint turn.
     effective_braking_deceleration: 0.35
     braking_control_delay: 0.20
-    braking_safety_margin: 0.015
+    braking_safety_margin: 0.025
     braking_distance_feedback_gain: 1.00
     max_angular_acceleration: 1.80
     max_angular_deceleration: 3.00
@@ -70,9 +67,9 @@ waypoint_navigator:
     cross_track_slowdown_start: 0.015
     # The planner reserves 5 cm for tracking error outside the chassis safety
     # envelope. Slow well before consuming it; straight, centred segments stay
-    # at 0.15 m/s.
+    # at 0.05 m/s.
     cross_track_slowdown_full: 0.04
-    cross_track_minimum_speed: 0.10
+    cross_track_minimum_speed: 0.04
     # Limit speed from generated-path curvature, so the rectangular vehicle
     # does not cut inside a planned corner while the controller is catching up.
     max_lateral_acceleration: 0.22
@@ -96,6 +93,41 @@ waypoint_navigator:
     waypoint_recovery_speed: 0.10
     waypoint_recovery_heading_tolerance: 0.12
     waypoint_recovery_max_angular_speed: 0.40
+    # Planned junction turns use the stop-check-act shunt from
+    # corner_turn_shunt_animation.html. Vehicle footprint, wheel track and
+    # base_link-to-axle offset are injected from vehicle_physical.yaml by launch files.
+    corner_shunt_enabled: true
+    corner_shunt_road_width_m: 0.20
+    corner_shunt_road_margin_m: 0.008
+    corner_shunt_road_back_m: 0.60
+    corner_shunt_road_forward_m: 0.56
+    corner_shunt_stop_s: 0.18
+    corner_shunt_check_s: 0.05
+    corner_shunt_arc_segment_s: 0.19
+    corner_shunt_rotate_segment_s: 0.19
+    corner_shunt_creep_segment_s: 0.19
+    corner_shunt_reverse_segment_s: 0.19
+    corner_shunt_start_x_m: -0.070
+    corner_shunt_start_x_tolerance_m: 0.005
+    corner_shunt_exit_yaw_tolerance_rad: 0.08
+    corner_shunt_exit_x_m: -0.0075
+    corner_shunt_exit_y_m: 0.1225
+    corner_shunt_exit_x_tolerance_m: 0.025
+    corner_shunt_exit_y_tolerance_m: 0.015
+    corner_shunt_max_turn_angle_rad: 2.20
+    corner_shunt_max_s: 60.00
+    corner_shunt_prediction_horizon_s: 0.20
+    corner_shunt_prediction_step_s: 0.04
+    corner_shunt_linear_speed_mps: 0.010
+    corner_shunt_angular_speed_rps: 0.24
+    corner_shunt_late_turn_progress: 0.83
+    corner_shunt_late_linear_speed_mps: 0.014
+    corner_shunt_late_angular_speed_rps: 0.10
+    corner_shunt_rotate_angular_speed_rps: 0.20
+    corner_shunt_creep_linear_speed_mps: 0.010
+    corner_shunt_reverse_linear_speed_mps: -0.008
+    corner_shunt_reverse_angular_speed_rps: -0.10
+    corner_shunt_max_reverse_count: 80
     # Braking, mission holds, localization waits and final-yaw control pause
     # position progress. In-place turns remain safe through the displacement gate.
     path_progress_timeout: 10.0
@@ -152,9 +184,7 @@ waypoint_navigator:
     # Range may arrive just before Bool because the subscriptions are separate,
     # but samples from an older clear/true cycle must never be reused.
     front_obstacle_pairing_reorder_tolerance: 0.10
-    # base_link -> D455 and measured front extent of the 148.5 mm chassis.
-    obstacle_sensor_forward_offset: 0.055
-    vehicle_front_offset: 0.07425
+    # Sensor and chassis offsets come from vehicle_physical.yaml.
     expected_obstacle_tolerance: 0.05
     obstacle_reverse_speed: 0.10
     obstacle_reverse_angular_gain: 1.20

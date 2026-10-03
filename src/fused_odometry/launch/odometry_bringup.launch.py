@@ -5,6 +5,7 @@ from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from vehicle_config import load_vehicle_physical_config, parameters_for
 import os
 
 
@@ -30,6 +31,8 @@ def generate_launch_description():
     use_wheel = LaunchConfiguration("use_wheel")
     use_sim_time = LaunchConfiguration("use_sim_time")
     enable_depth = LaunchConfiguration("enable_depth")
+    physical = load_vehicle_physical_config()
+    wheel_physical_parameters = parameters_for("wheel_odometry", physical)
 
     wheel_config = os.path.join(
         get_package_share_directory("wheel_odometry"),
@@ -42,14 +45,14 @@ def generate_launch_description():
         name="base_to_d455",
         output="screen",
         arguments=[
-            "--x", "0.055",
-            "--y", "0.0",
-            "--z", "0.0",
-            "--yaw", "0.0",
-            "--pitch", "0.0",
-            "--roll", "0.0",
-            "--frame-id", "base_link",
-            "--child-frame-id", "camera_link",
+            "--x", str(physical.camera_x_m),
+            "--y", str(physical.camera_y_m),
+            "--z", str(physical.camera_z_m),
+            "--yaw", str(physical.camera_yaw_rad),
+            "--pitch", str(physical.camera_pitch_rad),
+            "--roll", str(physical.camera_roll_rad),
+            "--frame-id", physical.camera_parent_frame,
+            "--child-frame-id", physical.camera_child_frame,
         ],
         parameters=[{"use_sim_time": use_sim_time}],
     )
@@ -98,6 +101,7 @@ def generate_launch_description():
             condition=IfCondition(use_wheel),
             parameters=[
                 wheel_config,
+                wheel_physical_parameters,
                 {
                     "base_frame": "base_link",
                     "publish_tf": False,

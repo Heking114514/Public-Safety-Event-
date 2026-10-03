@@ -1,5 +1,59 @@
 # Changelog
 
+## 2026-10-04
+
+- 新增 `scripts/record_camera_samples.sh` 交互式定点相机采样工具：仅启动 D455，
+  不启动串口或运动控制；每次放置小车后录制一段独立的 RGB、对齐深度和标定
+  rosbag，并在外接录制盘的会话目录保存样本备注与时间索引。
+- 为相机采样脚本增加模拟 ROS 进程测试，覆盖完整样本落盘、RGB-only 模式和非法
+  时长拒绝，确保采集话题不包含 `cmd_vel` 或串口控制链。
+- 复查并收紧正式 `visual_navigation` 过弯控制器与
+  `corner_turn_shunt_animation.html` 的一致性：默认 8mm 安全边、0.05m/s approach、
+  更严格的 HTML 出口姿态、统一 0.19s 微动作段，并补充 8mm/出口条件回归测试。
+- 保留一个 disabled 的真实到点姿态严格仿真用例，记录当前 153.5mm 车宽加 8mm
+  安全边仍存在局部死角；该场景尚不能声明已按 HTML 完整通过。
+
+## 2026-10-03
+
+- 将 `corner_turn_shunt_animation.html` 的停-检查-小弧线/微转/慢爬/小倒退策略移入正式
+  `visual_navigation/waypoint_navigator`：新增 `CornerShuntController`、`SHUNT_TURN`
+  状态和安全预测，按轮轴中点积分并使用中央车体参数中的 `base_link` 前偏预测整车矩形包络。
+- 收紧 `CornerShuntController` 的出弯交棒条件：不再只靠宽松航向误差提前返回
+  `PATH_ALIGNED`，必须确认车体中心已经进入出弯通道；第二个右转不再从贴内角姿态进入
+  `TURN_BLOCKED`。
+- 完整闭环 launch 继续默认使用正式 `waypoint_navigator`，`loopback_route_controller`
+  仅保留为 debug；loopback 真值里程计同步改为按轮轴积分后发布 `base_link`，
+  避免仿真绕过车体前偏/杠臂效应。
+- 新增/更新 `corner_shunt`、`waypoint_navigator` launch、`vehicle_config` 和
+  `vehicle_loopback_sim` 契约测试。`planner_control_loopback.launch.py gui:=false`
+  已用真实 `arena_path_planner` 路线和正式 `waypoint_navigator` 跑完整 19 点路线，
+  最终到达 `GOAL_REACHED`。
+- 新增 `vehicle_loopback_sim` 真值里程计仿真包：订阅 `/cmd_vel_nav`，
+  发布 `/odometry/fused`、`/imu/control`、融合健康状态、执行器健康和理想控制遥测，
+  便于在不启动实车、ORB 和融合链路时闭环测试规划器与 `waypoint_navigator`。
+- 将 loopback mission 从单次 `layer1` 请求改为默认顺序执行
+  `layer1,layer2,layer3`：每段 `GOAL_REACHED` 后用真值里程计反算 arena 起点，
+  并把已确认道路覆盖传入下一次规划请求。
+- 修复 loopback mission 使用 C++ 风格日志参数导致 Python 节点在第一段规划返回后崩溃的问题；
+  增加 mission 日志签名单测，避免后续分层接力再次被日志调用打断。
+- 收敛正式 `waypoint_navigator` 控制器速度与过弯交棒：默认/最高线速度降至
+  `0.10 m/s`，增加制动余量，降低横向偏差最低速度，并将 shunt 内部脱困前进候选
+  从最高 `0.040 m/s` 压到 `0.030 m/s`；shunt 几何安全边保持 `6 mm`，避免窄弯误判无解。
+- 为 `vehicle_loopback_sim` 增加浏览器实时 GUI：默认随 loopback launch 启动，
+  显示规划地图、导航路径、控制器执行路径、真值车体轮廓、历史轨迹、速度命令和导航状态。
+- 修正 loopback GUI 的场地显示：按 `arena_map.yaml` 绘制真实道路/障碍边界，
+  并把 planner 的 `arena` 路径转换到 odom 使用的 `map` 坐标；完整闭环 launch
+  默认发送一次真实 `layer1` planner 请求并激活给正式 `waypoint_navigator`。
+- 新增 `loopback_route_controller` 仅作为 debug/demo 路线执行器保留；完整闭环仿真
+  默认接入 `visual_navigation/waypoint_navigator`，避免仿真包绕过正式导航控制器。
+- 修复 `waypoint_navigator` 在预转弯刹车安全边界上可能卡住的问题：到点/过点
+  判断加入微小浮点容差，避免速度已降到 0 但剩余距离刚好等于刹车安全余量时无法进入转弯。
+- 整理 `vehicle_config` 中央车体参数包：保留 `vehicle_physical.yaml`
+  作为车体尺寸、轮系、跟踪点和相机安装位姿的唯一来源，并补充依赖契约测试，
+  防止消费者包漏声明 `vehicle_config`。
+- 去除融合节点头文件中残留的轮轴到 `base_link` 物理默认值，并让障碍物投影脚本
+  默认读取中心相机前向偏移，避免离线/规划辅助工具继续散落车体参数。
+
 ## 2026-10-01
 
 - 纯巡线实车调试确认：此前“走着走着偏右”不是串口掉线或积分项发散，

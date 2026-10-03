@@ -52,9 +52,7 @@ fused_odometry_gate:
     max_wheel_only_time_s: 2.0
     max_wheel_only_distance_m: 0.30
     max_wheel_only_speed_mps: 0.30
-    # STM32 declares 1.0 m/s as the physical wheel-speed ceiling. Normal
-    # navigation is lower still (0.6 m/s per-wheel command limit).
-    max_wheel_speed_mps: 1.0
+    # The STM32 physical wheel-speed ceiling comes from vehicle_physical.yaml.
     max_wheel_yaw_rate_radps: 4.0
     max_imu_yaw_rate_radps: 4.0
 
@@ -92,10 +90,8 @@ fused_odometry_gate:
     # physical chassis. It is not a local EKF motion source.
     visual_vx_variance: 0.06
     visual_vy_variance: 0.30
-    # Wheel vx is the primary short-term distance source. Its yaw remains
-    # diagnostic-only, but the 50 mm axle-to-base_link lever arm publishes a
-    # real body-centre vy during pivots and is fused with moderate confidence.
-    wheel_base_offset_x_m: 0.050
+    # Wheel vx is the primary short-term distance source. The axle-to-base_link
+    # lever arm comes from vehicle_physical.yaml and provides body-centre vy.
     wheel_vx_variance: 0.02
     wheel_vy_variance: 0.04
     # Encoder vx is downweighted during observed turns. Only near-zero commanded

@@ -7,6 +7,7 @@ from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+from vehicle_config import parameters_for
 
 
 def generate_launch_description():
@@ -14,6 +15,7 @@ def generate_launch_description():
     serial_share = Path(get_package_share_directory("cup_car_serial"))
     default_parameters = str(package_share / "config" / "pure_line_following.yaml")
     default_serial_parameters = str(serial_share / "config" / "cmd_vel_serial.yaml")
+    physical_parameters = parameters_for("pure_line_following")
 
     parameters_file = LaunchConfiguration("parameters_file")
     serial_parameters_file = LaunchConfiguration("serial_parameters_file")
@@ -67,6 +69,7 @@ def generate_launch_description():
         output="screen",
         parameters=[
             parameters_file,
+            physical_parameters,
             {
                 "image_topic": LaunchConfiguration("image_topic"),
                 "camera_info_topic": LaunchConfiguration("camera_info_topic"),
@@ -186,6 +189,8 @@ def generate_launch_description():
                 default_value="/pure_line_following/debug_image",
             ),
             DeclareLaunchArgument("publish_debug_image", default_value="false"),
+            DeclareLaunchArgument("show_debug_gui", default_value="false"),
+            DeclareLaunchArgument("viewer_mode", default_value="side_by_side"),
             DeclareLaunchArgument("require_camera_info", default_value="true"),
             DeclareLaunchArgument("require_depth", default_value="false"),
             DeclareLaunchArgument("use_depth_projection", default_value="true"),
@@ -204,6 +209,22 @@ def generate_launch_description():
             ),
             camera_node,
             pure_line_node,
+            Node(
+                package="pure_line_following",
+                executable="pure_line_debug_viewer",
+                name="pure_line_debug_viewer",
+                output="screen",
+                condition=IfCondition(LaunchConfiguration("show_debug_gui")),
+                parameters=[
+                    {
+                        "camera_image_topic": LaunchConfiguration("image_topic"),
+                        "debug_image_topic": LaunchConfiguration("debug_image_topic"),
+                        "status_topic": "/pure_line_following/status",
+                        "cmd_vel_topic": cmd_vel_topic,
+                        "view_mode": LaunchConfiguration("viewer_mode"),
+                    }
+                ],
+            ),
             serial_node,
         ]
     )

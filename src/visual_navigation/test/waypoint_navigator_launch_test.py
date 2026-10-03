@@ -21,10 +21,12 @@ from rclpy.qos import (
 from sensor_msgs.msg import Range
 from std_msgs.msg import Bool, String, UInt64
 from std_srvs.srv import Trigger
+from vehicle_config import parameters_for
 
 
 @pytest.mark.launch_test
 def generate_test_description():
+    physical_parameters = parameters_for("waypoint_navigation")
     route_file = str(
         FilePath(__file__).resolve().parents[1] / "routes" / "example_route.csv"
     )
@@ -32,26 +34,29 @@ def generate_test_description():
         package="visual_navigation",
         executable="waypoint_navigator",
         name="waypoint_navigator_test",
-        parameters=[{
-            "route_file": route_file,
-            "route_input_topic": "/test/route_input",
-            "route_ack_topic": "/test/route_ack",
-            "odom_topic": "/test/odometry",
-            "fusion_status_topic": "/test/fusion_status",
-            "status_topic": "/test/navigation_status",
-            "front_obstacle_topic": "/test/front_blocked",
-            "front_obstacle_range_topic": "/test/front_range",
-            "control_telemetry_topic": "/test/control_telemetry",
-            "front_obstacle_classification_wait": 0.05,
-            "pre_turn_minimum_stop_time": 0.05,
-            "pre_turn_stop_dwell": 0.05,
-            "pre_turn_brake_timeout": 0.20,
-            "stop_motion_window": 0.10,
-            "require_fusion_status": True,
-            "require_tracking_state": False,
-            "require_actuator_health": False,
-            "autostart": False,
-        }],
+        parameters=[
+            physical_parameters,
+            {
+                "route_file": route_file,
+                "route_input_topic": "/test/route_input",
+                "route_ack_topic": "/test/route_ack",
+                "odom_topic": "/test/odometry",
+                "fusion_status_topic": "/test/fusion_status",
+                "status_topic": "/test/navigation_status",
+                "front_obstacle_topic": "/test/front_blocked",
+                "front_obstacle_range_topic": "/test/front_range",
+                "control_telemetry_topic": "/test/control_telemetry",
+                "front_obstacle_classification_wait": 0.05,
+                "pre_turn_minimum_stop_time": 0.05,
+                "pre_turn_stop_dwell": 0.05,
+                "pre_turn_brake_timeout": 0.20,
+                "stop_motion_window": 0.10,
+                "require_fusion_status": True,
+                "require_tracking_state": False,
+                "require_actuator_health": False,
+                "autostart": False,
+            },
+        ],
         output="screen",
     )
     return launch.LaunchDescription([navigator, launch_testing.actions.ReadyToTest()]), {
@@ -371,7 +376,7 @@ class TestWaypointNavigatorContract(unittest.TestCase):
         self.spin(0.5)
         assert self.acks == [stamp.nanoseconds]
 
-    def test_turn_alignment_forces_zero_linear_velocity(self):
+    def test_planned_corner_uses_safe_shunt_arc_after_stop(self):
         self.call_trigger(self.stop_client)
         self.commands.clear()
         stamp = self.node.get_clock().now()
@@ -396,12 +401,16 @@ class TestWaypointNavigatorContract(unittest.TestCase):
         self.commands.clear()
         for _ in range(10):
             self.publish_fusion("FULL")
-            self.publish_odometry(x=0.35)
+            self.publish_odometry(x=0.30)
             self.spin(0.04)
 
-        turning_commands = [command for command in self.commands if abs(command[1]) > 0.05]
-        assert turning_commands
-        assert all(abs(command[0]) < 1.0e-12 for command in turning_commands)
+        assert "TURN_ARC" in self.states
+        arc_commands = [
+            command
+            for command in self.commands
+            if command[0] > 0.001 and command[1] > 0.02
+        ]
+        assert arc_commands
         self.call_trigger(self.stop_client)
 
     def test_wrong_heading_without_known_junction_does_not_pivot(self):
@@ -453,10 +462,10 @@ class TestWaypointNavigatorContract(unittest.TestCase):
         self.spin(0.05)
         stamp = self.node.get_clock().now()
         self.publish_route(stamp.to_msg(), [(0.0, 0.0, 0.001), (0.0, 1.0)])
-        self.hold_odometry(0.0, cycles=8)
+        self.hold_odometry(0.0, cycles=16)
 
         assert "OBSTACLE_REPLAN_REQUIRED" not in self.states
-        assert "ROTATING_TO_PATH" in self.states
+        assert "TURN_ARC" in self.states
         assert any(angular > 0.05 for _, angular in self.commands)
         self.call_trigger(self.stop_client)
 

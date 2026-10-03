@@ -67,25 +67,34 @@ void WaypointNavigator::RunPath(const ControlFrame &frame) {
   const bool shouldRotateInPlace = visual_navigation::PlannedTurnMayPivot(
       stoppedAtPlannedTurn_, controlState_.path_aligned(), distanceFromTurn,
       headingError, std::max(0.70, rotateInPlaceThreshold_));
+  const bool turningManeuverActive =
+      controlState_.in(visual_navigation::ControlPhase::SHUNT_TURN) ||
+      controlState_.in(visual_navigation::ControlPhase::ALIGN_PATH);
 
-  if (!controlState_.in(visual_navigation::ControlPhase::ALIGN_PATH) &&
-      shouldRotateInPlace) {
+  if (!turningManeuverActive && shouldRotateInPlace) {
     ResetManeuver();
-    controlState_.begin_path_alignment(currentX_, currentY_);
+    const double plannedTurnError =
+        NormalizeAngle(stoppedTurnTargetHeading_ - stoppedTurnArrivalHeading_);
+    if (cornerShuntController_.enabled_for(plannedTurnError)) {
+      controlState_.begin_corner_shunt(currentX_, currentY_);
+      cornerShuntController_.begin(
+          std::chrono::duration<double>(
+              std::chrono::steady_clock::now().time_since_epoch())
+              .count());
+    } else {
+      controlState_.begin_path_alignment(currentX_, currentY_);
+    }
     turnSettleController_.reset();
-  } else if (!controlState_.in(visual_navigation::ControlPhase::ALIGN_PATH) &&
-             !controlState_.path_aligned()) {
+  } else if (!turningManeuverActive && !controlState_.path_aligned()) {
     controlState_.mark_path_aligned();
     stoppedAtPlannedTurn_ = false;
     firstHalfTurnPending_ = false;
   }
 
+  const bool shunting =
+      controlState_.in(visual_navigation::ControlPhase::SHUNT_TURN);
   const bool aligningPath =
       controlState_.in(visual_navigation::ControlPhase::ALIGN_PATH);
-  if (!aligningPath && std::abs(pathError) > 0.70) {
-    BeginJunctionRetreat();
-    return;
-  }
   const double alignmentError = NormalizeAngle(
       (firstHalfTurnPending_ ? firstHalfTurnYaw_ : frame.path_heading) -
       currentYaw_);
@@ -103,6 +112,16 @@ void WaypointNavigator::RunPath(const ControlFrame &frame) {
                 Clamp(frame.path_length - frame.path_projection.remaining, 0.0,
                       frame.path_length)
           : std::numeric_limits<double>::quiet_NaN();
+
+  if (shunting) {
+    RunCornerShunt(frame, segmentProgress);
+    return;
+  }
+
+  if (!aligningPath && std::abs(pathError) > 0.70) {
+    BeginJunctionRetreat();
+    return;
+  }
 
   if (aligningPath) {
     if (SupervisePathProgress(segmentProgress,

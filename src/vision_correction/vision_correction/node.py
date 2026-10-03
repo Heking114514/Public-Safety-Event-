@@ -36,6 +36,11 @@ from rclpy.qos import (
 )
 from sensor_msgs.msg import CameraInfo, Image
 from tf2_msgs.msg import TFMessage
+from vehicle_config import (
+    complete_mount_translation,
+    parameters_for,
+    rpy_rotation_matrix,
+)
 
 from . import road_detector
 
@@ -229,7 +234,15 @@ class VisionCorrectionNode(Node):
             tuple[str, str], tuple[np.ndarray, np.ndarray]
         ] = {}
         # CameraInfo for the RGB stream uses the ROS optical convention.
-        self._color_to_base = road_detector.DEFAULT_OPTICAL_TO_BASE.copy()
+        link_to_base = np.asarray(
+            rpy_rotation_matrix(
+                float(self.get_parameter("camera_roll_rad").value),
+                float(self.get_parameter("camera_pitch_rad").value),
+                float(self.get_parameter("camera_yaw_rad").value),
+            ),
+            dtype=np.float64,
+        )
+        self._color_to_base = link_to_base @ road_detector.DEFAULT_OPTICAL_TO_BASE
         self._camera_frame_id = "camera_color_optical_frame"
         self._camera_x = float(self.get_parameter("camera_x_m").value)
         self._camera_y = float(self.get_parameter("camera_y_m").value)
@@ -308,6 +321,7 @@ class VisionCorrectionNode(Node):
         )
 
     def _declare_parameters(self) -> None:
+        physical = parameters_for("vision_correction")
         declarations = {
             "map_file": "",
             "image_topic": "/camera/camera/color/image_raw",
@@ -315,9 +329,12 @@ class VisionCorrectionNode(Node):
             "fused_topic": "/odometry/fused",
             "output_topic": "/odometry/landmark_corrected",
             "tf_static_topic": "/tf_static",
-            "camera_height_m": 0.121,
-            "camera_x_m": 0.055,
-            "camera_y_m": 0.0,
+            "camera_height_m": physical["camera_height_m"],
+            "camera_x_m": physical["camera_x_m"],
+            "camera_y_m": physical["camera_y_m"],
+            "camera_roll_rad": physical["camera_roll_rad"],
+            "camera_pitch_rad": physical["camera_pitch_rad"],
+            "camera_yaw_rad": physical["camera_yaw_rad"],
             "sync_tolerance_s": 0.12,
             "publish_rate": 0.0,
             "timeout": 0.5,
@@ -520,13 +537,18 @@ class VisionCorrectionNode(Node):
         if camera_link is None:
             return
         link_translation, link_rotation = camera_link
-        camera_translation = np.array(
+        configured_translation = np.array(
             [
-                link_translation[0],
-                link_translation[1],
-                float(self.get_parameter("camera_height_m").value)
-                + link_translation[2],
+                float(self.get_parameter("camera_x_m").value),
+                float(self.get_parameter("camera_y_m").value),
+                float(self.get_parameter("camera_height_m").value),
             ],
+            dtype=np.float64,
+        )
+        # Older recordings published zero for unconfigured mount axes. Keep
+        # those bags usable while treating a complete current TF as authoritative.
+        camera_translation = np.asarray(
+            complete_mount_translation(link_translation, configured_translation),
             dtype=np.float64,
         )
         optical_to_base = (

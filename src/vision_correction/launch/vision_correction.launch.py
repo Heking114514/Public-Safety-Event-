@@ -5,12 +5,14 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from vehicle_config import parameters_for
 
 
 def generate_launch_description():
     package_share = Path(get_package_share_directory("vision_correction"))
     default_parameters = str(package_share / "config" / "vision_correction.yaml")
     parameters_file = LaunchConfiguration("parameters_file")
+    physical_parameters = parameters_for("vision_correction")
     return LaunchDescription(
         [
             DeclareLaunchArgument("parameters_file", default_value=default_parameters),
@@ -29,7 +31,6 @@ def generate_launch_description():
                 default_value="/odometry/landmark_corrected",
             ),
             DeclareLaunchArgument("tf_static_topic", default_value="/tf_static"),
-            DeclareLaunchArgument("camera_height_m", default_value="0.121"),
             DeclareLaunchArgument("map_frame", default_value="map"),
             DeclareLaunchArgument("base_frame", default_value="base_link"),
             DeclareLaunchArgument("sync_tolerance_s", default_value="0.12"),
@@ -42,6 +43,7 @@ def generate_launch_description():
                 output="screen",
                 parameters=[
                     parameters_file,
+                    physical_parameters,
                     {
                         "map_file": LaunchConfiguration("map_file"),
                         "image_topic": LaunchConfiguration("image_topic"),
@@ -49,7 +51,6 @@ def generate_launch_description():
                         "fused_topic": LaunchConfiguration("fused_topic"),
                         "output_topic": LaunchConfiguration("output_topic"),
                         "tf_static_topic": LaunchConfiguration("tf_static_topic"),
-                        "camera_height_m": LaunchConfiguration("camera_height_m"),
                         "map_frame": LaunchConfiguration("map_frame"),
                         "base_frame": LaunchConfiguration("base_frame"),
                         "sync_tolerance_s": LaunchConfiguration("sync_tolerance_s"),

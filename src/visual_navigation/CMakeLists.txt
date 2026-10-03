@@ -30,6 +30,7 @@ add_executable(waypoint_navigator
   src/route.cpp
   src/runtime.cpp
   src/obstacle_recovery.cpp
+  src/corner_shunt.cpp
   src/control.cpp
   src/maneuvers.cpp
   src/path_following.cpp
@@ -88,6 +89,8 @@ if(BUILD_TESTING)
   target_include_directories(rate_limiter_test PRIVATE include)
   ament_add_gtest(path_control_test test/path_control_test.cpp)
   target_include_directories(path_control_test PRIVATE include)
+  ament_add_gtest(corner_shunt_test test/corner_shunt_test.cpp)
+  target_include_directories(corner_shunt_test PRIVATE include)
   ament_add_gtest(path_progress_supervisor_test test/path_progress_supervisor_test.cpp)
   target_include_directories(path_progress_supervisor_test PRIVATE include)
   ament_add_gtest(turn_progress_supervisor_test test/turn_progress_supervisor_test.cpp)

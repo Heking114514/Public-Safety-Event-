@@ -141,6 +141,14 @@ TEST(PathControl, StopRequiredEndpointAcceptsBrakeMarginInsideCorridor)
       braked_at_endpoint, 0.015, 0.045));
 }
 
+TEST(PathControl, StopRequiredEndpointAcceptsBrakeMarginFloatBoundary)
+{
+  const visual_navigation::PathProjection braked_at_float_boundary{
+    0.0150000004, 0.0, true};
+  EXPECT_TRUE(visual_navigation::WaypointEndpointReached(
+      braked_at_float_boundary, 0.015, 0.045));
+}
+
 TEST(PathControl, StopRequiredEndpointRejectsLargeLateralMiss)
 {
   const visual_navigation::PathProjection passed_outside_corridor{

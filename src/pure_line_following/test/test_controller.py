@@ -118,7 +118,7 @@ def test_junction_small_lateral_error_keeps_moving_while_correcting():
     command = command_for(
         observation(
             state="JUNCTION",
-            lateral=0.014,
+            lateral=0.010,
             heading=0.0,
         ),
         ControllerConfig(),
@@ -144,13 +144,14 @@ def test_junction_deadband_suppresses_small_lateral_wobble():
 
 
 def test_junction_lateral_gain_is_reduced_after_deadband():
+    params = ControllerConfig(road_center_stop_error_m=0.09)
     normal = command_for(
         observation(
             state="JUNCTION",
             lateral=0.05,
             heading=0.0,
         ),
-        ControllerConfig(),
+        params,
     )
     damped = command_for(
         observation(
@@ -161,10 +162,25 @@ def test_junction_lateral_gain_is_reduced_after_deadband():
         ControllerConfig(
             junction_lateral_deadband_m=0.025,
             junction_lateral_gain_scale=0.35,
+            road_center_stop_error_m=0.09,
         ),
     )
-    assert damped.linear.x > 0.0
     assert 0.0 < abs(damped.angular.z) < abs(normal.angular.z)
+    assert damped.linear.x == 0.0
+
+
+def test_physical_clearance_caps_configured_forward_motion_threshold():
+    command = command_for(
+        observation(
+            state=TRACK,
+            lateral=0.020,
+            heading=0.0,
+        ),
+        ControllerConfig(road_center_stop_error_m=0.09),
+    )
+
+    assert command.linear.x == 0.0
+    assert command.angular.z > 0.0
 
 
 def test_junction_heading_is_ignored_for_straight_through():

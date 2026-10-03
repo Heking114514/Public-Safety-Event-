@@ -1,0 +1,36 @@
+# All distances are metres and all angles are radians.
+# ROS body axes: +x forward, +y left, +z up. Therefore a camera mounted
+# 15 mm to the right of the centreline has y_m = -0.015.
+schema_version: 1
+
+chassis:
+  length_m: 0.1485
+  width_m: 0.1535
+
+differential_drive:
+  wheel_radius_m: 0.0302
+  wheel_track_m: 0.1466
+  encoder_counts_per_revolution: 294912.0
+  # Encoder counts decrease during ROS-forward wheel motion.
+  left_distance_scale: -1.0
+  right_distance_scale: -1.0
+  yaw_slip_scale: 1.0
+  max_wheel_speed_mps: 1.0
+  # Position of base_link measured from the wheel axle midpoint.
+  base_link_offset_x_m: 0.050
+  base_link_offset_y_m: 0.000
+
+# Navigation routes and odometry both describe the base_link centre.
+tracking_point:
+  x_m: 0.000
+  y_m: 0.000
+
+camera:
+  parent_frame: base_link
+  child_frame: camera_link
+  x_m: 0.055
+  y_m: -0.015
+  z_m: 0.121
+  roll_rad: 0.0
+  pitch_rad: 0.0
+  yaw_rad: 0.0

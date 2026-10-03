@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 from typing import Iterable, Optional
 
+from vehicle_physical import VEHICLE_PHYSICAL
+
 
 Aabb = tuple[float, float, float, float]
 Pose2d = tuple[float, float, float]
@@ -43,7 +45,7 @@ def front_obstacle_aabb(
     vehicle_y: float,
     vehicle_yaw: float,
     measured_range: float,
-    camera_forward_offset: float = 0.070,
+    camera_forward_offset: float = VEHICLE_PHYSICAL.camera_x_m,
     obstacle_width: float = 0.24,
     obstacle_depth: float = 0.12,
 ) -> Aabb:

@@ -17,8 +17,10 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import String
+from vehicle_config import parameters_for, rpy_rotation_matrix
 
 from .controller import ControllerConfig, command_for, limit_angular_rate
+from .corner_turn import CornerTurnConfig, CornerTurnStateMachine, MotionCommand
 from . import geometry as road_detector
 from .tracker import LOST, UNSAFE_EDGE, TrackObservation, TrackerConfig, observe
 
@@ -55,6 +57,13 @@ def _image_to_bgr(message: Image) -> Optional[np.ndarray]:
 def _stamp_to_seconds(message: Image) -> float:
     stamp = message.header.stamp
     return float(stamp.sec) + float(stamp.nanosec) * 1.0e-9
+
+
+def _motion_command_to_twist(command: MotionCommand) -> Twist:
+    twist = Twist()
+    twist.linear.x = float(command.linear_x_mps)
+    twist.angular.z = float(command.angular_z_rps)
+    return twist
 
 
 def _image_to_depth_m(message: Image, depth_scale: float) -> Optional[np.ndarray]:
@@ -96,6 +105,14 @@ def _image_to_depth_m(message: Image, depth_scale: float) -> Optional[np.ndarray
 
 
 def _camera_model_from_parameters(node: Node) -> road_detector.CameraGeometry:
+    link_to_base = np.asarray(
+        rpy_rotation_matrix(
+            float(node.get_parameter("camera_roll_rad").value),
+            float(node.get_parameter("camera_pitch_rad").value),
+            float(node.get_parameter("camera_yaw_rad").value),
+        ),
+        dtype=np.float64,
+    )
     return road_detector.CameraGeometry(
         fx=float(node.get_parameter("fallback_fx").value),
         fy=float(node.get_parameter("fallback_fy").value),
@@ -104,7 +121,7 @@ def _camera_model_from_parameters(node: Node) -> road_detector.CameraGeometry:
         camera_x=float(node.get_parameter("camera_x_m").value),
         camera_y=float(node.get_parameter("camera_y_m").value),
         camera_z=float(node.get_parameter("camera_height_m").value),
-        color_to_base=road_detector.DEFAULT_OPTICAL_TO_BASE.copy(),
+        color_to_base=link_to_base @ road_detector.DEFAULT_OPTICAL_TO_BASE,
     )
 
 
@@ -169,6 +186,136 @@ class PureLineFollowingNode(Node):
         )
         self._tracker_config = tracker_config
         self._controller_config = controller_config
+        self._corner_turn = CornerTurnStateMachine(
+            CornerTurnConfig(
+                enabled=bool(self.get_parameter("corner_turn_enabled").value),
+                once=bool(self.get_parameter("corner_turn_once").value),
+                direction=str(self.get_parameter("corner_turn_direction").value),
+                junction_prefer_direction=str(
+                    self.get_parameter("corner_turn_junction_prefer_direction").value
+                ),
+                stable_frames=int(
+                    self.get_parameter("corner_turn_stable_frames").value
+                ),
+                trigger_min_x_m=float(
+                    self.get_parameter("corner_turn_trigger_min_x_m").value
+                ),
+                trigger_max_x_m=float(
+                    self.get_parameter("corner_turn_trigger_max_x_m").value
+                ),
+                turn_entry_x_m=float(
+                    self.get_parameter("corner_turn_entry_x_m").value
+                ),
+                turn_entry_hysteresis_m=float(
+                    self.get_parameter("corner_turn_entry_hysteresis_m").value
+                ),
+                min_branch_extent_m=float(
+                    self.get_parameter("corner_turn_min_branch_extent_m").value
+                ),
+                branch_extent_margin_m=float(
+                    self.get_parameter("corner_turn_branch_extent_margin_m").value
+                ),
+                min_confidence=float(
+                    self.get_parameter("corner_turn_min_confidence").value
+                ),
+                linear_speed_mps=float(
+                    self.get_parameter("corner_turn_linear_speed_mps").value
+                ),
+                angular_speed_rps=float(
+                    self.get_parameter("corner_turn_angular_speed_rps").value
+                ),
+                min_turn_s=float(self.get_parameter("corner_turn_min_s").value),
+                max_turn_s=float(self.get_parameter("corner_turn_max_s").value),
+                approach_timeout_s=float(
+                    self.get_parameter("corner_turn_approach_timeout_s").value
+                ),
+                exit_lateral_error_m=float(
+                    self.get_parameter("corner_turn_exit_lateral_error_m").value
+                ),
+                exit_heading_error_rad=float(
+                    self.get_parameter("corner_turn_exit_heading_error_rad").value
+                ),
+                exit_stable_frames=int(
+                    self.get_parameter("corner_turn_exit_stable_frames").value
+                ),
+                stop_s=float(self.get_parameter("corner_turn_stop_s").value),
+                check_s=float(self.get_parameter("corner_turn_check_s").value),
+                arc_segment_s=float(
+                    self.get_parameter("corner_turn_arc_segment_s").value
+                ),
+                rotate_segment_s=float(
+                    self.get_parameter("corner_turn_rotate_segment_s").value
+                ),
+                creep_segment_s=float(
+                    self.get_parameter("corner_turn_creep_segment_s").value
+                ),
+                reverse_segment_s=float(
+                    self.get_parameter("corner_turn_reverse_segment_s").value
+                ),
+                turn_entry_distance_m=float(
+                    self.get_parameter("corner_turn_entry_distance_m").value
+                ),
+                target_yaw_rad=float(
+                    self.get_parameter("corner_turn_target_yaw_rad").value
+                ),
+                exit_yaw_tolerance_rad=float(
+                    self.get_parameter("corner_turn_exit_yaw_tolerance_rad").value
+                ),
+                road_width_m=float(
+                    self.get_parameter("corner_turn_road_width_m").value
+                ),
+                road_margin_m=float(
+                    self.get_parameter("corner_turn_road_margin_m").value
+                ),
+                road_back_m=float(self.get_parameter("corner_turn_road_back_m").value),
+                road_forward_m=float(
+                    self.get_parameter("corner_turn_road_forward_m").value
+                ),
+                vehicle_length_m=float(
+                    self.get_parameter("corner_turn_vehicle_length_m").value
+                ),
+                vehicle_width_m=float(
+                    self.get_parameter("corner_turn_vehicle_width_m").value
+                ),
+                vehicle_center_x_m=float(
+                    self.get_parameter("base_offset_x_m").value
+                ),
+                wheel_track_m=float(self.get_parameter("wheel_track_m").value),
+                prediction_horizon_s=float(
+                    self.get_parameter("corner_turn_prediction_horizon_s").value
+                ),
+                prediction_step_s=float(
+                    self.get_parameter("corner_turn_prediction_step_s").value
+                ),
+                pose_correction_gain=float(
+                    self.get_parameter("corner_turn_pose_correction_gain").value
+                ),
+                late_turn_progress=float(
+                    self.get_parameter("corner_turn_late_turn_progress").value
+                ),
+                late_linear_speed_mps=float(
+                    self.get_parameter("corner_turn_late_linear_speed_mps").value
+                ),
+                late_angular_speed_rps=float(
+                    self.get_parameter("corner_turn_late_angular_speed_rps").value
+                ),
+                rotate_angular_speed_rps=float(
+                    self.get_parameter("corner_turn_rotate_angular_speed_rps").value
+                ),
+                creep_linear_speed_mps=float(
+                    self.get_parameter("corner_turn_creep_linear_speed_mps").value
+                ),
+                reverse_linear_speed_mps=float(
+                    self.get_parameter("corner_turn_reverse_linear_speed_mps").value
+                ),
+                reverse_angular_speed_rps=float(
+                    self.get_parameter("corner_turn_reverse_angular_speed_rps").value
+                ),
+                max_reverse_count=int(
+                    self.get_parameter("corner_turn_max_reverse_count").value
+                ),
+            )
+        )
 
         image_topic = str(self.get_parameter("image_topic").value)
         camera_info_topic = str(self.get_parameter("camera_info_topic").value)
@@ -222,6 +369,7 @@ class PureLineFollowingNode(Node):
         )
 
     def _declare_parameters(self) -> None:
+        physical = parameters_for("pure_line_following")
         declarations = {
             "image_topic": "/camera/camera/color/image_raw",
             "camera_info_topic": "/camera/camera/color/camera_info",
@@ -233,11 +381,14 @@ class PureLineFollowingNode(Node):
             "require_camera_info": True,
             "require_depth": False,
             "image_is_rectified": False,
-            "camera_x_m": 0.055,
-            # The RGB optical head is 59.1 mm to the right of camera_link in
-            # the recorded D455 static transform (base_link + camera_link).
-            "camera_y_m": -0.020,
-            "camera_height_m": 0.130,
+            "camera_x_m": physical["camera_x_m"],
+            "camera_y_m": physical["camera_y_m"],
+            "camera_height_m": physical["camera_height_m"],
+            "base_offset_x_m": physical["base_offset_x_m"],
+            "wheel_track_m": physical["wheel_track_m"],
+            "camera_roll_rad": physical["camera_roll_rad"],
+            "camera_pitch_rad": physical["camera_pitch_rad"],
+            "camera_yaw_rad": physical["camera_yaw_rad"],
             "fallback_fx": 383.0,
             "fallback_fy": 382.5,
             "fallback_cx": 318.0,
@@ -246,12 +397,59 @@ class PureLineFollowingNode(Node):
             "depth_sync_tolerance_s": 0.12,
             "image_timeout_s": 0.50,
             "invalid_stop_s": 0.40,
+            "invalid_frame_hold_s": 0.18,
             "command_rate_hz": 30.0,
             "enabled": True,
             "allow_navigation_cmd_vel_topic": False,
             "reject_shared_cmd_vel": True,
             "shared_cmd_vel_check_period_s": 0.25,
             "min_valid_observations_before_motion": 2,
+            "corner_turn_enabled": True,
+            "corner_turn_once": True,
+            "corner_turn_direction": "auto",
+            "corner_turn_junction_prefer_direction": "left",
+            "corner_turn_stable_frames": 3,
+            "corner_turn_trigger_min_x_m": 0.16,
+            "corner_turn_trigger_max_x_m": 0.50,
+            "corner_turn_entry_x_m": 0.32,
+            "corner_turn_entry_hysteresis_m": 0.035,
+            "corner_turn_min_branch_extent_m": 0.12,
+            "corner_turn_branch_extent_margin_m": 0.070,
+            "corner_turn_min_confidence": 0.35,
+            "corner_turn_linear_speed_mps": 0.018,
+            "corner_turn_angular_speed_rps": 0.30,
+            "corner_turn_stop_s": 0.18,
+            "corner_turn_min_s": 1.20,
+            "corner_turn_max_s": 7.50,
+            "corner_turn_approach_timeout_s": 12.0,
+            "corner_turn_exit_lateral_error_m": 0.040,
+            "corner_turn_exit_heading_error_rad": 0.22,
+            "corner_turn_exit_stable_frames": 3,
+            "corner_turn_check_s": 0.05,
+            "corner_turn_arc_segment_s": 0.22,
+            "corner_turn_rotate_segment_s": 0.16,
+            "corner_turn_creep_segment_s": 0.16,
+            "corner_turn_reverse_segment_s": 0.18,
+            "corner_turn_entry_distance_m": 0.070,
+            "corner_turn_target_yaw_rad": math.pi / 2.0,
+            "corner_turn_exit_yaw_tolerance_rad": 0.20,
+            "corner_turn_road_width_m": 0.20,
+            "corner_turn_road_margin_m": 0.008,
+            "corner_turn_road_back_m": 0.60,
+            "corner_turn_road_forward_m": 0.56,
+            "corner_turn_vehicle_length_m": physical["vehicle_length_m"],
+            "corner_turn_vehicle_width_m": physical["vehicle_width_m"],
+            "corner_turn_prediction_horizon_s": 0.24,
+            "corner_turn_prediction_step_s": 0.04,
+            "corner_turn_pose_correction_gain": 0.35,
+            "corner_turn_late_turn_progress": 0.72,
+            "corner_turn_late_linear_speed_mps": 0.018,
+            "corner_turn_late_angular_speed_rps": 0.12,
+            "corner_turn_rotate_angular_speed_rps": 0.20,
+            "corner_turn_creep_linear_speed_mps": 0.010,
+            "corner_turn_reverse_linear_speed_mps": -0.008,
+            "corner_turn_reverse_angular_speed_rps": -0.04,
+            "corner_turn_max_reverse_count": 3,
         }
         for field in dataclasses.fields(TrackerConfig):
             declarations.setdefault(field.name, getattr(TrackerConfig(), field.name))
@@ -369,7 +567,6 @@ class PureLineFollowingNode(Node):
             return
 
         self._last_processing_error = ""
-        self._last_observation = observation
         now = time.monotonic()
         self._last_image_time = now
         shared_publishers = self._shared_command_publishers(now)
@@ -382,13 +579,31 @@ class PureLineFollowingNode(Node):
             and observation.confidence
             >= self._controller_config.recovery_min_confidence
         )
+        corner_turn_active_before = self._corner_turn.active
+        hold_recent_track = self._can_hold_recent_command(
+            observation,
+            now,
+            shared_publishers,
+        )
         command_allowed = (
             self._enabled
             and not self._unsafe_command_topic
-            and (normal_track_ready or recovery_track_ready)
+            and (
+                normal_track_ready
+                or recovery_track_ready
+                or corner_turn_active_before
+            )
             and not shared_publishers
         )
+        control_observation = observation
         if command_allowed:
+            decision = self._corner_turn.update(
+                observation,
+                now,
+                previous_linear_mps=self._last_command.linear.x,
+                previous_angular_rps=self._last_command.angular.z,
+            )
+            control_observation = decision.observation
             self._valid_observation_streak += 1
             # Keep the watchdog alive while the short consecutive-frame
             # confirmation is in progress. Otherwise the watchdog resets the
@@ -402,33 +617,49 @@ class PureLineFollowingNode(Node):
                     ).value
                 ),
             )
-            raw_command = command_for(
-                observation,
-                self._controller_config,
-                lateral_integral_m_s=self._update_lateral_integral(
-                    observation,
+            if self._corner_turn.active:
+                self._decay_lateral_integral(now)
+                integral = 0.0
+            else:
+                integral = self._update_lateral_integral(
+                    control_observation,
                     now,
                     normal_track_ready,
-                ),
+                )
+            raw_command = command_for(
+                control_observation,
+                self._controller_config,
+                lateral_integral_m_s=integral,
             )
-            if self._valid_observation_streak >= minimum_streak:
+            corner_command = decision.command
+            if corner_command is not None:
+                raw_command = _motion_command_to_twist(corner_command)
+            if (
+                self._valid_observation_streak >= minimum_streak
+                or self._corner_turn.active
+            ):
                 previous_angular = self._last_command.angular.z
                 self._last_command = raw_command
-                self._last_command.angular.z = limit_angular_rate(
-                    raw_command.angular.z,
-                    previous_angular,
-                    now - self._last_command_update_time,
-                    self._controller_config,
-                )
+                if corner_command is None:
+                    self._last_command.angular.z = limit_angular_rate(
+                        raw_command.angular.z,
+                        previous_angular,
+                        now - self._last_command_update_time,
+                        self._controller_config,
+                    )
                 self._last_command_update_time = now
                 self._last_valid_observation_time = now
             else:
                 self._stop_command(publish=True)
                 self._last_valid_observation_time = now
+        elif hold_recent_track:
+            self._decay_lateral_integral(now)
         else:
+            self._corner_turn.cancel_active()
             self._valid_observation_streak = 0
             self._decay_lateral_integral(now)
             self._stop_command(publish=True)
+        self._last_observation = control_observation
         reason = ""
         if not self._enabled:
             reason = "disabled"
@@ -436,13 +667,21 @@ class PureLineFollowingNode(Node):
             reason = "unsafe_cmd_vel_topic"
         elif shared_publishers:
             reason = "shared_cmd_vel_topic"
-        elif observation.can_recover:
+        elif hold_recent_track:
+            reason = "holding_recent_track"
+        elif self._corner_turn.active:
+            reason = (
+                "turning_first_corner"
+                if self._corner_turn.turning
+                else "approaching_first_corner"
+            )
+        elif control_observation.can_recover:
             reason = "recovering_unsafe_edge"
-        elif observation.state == UNSAFE_EDGE:
+        elif control_observation.state == UNSAFE_EDGE:
             reason = "road_unsafe_stop"
-        elif not observation.valid:
+        elif not control_observation.valid:
             reason = "track_invalid"
-        elif observation.confidence < self._controller_config.min_confidence:
+        elif control_observation.confidence < self._controller_config.min_confidence:
             reason = "confidence_below_threshold"
         elif self._valid_observation_streak < max(
             1,
@@ -451,9 +690,34 @@ class PureLineFollowingNode(Node):
             ),
         ):
             reason = "waiting_for_stable_track"
-        self._publish_status(observation, reason)
+        self._publish_status(control_observation, reason)
         if self._debug_publisher is not None:
-            self._publish_debug(image, observation)
+            self._publish_debug(image, control_observation)
+
+    def _can_hold_recent_command(
+        self,
+        observation: TrackObservation,
+        now: float,
+        shared_publishers: tuple[str, ...],
+    ) -> bool:
+        hold_s = max(0.0, float(self.get_parameter("invalid_frame_hold_s").value))
+        if hold_s <= 0.0:
+            return False
+        if (
+            not self._enabled
+            or self._unsafe_command_topic
+            or shared_publishers
+            or self._last_valid_observation_time <= 0.0
+        ):
+            return False
+        if observation.valid or observation.state != LOST:
+            return False
+        if now - self._last_valid_observation_time > hold_s:
+            return False
+        return (
+            abs(float(self._last_command.linear.x)) > 1.0e-6
+            or abs(float(self._last_command.angular.z)) > 1.0e-6
+        )
 
     def _publish_watchdog(self) -> None:
         now = time.monotonic()
@@ -618,6 +882,9 @@ class PureLineFollowingNode(Node):
             depth_control_rows = 0
             depth_valid_fraction = 0.0
             depth_reject_reason = ""
+            branch_x = 0.0
+            branch_left = 0.0
+            branch_right = 0.0
         else:
             state = observation.state
             valid = observation.valid
@@ -634,6 +901,9 @@ class PureLineFollowingNode(Node):
             depth_control_rows = observation.depth_control_rows
             depth_valid_fraction = observation.depth_valid_fraction
             depth_reject_reason = observation.depth_reject_reason
+            branch_x = observation.branch_x_m
+            branch_left = observation.branch_left_extent_m
+            branch_right = observation.branch_right_extent_m
         now = time.monotonic()
         depth_age = (
             now - self._last_depth_time
@@ -651,6 +921,10 @@ class PureLineFollowingNode(Node):
             "road_left_y_m": round(road_left, 4),
             "road_right_y_m": round(road_right, 4),
             "road_clearance_m": round(road_clearance, 4),
+            "branch_x_m": round(branch_x, 4),
+            "branch_left_extent_m": round(branch_left, 4),
+            "branch_right_extent_m": round(branch_right, 4),
+            "corner_turn": self._corner_turn.status(now),
             "depth_enabled": self._use_depth_projection,
             "depth_recent": (
                 bool(depth_age <= float(self.get_parameter("image_timeout_s").value))
@@ -705,7 +979,9 @@ class PureLineFollowingNode(Node):
             f"src={observation.lateral_source} "
             f"e={observation.lateral_error_m:+.3f} "
             f"h={math.degrees(observation.heading_error_rad):+.1f}deg "
-            f"w={observation.road_clearance_m:.3f}"
+            f"w={observation.road_clearance_m:.3f} "
+            f"bx={observation.branch_x_m:.2f} "
+            f"ct={self._corner_turn.status(time.monotonic())['state']}"
         )
         cv2.putText(
             panel,

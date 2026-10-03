@@ -22,6 +22,10 @@ TEST(ControlState, ManeuverPhasesAreExclusive) {
   EXPECT_TRUE(state.in(ControlPhase::ALIGN_PATH));
   EXPECT_TRUE(state.anchor_valid());
 
+  state.begin_corner_shunt(1.0, 2.0);
+  EXPECT_TRUE(state.in(ControlPhase::SHUNT_TURN));
+  EXPECT_TRUE(state.anchor_valid());
+
   state.begin_waypoint_recovery();
   EXPECT_TRUE(state.in(ControlPhase::RECOVER_WAYPOINT));
   EXPECT_FALSE(state.in(ControlPhase::ALIGN_PATH));
@@ -119,6 +123,8 @@ TEST(ControlState, SegmentResetClearsGoalAndAlignmentHistory) {
 TEST(ControlState, PersistentPhasesKeepTheirPublicStatusNames) {
   EXPECT_STREQ(visual_navigation::phase_status(ControlPhase::FOLLOW),
                "FOLLOWING");
+  EXPECT_STREQ(visual_navigation::phase_status(ControlPhase::SHUNT_TURN),
+               "TURN_CHECK");
   EXPECT_STREQ(visual_navigation::phase_status(ControlPhase::ALIGN_PATH),
                "ROTATING_TO_PATH");
   EXPECT_STREQ(visual_navigation::phase_status(ControlPhase::RECOVER_WAYPOINT),

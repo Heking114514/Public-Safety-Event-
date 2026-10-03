@@ -3,9 +3,11 @@ from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+from vehicle_config import parameters_for
 
 
 def generate_launch_description():
+    physical_parameters = parameters_for("rectangle_primitive_controller")
     return LaunchDescription(
         [
             DeclareLaunchArgument("enable", default_value="false"),
@@ -83,6 +85,7 @@ def generate_launch_description():
                 name="rectangle_primitive_controller",
                 output="screen",
                 parameters=[
+                    physical_parameters,
                     {
                         "enable": ParameterValue(
                             LaunchConfiguration("enable"), value_type=bool

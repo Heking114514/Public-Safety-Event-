@@ -16,6 +16,7 @@ from sensor_msgs.msg import Image
 
 import offline_image_track_correction as correction
 import render_image_track_detection_video as detector
+from vehicle_physical import VEHICLE_PHYSICAL
 
 
 DEFAULT_BAG = Path("/media/hjh/Data/rosbag_recording/latest_navigation_bag")
@@ -282,21 +283,9 @@ def detect_landmarks(lines: list[GroundLine], camera: correction.CameraModel, ar
 
 
 def ground_to_pixel(camera: correction.CameraModel, x: float, y: float) -> tuple[float, float] | None:
-    base_x = x - camera.x
-    base_y = y - camera.y
-    base_z = -camera.z
-    if base_x <= 1.0e-5:
-        return None
-    cp = math.cos(camera.pitch_down)
-    sp = math.sin(camera.pitch_down)
-    optical_x = cp * base_x - sp * base_z
-    optical_z = sp * base_x + cp * base_z
-    if optical_x <= 1.0e-5:
-        return None
-    optical_y = base_y
-    u = camera.cx - camera.fx * optical_y / optical_x
-    v = camera.cy - camera.fy * optical_z / optical_x
-    return u, v
+    return detector.road_detector.ground_to_pixel(
+        detector.camera_geometry(camera), x, y
+    )
 
 
 def map_landmarks_from_features(features: list[correction.LineFeature], args) -> list[MapLandmark]:
@@ -485,10 +474,20 @@ def parse_args():
     parser.add_argument("--max-frames", type=int, default=0)
     parser.add_argument("--fps", type=float, default=15.0)
     parser.add_argument("--codec", default="VP80")
-    parser.add_argument("--camera-x", type=float, default=0.055)
-    parser.add_argument("--camera-y", type=float, default=0.0)
-    parser.add_argument("--camera-z", type=float, default=0.121)
-    parser.add_argument("--camera-pitch-down", type=float, default=0.0)
+    parser.add_argument("--camera-x", type=float, default=VEHICLE_PHYSICAL.camera_x_m)
+    parser.add_argument("--camera-y", type=float, default=VEHICLE_PHYSICAL.camera_y_m)
+    parser.add_argument("--camera-z", type=float, default=VEHICLE_PHYSICAL.camera_z_m)
+    parser.add_argument(
+        "--camera-roll", type=float, default=VEHICLE_PHYSICAL.camera_roll_rad
+    )
+    parser.add_argument(
+        "--camera-pitch-down",
+        type=float,
+        default=VEHICLE_PHYSICAL.camera_pitch_rad,
+    )
+    parser.add_argument(
+        "--camera-yaw", type=float, default=VEHICLE_PHYSICAL.camera_yaw_rad
+    )
     parser.add_argument("--roi-top-fraction", type=float, default=0.60)
     parser.add_argument("--roi-bottom-fraction", type=float, default=0.94)
     parser.add_argument(
@@ -545,13 +544,18 @@ def main():
             x=args.camera_x,
             y=args.camera_y,
             z=args.camera_z,
+            roll=args.camera_roll,
             pitch_down=args.camera_pitch_down,
+            yaw=args.camera_yaw,
         ),
     )
     camera.x = args.camera_x
     camera.y = args.camera_y
     camera.z = args.camera_z
+    camera.roll = args.camera_roll
     camera.pitch_down = args.camera_pitch_down
+    camera.yaw = args.camera_yaw
+    camera.color_to_base = correction.mounted_optical_to_base(camera)
     features = correction.load_map_features(args.map)
     map_landmarks = map_landmarks_from_features(features, args)
 

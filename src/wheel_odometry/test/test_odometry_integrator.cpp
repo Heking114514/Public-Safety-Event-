@@ -12,17 +12,19 @@ namespace
 {
 constexpr double kPi = 3.14159265358979323846;
 
-TEST(OdometryIntegratorConfig, DefaultsMatchMeasuredChassis)
+TEST(OdometryIntegratorConfig, PhysicalGeometryMustBeProvided)
 {
   const IntegratorConfig config;
-  EXPECT_DOUBLE_EQ(config.wheel_radius_m, 0.0302);
-  EXPECT_DOUBLE_EQ(config.wheel_track_m, 0.1466);
-  EXPECT_DOUBLE_EQ(config.base_offset_x_m, 0.050);
-  EXPECT_DOUBLE_EQ(config.base_offset_y_m, 0.0);
-  EXPECT_DOUBLE_EQ(config.left_encoder_counts_per_revolution, 294912.0);
-  EXPECT_DOUBLE_EQ(config.right_encoder_counts_per_revolution, 294912.0);
-  EXPECT_DOUBLE_EQ(config.left_distance_scale, -1.0);
-  EXPECT_DOUBLE_EQ(config.right_distance_scale, -1.0);
+  EXPECT_TRUE(std::isnan(config.wheel_radius_m));
+  EXPECT_TRUE(std::isnan(config.wheel_track_m));
+  EXPECT_TRUE(std::isnan(config.base_offset_x_m));
+  EXPECT_TRUE(std::isnan(config.base_offset_y_m));
+  EXPECT_TRUE(std::isnan(config.left_encoder_counts_per_revolution));
+  EXPECT_TRUE(std::isnan(config.right_encoder_counts_per_revolution));
+  EXPECT_TRUE(std::isnan(config.left_distance_scale));
+  EXPECT_TRUE(std::isnan(config.right_distance_scale));
+  EXPECT_TRUE(std::isnan(config.yaw_slip_scale));
+  EXPECT_TRUE(std::isnan(config.max_wheel_speed_mps));
 }
 
 IntegratorConfig test_config()
@@ -37,6 +39,7 @@ IntegratorConfig test_config()
   config.base_offset_y_m = 0.0;
   config.left_distance_scale = 1.0;
   config.right_distance_scale = 1.0;
+  config.yaw_slip_scale = 1.0;
   config.max_wheel_speed_mps = 10.0;
   config.nominal_sample_period_s = 0.02;
   config.nominal_sequence_increment = 1;

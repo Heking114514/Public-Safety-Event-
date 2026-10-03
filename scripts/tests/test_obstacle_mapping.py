@@ -15,6 +15,7 @@ from obstacle_mapping import (  # noqa: E402
     front_obstacle_aabb,
     merge_nearby_aabbs,
 )
+from vehicle_physical import VEHICLE_PHYSICAL  # noqa: E402
 
 
 def test_projects_visible_surface_in_front_of_vehicle() -> None:
@@ -28,6 +29,26 @@ def test_projects_visible_surface_in_front_of_vehicle() -> None:
         obstacle_depth=0.1,
     )
     assert bounds == pytest.approx((1.5, 1.9, 1.6, 2.1))
+
+
+def test_default_camera_offset_comes_from_vehicle_config() -> None:
+    bounds = front_obstacle_aabb(
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        obstacle_width=0.2,
+        obstacle_depth=0.1,
+    )
+
+    assert bounds == pytest.approx(
+        (
+            VEHICLE_PHYSICAL.camera_x_m + 1.0,
+            -0.1,
+            VEHICLE_PHYSICAL.camera_x_m + 1.1,
+            0.1,
+        )
+    )
 
 
 def test_opposite_observations_recover_same_obstacle() -> None:
@@ -119,7 +140,10 @@ def test_obstacle_is_only_promoted_after_recovery_reaches_replan_state() -> None
 
     assert promoted
     assert len(obstacles) == 1
-    assert obstacles[0] == pytest.approx((1.270, 1.88, 1.390, 2.12))
+    camera_x = VEHICLE_PHYSICAL.camera_x_m
+    assert obstacles[0] == pytest.approx(
+        (0.8 + camera_x + 0.4, 1.88, 0.8 + camera_x + 0.52, 2.12)
+    )
     assert state.pending is None
 
 

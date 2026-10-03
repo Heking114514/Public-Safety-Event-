@@ -25,10 +25,7 @@ arena:
   inflation_radius_m: 0.05
   preferred_clearance_m: 0.15
   clearance_cost_weight: 6.0
-  # Current measured complete envelope. The 153.5 mm overall width includes
-  # the wheels; the differential-drive kinematic track is 146.6 mm.
-  vehicle_length_m: 0.1485
-  vehicle_width_m: 0.1535
+  # The measured chassis envelope comes from vehicle_physical.yaml.
   safety_margin_m: 0.015
   tracking_margin_m: 0.020
   # Small planning reserve beyond the inflated obstacle boundary. Braking and

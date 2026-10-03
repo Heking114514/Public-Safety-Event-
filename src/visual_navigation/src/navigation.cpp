@@ -134,6 +134,7 @@ void WaypointNavigator::ResetManeuver() {
   continuePathControlOnNextSegment_ = false;
   ResetPathFeedback();
   controlState_.interrupt_maneuver();
+  cornerShuntController_.reset();
   turnSettleController_.reset();
   waypointBrakeController_.reset();
   waypointBrakeRecovering_ = false;
@@ -144,6 +145,8 @@ void WaypointNavigator::ResetManeuver() {
 void WaypointNavigator::ResetRunControl() {
   stoppedAtPlannedTurn_ = false;
   firstHalfTurnPending_ = false;
+  stoppedTurnArrivalHeading_ = 0.0;
+  stoppedTurnTargetHeading_ = 0.0;
   reverseSegmentActive_ = false;
   lastStoppedTurnIndex_ = std::numeric_limits<std::size_t>::max();
   ResetManeuver();

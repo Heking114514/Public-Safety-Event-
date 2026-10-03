@@ -4,6 +4,7 @@ from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
+from vehicle_config import parameters_for
 
 
 def generate_launch_description():
@@ -27,6 +28,7 @@ def generate_launch_description():
     cmd_vel_topic = LaunchConfiguration("cmd_vel_topic")
     route_input_topic = LaunchConfiguration("route_input_topic")
     autostart = LaunchConfiguration("autostart")
+    physical_parameters = parameters_for("waypoint_navigation")
 
     navigator = Node(
         package="visual_navigation",
@@ -35,6 +37,7 @@ def generate_launch_description():
         output="screen",
         parameters=[
             parameters_file,
+            physical_parameters,
             {
                 "route_file": ParameterValue(route_file, value_type=str),
                 "route_frame": ParameterValue(route_frame, value_type=str),
@@ -89,8 +92,14 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument("route_frame", default_value="map"),
             DeclareLaunchArgument("odom_topic", default_value="/odometry/local_map"),
-            DeclareLaunchArgument("tracking_point_offset_x", default_value="0.0"),
-            DeclareLaunchArgument("tracking_point_offset_y", default_value="0.0"),
+            DeclareLaunchArgument(
+                "tracking_point_offset_x",
+                default_value=str(physical_parameters["tracking_point_offset_x"]),
+            ),
+            DeclareLaunchArgument(
+                "tracking_point_offset_y",
+                default_value=str(physical_parameters["tracking_point_offset_y"]),
+            ),
             DeclareLaunchArgument(
                 "fusion_status_topic", default_value="/odometry/fusion_status"
             ),

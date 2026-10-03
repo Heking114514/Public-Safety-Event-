@@ -1,5 +1,7 @@
 #include "fused_odometry/fusion_gate_node.hpp"
 
+#include <limits>
+
 namespace fused_odometry {
 
 double FusionGateNode::positive(const std::string &name, double default_value) {
@@ -137,7 +139,8 @@ FusionGateNode::FusionGateNode()
   max_wheel_only_time_ = positive("max_wheel_only_time_s", 2.0);
   max_wheel_only_distance_ = positive("max_wheel_only_distance_m", 0.30);
   max_wheel_only_speed_ = positive("max_wheel_only_speed_mps", 0.30);
-  max_wheel_speed_ = positive("max_wheel_speed_mps", 1.0);
+  max_wheel_speed_ = positive(
+      "max_wheel_speed_mps", std::numeric_limits<double>::quiet_NaN());
   max_wheel_yaw_rate_ = positive("max_wheel_yaw_rate_radps", 4.0);
   max_imu_yaw_rate_ = positive("max_imu_yaw_rate_radps", 4.0);
   wheel_soft_residual_ = positive("wheel_visual_soft_mps", 0.15);
@@ -178,7 +181,8 @@ FusionGateNode::FusionGateNode()
   visual_yaw_variance_ = positive("visual_yaw_variance", 0.04);
   visual_vx_variance_ = positive("visual_vx_variance", 0.01);
   visual_vy_variance_ = positive("visual_vy_variance", 0.02);
-  wheel_base_offset_x_ = positive("wheel_base_offset_x_m", 0.05);
+  wheel_base_offset_x_ = positive(
+      "wheel_base_offset_x_m", std::numeric_limits<double>::quiet_NaN());
   recovery_samples_ = positive_count("visual_recovery_samples", 5);
   robust_min_samples_ = positive_count("robust_min_samples", 5);
 

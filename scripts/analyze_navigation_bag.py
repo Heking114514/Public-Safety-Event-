@@ -29,6 +29,8 @@ import rosbag2_py
 from rclpy.serialization import deserialize_message
 from rosidl_runtime_py.utilities import get_message
 
+from vehicle_physical import VEHICLE_PHYSICAL
+
 
 ODOMETRY_TOPICS = (
     "/odometry/visual_raw",
@@ -75,7 +77,7 @@ WAYPOINT_PASS_LONGITUDINAL_TOLERANCE_M = 0.01
 WAYPOINT_PASS_LATERAL_TOLERANCE_M = 0.045
 WAYPOINT_TOLERANCE_M = 0.04
 PRE_TURN_STOP_HEADING_THRESHOLD_RAD = 0.18
-DEFAULT_TURN_CENTER_OFFSET_M = 0.050
+DEFAULT_TURN_CENTER_OFFSET_M = VEHICLE_PHYSICAL.base_link_offset_x_m
 
 
 @dataclass(frozen=True)

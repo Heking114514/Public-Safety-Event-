@@ -27,12 +27,15 @@ Arguments are passed through to pure_line_following_serial.launch.py.
 Examples:
   scripts/start_pure_line_following.sh
   scripts/start_pure_line_following.sh serial_device:=/dev/serial/by-id/your-controller
+  scripts/start_pure_line_following.sh show_debug_gui:=true
+  scripts/start_pure_line_following.sh show_debug_gui:=true viewer_mode:=camera
   scripts/start_pure_line_following.sh start_camera:=false publish_debug_image:=false
 
 Environment:
   PURE_LINE_RUNS_ROOT       Output root for timestamped runs
   PURE_LINE_LATEST_RUN      Symlink to the newest run
   PURE_LINE_LATEST_BAG      Symlink to the newest bag
+  PURE_LINE_RECORDING_ROOT  Recording root that contains navigation_runs
   PURE_LINE_ROS2_COMMAND    ros2 command override
 EOF
 }
@@ -57,11 +60,41 @@ else
   fail "workspace setup is missing; run colcon build first: ${WORKSPACE_ROOT}/install/setup.bash"
 fi
 
-DEFAULT_RECORDING_ROOT=""
-for candidate in \
-  /media/hjh/E/rosbag_recording \
-  /media/hjh/Data/rosbag_recording \
-  /media/hjh/E1/rosbag_recording; do
+[[ -f "${WORKSPACE_ROOT}/install/vehicle_config/share/vehicle_config/config/vehicle_physical.yaml" ]] ||
+  fail "vehicle physical config is missing; rebuild vehicle_config"
+
+# Keep pure-line bags in the same external tree as navigation bags. Do not fall
+# back to the workspace root: local bags get mixed into source control and are
+# easy to delete or analyze from the wrong place.
+mount_recording_volume() {
+  local label="$1" mountpoint="$2" device="/dev/disk/by-label/$1"
+  [[ -e "${device}" ]] || return 1
+  if command -v udisksctl >/dev/null 2>&1; then
+    udisksctl mount -b "${device}" >/dev/null 2>&1 || true
+    mountpoint -q -- "${mountpoint}" && return 0
+  fi
+  if [[ ! -d "${mountpoint}" ]]; then
+    mkdir -p -- "${mountpoint}" 2>/dev/null \
+      || sudo mkdir -p -- "${mountpoint}" >/dev/null 2>&1 \
+      || return 1
+  fi
+  sudo mount -t ntfs3 -o force "${device}" "${mountpoint}" >/dev/null 2>&1 || true
+  mountpoint -q -- "${mountpoint}" && return 0
+  sudo ntfsfix "${device}" >/dev/null 2>&1 || true
+  sudo mount -t ntfs3 "${device}" "${mountpoint}" >/dev/null 2>&1 || true
+  mountpoint -q -- "${mountpoint}"
+}
+
+DEFAULT_RECORDING_ROOT="${PURE_LINE_RECORDING_ROOT:-}"
+if [[ -n "${DEFAULT_RECORDING_ROOT}" ]]; then
+  mkdir -p -- "${DEFAULT_RECORDING_ROOT}" 2>/dev/null ||
+    fail "recording root is not writable: ${DEFAULT_RECORDING_ROOT}"
+  [[ -d "${DEFAULT_RECORDING_ROOT}" && -w "${DEFAULT_RECORDING_ROOT}" ]] ||
+    fail "recording root is not writable: ${DEFAULT_RECORDING_ROOT}"
+fi
+
+for candidate in /media/hjh/E/rosbag_recording /media/hjh/Data/rosbag_recording; do
+  [[ -z "${DEFAULT_RECORDING_ROOT}" ]] || break
   candidate_parent="$(dirname -- "${candidate}")"
   if [[ -d "${candidate_parent}" ]]; then
     mkdir -p -- "${candidate}" 2>/dev/null || true
@@ -70,17 +103,29 @@ for candidate in \
       break
     fi
   fi
+  if [[ -z "${PURE_LINE_RUNS_ROOT:-}" ]] \
+    && mount_recording_volume "$(basename -- "${candidate_parent}")" "${candidate_parent}" \
+    && mountpoint -q -- "${candidate_parent}"; then
+    mkdir -p -- "${candidate}" 2>/dev/null || true
+    if [[ -d "${candidate}" && -w "${candidate}" ]]; then
+      log "mounted ${candidate_parent} for recording"
+      DEFAULT_RECORDING_ROOT="${candidate}"
+      break
+    fi
+  fi
 done
 
 if [[ -n "${DEFAULT_RECORDING_ROOT}" ]]; then
-  RUNS_ROOT="${PURE_LINE_RUNS_ROOT:-${DEFAULT_RECORDING_ROOT}/pure_line_runs}"
-  LATEST_RUN="${PURE_LINE_LATEST_RUN:-${DEFAULT_RECORDING_ROOT}/latest_pure_line_run}"
-  LATEST_BAG="${PURE_LINE_LATEST_BAG:-${DEFAULT_RECORDING_ROOT}/latest_pure_line_bag}"
+  RUNS_ROOT="${PURE_LINE_RUNS_ROOT:-${DEFAULT_RECORDING_ROOT}/navigation_runs}"
+  LATEST_RUN="${PURE_LINE_LATEST_RUN:-${DEFAULT_RECORDING_ROOT}/latest_navigation_run}"
+  LATEST_BAG="${PURE_LINE_LATEST_BAG:-${DEFAULT_RECORDING_ROOT}/latest_navigation_bag}"
 else
-  RUNS_ROOT="${PURE_LINE_RUNS_ROOT:-${WORKSPACE_ROOT}/pure_line_runs}"
-  LATEST_RUN="${PURE_LINE_LATEST_RUN:-${WORKSPACE_ROOT}/latest_pure_line_run}"
-  LATEST_BAG="${PURE_LINE_LATEST_BAG:-${WORKSPACE_ROOT}/latest_pure_line_bag}"
-  log "external rosbag directory not found; recording under ${RUNS_ROOT}"
+  [[ -n "${PURE_LINE_RUNS_ROOT:-}" ]] ||
+    fail "no writable external rosbag directory found; mount /media/hjh/E or /media/hjh/Data writable, or set PURE_LINE_RUNS_ROOT"
+  RUNS_ROOT="${PURE_LINE_RUNS_ROOT}"
+  RUNS_PARENT="$(dirname -- "${RUNS_ROOT}")"
+  LATEST_RUN="${PURE_LINE_LATEST_RUN:-${RUNS_PARENT}/latest_navigation_run}"
+  LATEST_BAG="${PURE_LINE_LATEST_BAG:-${RUNS_PARENT}/latest_navigation_bag}"
 fi
 
 has_launch_arg() {
@@ -114,7 +159,8 @@ DEPTH_IMAGE_TOPIC="$(get_arg depth_image_topic /camera/camera/aligned_depth_to_c
 CMD_VEL_TOPIC="$(get_arg cmd_vel_topic /cmd_vel_line_following)"
 DEBUG_IMAGE_TOPIC="$(get_arg debug_image_topic /pure_line_following/debug_image)"
 
-RUN_ID="$(date -u +%Y%m%dT%H%M%S.%6NZ)_pure_line"
+SOURCE_SHORT_COMMIT="$(git -C "${WORKSPACE_ROOT}" rev-parse --short=12 HEAD 2>/dev/null || printf unknown)"
+RUN_ID="$(date -u +%Y%m%dT%H%M%S.%6NZ)_${SOURCE_SHORT_COMMIT}_pure_line"
 RUN_DIR="${RUNS_ROOT}/${RUN_ID}"
 BAG_DIR="${RUN_DIR}/bag"
 mkdir -p -- "${RUN_DIR}"
@@ -156,18 +202,59 @@ BAG_PID=""
 CLEANED_UP="false"
 
 cleanup() {
+  local original_status=$?
   local pid
+  local attempt
+  local -a remaining=()
   [[ "${CLEANED_UP}" == "false" ]] || return 0
   CLEANED_UP="true"
+  trap - EXIT INT TERM
   set +e
   for pid in "${BAG_PID}" "${LAUNCH_PID}"; do
     [[ -n "${pid}" ]] || continue
     kill -INT "${pid}" 2>/dev/null || true
   done
+  for attempt in {1..80}; do
+    remaining=()
+    for pid in "${BAG_PID}" "${LAUNCH_PID}"; do
+      [[ -n "${pid}" ]] || continue
+      kill -0 "${pid}" 2>/dev/null && remaining+=("${pid}")
+    done
+    ((${#remaining[@]} == 0)) && break
+    sleep 0.1
+  done
+  if ((${#remaining[@]} > 0)); then
+    kill -TERM "${remaining[@]}" 2>/dev/null || true
+    for attempt in {1..10}; do
+      local -a still_running=()
+      for pid in "${remaining[@]}"; do
+        kill -0 "${pid}" 2>/dev/null && still_running+=("${pid}")
+      done
+      remaining=("${still_running[@]}")
+      ((${#remaining[@]} == 0)) && break
+      sleep 0.1
+    done
+  fi
+  ((${#remaining[@]} == 0)) || kill -KILL "${remaining[@]}" 2>/dev/null || true
   for pid in "${BAG_PID}" "${LAUNCH_PID}"; do
     [[ -n "${pid}" ]] || continue
     wait "${pid}" 2>/dev/null || true
   done
+  if [[ "${original_status}" == "0" || "${original_status}" == "130" || "${original_status}" == "143" ]]; then
+    if [[ -f "${BAG_DIR}/metadata.yaml" ]]; then
+      mkdir -p -- "$(dirname -- "${LATEST_BAG}")"
+      if ln -sfnT -- "${BAG_DIR}" "${LATEST_BAG}"; then
+        log "Latest navigation bag link: ${LATEST_BAG}"
+      else
+        log "could not update latest bag link; leaving existing link untouched: ${LATEST_BAG}"
+      fi
+    else
+      log "bag metadata missing; latest navigation bag link was not updated"
+    fi
+  else
+    log "run failed with status ${original_status}; latest navigation bag link was not updated"
+  fi
+  exit "${original_status}"
 }
 
 trap cleanup EXIT
@@ -176,7 +263,9 @@ trap 'exit 143' TERM
 
 log "Run directory: ${RUN_DIR}"
 log "Recording bag: ${BAG_DIR}"
+log "Latest run link: ${LATEST_RUN}"
 log "Command topic: ${CMD_VEL_TOPIC}"
+ln -sfnT -- "${RUN_DIR}" "${LATEST_RUN}"
 
 "${ROS2_COMMAND}" launch pure_line_following pure_line_following_serial.launch.py \
   "${LAUNCH_ARGS[@]}" &
@@ -188,10 +277,6 @@ sleep 0.7
   "${ROSBAG_OPTIONS[@]}" \
   "${ROSBAG_TOPICS[@]}" &
 BAG_PID="$!"
-
-ln -sfn -- "${RUN_DIR}" "${LATEST_RUN}"
-ln -sfn -- "${BAG_DIR}" "${LATEST_BAG}"
-log "Latest bag link: ${LATEST_BAG}"
 
 set +e
 wait -n "${LAUNCH_PID}" "${BAG_PID}"

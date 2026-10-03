@@ -6,6 +6,7 @@ import math
 from dataclasses import dataclass
 
 from geometry_msgs.msg import Twist
+from vehicle_config import load_vehicle_physical_config
 
 from .tracker import (
     JUNCTION,
@@ -15,6 +16,9 @@ from .tracker import (
     UNSAFE_EDGE,
     TrackObservation,
 )
+
+
+_VEHICLE_PHYSICAL = load_vehicle_physical_config()
 
 
 @dataclass(frozen=True)
@@ -40,10 +44,10 @@ class ControllerConfig:
     junction_lateral_deadband_m: float = 0.0
     junction_lateral_gain_scale: float = 1.0
     junction_heading_deadband_rad: float = 0.0
-    road_center_slow_error_m: float = 0.025
-    road_center_stop_error_m: float = 0.09
+    road_center_slow_error_m: float = 0.006
+    road_center_stop_error_m: float = 0.0
     road_width_m: float = 0.20
-    vehicle_width_m: float = 0.1535
+    vehicle_width_m: float = _VEHICLE_PHYSICAL.width_m
     road_edge_margin_m: float = 0.010
     pivot_heading_error_rad: float = 0.32
     heading_ignore_road_width_m: float = 0.22
@@ -60,8 +64,11 @@ def _clamp(value: float, minimum: float, maximum: float) -> float:
 def _usable_center_error(params: ControllerConfig) -> float:
     physical = 0.5 * (params.road_width_m - params.vehicle_width_m)
     physical = max(0.0, physical - params.road_edge_margin_m)
-    if params.road_center_stop_error_m > 0.0:
-        return params.road_center_stop_error_m
+    configured = max(0.0, float(params.road_center_stop_error_m))
+    if configured > 0.0 and physical > 0.0:
+        return min(configured, physical)
+    if configured > 0.0:
+        return configured
     return physical
 
 
@@ -209,13 +216,17 @@ def command_for(
     # Pivot until the camera sees the centreline again.
     lateral_abs = abs(lateral_error)
     stop_error = _usable_center_error(params)
+    slow_error = max(
+        0.0,
+        min(float(params.road_center_slow_error_m), 0.65 * stop_error),
+    )
     if lateral_abs >= stop_error:
         linear = 0.0
-    elif lateral_abs > params.road_center_slow_error_m:
+    elif lateral_abs > slow_error:
         fraction = (
-            lateral_abs - params.road_center_slow_error_m
+            lateral_abs - slow_error
         ) / max(
-            stop_error - params.road_center_slow_error_m,
+            stop_error - slow_error,
             1.0e-6,
         )
         linear *= max(0.0, 1.0 - fraction)

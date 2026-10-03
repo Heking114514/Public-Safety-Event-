@@ -39,6 +39,7 @@ from white_track_corner_detector import (  # noqa: E402
     WhiteTrackParameters,
     detect_white_track,
 )
+from vehicle_physical import VEHICLE_PHYSICAL
 
 
 DEFAULT_BAG = Path(
@@ -282,9 +283,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fps", type=float, default=30.0)
     parser.add_argument("--stable-window", type=int, default=7)
     parser.add_argument("--stable-votes", type=int, default=4)
-    parser.add_argument("--camera-height", type=float, default=0.121)
-    parser.add_argument("--camera-x", type=float, default=0.055)
-    parser.add_argument("--camera-y", type=float, default=0.0)
+    parser.add_argument(
+        "--camera-height", type=float, default=VEHICLE_PHYSICAL.camera_z_m
+    )
+    parser.add_argument("--camera-x", type=float, default=VEHICLE_PHYSICAL.camera_x_m)
+    parser.add_argument("--camera-y", type=float, default=VEHICLE_PHYSICAL.camera_y_m)
     parser.add_argument("--ground-min-x", type=float, default=0.10)
     parser.add_argument("--ground-max-x", type=float, default=1.35)
     parser.add_argument("--ground-max-y", type=float, default=0.75)

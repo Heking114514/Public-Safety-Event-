@@ -67,7 +67,7 @@ ros2 pkg list | grep -E 'orbslam3|visual_navigation|cup_car_serial|realsense2_ca
 该包装脚本启动 C++ 规划服务后执行 `scripts/arena_route_frontend.py`；不要绕过它单独运行 GUI，否则界面没有规划服务可调用。
 两个入口共用工作空间构建锁，即使两个终端紧接着启动，也不会并发写入 `build/`、`install/` 和 `log/`。规划入口会等待旧后端完全退出后再发布新服务，但不会关闭已经打开的规划、路线或地图 GUI。
 
-统一入口的设备、传感器和构建默认值集中在 `config/navigation_startup.yaml`；录包保留数量和 topic 清单集中在 `config/navigation_recording.yaml`。两者分别由独立读取器校验，算法节点仍使用各功能包自己的 YAML，避免启动编排与融合、控制实现互相依赖。无参数 GUI 模式和 `--autostart` CSV 模式不允许由 YAML 改写，相关命令行选项优先于 YAML 默认值。`navigation_startup.odom_topic` 默认是 `/odometry/fused`，导航、控制与规划 GUI 共用这个选择；传 `--odom-topic /odometry/landmark_corrected` 可切回地标修正流，此时会额外启动 `vision_correction_node`。录包仍同时保留融合与修正两个 topic 便于对比。
+统一入口的设备、传感器和构建默认值集中在 `config/navigation_startup.yaml`；录包保留数量和 topic 清单集中在 `config/navigation_recording.yaml`。车身、轮组、编码器、轴心和相机安装位置统一写在 `src/vehicle_config/config/vehicle_physical.yaml`，规划、寻迹、里程计、融合、视觉校正和导航启动文件都从这里加载，不能再在各功能包 YAML 中复制一份。算法调节参数仍保留在各功能包自己的 YAML。无参数 GUI 模式和 `--autostart` CSV 模式不允许由 YAML 改写，相关命令行选项优先于 YAML 默认值。`navigation_startup.odom_topic` 默认是 `/odometry/fused`，导航、控制与规划 GUI 共用这个选择；传 `--odom-topic /odometry/landmark_corrected` 可切回地标修正流，此时会额外启动 `vision_correction_node`。录包仍同时保留融合与修正两个 topic 便于对比。
 
 固定 CSV 自动运行时，先检查并编辑 `scripts/waypoints.csv`，再使用：
 
@@ -454,13 +454,10 @@ linear.x,angular.z\r\n
 
 默认地图已经按正式比赛图转换为当前规划器使用的 YAML：总包络
 `3.2 × 4.4 m`、主场地 `3.2 × 3.2 m`、10 个 `800 × 800 mm` 障碍块、
-`200 mm` 道路和 4 段隧道。车辆采用实测的 `143.4 × 143.7 mm` 完整外廓，
-每侧保留 `15 mm` 余量后直行包络为 `173.4 × 173.7 mm`，可以通过名义道路；
-`124.7 mm` 运动学轮距是单独参数，与整车外廓不混用。图纸本身没有
-任务编号，配置中的 12 个编号点是项目现有的
-道路中心访问点。原 6×6 地图保存在
-`src/arena_path_planner/config/arena_map_6x6_legacy.yaml`，需要时可通过
-`./scripts/start_arena_planner.sh --map <文件>` 显式加载。
+`200 mm` 道路和 4 段隧道。车辆采用实测的 `148.5 × 153.5 mm` 完整外廓，
+每侧保留 `15 mm` 余量后直行包络为 `178.5 × 183.5 mm`，可以通过名义道路；
+`146.6 mm` 运动学轮距是单独参数，与整车外廓不混用。图纸本身没有
+任务编号，配置中的 12 个编号点是项目现有的道路中心访问点。
 
 自动规划模式不读取 `route_file`，也不需要调用 `/waypoint_navigator/start`。规划前端向
 `/arena_path_planner/plan` 提交当前位姿、剩余目标、已完成道路、障碍物和规划模式。规划器找到完整路线时直接执行；后续目标暂时不可达时，只要已得到的阶段路线通过碰撞检查、确实有位移并能增加任务或道路进度，也会在 `activate_navigation=true` 时发布到 `/waypoint_navigation/route_input`。导航节点收到后自动激活。定位、融合健康状态和执行器健康检查仍然是实际发车的必要条件。

@@ -14,6 +14,7 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 find_package(ament_cmake REQUIRED)
+find_package(ament_index_cpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
@@ -40,6 +41,7 @@ target_include_directories(arena_planner_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
 target_link_libraries(arena_planner_core yaml-cpp)
+ament_target_dependencies(arena_planner_core ament_index_cpp)
 
 add_executable(arena_planner_node src/node.cpp)
 target_link_libraries(arena_planner_node arena_planner_core)
@@ -58,7 +60,6 @@ install(DIRECTORY include/ DESTINATION include
 install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
-  find_package(ament_index_cpp REQUIRED)
   find_package(ament_cmake_gtest REQUIRED)
   set(_warn_deprecated_was_defined FALSE)
   if(DEFINED CMAKE_WARN_DEPRECATED)
@@ -99,6 +100,7 @@ ament_export_include_directories(include)
 ament_export_targets(arena_planner_coreTargets HAS_LIBRARY_TARGET)
 ament_export_dependencies(
   geometry_msgs
+  ament_index_cpp
   nav_msgs
   rosidl_default_runtime
   yaml_cpp_vendor)

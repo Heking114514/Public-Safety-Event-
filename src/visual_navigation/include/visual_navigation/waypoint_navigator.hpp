@@ -32,6 +32,7 @@
 #include "std_msgs/msg/u_int64.hpp"
 #include "std_srvs/srv/trigger.hpp"
 #include "visual_navigation/control_state.hpp"
+#include "visual_navigation/corner_shunt.hpp"
 #include "visual_navigation/fusion_health_policy.hpp"
 #include "visual_navigation/navigation_input_cache.hpp"
 #include "visual_navigation/navigation_supervisor.hpp"
@@ -213,6 +214,8 @@ private:
 
   void RunPath(const ControlFrame &frame);
 
+  void RunCornerShunt(const ControlFrame &frame, double segmentProgress);
+
   void RunObstacleRecovery();
 
   void BeginObstacleRecovery();
@@ -272,6 +275,9 @@ private:
   double UpdatePathPid(double error, double crossTrackError, bool allowIntegral,
                        double yawRate);
 
+  visual_navigation::CornerShuntContext
+  BuildCornerShuntContext(const ControlFrame &frame) const;
+
   void PublishStop();
 
   void PublishMotionCommand(const geometry_msgs::msg::Twist &desired,
@@ -311,20 +317,20 @@ private:
   std::string motionHoldStateTopic_;
   std::string routeAckTopic_;
   double controlFrequency_{30.0};
-  double trackingPointOffsetX_{0.0};
-  double trackingPointOffsetY_{0.0};
-  double defaultSpeed_{0.15};
-  double maxLinearSpeed_{0.15};
+  double trackingPointOffsetX_{std::numeric_limits<double>::quiet_NaN()};
+  double trackingPointOffsetY_{std::numeric_limits<double>::quiet_NaN()};
+  double defaultSpeed_{0.10};
+  double maxLinearSpeed_{0.10};
   double maxAngularSpeed_{0.75};
   double maxPathAngularSpeed_{0.65};
   double minPathAngularSpeed_{0.14};
   double pathAngularActivationError_{0.025};
   double pathYawResponseThreshold_{0.04};
-  double maxLinearAcceleration_{0.40};
+  double maxLinearAcceleration_{0.25};
   double maxLinearDeceleration_{0.80};
   double effectiveBrakingDeceleration_{0.35};
   double brakingControlDelay_{0.20};
-  double brakingSafetyMargin_{0.015};
+  double brakingSafetyMargin_{0.025};
   double brakingDistanceFeedbackGain_{1.0};
   double maxAngularAcceleration_{1.80};
   double maxAngularDeceleration_{3.00};
@@ -341,7 +347,7 @@ private:
   double maxCrossTrackCorrection_{0.70};
   double crossTrackSlowdownStart_{0.015};
   double crossTrackSlowdownFull_{0.06};
-  double crossTrackMinimumSpeed_{0.20};
+  double crossTrackMinimumSpeed_{0.06};
   double maxLateralAcceleration_{0.22};
   double pathCurvatureFeedforwardGain_{1.0};
   double preTurnPathAngularRatio_{1.2};
@@ -359,6 +365,7 @@ private:
   double waypointRecoverySpeed_{0.10};
   double waypointRecoveryHeadingTolerance_{0.12};
   double waypointRecoveryMaxAngularSpeed_{0.40};
+  visual_navigation::CornerShuntConfig cornerShuntConfig_;
   double turnProgressExpectedYawRate_{0.12};
   double preTurnStopHeadingThreshold_{0.18};
   double preTurnStopSpeed_{0.03};
@@ -382,8 +389,8 @@ private:
   double frontObstacleTimeout_{0.50};
   double frontObstacleClassificationWait_{0.10};
   double frontObstaclePairingReorderTolerance_{0.10};
-  double obstacleSensorForwardOffset_{0.055};
-  double vehicleFrontOffset_{0.07425};
+  double obstacleSensorForwardOffset_{0.0};
+  double vehicleFrontOffset_{0.0};
   double expectedObstacleTolerance_{0.05};
   double obstacleReverseSpeed_{0.10};
   double obstacleReverseAngularGain_{1.2};
@@ -402,6 +409,7 @@ private:
   visual_navigation::PathProgressSupervisor pathProgressSupervisor_;
   visual_navigation::TurnProgressSupervisor turnProgressSupervisor_;
   visual_navigation::ObstacleRecoveryController obstacleRecoveryController_;
+  visual_navigation::CornerShuntController cornerShuntController_;
 
   std::vector<Waypoint> waypoints_;
   std::size_t currentWaypointIndex_{0};
@@ -412,6 +420,8 @@ private:
   bool stoppedAtPlannedTurn_{false};
   bool firstHalfTurnPending_{false};
   double firstHalfTurnYaw_{0.0};
+  double stoppedTurnArrivalHeading_{0.0};
+  double stoppedTurnTargetHeading_{0.0};
   bool reverseSegmentActive_{false};
   bool routeStartTurnAuthorized_{false};
   std::size_t lastStoppedTurnIndex_{std::numeric_limits<std::size_t>::max()};

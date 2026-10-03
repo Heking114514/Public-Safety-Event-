@@ -19,7 +19,9 @@ import offline_image_track_correction as correction
 VISION_SOURCE = Path(__file__).resolve().parents[1] / "src" / "vision_correction"
 if str(VISION_SOURCE) not in sys.path:
     sys.path.insert(0, str(VISION_SOURCE))
-from vision_correction import road_detector
+from vision_correction import road_detector  # noqa: E402
+from vehicle_physical import VEHICLE_PHYSICAL  # noqa: E402
+from vehicle_config import rpy_rotation_matrix  # noqa: E402
 
 
 DEFAULT_BAG = Path("/media/hjh/Data/rosbag_recording/latest_navigation_bag")
@@ -61,16 +63,39 @@ def image_to_bgr(message: Image) -> np.ndarray | None:
 
 
 def camera_geometry(camera) -> road_detector.CameraGeometry:
+    color_to_base = getattr(camera, "color_to_base", None)
+    if color_to_base is None:
+        link_to_base = np.asarray(
+            rpy_rotation_matrix(
+                float(getattr(camera, "roll", VEHICLE_PHYSICAL.camera_roll_rad)),
+                float(
+                    getattr(
+                        camera,
+                        "pitch_down",
+                        VEHICLE_PHYSICAL.camera_pitch_rad,
+                    )
+                ),
+                float(getattr(camera, "yaw", VEHICLE_PHYSICAL.camera_yaw_rad)),
+            ),
+            dtype=np.float64,
+        )
+        color_to_base = link_to_base @ road_detector.DEFAULT_OPTICAL_TO_BASE
     return road_detector.CameraGeometry(
         fx=float(camera.fx),
         fy=float(camera.fy),
         cx=float(camera.cx),
         cy=float(camera.cy),
-        camera_x=float(getattr(camera, "camera_x", getattr(camera, "x", 0.055))),
-        camera_y=float(getattr(camera, "camera_y", getattr(camera, "y", 0.0))),
-        camera_z=float(getattr(camera, "camera_z", getattr(camera, "z", 0.121))),
+        camera_x=float(
+            getattr(camera, "camera_x", getattr(camera, "x", VEHICLE_PHYSICAL.camera_x_m))
+        ),
+        camera_y=float(
+            getattr(camera, "camera_y", getattr(camera, "y", VEHICLE_PHYSICAL.camera_y_m))
+        ),
+        camera_z=float(
+            getattr(camera, "camera_z", getattr(camera, "z", VEHICLE_PHYSICAL.camera_z_m))
+        ),
         distortion=getattr(camera, "distortion", None),
-        color_to_base=getattr(camera, "color_to_base", None),
+        color_to_base=color_to_base,
     )
 
 
@@ -101,10 +126,18 @@ def detect_mask(
             fy=float(getattr(args, "camera_fy", 382.103)),
             cx=float(getattr(args, "camera_cx", 318.010)),
             cy=float(getattr(args, "camera_cy", 247.032)),
-            x=float(getattr(args, "camera_x", 0.055)),
-            y=float(getattr(args, "camera_y", 0.0)),
-            z=float(getattr(args, "camera_z", 0.121)),
-            color_to_base=np.eye(3, dtype=np.float64),
+            x=float(getattr(args, "camera_x", VEHICLE_PHYSICAL.camera_x_m)),
+            y=float(getattr(args, "camera_y", VEHICLE_PHYSICAL.camera_y_m)),
+            z=float(getattr(args, "camera_z", VEHICLE_PHYSICAL.camera_z_m)),
+            roll=float(
+                getattr(args, "camera_roll", VEHICLE_PHYSICAL.camera_roll_rad)
+            ),
+            pitch_down=float(
+                getattr(args, "camera_pitch_down", VEHICLE_PHYSICAL.camera_pitch_rad)
+            ),
+            yaw=float(
+                getattr(args, "camera_yaw", VEHICLE_PHYSICAL.camera_yaw_rad)
+            ),
         )
     mask, _, _ = road_detector.build_black_line_mask(
         bgr,
@@ -362,10 +395,20 @@ def parse_args():
     parser.add_argument("--max-frames", type=int, default=0)
     parser.add_argument("--fps", type=float, default=15.0)
     parser.add_argument("--codec", default="VP80")
-    parser.add_argument("--camera-x", type=float, default=0.055)
-    parser.add_argument("--camera-y", type=float, default=0.0)
-    parser.add_argument("--camera-z", type=float, default=0.121)
-    parser.add_argument("--camera-pitch-down", type=float, default=0.0)
+    parser.add_argument("--camera-x", type=float, default=VEHICLE_PHYSICAL.camera_x_m)
+    parser.add_argument("--camera-y", type=float, default=VEHICLE_PHYSICAL.camera_y_m)
+    parser.add_argument("--camera-z", type=float, default=VEHICLE_PHYSICAL.camera_z_m)
+    parser.add_argument(
+        "--camera-roll", type=float, default=VEHICLE_PHYSICAL.camera_roll_rad
+    )
+    parser.add_argument(
+        "--camera-pitch-down",
+        type=float,
+        default=VEHICLE_PHYSICAL.camera_pitch_rad,
+    )
+    parser.add_argument(
+        "--camera-yaw", type=float, default=VEHICLE_PHYSICAL.camera_yaw_rad
+    )
     parser.add_argument(
         "--roi-top-fraction",
         type=float,
@@ -434,7 +477,9 @@ def main():
             x=args.camera_x,
             y=args.camera_y,
             z=args.camera_z,
+            roll=args.camera_roll,
             pitch_down=args.camera_pitch_down,
+            yaw=args.camera_yaw,
         ),
         tf_topic="/tf_static",
     )

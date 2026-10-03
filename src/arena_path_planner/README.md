@@ -26,14 +26,14 @@ returning to a junction before replanning. The marker does not change the
 displayed planar route or the map transform.
 
 The active footprint uses the measured 148.5 x 153.5 mm complete vehicle
-envelope. With a 15 mm margin on each side, its 178.5 x 183.5 mm translational
-envelope fits a nominal 200 mm straight road. The 146.6 mm kinematic wheel
-track remains a separate parameter from the measured overall width. In-place
+envelope loaded from `vehicle_config/config/vehicle_physical.yaml`. With a
+15 mm margin on each side, its 178.5 x 183.5 mm translational envelope fits a
+nominal 200 mm straight road. The 146.6 mm kinematic wheel track remains a
+separate parameter from the measured overall width. In-place
 turns remain explicitly enabled for the tight
-intersections. The old 6 x 6 m map is retained as
-`config/arena_map_6x6_legacy.yaml` for explicit `--map` use.
-`config/arena_map_synthetic.yaml` deliberately keeps the incompatible 217 x
-210 mm footprint as a rejection-test fixture and is not a vehicle map.
+intersections. Oversized-footprint rejection is covered by unit tests that
+construct incompatible vehicle dimensions in memory, so the package keeps only
+the active official map configuration.
 
 The default configuration uses:
 

@@ -3,6 +3,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from vehicle_config import parameters_for
 import os
 
 
@@ -13,6 +14,7 @@ def generate_launch_description():
         "fused_odometry.yaml",
     )
     use_sim_time = LaunchConfiguration("use_sim_time")
+    physical_parameters = parameters_for("fused_odometry")
 
     return LaunchDescription([
         DeclareLaunchArgument("use_sim_time", default_value="false"),
@@ -21,7 +23,7 @@ def generate_launch_description():
             executable="fusion_gate_node",
             name="fused_odometry_gate",
             output="screen",
-            parameters=[config, {"use_sim_time": use_sim_time}],
+            parameters=[config, physical_parameters, {"use_sim_time": use_sim_time}],
         ),
         Node(
             package="robot_localization",

@@ -12,10 +12,10 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
   odomTopic_ =
       declare_parameter<std::string>("odom_topic", "/odometry/local_map");
   imuTopic_ = declare_parameter<std::string>("imu_topic", "/imu/control");
-  trackingPointOffsetX_ =
-      declare_parameter<double>("tracking_point_offset_x", 0.0);
-  trackingPointOffsetY_ =
-      declare_parameter<double>("tracking_point_offset_y", 0.0);
+  trackingPointOffsetX_ = declare_parameter<double>(
+      "tracking_point_offset_x", std::numeric_limits<double>::quiet_NaN());
+  trackingPointOffsetY_ = declare_parameter<double>(
+      "tracking_point_offset_y", std::numeric_limits<double>::quiet_NaN());
   if (!std::isfinite(trackingPointOffsetX_) ||
       !std::isfinite(trackingPointOffsetY_))
     throw std::invalid_argument("tracking point offsets must be finite");
@@ -50,9 +50,9 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
   controlFrequency_ =
       std::max(1.0, declare_parameter<double>("control_frequency", 30.0));
   defaultSpeed_ =
-      std::max(0.0, declare_parameter<double>("default_speed", 0.15));
+      std::max(0.0, declare_parameter<double>("default_speed", 0.05));
   maxLinearSpeed_ =
-      std::max(0.0, declare_parameter<double>("max_linear_speed", 0.15));
+      std::max(0.0, declare_parameter<double>("max_linear_speed", 0.05));
   maxAngularSpeed_ =
       std::max(0.0, declare_parameter<double>("max_angular_speed", 0.75));
   maxPathAngularSpeed_ = std::min(
@@ -66,7 +66,7 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
   pathYawResponseThreshold_ = std::max(
       0.0, declare_parameter<double>("path_yaw_response_threshold", 0.04));
   maxLinearAcceleration_ = std::max(
-      0.01, declare_parameter<double>("max_linear_acceleration", 0.40));
+      0.01, declare_parameter<double>("max_linear_acceleration", 0.25));
   maxLinearDeceleration_ = std::max(
       0.01, declare_parameter<double>("max_linear_deceleration", 0.80));
   effectiveBrakingDeceleration_ = std::max(
@@ -74,7 +74,7 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
   brakingControlDelay_ =
       std::max(0.0, declare_parameter<double>("braking_control_delay", 0.20));
   brakingSafetyMargin_ =
-      std::max(0.0, declare_parameter<double>("braking_safety_margin", 0.015));
+      std::max(0.0, declare_parameter<double>("braking_safety_margin", 0.025));
   brakingDistanceFeedbackGain_ = std::max(
       0.0, declare_parameter<double>("braking_distance_feedback_gain", 1.0));
   maxAngularAcceleration_ = std::max(
@@ -105,7 +105,7 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
       std::max(crossTrackSlowdownStart_ + 0.001,
                declare_parameter<double>("cross_track_slowdown_full", 0.06));
   crossTrackMinimumSpeed_ = std::max(
-      0.0, declare_parameter<double>("cross_track_minimum_speed", 0.20));
+      0.0, declare_parameter<double>("cross_track_minimum_speed", 0.04));
   maxLateralAcceleration_ = std::max(
       0.01, declare_parameter<double>("max_lateral_acceleration", 0.22));
   pathCurvatureFeedforwardGain_ = std::max(
@@ -154,6 +154,113 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
       std::min(maxAngularSpeed_,
                std::max(0.0, declare_parameter<double>(
                                  "waypoint_recovery_max_angular_speed", 0.40)));
+  cornerShuntConfig_.enabled =
+      declare_parameter<bool>("corner_shunt_enabled", true);
+  cornerShuntConfig_.road_width = std::max(
+      0.01, declare_parameter<double>("corner_shunt_road_width_m", 0.20));
+  cornerShuntConfig_.road_margin = std::max(
+      0.0, declare_parameter<double>("corner_shunt_road_margin_m", 0.008));
+  cornerShuntConfig_.road_back = std::max(
+      0.0, declare_parameter<double>("corner_shunt_road_back_m", 0.60));
+  cornerShuntConfig_.road_forward = std::max(
+      0.0, declare_parameter<double>("corner_shunt_road_forward_m", 0.56));
+  cornerShuntConfig_.vehicle_length = declare_parameter<double>(
+      "vehicle_length_m", std::numeric_limits<double>::quiet_NaN());
+  cornerShuntConfig_.vehicle_width = declare_parameter<double>(
+      "vehicle_width_m", std::numeric_limits<double>::quiet_NaN());
+  cornerShuntConfig_.wheel_track = declare_parameter<double>(
+      "wheel_track_m", std::numeric_limits<double>::quiet_NaN());
+  cornerShuntConfig_.base_offset_x = declare_parameter<double>(
+      "base_offset_x_m", std::numeric_limits<double>::quiet_NaN());
+  cornerShuntConfig_.base_offset_y = declare_parameter<double>(
+      "base_offset_y_m", std::numeric_limits<double>::quiet_NaN());
+  if (!std::isfinite(cornerShuntConfig_.vehicle_length) ||
+      !std::isfinite(cornerShuntConfig_.vehicle_width) ||
+      !std::isfinite(cornerShuntConfig_.wheel_track) ||
+      !std::isfinite(cornerShuntConfig_.base_offset_x) ||
+      !std::isfinite(cornerShuntConfig_.base_offset_y) ||
+      cornerShuntConfig_.vehicle_length <= 0.0 ||
+      cornerShuntConfig_.vehicle_width <= 0.0 ||
+      cornerShuntConfig_.wheel_track <= 0.0)
+    throw std::invalid_argument(
+        "corner shunt requires finite vehicle base offset and positive length, "
+        "width and wheel track");
+  cornerShuntConfig_.stop_duration =
+      std::max(0.0, declare_parameter<double>("corner_shunt_stop_s", 0.18));
+  cornerShuntConfig_.check_duration =
+      std::max(0.0, declare_parameter<double>("corner_shunt_check_s", 0.05));
+  cornerShuntConfig_.arc_duration = std::max(
+      0.0, declare_parameter<double>("corner_shunt_arc_segment_s", 0.19));
+  cornerShuntConfig_.rotate_duration = std::max(
+      0.0, declare_parameter<double>("corner_shunt_rotate_segment_s", 0.19));
+  cornerShuntConfig_.creep_duration = std::max(
+      0.0, declare_parameter<double>("corner_shunt_creep_segment_s", 0.19));
+  cornerShuntConfig_.reverse_duration = std::max(
+      0.0, declare_parameter<double>("corner_shunt_reverse_segment_s", 0.19));
+  cornerShuntConfig_.start_x =
+      declare_parameter<double>("corner_shunt_start_x_m", -0.070);
+  cornerShuntConfig_.start_x_tolerance = std::max(
+      0.0, declare_parameter<double>("corner_shunt_start_x_tolerance_m", 0.005));
+  cornerShuntConfig_.target_yaw_tolerance = std::max(
+      0.0,
+      declare_parameter<double>("corner_shunt_exit_yaw_tolerance_rad", 0.08));
+  cornerShuntConfig_.target_x =
+      declare_parameter<double>("corner_shunt_exit_x_m", -0.0075);
+  cornerShuntConfig_.target_y =
+      declare_parameter<double>("corner_shunt_exit_y_m", 0.1225);
+  cornerShuntConfig_.target_x_tolerance = std::max(
+      0.0, declare_parameter<double>("corner_shunt_exit_x_tolerance_m", 0.025));
+  cornerShuntConfig_.target_y_tolerance = std::max(
+      0.0, declare_parameter<double>("corner_shunt_exit_y_tolerance_m", 0.015));
+  cornerShuntConfig_.max_turn_angle = std::max(
+      0.0, declare_parameter<double>("corner_shunt_max_turn_angle_rad", 2.20));
+  cornerShuntConfig_.max_turn_duration =
+      std::max(0.1, declare_parameter<double>("corner_shunt_max_s", 60.00));
+  cornerShuntConfig_.prediction_horizon = std::max(
+      0.0,
+      declare_parameter<double>("corner_shunt_prediction_horizon_s", 0.20));
+  cornerShuntConfig_.prediction_step = std::max(
+      0.01, declare_parameter<double>("corner_shunt_prediction_step_s", 0.04));
+  cornerShuntConfig_.arc_linear_speed =
+      std::min(maxLinearSpeed_,
+               std::max(0.0, declare_parameter<double>(
+                                 "corner_shunt_linear_speed_mps", 0.010)));
+  cornerShuntConfig_.arc_angular_speed =
+      std::min(maxAngularSpeed_,
+               std::max(0.0, declare_parameter<double>(
+                                 "corner_shunt_angular_speed_rps", 0.24)));
+  cornerShuntConfig_.late_turn_progress =
+      Clamp(declare_parameter<double>("corner_shunt_late_turn_progress", 0.83),
+            0.0, 1.0);
+  cornerShuntConfig_.late_linear_speed =
+      std::min(maxLinearSpeed_,
+               std::max(0.0, declare_parameter<double>(
+                                 "corner_shunt_late_linear_speed_mps", 0.014)));
+  cornerShuntConfig_.late_angular_speed =
+      std::min(maxAngularSpeed_,
+               std::max(0.0, declare_parameter<double>(
+                                 "corner_shunt_late_angular_speed_rps", 0.10)));
+  cornerShuntConfig_.rotate_angular_speed = std::min(
+      maxAngularSpeed_,
+      std::max(0.0, declare_parameter<double>(
+                        "corner_shunt_rotate_angular_speed_rps", 0.20)));
+  cornerShuntConfig_.creep_linear_speed = std::min(
+      maxLinearSpeed_,
+      std::max(0.0, declare_parameter<double>(
+                        "corner_shunt_creep_linear_speed_mps", 0.010)));
+  cornerShuntConfig_.reverse_linear_speed = std::max(
+      -maxLinearSpeed_,
+      std::min(0.0, declare_parameter<double>(
+                        "corner_shunt_reverse_linear_speed_mps", -0.008)));
+  cornerShuntConfig_.reverse_angular_speed =
+      std::max(-maxAngularSpeed_,
+               std::min(maxAngularSpeed_,
+                        declare_parameter<double>(
+                            "corner_shunt_reverse_angular_speed_rps", -0.10)));
+  cornerShuntConfig_.max_reverse_count =
+      std::max(0, static_cast<int>(declare_parameter<int64_t>(
+                      "corner_shunt_max_reverse_count", 80)));
+  cornerShuntController_.configure(cornerShuntConfig_);
   const double pathProgressTimeout =
       std::max(0.0, declare_parameter<double>("path_progress_timeout", 10.0));
   const double pathProgressMinimumAdvance = std::max(
@@ -266,13 +373,16 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
       std::max(0.0, declare_parameter<double>(
                         "front_obstacle_pairing_reorder_tolerance", 0.10));
   obstacleSensorForwardOffset_ =
-      declare_parameter<double>("obstacle_sensor_forward_offset", 0.055);
-  vehicleFrontOffset_ =
-      std::max(0.0, declare_parameter<double>("vehicle_front_offset", 0.07425));
+      declare_parameter<double>("obstacle_sensor_forward_offset",
+                                std::numeric_limits<double>::quiet_NaN());
+  vehicleFrontOffset_ = declare_parameter<double>(
+      "vehicle_front_offset", std::numeric_limits<double>::quiet_NaN());
   expectedObstacleTolerance_ = std::max(
       0.0, declare_parameter<double>("expected_obstacle_tolerance", 0.05));
-  if (!std::isfinite(obstacleSensorForwardOffset_))
-    throw std::invalid_argument("obstacle sensor offset must be finite");
+  if (!std::isfinite(obstacleSensorForwardOffset_) ||
+      !std::isfinite(vehicleFrontOffset_) || vehicleFrontOffset_ < 0.0)
+    throw std::invalid_argument(
+        "vehicle and obstacle sensor offsets must be finite and valid");
   obstacleReverseSpeed_ = std::min(
       maxLinearSpeed_,
       std::max(0.0, declare_parameter<double>("obstacle_reverse_speed", 0.10)));
@@ -335,8 +445,8 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
       declare_parameter<bool>("require_tracking_state", false);
   const bool abortOnTrackingLoss =
       declare_parameter<bool>("abort_on_tracking_loss", false);
-  navigationSupervisor_ = visual_navigation::NavigationSupervisor(
-      {abortOnTrackingLoss});
+  navigationSupervisor_ =
+      visual_navigation::NavigationSupervisor({abortOnTrackingLoss});
   autostart_ = declare_parameter<bool>("autostart", false);
 
   cmdVelPublisher_ =

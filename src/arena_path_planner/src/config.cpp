@@ -1,4 +1,5 @@
 #include "arena_path_planner/planner_internal.hpp"
+#include <ament_index_cpp/get_package_share_directory.hpp>
 #include <yaml-cpp/yaml.h>
 #include <algorithm>
 #include <cmath>
@@ -49,6 +50,23 @@ void ReadTopic(
     throw std::runtime_error(std::string("topics.") + key + " must not be empty");
   }
 }
+
+void ReadVehicleDimensions(PlannerConfig & config)
+{
+  const std::string path =
+    ament_index_cpp::get_package_share_directory("vehicle_config") +
+    "/config/vehicle_physical.yaml";
+  const YAML::Node physical = YAML::LoadFile(path);
+  if (!physical["schema_version"] || physical["schema_version"].as<int>() != 1) {
+    throw std::runtime_error("vehicle_physical.yaml schema_version must be 1");
+  }
+  const YAML::Node chassis = physical["chassis"];
+  if (!chassis || !chassis["length_m"] || !chassis["width_m"]) {
+    throw std::runtime_error("vehicle_physical.yaml requires chassis length_m and width_m");
+  }
+  config.vehicle_length = chassis["length_m"].as<double>();
+  config.vehicle_width = chassis["width_m"].as<double>();
+}
 }  // namespace
 PlannerConfig ArenaPlanner::LoadConfig(const std::string & path)
 {
@@ -61,12 +79,7 @@ PlannerConfig ArenaPlanner::LoadConfig(const std::string & path)
   config.inflation_radius = arena["inflation_radius_m"].as<double>();
   config.preferred_clearance = arena["preferred_clearance_m"].as<double>();
   config.clearance_cost_weight = arena["clearance_cost_weight"].as<double>();
-  if (arena["vehicle_length_m"]) {
-    config.vehicle_length = arena["vehicle_length_m"].as<double>();
-  }
-  if (arena["vehicle_width_m"]) {
-    config.vehicle_width = arena["vehicle_width_m"].as<double>();
-  }
+  ReadVehicleDimensions(config);
   if (arena["safety_margin_m"]) {
     config.safety_margin = arena["safety_margin_m"].as<double>();
   }

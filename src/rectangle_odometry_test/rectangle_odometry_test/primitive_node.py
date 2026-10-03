@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 from typing import Optional
 
+from vehicle_config import parameters_for
+
 from .geometry import Pose2D, wrap_angle
 from .primitive_controller import (
     PrimitiveController,
@@ -52,6 +54,7 @@ if rclpy is not None:
 
         def __init__(self) -> None:
             super().__init__("rectangle_primitive_controller")
+            physical = parameters_for("rectangle_primitive_controller")
             self.enable = bool(self.declare_parameter("enable", False).value)
             self.odom_topic = str(
                 self.declare_parameter("odom_topic", "/odometry/fused").value
@@ -131,7 +134,9 @@ if rclpy is not None:
                 self.declare_parameter("odom_timeout_s", 0.5).value
             )
             wheel_track_m = float(
-                self.declare_parameter("wheel_track_m", 0.1466).value
+                self.declare_parameter(
+                    "wheel_track_m", physical["wheel_track_m"]
+                ).value
             )
             differential_wheel_speeds(Twist2D(0.0, 0.0), wheel_track_m)
 

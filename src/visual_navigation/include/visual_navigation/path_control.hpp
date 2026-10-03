@@ -8,6 +8,8 @@
 namespace visual_navigation
 {
 
+constexpr double kPathComparisonEpsilon = 1.0e-6;
+
 struct PlanarPoint
 {
   double x{0.0};
@@ -65,7 +67,8 @@ inline bool WaypointReached(
     return true;
   }
   return projection.valid &&
-    projection.remaining <= std::max(0.0, pass_longitudinal_tolerance) &&
+    projection.remaining <=
+    std::max(0.0, pass_longitudinal_tolerance) + kPathComparisonEpsilon &&
     std::abs(projection.cross_track) <=
     std::max(radial, std::max(0.0, pass_lateral_tolerance));
 }
@@ -82,7 +85,8 @@ inline bool WaypointEndpointReached(
   {
     return false;
   }
-  return projection.remaining <= std::max(0.0, pass_longitudinal_tolerance) &&
+  return projection.remaining <=
+    std::max(0.0, pass_longitudinal_tolerance) + kPathComparisonEpsilon &&
     std::abs(projection.cross_track) <= std::max(0.0, pass_lateral_tolerance);
 }
 
@@ -95,7 +99,8 @@ inline bool WaypointNeedsRecovery(
   {
     return false;
   }
-  return projection.remaining <= std::max(0.0, pass_longitudinal_tolerance) &&
+  return projection.remaining <=
+    std::max(0.0, pass_longitudinal_tolerance) + kPathComparisonEpsilon &&
     std::abs(projection.cross_track) > std::max(0.0, pass_lateral_tolerance);
 }
 
@@ -115,7 +120,8 @@ inline bool ContinuousPathWaypointPassed(
   {
     return false;
   }
-  return projection.remaining <= std::max(0.0, pass_longitudinal_tolerance) &&
+  return projection.remaining <=
+    std::max(0.0, pass_longitudinal_tolerance) + kPathComparisonEpsilon &&
     std::abs(projection.cross_track) <= std::max(0.0, pass_lateral_tolerance);
 }
 

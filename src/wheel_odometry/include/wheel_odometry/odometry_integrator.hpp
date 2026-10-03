@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <string>
 
 namespace wheel_odometry
@@ -8,19 +9,19 @@ namespace wheel_odometry
 
 struct IntegratorConfig
 {
-  double wheel_radius_m{0.0302};
-  double left_encoder_counts_per_revolution{294912.0};
-  double right_encoder_counts_per_revolution{294912.0};
-  double wheel_track_m{0.1466};
+  double wheel_radius_m{std::numeric_limits<double>::quiet_NaN()};
+  double left_encoder_counts_per_revolution{std::numeric_limits<double>::quiet_NaN()};
+  double right_encoder_counts_per_revolution{std::numeric_limits<double>::quiet_NaN()};
+  double wheel_track_m{std::numeric_limits<double>::quiet_NaN()};
   // Position of base_link relative to the midpoint of the wheel axle,
   // expressed in the vehicle body axes. Positive x is forward and positive y
   // is left.
-  double base_offset_x_m{0.050};
-  double base_offset_y_m{0.0};
-  double left_distance_scale{-1.000};
-  double right_distance_scale{-1.000};
-  double yaw_slip_scale{1.0};
-  double max_wheel_speed_mps{1.0};
+  double base_offset_x_m{std::numeric_limits<double>::quiet_NaN()};
+  double base_offset_y_m{std::numeric_limits<double>::quiet_NaN()};
+  double left_distance_scale{std::numeric_limits<double>::quiet_NaN()};
+  double right_distance_scale{std::numeric_limits<double>::quiet_NaN()};
+  double yaw_slip_scale{std::numeric_limits<double>::quiet_NaN()};
+  double max_wheel_speed_mps{std::numeric_limits<double>::quiet_NaN()};
   double min_dt_s{1.0e-4};
   double nominal_sample_period_s{0.05};
   uint32_t nominal_sequence_increment{5};

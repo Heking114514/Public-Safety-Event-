@@ -907,12 +907,12 @@ config/waypoint_navigation.yaml
 | 参数 | 默认值 | 作用 |
 | --- | --- | --- |
 | `control_frequency` | `30.0` | 控制频率，Hz |
-| `default_speed` | `0.15` | CSV 未填写速度时的默认速度，m/s |
-| `max_linear_speed` | `0.15` | 最终速度发布口强制执行的全局最大线速度，m/s |
+| `default_speed` | `0.10` | CSV 未填写速度时的默认速度，m/s |
+| `max_linear_speed` | `0.10` | 最终速度发布口强制执行的全局最大线速度，m/s |
 | `max_angular_speed` | `0.75` | 最大角速度，rad/s |
 | `effective_braking_deceleration` | `0.35` | 实车有效制动减速度，m/s^2 |
 | `braking_control_delay` | `0.20` | 串口、控制与执行总延迟估计，s |
-| `braking_safety_margin` | `0.015` | 航点前预留的制动距离，m |
+| `braking_safety_margin` | `0.025` | 航点前预留的制动距离，m |
 | `braking_distance_feedback_gain` | `1.00` | 实际停止距离超出剩余距离时的速度压低增益 |
 | `angular_gain` | `1.40` | 终点朝向对齐的比例增益 |
 | `path_pid_kp` | `1.20` | 路径误差 PID 的比例增益 |

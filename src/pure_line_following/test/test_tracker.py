@@ -11,9 +11,11 @@ from pure_line_following.geometry import (
 )
 from pure_line_following.tracker import (
     JUNCTION,
+    LEFT_BRANCH,
     TRACK,
     TrackerConfig,
     _apply_lateral_bias,
+    _branch_geometry,
     _classify_branch,
     _control_geometry,
     _depth_control_geometry,
@@ -21,6 +23,7 @@ from pure_line_following.tracker import (
     _estimate_heading,
     _image_masks,
     _road_support_is_safe,
+    _road_slices,
     observe,
 )
 
@@ -70,6 +73,22 @@ def test_branch_classification_uses_competition_width_crossing():
     assert _classify_branch(rows, TrackerConfig()) == JUNCTION
 
 
+def test_branch_geometry_reports_corner_distance_and_side_extents():
+    rows = [
+        (0.25, 0.00, -0.08, 0.08, 0.16),
+        (0.35, 0.00, -0.08, 0.08, 0.16),
+        (0.45, 0.00, -0.08, 0.08, 0.16),
+        (0.52, 0.00, -0.08, 0.28, 0.36),
+        (0.55, 0.00, -0.08, 0.30, 0.38),
+    ]
+    branch = _branch_geometry(rows, TrackerConfig(branch_side_extent_m=0.12))
+
+    assert branch.state == LEFT_BRANCH
+    assert 0.50 <= branch.branch_x_m <= 0.56
+    assert branch.left_extent_m >= 0.20
+    assert branch.right_extent_m >= 0.08
+
+
 def test_control_geometry_ignores_wide_crossing_for_center():
     params = TrackerConfig(
         control_min_x_m=0.20,
@@ -91,6 +110,48 @@ def test_control_geometry_ignores_wide_crossing_for_center():
 
     assert abs(lateral) < 0.01
     assert width < 0.20
+
+
+def test_sparse_same_lane_intervals_are_merged_before_control():
+    params = TrackerConfig(
+        control_min_x_m=0.20,
+        control_max_x_m=0.65,
+        control_reference_x_m=0.30,
+        control_max_road_span_m=0.20,
+    )
+    grid = GroundGrid(0.12, -0.35, 0.01, 70, 70)
+    component = np.zeros((grid.height, grid.width), dtype=np.uint8)
+    for row in range(8, 35):
+        component[row, [36, 40, 44, 48]] = 255
+
+    lateral, road_left, road_right, width, _, rows = _control_geometry(
+        component,
+        grid,
+        params,
+    )
+
+    assert rows > 10
+    assert road_left < lateral < road_right
+    assert width > 0.08
+
+
+def test_wide_branch_slice_keeps_forward_trunk_center():
+    params = TrackerConfig(
+        control_max_road_span_m=0.20,
+        road_width_m=0.20,
+    )
+    grid = GroundGrid(0.12, -0.40, 0.01, 80, 70)
+    component = np.zeros((grid.height, grid.width), dtype=np.uint8)
+    centre = 40
+    component[8:35, centre - 9 : centre + 10] = 255
+    component[28:32, centre - 30 : centre + 31] = 255
+
+    slices = _road_slices(component, grid, params, 0.20, 0.55, 0.36)
+    wide = [row for row in slices if row.full_width_m > 0.40]
+
+    assert wide
+    assert all(abs(row.center_y_m) < 0.02 for row in wide)
+    assert all(row.width_m <= params.control_max_road_span_m for row in wide)
 
 
 def test_narrow_edge_is_not_a_safe_road_support():
@@ -140,6 +201,30 @@ def test_white_mask_rejects_pale_green_rgb_cast():
     pale_green_bgr = np.full((480, 640, 3), (112, 137, 130), dtype=np.uint8)
     pale_green_white, _, _ = _image_masks(pale_green_bgr, camera, params)
     assert np.count_nonzero(pale_green_white) == 0
+
+
+def test_pale_green_floor_is_context_not_white_road():
+    camera = CameraGeometry(
+        fx=383.0,
+        fy=382.5,
+        cx=318.0,
+        cy=247.0,
+        camera_x=0.0547,
+        camera_y=-0.020,
+        camera_z=0.130,
+        color_to_base=DEFAULT_OPTICAL_TO_BASE,
+    )
+    params = TrackerConfig()
+
+    # Matches the light green mat in the hand-pushed recognition bag around
+    # t=99.8 s: bright enough to look like white under the old threshold, but
+    # still chromatically green in Lab/RGB opponent space.
+    pale_floor_bgr = np.full((480, 640, 3), (105, 121, 118), dtype=np.uint8)
+    white, green, baseline = _image_masks(pale_floor_bgr, camera, params)
+
+    assert np.count_nonzero(white) == 0
+    assert np.count_nonzero(green) > 1000
+    assert baseline > 0.0
 
 
 def test_depth_pixels_project_to_base_with_expected_signs():

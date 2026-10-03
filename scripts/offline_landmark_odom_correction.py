@@ -28,6 +28,8 @@ from tf2_msgs.msg import TFMessage
 import offline_image_track_correction as correction
 import render_image_track_detection_video as detector
 import depth_image_utils as depth_utils
+from vehicle_physical import VEHICLE_PHYSICAL
+from vehicle_config import complete_mount_translation, rpy_rotation_matrix
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
@@ -319,22 +321,24 @@ def load_camera_calibration(
         "camera_color_optical_frame",
     )
 
-    # camera_x/camera_y/camera_z are fallback physical coordinates. When the
-    # bag contains the measured base_link -> camera_link TF, use that TF for
-    # XY and retain the independently measured camera height for Z.
+    # The recorded TF is a complete mount pose. Central values fill axes that
+    # older bags left at zero before the physical transform was corrected.
     camera_translation = np.array(
         [args.camera_x, args.camera_y, args.camera_z],
         dtype=np.float64,
     )
-    base_to_link_rotation = np.eye(3, dtype=np.float64)
+    base_to_link_rotation = np.asarray(
+        rpy_rotation_matrix(
+            VEHICLE_PHYSICAL.camera_roll_rad,
+            VEHICLE_PHYSICAL.camera_pitch_rad,
+            VEHICLE_PHYSICAL.camera_yaw_rad,
+        ),
+        dtype=np.float64,
+    )
     if base_to_link is not None:
         link_translation, base_to_link_rotation = base_to_link
-        camera_translation = np.array(
-            [
-                link_translation[0],
-                link_translation[1],
-                args.camera_z + link_translation[2],
-            ],
+        camera_translation = np.asarray(
+            complete_mount_translation(link_translation, camera_translation),
             dtype=np.float64,
         )
 
@@ -351,7 +355,7 @@ def load_camera_calibration(
     else:
         color_to_base = (
             base_to_color_rotation
-            @ road_detector.DEFAULT_OPTICAL_TO_BASE
+            @ detector.road_detector.DEFAULT_OPTICAL_TO_BASE
         )
 
     return CameraCalibration(
@@ -2099,9 +2103,9 @@ def parse_args():
     parser.add_argument("--max-frames", type=int, default=0)
     parser.add_argument("--fps", type=float, default=15.0)
     parser.add_argument("--codec", default="VP80")
-    parser.add_argument("--camera-x", type=float, default=0.055)
-    parser.add_argument("--camera-y", type=float, default=0.0)
-    parser.add_argument("--camera-z", type=float, default=0.121)
+    parser.add_argument("--camera-x", type=float, default=VEHICLE_PHYSICAL.camera_x_m)
+    parser.add_argument("--camera-y", type=float, default=VEHICLE_PHYSICAL.camera_y_m)
+    parser.add_argument("--camera-z", type=float, default=VEHICLE_PHYSICAL.camera_z_m)
     parser.add_argument("--roi-top-fraction", type=float, default=0.0)
     parser.add_argument("--roi-bottom-fraction", type=float, default=1.0)
     parser.add_argument(

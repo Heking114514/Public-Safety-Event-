@@ -15,6 +15,7 @@ PROCESS_HELPER="${SCRIPT_DIR}/navigation_processes.sh"
 BUILD_LOCK_HELPER="${SCRIPT_DIR}/build_lock.sh"
 CONFIG_HELPER="${SCRIPT_DIR}/navigation_config.py"
 CONFIG_SHELL_HELPER="${SCRIPT_DIR}/navigation_config.sh"
+VEHICLE_PHYSICAL_HELPER="${SCRIPT_DIR}/vehicle_physical.py"
 STARTUP_CONFIG="${NAVIGATION_STARTUP_CONFIG:-${WORKSPACE_ROOT}/config/navigation_startup.yaml}"
 RECORDING_CONFIG="${NAVIGATION_RECORDING_CONFIG:-${WORKSPACE_ROOT}/config/navigation_recording.yaml}"
 DEFAULT_AUTOSTART_ROUTE="${SCRIPT_DIR}/waypoints.csv"
@@ -114,8 +115,14 @@ USE_IMU="true"
 USE_SLAM_IMU="false"
 ODOM_TOPIC="/odometry/fused"
 NAVIGATION_PARAMETERS_FILE="${NAVIGATION_PARAMETERS_FILE:-}"
-TRACKING_POINT_OFFSET_X="${NAVIGATION_TRACKING_POINT_OFFSET_X:-0.0}"
-TRACKING_POINT_OFFSET_Y="${NAVIGATION_TRACKING_POINT_OFFSET_Y:-0.0}"
+DEFAULT_TRACKING_POINT_OFFSET_X="$(
+  python3 "${VEHICLE_PHYSICAL_HELPER}" tracking_point_x_m
+)" || fail "could not read tracking point x from vehicle_physical.yaml"
+DEFAULT_TRACKING_POINT_OFFSET_Y="$(
+  python3 "${VEHICLE_PHYSICAL_HELPER}" tracking_point_y_m
+)" || fail "could not read tracking point y from vehicle_physical.yaml"
+TRACKING_POINT_OFFSET_X="${NAVIGATION_TRACKING_POINT_OFFSET_X:-${DEFAULT_TRACKING_POINT_OFFSET_X}}"
+TRACKING_POINT_OFFSET_Y="${NAVIGATION_TRACKING_POINT_OFFSET_Y:-${DEFAULT_TRACKING_POINT_OFFSET_Y}}"
 DEFAULT_VISION_CORRECTION_MAP="${WORKSPACE_ROOT}/src/arena_path_planner/config/arena_map.yaml"
 VISION_CORRECTION_MAP_FILE="${NAVIGATION_VISION_CORRECTION_MAP_FILE:-${DEFAULT_VISION_CORRECTION_MAP}}"
 VISION_CORRECTION_IMAGE_TOPIC="${NAVIGATION_VISION_CORRECTION_IMAGE_TOPIC:-/camera/camera/color/image_raw}"
@@ -524,7 +531,7 @@ build_orb_slam3() {
 
 build_ros_packages() {
   log "Building ROS 2 nodes"
-  local packages=(mission_control_interfaces imu_rpy_filter wheel_odometry fused_odometry visual_navigation)
+  local packages=(vehicle_config mission_control_interfaces imu_rpy_filter wheel_odometry fused_odometry visual_navigation)
   if [[ -d "${WORKSPACE_ROOT}/src/rectangle_odometry_test" ]]; then
     packages+=(rectangle_odometry_test)
   fi
@@ -566,6 +573,7 @@ runtime_artifacts() {
     "odometry_launch=${WORKSPACE_ROOT}/install/fused_odometry/share/fused_odometry/launch/odometry_bringup.launch.py"
     "fusion_launch=${WORKSPACE_ROOT}/install/fused_odometry/share/fused_odometry/launch/fused_odometry.launch.py"
     "fusion_config=${WORKSPACE_ROOT}/install/fused_odometry/share/fused_odometry/config/fused_odometry.yaml"
+    "vehicle_physical=${WORKSPACE_ROOT}/install/vehicle_config/share/vehicle_config/config/vehicle_physical.yaml"
     "orb_launch=${WORKSPACE_ROOT}/install/orbslam3/share/orbslam3/launch/realsense_d455_stereo_inertial.launch.py"
     "orb_config=${WORKSPACE_ROOT}/install/orbslam3/share/orbslam3/config/stereo-inertial/RealSense_D455.yaml"
     "navigation_base_launch=${WORKSPACE_ROOT}/install/visual_navigation/share/visual_navigation/launch/visual_navigation_bringup.launch.py"
@@ -816,6 +824,7 @@ declare -a RUN_INPUT_FILES=(
   "recording_config=${RECORDING_CONFIG}"
   "config_helper=${CONFIG_HELPER}"
   "config_shell_helper=${CONFIG_SHELL_HELPER}"
+  "vehicle_config_helper=${VEHICLE_PHYSICAL_HELPER}"
   "process_helper=${PROCESS_HELPER}"
   "manifest_helper=${RUN_MANIFEST_HELPER}"
   "bag_helper=${NAVIGATION_BAGS_HELPER}"
@@ -823,6 +832,7 @@ declare -a RUN_INPUT_FILES=(
   "odometry_launch=${WORKSPACE_ROOT}/install/fused_odometry/share/fused_odometry/launch/odometry_bringup.launch.py"
   "fusion_launch=${WORKSPACE_ROOT}/install/fused_odometry/share/fused_odometry/launch/fused_odometry.launch.py"
   "fusion_config=${WORKSPACE_ROOT}/install/fused_odometry/share/fused_odometry/config/fused_odometry.yaml"
+  "vehicle_physical=${WORKSPACE_ROOT}/install/vehicle_config/share/vehicle_config/config/vehicle_physical.yaml"
   "orb_launch=${WORKSPACE_ROOT}/install/orbslam3/share/orbslam3/launch/realsense_d455_stereo_inertial.launch.py"
   "orb_config=${WORKSPACE_ROOT}/install/orbslam3/share/orbslam3/config/stereo-inertial/RealSense_D455.yaml"
   "navigation_launch=${WORKSPACE_ROOT}/install/visual_navigation/share/visual_navigation/launch/${LAUNCH_FILE}"

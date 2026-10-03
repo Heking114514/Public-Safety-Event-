@@ -7,6 +7,7 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+from vehicle_config import parameters_for
 
 
 def generate_launch_description():
@@ -14,6 +15,7 @@ def generate_launch_description():
     correction_parameters = str(
         correction_share / "config" / "vision_correction.yaml"
     )
+    physical_parameters = parameters_for("vision_correction")
     correction = Node(
         package="vision_correction",
         executable="vision_correction_node",
@@ -21,6 +23,7 @@ def generate_launch_description():
         output="screen",
         parameters=[
             correction_parameters,
+            physical_parameters,
             {
                 "map_file": LaunchConfiguration("map_file"),
                 "output_topic": "/odometry/landmark_corrected",

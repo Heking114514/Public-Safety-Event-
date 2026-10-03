@@ -6,9 +6,6 @@ vision_correction_node:
     fused_topic: /odometry/fused
     output_topic: /odometry/landmark_corrected
     tf_static_topic: /tf_static
-    camera_height_m: 0.121
-    camera_x_m: 0.055
-    camera_y_m: 0.0
     sync_tolerance_s: 0.12
     publish_rate: 0.0
     timeout: 0.5

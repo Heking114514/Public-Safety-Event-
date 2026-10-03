@@ -1,0 +1,86 @@
+vehicle_loopback_sim:
+  ros__parameters:
+    cmd_vel_topic: /cmd_vel_nav
+    initial_pose_topic: /initialpose
+    odom_topic: /odometry/fused
+    imu_topic: /imu/control
+    fusion_status_topic: /odometry/fusion_status
+    actuator_health_topic: /cup_car_serial/actuator_healthy
+    control_telemetry_topic: /cup_car_serial/control_telemetry
+    status_topic: /vehicle_loopback_sim/status
+
+    map_frame_id: map
+    base_frame_id: base_link
+    initial_x_m: 0.0
+    initial_y_m: 0.0
+    initial_yaw_rad: 0.0
+
+    update_rate_hz: 50.0
+    status_rate_hz: 10.0
+    command_timeout_s: 0.50
+
+    # <= 0 disables the corresponding limiter. Speed limits remain enabled
+    # by default so runaway commands cannot jump the truth pose.
+    max_linear_speed_mps: 0.20
+    max_angular_speed_rps: 0.90
+    max_linear_accel_mps2: 0.0
+    max_angular_accel_rps2: 0.0
+
+    publish_tf: true
+    publish_actuator_health: true
+    publish_control_telemetry: true
+
+vehicle_loopback_gui:
+  ros__parameters:
+    host: 127.0.0.1
+    port: 8765
+    publish_rate_hz: 12.0
+    max_trail_points: 1200
+    trail_min_distance_m: 0.005
+
+    odom_topic: /odometry/fused
+    cmd_vel_topic: /cmd_vel_nav
+    control_telemetry_topic: /cup_car_serial/control_telemetry
+    loopback_status_topic: /vehicle_loopback_sim/status
+    navigator_status_topic: /waypoint_navigation/status
+    current_waypoint_topic: /waypoint_navigation/current_waypoint
+    waypoint_path_topic: /waypoint_path
+    navigation_path_topic: /arena_path_planner/navigation_path
+    arena_path_topic: /arena_path_planner/arena_path
+    map_topic: /arena_path_planner/map
+    mission_status_topic: /vehicle_loopback_sim/mission_status
+
+vehicle_loopback_mission:
+  ros__parameters:
+    planner_service: /arena_path_planner/plan
+    mode: layer1,layer2,layer3
+    activate_navigation: true
+    request_delay_s: 1.0
+    status_topic: /vehicle_loopback_sim/mission_status
+    navigator_status_topic: /waypoint_navigation/status
+    odom_topic: /odometry/fused
+
+loopback_route_controller:
+  ros__parameters:
+    route_input_topic: /waypoint_navigation/route_input
+    odom_topic: /odometry/fused
+    cmd_vel_topic: /cmd_vel_nav
+    path_topic: /waypoint_path
+    status_topic: /waypoint_navigation/status
+    current_waypoint_topic: /waypoint_navigation/current_waypoint
+
+    control_rate_hz: 30.0
+    cruise_speed_mps: 0.12
+    minimum_drive_speed_mps: 0.035
+    slowdown_distance_m: 0.10
+    stop_tolerance_m: 0.018
+    pass_tolerance_m: 0.012
+    lateral_tolerance_m: 0.050
+    turn_heading_threshold_rad: 0.35
+    turn_yaw_tolerance_rad: 0.055
+    heading_gain: 1.70
+    cross_track_gain: 1.80
+    stanley_softening_speed_mps: 0.12
+    turn_gain: 1.80
+    min_turn_speed_rps: 0.24
+    max_turn_speed_rps: 0.70

@@ -8,24 +8,10 @@ wheel_odometry_node:
     # when wheel odometry is the sole odometry source.
     publish_tf: false
 
-    # Current STM32 physical model (2026-09-15): wheel radius 30.2 mm,
-    # differential-drive track 146.6 mm, M2006 P36 encoder = 8192 * 36.
-    wheel_radius_m: 0.0302
-    left_encoder_counts_per_revolution: 294912.0
-    right_encoder_counts_per_revolution: 294912.0
-    wheel_track_m: 0.1466
-    # The wheel axle midpoint is 50 mm behind the geometric base_link centre.
-    # Offsets are base_link relative to the axle midpoint, in body axes.
-    base_offset_x_m: 0.050
-    base_offset_y_m: 0.000
-    # Encoder counts decrease during ROS-forward wheel motion on this chassis;
-    # keep the physical CPR positive and express polarity as signed scales.
-    left_distance_scale: -1.0
-    right_distance_scale: -1.0
-    yaw_slip_scale: 1.0
-
-    # Reject a sample if either wheel would have exceeded this speed.
-    max_wheel_speed_mps: 1.0
+    # Wheel geometry, encoder resolution and axle-to-base_link offsets come
+    # from vehicle_config/config/vehicle_physical.yaml at launch time.
+    # Encoder polarity, yaw scale and the physical wheel-speed ceiling also
+    # come from vehicle_physical.yaml.
     min_dt_s: 0.0001
     # Firmware samples at 100 Hz and reports cumulative counts at 20 Hz. Thus a
     # healthy report advances sample_sequence by five every 50 ms.

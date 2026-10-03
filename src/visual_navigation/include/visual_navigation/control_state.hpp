@@ -5,6 +5,7 @@ namespace visual_navigation {
 
 enum class ControlPhase {
   FOLLOW,
+  SHUNT_TURN,
   ALIGN_PATH,
   RECOVER_WAYPOINT,
   BRAKE,
@@ -21,6 +22,8 @@ inline const char *phase_status(ControlPhase phase) {
   switch (phase) {
   case ControlPhase::FOLLOW:
     return "FOLLOWING";
+  case ControlPhase::SHUNT_TURN:
+    return "TURN_CHECK";
   case ControlPhase::ALIGN_PATH:
     return "ROTATING_TO_PATH";
   case ControlPhase::RECOVER_WAYPOINT:
@@ -90,6 +93,11 @@ public:
 
   void begin_path_alignment(double x, double y) {
     phase_ = ControlPhase::ALIGN_PATH;
+    set_anchor(x, y);
+  }
+
+  void begin_corner_shunt(double x, double y) {
+    phase_ = ControlPhase::SHUNT_TURN;
     set_anchor(x, y);
   }
 

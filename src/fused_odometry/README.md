@@ -159,9 +159,10 @@ relocalization jumps and are not odometry-fusion pose inputs.
 
 ## Frames
 
-The current planar measurement places `camera_link` 0.055 m forward of the
-geometric vehicle center: `base_link -> camera_link = (0.055, 0, 0)`. The wheel
-axle midpoint is measured 0.050 m behind that center, so wheel odometry converts
+The shared physical configuration places `camera_link` 0.055 m forward,
+0.015 m right, and 0.121 m above the geometric vehicle center:
+`base_link -> camera_link = (0.055, -0.015, 0.121)`. The wheel axle midpoint is
+measured 0.050 m behind that center, so wheel odometry converts
 the axle pose to `base_link` with `base_offset_x_m: 0.050`. ORB, wheel odometry
 and processed BMI088 ATT publish the vehicle center as `base_link`.
 

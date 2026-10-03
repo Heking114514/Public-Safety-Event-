@@ -22,12 +22,6 @@ std::string ConfigPath()
          "/config/arena_map.yaml";
 }
 
-std::string SyntheticConfigPath()
-{
-  return ament_index_cpp::get_package_share_directory("arena_path_planner") +
-         "/config/arena_map_synthetic.yaml";
-}
-
 PlannerConfig DiagramPointRobotConfig()
 {
   PlannerConfig config = ArenaPlanner::LoadConfig(ConfigPath());
@@ -401,9 +395,12 @@ TEST(ArenaPlanner, DefersBlockedTargetsAndKeepsPlanningReachableOnes)
     result.deferred_targets.end());
 }
 
-TEST(ArenaPlanner, RejectsSyntheticMapThatCannotFitVehicle)
+TEST(ArenaPlanner, RejectsOversizedVehicleThatCannotFitOfficialStart)
 {
-  const PlannerConfig config = ArenaPlanner::LoadConfig(SyntheticConfigPath());
+  PlannerConfig config = ArenaPlanner::LoadConfig(ConfigPath());
+  config.vehicle_length = 0.217;
+  config.vehicle_width = 0.210;
+  config.safety_margin = 0.040;
   const ArenaPlanner planner(config);
   const PlanResult result = planner.Plan(
     config.default_start, config.default_targets, config.default_labels, "shortest");

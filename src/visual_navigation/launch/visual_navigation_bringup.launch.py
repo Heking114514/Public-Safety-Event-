@@ -4,10 +4,12 @@ from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
+from vehicle_config import parameters_for
 
 
 def generate_launch_description():
     package_share = FindPackageShare("visual_navigation")
+    physical_parameters = parameters_for("waypoint_navigation")
     route_file = LaunchConfiguration("route_file")
     route_frame = LaunchConfiguration("route_frame")
     odom_topic = LaunchConfiguration("odom_topic")
@@ -62,8 +64,14 @@ def generate_launch_description():
                     [package_share, "config", "waypoint_navigation.yaml"]
                 ),
             ),
-            DeclareLaunchArgument("tracking_point_offset_x", default_value="0.0"),
-            DeclareLaunchArgument("tracking_point_offset_y", default_value="0.0"),
+            DeclareLaunchArgument(
+                "tracking_point_offset_x",
+                default_value=str(physical_parameters["tracking_point_offset_x"]),
+            ),
+            DeclareLaunchArgument(
+                "tracking_point_offset_y",
+                default_value=str(physical_parameters["tracking_point_offset_y"]),
+            ),
             DeclareLaunchArgument(
                 "fusion_status_topic", default_value="/odometry/fusion_status"
             ),
