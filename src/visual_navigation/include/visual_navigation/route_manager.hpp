@@ -1,8 +1,8 @@
 #ifndef VISUAL_NAVIGATION__ROUTE_MANAGER_HPP_
 #define VISUAL_NAVIGATION__ROUTE_MANAGER_HPP_
 
-#include <cmath>
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <fstream>
 #include <limits>
@@ -14,11 +14,9 @@
 
 #include "nav_msgs/msg/path.hpp"
 
-namespace visual_navigation
-{
+namespace visual_navigation {
 
-struct RouteWaypoint
-{
+struct RouteWaypoint {
   double x{0.0};
   double y{0.0};
   double yaw{std::numeric_limits<double>::quiet_NaN()};
@@ -26,17 +24,16 @@ struct RouteWaypoint
   double tolerance{0.0};
   double stop_time{0.0};
   bool turn_junction{false};
+  bool reverse_arrival_turn{false};
 };
 
 // Owns route parsing and comparison policy. The ROS node remains responsible
 // for route publication and mission-state transitions.
-class RouteManager
-{
+class RouteManager {
 public:
-  static bool LoadCsv(
-    const std::string & route_file, double default_speed, double default_tolerance,
-    std::vector<RouteWaypoint> & output, std::string & error)
-  {
+  static bool LoadCsv(const std::string &route_file, double default_speed,
+                      double default_tolerance,
+                      std::vector<RouteWaypoint> &output, std::string &error) {
     output.clear();
     error.clear();
     if (route_file.empty()) {
@@ -64,7 +61,8 @@ public:
       if (looks_like_header(fields))
         continue;
       if (fields.size() < 2) {
-        error = "Waypoint line " + std::to_string(line_number) + " requires at least x,y";
+        error = "Waypoint line " + std::to_string(line_number) +
+                " requires at least x,y";
         output.clear();
         return false;
       }
@@ -74,23 +72,27 @@ public:
         waypoint.y = std::stod(fields[1]);
         if (fields.size() > 2 && !fields[2].empty())
           waypoint.yaw = std::stod(fields[2]);
-        waypoint.speed = fields.size() > 3 && !fields[3].empty() ?
-          std::stod(fields[3]) : default_speed;
-        waypoint.tolerance = fields.size() > 4 && !fields[4].empty() ?
-          std::stod(fields[4]) : default_tolerance;
-        waypoint.stop_time = fields.size() > 5 && !fields[5].empty() ?
-          std::stod(fields[5]) : 0.0;
+        waypoint.speed = fields.size() > 3 && !fields[3].empty()
+                             ? std::stod(fields[3])
+                             : default_speed;
+        waypoint.tolerance = fields.size() > 4 && !fields[4].empty()
+                                 ? std::stod(fields[4])
+                                 : default_tolerance;
+        waypoint.stop_time = fields.size() > 5 && !fields[5].empty()
+                                 ? std::stod(fields[5])
+                                 : 0.0;
         if (!std::isfinite(waypoint.x) || !std::isfinite(waypoint.y) ||
-          !std::isfinite(waypoint.speed) || !std::isfinite(waypoint.tolerance) ||
-          !std::isfinite(waypoint.stop_time) || waypoint.speed < 0.0 ||
-          waypoint.tolerance <= 0.0 || waypoint.stop_time < 0.0)
-        {
-          throw std::runtime_error("waypoint values are outside their valid range");
+            !std::isfinite(waypoint.speed) ||
+            !std::isfinite(waypoint.tolerance) ||
+            !std::isfinite(waypoint.stop_time) || waypoint.speed < 0.0 ||
+            waypoint.tolerance <= 0.0 || waypoint.stop_time < 0.0) {
+          throw std::runtime_error(
+              "waypoint values are outside their valid range");
         }
         output.push_back(waypoint);
-      } catch (const std::exception & exception) {
-        error = "Invalid waypoint at line " + std::to_string(line_number) + ": " +
-          exception.what();
+      } catch (const std::exception &exception) {
+        error = "Invalid waypoint at line " + std::to_string(line_number) +
+                ": " + exception.what();
         output.clear();
         return false;
       }
@@ -103,9 +105,8 @@ public:
     return true;
   }
 
-  static bool Equivalent(
-    const std::vector<RouteWaypoint> & left, const std::vector<RouteWaypoint> & right)
-  {
+  static bool Equivalent(const std::vector<RouteWaypoint> &left,
+                         const std::vector<RouteWaypoint> &right) {
     if (left.size() != right.size())
       return false;
     constexpr double k_position_tolerance = 1e-4;
@@ -114,22 +115,24 @@ public:
       const bool left_yaw = std::isfinite(left[index].yaw);
       const bool right_yaw = std::isfinite(right[index].yaw);
       if (std::abs(left[index].x - right[index].x) > k_position_tolerance ||
-        std::abs(left[index].y - right[index].y) > k_position_tolerance ||
-        left[index].turn_junction != right[index].turn_junction ||
-        left_yaw != right_yaw ||
-        (left_yaw && std::abs(normalize_angle(left[index].yaw - right[index].yaw)) >
-        k_yaw_tolerance))
-      {
+          std::abs(left[index].y - right[index].y) > k_position_tolerance ||
+          left[index].turn_junction != right[index].turn_junction ||
+          left[index].reverse_arrival_turn !=
+              right[index].reverse_arrival_turn ||
+          left_yaw != right_yaw ||
+          (left_yaw &&
+           std::abs(normalize_angle(left[index].yaw - right[index].yaw)) >
+               k_yaw_tolerance)) {
         return false;
       }
     }
     return true;
   }
 
-  static bool LoadPath(
-    const nav_msgs::msg::Path & path, double default_speed, double default_tolerance,
-    std::vector<RouteWaypoint> & output, std::size_t & invalid_index, std::string & error)
-  {
+  static bool LoadPath(const nav_msgs::msg::Path &path, double default_speed,
+                       double default_tolerance,
+                       std::vector<RouteWaypoint> &output,
+                       std::size_t &invalid_index, std::string &error) {
     output.clear();
     error.clear();
     invalid_index = 0;
@@ -139,16 +142,19 @@ public:
     }
     output.reserve(path.poses.size());
     for (std::size_t index = 0; index < path.poses.size(); ++index) {
-      const auto & pose = path.poses[index].pose;
+      const auto &pose = path.poses[index].pose;
       const bool ordinary_height =
-        std::isfinite(pose.position.z) && std::abs(pose.position.z) <= 1.0e-6;
+          std::isfinite(pose.position.z) && std::abs(pose.position.z) <= 1.0e-6;
       const bool turn_junction_height =
-        std::isfinite(pose.position.z) &&
-        std::abs(pose.position.z - 1.0e-3) <= 1.0e-6;
+          std::isfinite(pose.position.z) &&
+          std::abs(pose.position.z - 1.0e-3) <= 1.0e-6;
+      const bool reverse_arrival_height =
+          std::isfinite(pose.position.z) &&
+          std::abs(pose.position.z - 2.0e-3) <= 1.0e-6;
       if (!std::isfinite(pose.position.x) || !std::isfinite(pose.position.y) ||
-        (!ordinary_height && !turn_junction_height) ||
-        !valid_quaternion(pose.orientation))
-      {
+          (!ordinary_height && !turn_junction_height &&
+           !reverse_arrival_height) ||
+          !valid_quaternion(pose.orientation)) {
         invalid_index = index;
         error = "waypoint pose is invalid";
         output.clear();
@@ -157,7 +163,8 @@ public:
       RouteWaypoint waypoint;
       waypoint.x = pose.position.x;
       waypoint.y = pose.position.y;
-      waypoint.turn_junction = turn_junction_height;
+      waypoint.turn_junction = turn_junction_height || reverse_arrival_height;
+      waypoint.reverse_arrival_turn = reverse_arrival_height;
       waypoint.yaw = quaternion_yaw(pose.orientation);
       waypoint.speed = default_speed;
       waypoint.tolerance = default_tolerance;
@@ -167,8 +174,7 @@ public:
   }
 
 private:
-  static std::string trim(const std::string & text)
-  {
+  static std::string trim(const std::string &text) {
     const std::string whitespace = " \t\r\n";
     const std::size_t first = text.find_first_not_of(whitespace);
     if (first == std::string::npos)
@@ -177,8 +183,7 @@ private:
     return text.substr(first, last - first + 1);
   }
 
-  static std::vector<std::string> split_csv(const std::string & line)
-  {
+  static std::vector<std::string> split_csv(const std::string &line) {
     std::vector<std::string> fields;
     std::stringstream stream(line);
     std::string field;
@@ -187,18 +192,17 @@ private:
     return fields;
   }
 
-  static bool looks_like_header(const std::vector<std::string> & fields)
-  {
+  static bool looks_like_header(const std::vector<std::string> &fields) {
     if (fields.empty())
       return false;
     std::string first = fields.front();
-    for (char & character : first)
-      character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+    for (char &character : first)
+      character = static_cast<char>(
+          std::tolower(static_cast<unsigned char>(character)));
     return first == "x" || first == "x[m]" || first == "x_m";
   }
 
-  static double normalize_angle(double angle)
-  {
+  static double normalize_angle(double angle) {
     constexpr double k_pi = 3.14159265358979323846;
     while (angle > k_pi)
       angle -= 2.0 * k_pi;
@@ -207,30 +211,32 @@ private:
     return angle;
   }
 
-  static bool valid_quaternion(const geometry_msgs::msg::Quaternion & quaternion)
-  {
+  static bool
+  valid_quaternion(const geometry_msgs::msg::Quaternion &quaternion) {
     if (!std::isfinite(quaternion.x) || !std::isfinite(quaternion.y) ||
-      !std::isfinite(quaternion.z) || !std::isfinite(quaternion.w))
-    {
+        !std::isfinite(quaternion.z) || !std::isfinite(quaternion.w)) {
       return false;
     }
-    const double norm_squared = quaternion.x * quaternion.x +
-      quaternion.y * quaternion.y + quaternion.z * quaternion.z + quaternion.w * quaternion.w;
+    const double norm_squared =
+        quaternion.x * quaternion.x + quaternion.y * quaternion.y +
+        quaternion.z * quaternion.z + quaternion.w * quaternion.w;
     return std::isfinite(norm_squared) && norm_squared > 1.0e-12;
   }
 
-  static double quaternion_yaw(const geometry_msgs::msg::Quaternion & quaternion)
-  {
+  static double
+  quaternion_yaw(const geometry_msgs::msg::Quaternion &quaternion) {
     const double norm_squared =
-      quaternion.x * quaternion.x + quaternion.y * quaternion.y +
-      quaternion.z * quaternion.z + quaternion.w * quaternion.w;
+        quaternion.x * quaternion.x + quaternion.y * quaternion.y +
+        quaternion.z * quaternion.z + quaternion.w * quaternion.w;
     return std::atan2(
-      2.0 * (quaternion.w * quaternion.z + quaternion.x * quaternion.y) / norm_squared,
-      1.0 - 2.0 * (quaternion.y * quaternion.y + quaternion.z * quaternion.z) /
-      norm_squared);
+        2.0 * (quaternion.w * quaternion.z + quaternion.x * quaternion.y) /
+            norm_squared,
+        1.0 - 2.0 *
+                  (quaternion.y * quaternion.y + quaternion.z * quaternion.z) /
+                  norm_squared);
   }
 };
 
-}  // namespace visual_navigation
+} // namespace visual_navigation
 
-#endif  // VISUAL_NAVIGATION__ROUTE_MANAGER_HPP_
+#endif // VISUAL_NAVIGATION__ROUTE_MANAGER_HPP_

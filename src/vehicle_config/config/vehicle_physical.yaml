@@ -5,7 +5,7 @@ schema_version: 1
 
 chassis:
   length_m: 0.1485
-  width_m: 0.1535
+  width_m: 0.1250
 
 differential_drive:
   wheel_radius_m: 0.0302
@@ -17,7 +17,7 @@ differential_drive:
   yaw_slip_scale: 1.0
   max_wheel_speed_mps: 1.0
   # Position of base_link measured from the wheel axle midpoint.
-  base_link_offset_x_m: 0.050
+  base_link_offset_x_m: 0.030
   base_link_offset_y_m: 0.000
 
 # Navigation routes and odometry both describe the base_link centre.

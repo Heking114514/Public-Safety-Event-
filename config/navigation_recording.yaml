@@ -29,6 +29,15 @@ navigation_recording:
     - /arena_path_planner/arena_path
     - /arena_path_planner/navigation_path
     - /arena_path_planner/map
+    - /new_map_planner/route_plan
+    - /new_map_planner/arena_path
+    - /new_map_planner/navigation_path
+    - /new_map_planner/map
+    - /navigation_mission/state
+    - /navigation_mission/status_text
+    - /navigation_mission/reported_event
+    - /perception/event_candidate
+    - /perception/dynamic_obstacle
     - /waypoint_navigation/route_ack
     - /waypoint_navigation/status
     - /waypoint_navigation/current_waypoint

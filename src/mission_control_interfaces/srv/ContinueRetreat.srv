@@ -1,0 +1,6 @@
+float64 minimum_distance_m
+---
+bool accepted
+bool trace_exhausted
+uint32 remaining_breadcrumbs
+string message

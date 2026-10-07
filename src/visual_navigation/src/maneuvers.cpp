@@ -47,31 +47,37 @@ WaypointNavigator::RunBrake(const ControlFrame &frame) {
   }
 
   const Waypoint &nextTarget = waypoints_[currentWaypointIndex_ + 1];
-  const double nextHeading = std::atan2(
-      nextTarget.y - frame.target.y, nextTarget.x - frame.target.x);
+  const double nextHeading =
+      std::atan2(nextTarget.y - frame.target.y, nextTarget.x - frame.target.x);
   const bool routeStartTurn = currentWaypointIndex_ == 0 &&
-      routeStartTurnAuthorized_ && frame.target.turn_junction;
+                              routeStartTurnAuthorized_ &&
+                              frame.target.turn_junction;
   const bool plannedReverse = visual_navigation::IsOutAndBackWaypoint(
       pathSegmentStartX_, pathSegmentStartY_, frame.target.x, frame.target.y,
       nextTarget.x, nextTarget.y, 0.02, 0.05);
-  const double arrivalHeading = routeStartTurn
-      ? currentYaw_
-      : NormalizeAngle(frame.path_heading +
-                       (reverseSegmentActive_ ? kPi : 0.0));
+  const bool reverseArrivalTurn =
+      frame.target.reverse_arrival_turn && reverseSegmentActive_;
+  const double arrivalHeading =
+      routeStartTurn
+          ? currentYaw_
+          : NormalizeAngle(
+                frame.path_heading +
+                (reverseSegmentActive_ && !reverseArrivalTurn ? kPi : 0.0));
   const double plannedTurnError = NormalizeAngle(nextHeading - arrivalHeading);
   stoppedTurnArrivalHeading_ = arrivalHeading;
   stoppedTurnTargetHeading_ = nextHeading;
-  stoppedAtPlannedTurn_ =
-      frame.target.turn_junction && !plannedReverse &&
-      std::abs(plannedTurnError) >= 0.70;
+  stoppedTurnReverseArrival_ = reverseArrivalTurn;
+  stoppedAtPlannedTurn_ = frame.target.turn_junction && !plannedReverse &&
+                          std::abs(plannedTurnError) >= 0.70;
   if (stoppedAtPlannedTurn_) {
     lastStoppedTurnIndex_ = currentWaypointIndex_;
     firstHalfTurnPending_ = std::abs(plannedTurnError) > 2.35;
     if (firstHalfTurnPending_)
-      firstHalfTurnYaw_ = visual_navigation::FirstHalfTurnYaw(
-          arrivalHeading, nextHeading);
+      firstHalfTurnYaw_ =
+          visual_navigation::FirstHalfTurnYaw(arrivalHeading, nextHeading);
   } else {
     firstHalfTurnPending_ = false;
+    stoppedTurnReverseArrival_ = false;
   }
   routeStartTurnAuthorized_ = false;
   reverseSegmentActive_ = plannedReverse;
@@ -95,13 +101,13 @@ void WaypointNavigator::RunGoal(const ControlFrame &frame) {
   if (std::isfinite(frame.target.yaw) &&
       std::abs(NormalizeAngle(frame.target.yaw - currentYaw_)) >
           finalYawTolerance_) {
-    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 3000,
-                         "Skipping terminal pivot away from a confirmed junction");
+    RCLCPP_INFO_THROTTLE(
+        get_logger(), *get_clock(), 3000,
+        "Skipping terminal pivot away from a confirmed junction");
   }
   if (!visual_navigation::FinalPositionCanComplete(
           controlState_.goal_captured(), frame.distance,
-          std::max(frame.target.tolerance,
-                   finalPositionReleaseTolerance_))) {
+          std::max(frame.target.tolerance, finalPositionReleaseTolerance_))) {
     BeginFinalPositionRecovery();
     return;
   }
@@ -122,12 +128,12 @@ void WaypointNavigator::RunRecovery(const ControlFrame &frame,
   const double recoveryHeading = std::atan2(frame.delta_y, frame.delta_x);
   const double forwardError = NormalizeAngle(recoveryHeading - currentYaw_);
   const bool reverse = plannedReverse || std::abs(forwardError) > kPi / 2.0;
-  const double recoveryHeadingError = NormalizeAngle(
-      recoveryHeading - (reverse ? kPi : 0.0) - currentYaw_);
-  const double requestedAngularSpeed =
-      Clamp(angularGain_ * recoveryHeadingError -
-                turnYawRateDamping_ * frame.control_yaw_rate,
-            -waypointRecoveryMaxAngularSpeed_, waypointRecoveryMaxAngularSpeed_);
+  const double recoveryHeadingError =
+      NormalizeAngle(recoveryHeading - (reverse ? kPi : 0.0) - currentYaw_);
+  const double requestedAngularSpeed = Clamp(
+      angularGain_ * recoveryHeadingError -
+          turnYawRateDamping_ * frame.control_yaw_rate,
+      -waypointRecoveryMaxAngularSpeed_, waypointRecoveryMaxAngularSpeed_);
   geometry_msgs::msg::Twist command;
   command.angular.z = requestedAngularSpeed;
   command.linear.x =
@@ -140,14 +146,13 @@ void WaypointNavigator::RunRecovery(const ControlFrame &frame,
       Clamp(frame.path_length - frame.distance, 0.0, frame.path_length);
   if (SupervisePathProgress(
           recoveryProgress, frame.progress_supervision_allowed,
-          lastMotionCommand_.linear.x,
-          inputCache_.odometry_velocity(),
-          inputCache_.odometry_velocity_valid(),
-          true)) {
+          lastMotionCommand_.linear.x, inputCache_.odometry_velocity(),
+          inputCache_.odometry_velocity_valid(), true)) {
     return;
   }
   turnProgressSupervisor_.Reset();
   PublishMotionCommand(command);
-  SetState(plannedReverse ? "REVERSING_PLANNED_RETREAT"
-                          : visual_navigation::phase_status(controlState_.phase()));
+  SetState(plannedReverse
+               ? "REVERSING_PLANNED_RETREAT"
+               : visual_navigation::phase_status(controlState_.phase()));
 }

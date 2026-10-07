@@ -56,6 +56,10 @@ class NavigationConfigTest(unittest.TestCase):
             "/cmd_vel_nav",
             "/cup_car_serial/control_telemetry",
             "/arena_path_planner/map",
+            "/new_map_planner/route_plan",
+            "/new_map_planner/map",
+            "/navigation_mission/state",
+            "/navigation_mission/reported_event",
             "/diagnostics",
             "/parameter_events",
             "/rosout",
@@ -64,9 +68,9 @@ class NavigationConfigTest(unittest.TestCase):
         }
         self.assertTrue(required.issubset(topics))
         point_cloud_topics = [
-            topic for topic in topics
-            if "pointcloud" in topic.lower()
-            or topic.lower().endswith("/points")
+            topic
+            for topic in topics
+            if "pointcloud" in topic.lower() or topic.lower().endswith("/points")
         ]
         self.assertEqual([], point_cloud_topics)
         self.assertNotIn("/camera/camera/infra1/image_rect_raw", topics)
@@ -137,9 +141,9 @@ class NavigationConfigTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             startup_data = yaml.safe_load(STARTUP.read_text(encoding="utf-8"))
-            startup_data["navigation_startup"]["odom_topic"] = (
-                "/odometry/landmark_corrected"
-            )
+            startup_data["navigation_startup"][
+                "odom_topic"
+            ] = "/odometry/landmark_corrected"
             startup = root / "startup.yaml"
             startup.write_text(yaml.safe_dump(startup_data), encoding="utf-8")
             result, records = read_records(startup=startup)
@@ -153,9 +157,7 @@ class NavigationConfigTest(unittest.TestCase):
             root = Path(temporary)
             marker = root / "executed"
             startup_data = yaml.safe_load(STARTUP.read_text(encoding="utf-8"))
-            startup_data["navigation_startup"]["serial_device"] = (
-                f"$(touch {marker})"
-            )
+            startup_data["navigation_startup"]["serial_device"] = f"$(touch {marker})"
             startup = root / "startup.yaml"
             startup.write_text(yaml.safe_dump(startup_data), encoding="utf-8")
             script = f"""

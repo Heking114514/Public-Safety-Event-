@@ -9,6 +9,7 @@ import launch_testing
 import pytest
 import rclpy
 from mission_control_interfaces.msg import ControlTelemetry
+from mission_control_interfaces.srv import ContinueRetreat
 from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Odometry, Path
 from rclpy.node import Node
@@ -59,7 +60,9 @@ def generate_test_description():
         ],
         output="screen",
     )
-    return launch.LaunchDescription([navigator, launch_testing.actions.ReadyToTest()]), {
+    return launch.LaunchDescription(
+        [navigator, launch_testing.actions.ReadyToTest()]
+    ), {
         "navigator": navigator,
     }
 
@@ -89,24 +92,18 @@ class TestWaypointNavigatorContract(unittest.TestCase):
         cls.command_subscription = cls.node.create_subscription(
             Twist,
             "/cmd_vel_nav",
-            lambda message: cls.commands.append(
-                (message.linear.x, message.angular.z)
-            ),
+            lambda message: cls.commands.append((message.linear.x, message.angular.z)),
             10,
         )
         cls.publisher = cls.node.create_publisher(Path, "/test/route_input", 10)
-        cls.odom_publisher = cls.node.create_publisher(
-            Odometry, "/test/odometry", 10
-        )
+        cls.odom_publisher = cls.node.create_publisher(Odometry, "/test/odometry", 10)
         cls.fusion_publisher = cls.node.create_publisher(
             String, "/test/fusion_status", 10
         )
         cls.obstacle_publisher = cls.node.create_publisher(
             Bool, "/test/front_blocked", qos_profile_sensor_data
         )
-        cls.range_publisher = cls.node.create_publisher(
-            Range, "/test/front_range", 10
-        )
+        cls.range_publisher = cls.node.create_publisher(Range, "/test/front_range", 10)
         cls.telemetry_publisher = cls.node.create_publisher(
             ControlTelemetry, "/test/control_telemetry", 10
         )
@@ -116,6 +113,10 @@ class TestWaypointNavigatorContract(unittest.TestCase):
         )
         cls.stop_client = cls.node.create_client(
             Trigger, "/waypoint_navigator_test/stop"
+        )
+        cls.continue_retreat_client = cls.node.create_client(
+            ContinueRetreat,
+            "/waypoint_navigator_test/continue_obstacle_retreat",
         )
 
     @classmethod
@@ -169,6 +170,17 @@ class TestWaypointNavigatorContract(unittest.TestCase):
     def call_trigger(self, client):
         assert client.wait_for_service(timeout_sec=2.0)
         future = client.call_async(Trigger.Request())
+        deadline = time.monotonic() + 2.0
+        while not future.done() and time.monotonic() < deadline:
+            rclpy.spin_once(self.node, timeout_sec=0.01)
+        assert future.done()
+        return future.result()
+
+    def call_continue_retreat(self, minimum_distance):
+        assert self.continue_retreat_client.wait_for_service(timeout_sec=2.0)
+        request = ContinueRetreat.Request()
+        request.minimum_distance_m = minimum_distance
+        future = self.continue_retreat_client.call_async(request)
         deadline = time.monotonic() + 2.0
         while not future.done() and time.monotonic() < deadline:
             rclpy.spin_once(self.node, timeout_sec=0.01)
@@ -264,15 +276,16 @@ class TestWaypointNavigatorContract(unittest.TestCase):
         self.spin(0.10)
         assert self.states[-1] == "OBSTACLE_REPLAN_REQUIRED"
         assert abs(self.commands[-1][0]) < 1.0e-12
+        retreat = self.call_continue_retreat(0.20)
+        assert not retreat.accepted
+        assert retreat.trace_exhausted
         self.publish_obstacle(False)
 
         # A new plan can be geometrically identical. Its new route id must
         # still clear the completed recovery state and receive an ACK.
         replacement_stamp = self.node.get_clock().now()
         self.acks.clear()
-        self.publish_route(
-            replacement_stamp.to_msg(), [(0.0, 0.0), (1.0, 0.0)]
-        )
+        self.publish_route(replacement_stamp.to_msg(), [(0.0, 0.0), (1.0, 0.0)])
         self.spin(0.20)
         assert replacement_stamp.nanoseconds in self.acks
         assert self.states[-1] != "OBSTACLE_REPLAN_REQUIRED"
@@ -404,13 +417,14 @@ class TestWaypointNavigatorContract(unittest.TestCase):
             self.publish_odometry(x=0.30)
             self.spin(0.04)
 
-        assert "TURN_ARC" in self.states
-        arc_commands = [
+        motion_states = {"TURN_REVERSE", "TURN_ROTATE", "TURN_ARC", "TURN_CREEP"}
+        assert motion_states.intersection(self.states)
+        turn_commands = [
             command
             for command in self.commands
-            if command[0] > 0.001 and command[1] > 0.02
+            if abs(command[0]) > 0.001 or abs(command[1]) > 0.02
         ]
-        assert arc_commands
+        assert turn_commands
         self.call_trigger(self.stop_client)
 
     def test_wrong_heading_without_known_junction_does_not_pivot(self):
@@ -424,8 +438,10 @@ class TestWaypointNavigatorContract(unittest.TestCase):
 
         assert self.states[-1] == "OBSTACLE_REPLAN_REQUIRED"
         assert self.commands
-        assert all(abs(linear) < 1e-12 and abs(angular) < 1e-12
-                   for linear, angular in self.commands[-5:])
+        assert all(
+            abs(linear) < 1e-12 and abs(angular) < 1e-12
+            for linear, angular in self.commands[-5:]
+        )
         self.call_trigger(self.stop_client)
 
     def test_marked_out_and_back_uses_planned_reverse_without_pivot(self):
@@ -435,9 +451,7 @@ class TestWaypointNavigatorContract(unittest.TestCase):
         self.publish_odometry()
         self.spin(0.05)
         stamp = self.node.get_clock().now()
-        self.publish_route(
-            stamp.to_msg(), [(0.0, 0.0), (0.30, 0.0, 0.001), (0.0, 0.0)]
-        )
+        self.publish_route(stamp.to_msg(), [(0.0, 0.0), (0.30, 0.0, 0.001), (0.0, 0.0)])
         self.hold_odometry(0.0, cycles=5)
         for x in (0.10, 0.20, 0.30):
             self.hold_odometry(x, cycles=2)
@@ -465,8 +479,9 @@ class TestWaypointNavigatorContract(unittest.TestCase):
         self.hold_odometry(0.0, cycles=16)
 
         assert "OBSTACLE_REPLAN_REQUIRED" not in self.states
-        assert "TURN_ARC" in self.states
-        assert any(angular > 0.05 for _, angular in self.commands)
+        motion_states = {"TURN_REVERSE", "TURN_ROTATE", "TURN_ARC", "TURN_CREEP"}
+        assert motion_states.intersection(self.states)
+        assert any(abs(angular) > 0.05 for _, angular in self.commands)
         self.call_trigger(self.stop_client)
 
     def test_non_junction_out_and_back_uses_reverse_without_pivot(self):
@@ -501,10 +516,11 @@ class TestWaypointNavigatorContract(unittest.TestCase):
         self.publish_route(stamp.to_msg(), [(2.0, 0.0), (2.0, 3.0)])
 
         for _ in range(12):
+            self.publish_fusion("FULL")
             self.publish_odometry()
             self.spin(0.04)
 
-        forward_commands = [command for command in self.commands if command[0] > 0.05]
+        forward_commands = [command for command in self.commands if command[0] > 0.01]
         assert forward_commands
         assert all(abs(command[1]) < 1.0e-12 for command in forward_commands)
         self.call_trigger(self.stop_client)

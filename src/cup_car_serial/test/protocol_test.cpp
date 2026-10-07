@@ -57,6 +57,30 @@ TEST(Protocol, ParsesBmi088AttitudeFrame)
   EXPECT_EQ(frame.startup_samples, 600U);
 }
 
+TEST(Protocol, ParsesRfidFrameWithNumber)
+{
+  cup_car_serial::RfidFrame frame;
+  ASSERT_TRUE(cup_car_serial::parse_rfid_frame(
+      "RFID,1250,7,51,0,4,8,12,56C68E89", &frame));
+  EXPECT_EQ(frame.mcu_time_ms, 1250U);
+  EXPECT_EQ(frame.card_sequence, 7U);
+  EXPECT_EQ(frame.status, 51U);
+  EXPECT_EQ(frame.protocol_status, 0U);
+  EXPECT_EQ(frame.tag_type, 4U);
+  EXPECT_EQ(frame.sak, 8U);
+  EXPECT_EQ(frame.number, 12U);
+  EXPECT_EQ(frame.uid_hex, "56C68E89");
+}
+
+TEST(Protocol, ParsesLegacyRfidFrameWithoutNumber)
+{
+  cup_car_serial::RfidFrame frame;
+  ASSERT_TRUE(cup_car_serial::parse_rfid_frame(
+      "RFID,1250,7,19,0,4,8,56C68E89", &frame));
+  EXPECT_EQ(frame.number, 0U);
+  EXPECT_EQ(frame.uid_hex, "56C68E89");
+}
+
 TEST(Protocol, RejectsMalformedBmi088Frames)
 {
   cup_car_serial::Bmi088ImuFrame imu;
@@ -67,6 +91,17 @@ TEST(Protocol, RejectsMalformedBmi088Frames)
       "IMU,1,2,1,0,0,40000,0", &imu));
   EXPECT_FALSE(cup_car_serial::parse_bmi088_attitude_frame(
       "ATT,1,2,1,0,0,0", &attitude));
+}
+
+TEST(Protocol, RejectsMalformedRfidFrames)
+{
+  cup_car_serial::RfidFrame frame;
+  EXPECT_FALSE(cup_car_serial::parse_rfid_frame(
+      "RFID,1,2,3,4,5,6,13,56C68E89", &frame));
+  EXPECT_FALSE(cup_car_serial::parse_rfid_frame(
+      "RFID,1,2,3,4,5,6,1,56C68E8", &frame));
+  EXPECT_FALSE(cup_car_serial::parse_rfid_frame(
+      "RFID,1,2,3,4,70000,6,1,56C68E89", &frame));
 }
 
 TEST(Protocol, AcceptsNeverReceivedCommandAge)

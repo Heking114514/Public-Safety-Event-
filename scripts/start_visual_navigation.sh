@@ -198,7 +198,7 @@ Options:
   -h, --help                Show this help
 
 With no options the stack waits for the planning GUI. In a second terminal run
-scripts/start_arena_planner.sh and click its start-navigation button.
+scripts/start_new_map_planner.sh and click its navigation button.
 EOF
 }
 
@@ -498,6 +498,27 @@ prepare_camera_imu() {
   fi
 }
 
+prepare_cmake_build_dir() {
+  local source_dir="$1" build_dir="$2"
+  local cache_file="${build_dir}/CMakeCache.txt"
+  local expected_source expected_build cached_source cached_build
+
+  [[ -d "${source_dir}" ]] || fail "CMake source directory does not exist: ${source_dir}"
+  expected_source="${source_dir}"
+  mkdir -p -- "${build_dir}"
+  expected_build="${build_dir}"
+
+  [[ -f "${cache_file}" ]] || return 0
+  cached_source="$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' "${cache_file}" | head -n 1)"
+  cached_build="$(sed -n 's/^CMAKE_CACHEFILE_DIR:INTERNAL=//p' "${cache_file}" | head -n 1)"
+  if [[ ( -n "${cached_source}" && "${cached_source}" != "${expected_source}" ) ||
+        ( -n "${cached_build}" && "${cached_build}" != "${expected_build}" ) ]]; then
+    log "Discarding CMake cache from a different checkout: ${cache_file}"
+    rm -rf -- "${build_dir}"
+    mkdir -p -- "${build_dir}"
+  fi
+}
+
 build_orb_slam3() {
   local dbow_build="${ORB_ROOT}/Thirdparty/DBoW2/build"
   local g2o_build="${ORB_ROOT}/Thirdparty/g2o/build"
@@ -509,12 +530,14 @@ build_orb_slam3() {
   fi
 
   log "Building DBoW2 incrementally"
+  prepare_cmake_build_dir "${ORB_ROOT}/Thirdparty/DBoW2" "${dbow_build}"
   "${CMAKE_COMMAND}" -S "${ORB_ROOT}/Thirdparty/DBoW2" -B "${dbow_build}" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5
   "${CMAKE_COMMAND}" --build "${dbow_build}" --parallel "${BUILD_JOBS}"
 
   log "Building g2o incrementally"
+  prepare_cmake_build_dir "${ORB_ROOT}/Thirdparty/g2o" "${g2o_build}"
   "${CMAKE_COMMAND}" -S "${ORB_ROOT}/Thirdparty/g2o" -B "${g2o_build}" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CXX_STANDARD=14 \
@@ -522,6 +545,7 @@ build_orb_slam3() {
   "${CMAKE_COMMAND}" --build "${g2o_build}" --parallel "${BUILD_JOBS}"
 
   log "Building ORB-SLAM3"
+  prepare_cmake_build_dir "${ORB_ROOT}" "${orb_build}"
   "${CMAKE_COMMAND}" -S "${ORB_ROOT}" -B "${orb_build}" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
@@ -748,7 +772,7 @@ if [[ "${CONTROL_MODE}" == "primitive_rectangle" ]]; then
 elif [[ "${ROUTE_MODE}" == "csv" ]]; then
   log "Route mode: CSV autostart (${ROUTE_FILE})"
 else
-  log "Route mode: planner GUI; run scripts/start_arena_planner.sh in terminal 2"
+  log "Route mode: planner GUI; run scripts/start_new_map_planner.sh in terminal 2"
 fi
 log "IMU filter: ${USE_IMU}; SLAM IMU fusion: ${USE_SLAM_IMU}; odom_topic: ${ODOM_TOPIC}; CLAHE: ${EQUALIZE}; visualization: ${VISUALIZATION}; autostart: ${AUTOSTART}"
 log "Navigation tracking point offset: x=${TRACKING_POINT_OFFSET_X} m, y=${TRACKING_POINT_OFFSET_Y} m"

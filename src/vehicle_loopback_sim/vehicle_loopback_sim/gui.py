@@ -13,16 +13,23 @@ import threading
 from typing import Any
 
 from ament_index_python.packages import get_package_share_directory
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Point32, PolygonStamped, Twist
 from mission_control_interfaces.msg import ControlTelemetry
 from nav_msgs.msg import OccupancyGrid, Odometry, Path as NavPath
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from std_msgs.msg import Int32, String
+from std_msgs.msg import Empty, Int32, String
 from vehicle_config import load_vehicle_physical_config
 
-from .arena_layout import arena_pose_to_map, layout_from_config, transform_from_config
+from .arena_layout import (
+    arena_pose_to_map,
+    layout_from_config,
+    nearest_lane_geometry,
+    transform_from_config,
+)
+from .obstacle import box_obstacle
 
 
 def _yaw_from_quaternion(quaternion) -> float:
@@ -91,6 +98,7 @@ class VehicleLoopbackGui(Node):
         self._navigator_status = "waiting"
         self._current_waypoint = -1
         self._trail: list[dict[str, float]] = []
+        self._manual_obstacles: list[list[dict[str, float]]] = []
         self._max_trail_points = max(
             10, int(self.get_parameter("max_trail_points").value)
         )
@@ -170,6 +178,16 @@ class VehicleLoopbackGui(Node):
             self._handle_map,
             durable_qos,
         )
+        self._manual_obstacle_publisher = self.create_publisher(
+            PolygonStamped,
+            str(self.get_parameter("manual_obstacle_topic").value),
+            default_qos,
+        )
+        self._clear_manual_obstacles_publisher = self.create_publisher(
+            Empty,
+            str(self.get_parameter("clear_manual_obstacles_topic").value),
+            default_qos,
+        )
 
         publish_rate_hz = max(1.0, float(self.get_parameter("publish_rate_hz").value))
         self.create_timer(1.0 / publish_rate_hz, self._publish_live_state)
@@ -195,6 +213,7 @@ class VehicleLoopbackGui(Node):
 
     def _declare_parameters(self) -> None:
         declarations = {
+            "display_name": "Loopback Navigation GUI",
             "host": "127.0.0.1",
             "port": 8765,
             "publish_rate_hz": 12.0,
@@ -207,10 +226,17 @@ class VehicleLoopbackGui(Node):
             "navigator_status_topic": "/waypoint_navigation/status",
             "current_waypoint_topic": "/waypoint_navigation/current_waypoint",
             "waypoint_path_topic": "/waypoint_path",
-            "navigation_path_topic": "/arena_path_planner/navigation_path",
-            "arena_path_topic": "/arena_path_planner/arena_path",
-            "map_topic": "/arena_path_planner/map",
+            "navigation_path_topic": "/new_map_planner/navigation_path",
+            "arena_path_topic": "/new_map_planner/arena_path",
+            "map_topic": "/new_map_planner/map",
             "mission_status_topic": "/vehicle_loopback_sim/mission_status",
+            "manual_obstacle_topic": "/vehicle_loopback_sim/manual_obstacle",
+            "clear_manual_obstacles_topic": "/vehicle_loopback_sim/clear_obstacles",
+            "manual_obstacle_width_m": 0.20,
+            "manual_obstacle_depth_m": 0.10,
+            "obstacle_detection_trigger_range_m": 0.25,
+            "obstacle_detection_trigger_jitter_m": 0.0,
+            "obstacle_detection_fov_rad": 0.40,
             "arena_config": self._default_arena_config(),
         }
         self.declare_parameters("", list(declarations.items()))
@@ -218,9 +244,9 @@ class VehicleLoopbackGui(Node):
     def _default_arena_config(self) -> str:
         try:
             return str(
-                Path(get_package_share_directory("arena_path_planner"))
+                Path(get_package_share_directory("new_map_planner"))
                 / "config"
-                / "arena_map.yaml"
+                / "arena.yaml"
             )
         except Exception:
             return ""
@@ -239,11 +265,38 @@ class VehicleLoopbackGui(Node):
 
     def _initial_state(self) -> dict[str, Any]:
         return {
+            "display_name": str(self.get_parameter("display_name").value),
             "vehicle": {
                 "length_m": self._vehicle.length_m,
                 "width_m": self._vehicle.width_m,
                 "wheel_track_m": self._vehicle.wheel_track_m,
                 "base_link_offset_x_m": self._vehicle.base_link_offset_x_m,
+                "camera_x_m": self._vehicle.camera_x_m,
+                "camera_y_m": self._vehicle.camera_y_m,
+            },
+            "obstacle_detection": {
+                "sensor_x_m": self._vehicle.camera_x_m,
+                "sensor_y_m": self._vehicle.camera_y_m,
+                "trigger_range_m": max(
+                    0.0,
+                    float(
+                        self.get_parameter(
+                            "obstacle_detection_trigger_range_m"
+                        ).value
+                    ),
+                ),
+                "trigger_jitter_m": max(
+                    0.0,
+                    float(
+                        self.get_parameter(
+                            "obstacle_detection_trigger_jitter_m"
+                        ).value
+                    ),
+                ),
+                "fov_rad": max(
+                    0.01,
+                    float(self.get_parameter("obstacle_detection_fov_rad").value),
+                ),
             },
             "pose": None,
             "twist": {"linear_x_mps": 0.0, "angular_z_rps": 0.0},
@@ -258,8 +311,52 @@ class VehicleLoopbackGui(Node):
             "waypoint_path": {"frame_id": "", "poses": []},
             "navigation_path": {"frame_id": "", "poses": []},
             "arena_path": {"frame_id": "", "poses": []},
+            "manual_obstacles": [],
             "map": None,
         }
+
+    def _add_manual_obstacle(self, x_m: float, y_m: float) -> dict[str, Any]:
+        width_m = float(self.get_parameter("manual_obstacle_width_m").value)
+        depth_m = float(self.get_parameter("manual_obstacle_depth_m").value)
+        lane = nearest_lane_geometry(self._arena_layout, x_m, y_m, width_m)
+        center_x_m = float(lane["x_m"]) if lane is not None else x_m
+        center_y_m = float(lane["y_m"]) if lane is not None else y_m
+        yaw_rad = float(lane["yaw_rad"]) if lane is not None else 0.0
+        width_m = float(lane["width_m"]) if lane is not None else width_m
+        values = (center_x_m, center_y_m, width_m, depth_m, yaw_rad)
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError("manual obstacle values must be finite")
+        if width_m <= 0.0 or depth_m <= 0.0:
+            raise ValueError("manual obstacle dimensions must be positive")
+
+        polygon = [
+            {"x_m": x, "y_m": y}
+            for x, y in box_obstacle(center_x_m, center_y_m, width_m, depth_m, yaw_rad)
+        ]
+        self._manual_obstacles.append(polygon)
+        self._state.update({"manual_obstacles": self._manual_obstacles})
+
+        message = PolygonStamped()
+        message.header.stamp = self.get_clock().now().to_msg()
+        message.header.frame_id = "map"
+        message.polygon.points = [
+            Point32(x=point["x_m"], y=point["y_m"], z=0.0) for point in polygon
+        ]
+        self._manual_obstacle_publisher.publish(message)
+        self.get_logger().info(
+            "manual obstacle placed from GUI: "
+            f"x={center_x_m:.3f} y={center_y_m:.3f} yaw={yaw_rad:.3f} "
+            f"width={width_m:.3f} lane={lane['label'] if lane is not None else 'none'} "
+            f"count={len(self._manual_obstacles)}"
+        )
+        return {"manual_obstacles": copy.deepcopy(self._manual_obstacles)}
+
+    def _clear_manual_obstacles(self) -> dict[str, Any]:
+        self._manual_obstacles.clear()
+        self._state.update({"manual_obstacles": self._manual_obstacles})
+        self._clear_manual_obstacles_publisher.publish(Empty())
+        self.get_logger().info("manual obstacles cleared from GUI")
+        return {"manual_obstacles": []}
 
     def _make_server(self, host: str, port: int) -> ThreadingHTTPServer:
         index_path = (
@@ -268,6 +365,7 @@ class VehicleLoopbackGui(Node):
             / "index.html"
         )
         state = self._state
+        owner = self
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:
@@ -284,15 +382,59 @@ class VehicleLoopbackGui(Node):
                     self.send_header("Cache-Control", "no-store")
                     self.send_header("Content-Length", str(len(payload)))
                     self.end_headers()
-                    self.wfile.write(payload)
+                    try:
+                        self.wfile.write(payload)
+                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        pass
                     return
                 if self.path == "/events":
                     self._serve_events()
                     return
                 self.send_error(HTTPStatus.NOT_FOUND)
 
+            def do_POST(self) -> None:
+                if self.path == "/manual_obstacles":
+                    try:
+                        payload = self._read_json()
+                        updates = owner._add_manual_obstacle(
+                            float(payload["x_m"]),
+                            float(payload["y_m"]),
+                        )
+                    except (KeyError, TypeError, ValueError) as error:
+                        self._send_json(
+                            HTTPStatus.BAD_REQUEST,
+                            {"error": str(error)},
+                        )
+                        return
+                    self._send_json(HTTPStatus.OK, {"state": updates})
+                    return
+                if self.path == "/manual_obstacles/clear":
+                    updates = owner._clear_manual_obstacles()
+                    self._send_json(HTTPStatus.OK, {"state": updates})
+                    return
+                self.send_error(HTTPStatus.NOT_FOUND)
+
             def log_message(self, fmt: str, *args) -> None:
                 return
+
+            def _read_json(self) -> dict[str, Any]:
+                length = int(self.headers.get("Content-Length", "0"))
+                if length <= 0 or length > 4096:
+                    raise ValueError("invalid JSON request length")
+                payload = self.rfile.read(length)
+                data = json.loads(payload.decode("utf-8"))
+                if not isinstance(data, dict):
+                    raise ValueError("JSON request must be an object")
+                return data
+
+            def _send_json(self, status: HTTPStatus, data: dict[str, Any]) -> None:
+                payload = json.dumps(data, separators=(",", ":")).encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
 
             def _serve_file(self, path: Path, content_type: str) -> None:
                 try:
@@ -403,7 +545,11 @@ class VehicleLoopbackGui(Node):
         self._state.update(
             {
                 field: {
-                    "frame_id": "map" if message.header.frame_id == "arena" else message.header.frame_id,
+                    "frame_id": (
+                        "map"
+                        if message.header.frame_id == "arena"
+                        else message.header.frame_id
+                    ),
                     "poses": poses,
                 }
             }
@@ -466,7 +612,7 @@ def main(args=None) -> None:
     node = VehicleLoopbackGui()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()

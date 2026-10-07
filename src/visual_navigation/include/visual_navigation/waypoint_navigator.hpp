@@ -19,6 +19,7 @@
 #include "geometry_msgs/msg/twist.hpp"
 #include "mission_control_interfaces/msg/control_telemetry.hpp"
 #include "mission_control_interfaces/msg/motion_hold_state.hpp"
+#include "mission_control_interfaces/srv/continue_retreat.hpp"
 #include "mission_control_interfaces/srv/set_motion_hold.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "nav_msgs/msg/path.hpp"
@@ -184,6 +185,12 @@ private:
       mission_control_interfaces::srv::SetMotionHold::Response::SharedPtr
           response);
 
+  void HandleContinueRetreat(
+      const mission_control_interfaces::srv::ContinueRetreat::Request::SharedPtr
+          request,
+      mission_control_interfaces::srv::ContinueRetreat::Response::SharedPtr
+          response);
+
   void HandleReset(const std_srvs::srv::Trigger::Request::SharedPtr,
                    std_srvs::srv::Trigger::Response::SharedPtr response);
 
@@ -282,6 +289,8 @@ private:
 
   void PublishMotionCommand(const geometry_msgs::msg::Twist &desired,
                             bool forceZeroLinear = false);
+
+  void PublishRecordedCommand(const geometry_msgs::msg::Twist &recorded);
 
   void PublishCurrentWaypoint();
 
@@ -422,6 +431,7 @@ private:
   double firstHalfTurnYaw_{0.0};
   double stoppedTurnArrivalHeading_{0.0};
   double stoppedTurnTargetHeading_{0.0};
+  bool stoppedTurnReverseArrival_{false};
   bool reverseSegmentActive_{false};
   bool routeStartTurnAuthorized_{false};
   std::size_t lastStoppedTurnIndex_{std::numeric_limits<std::size_t>::max()};
@@ -505,6 +515,8 @@ private:
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr resetService_;
   rclcpp::Service<mission_control_interfaces::srv::SetMotionHold>::SharedPtr
       motionHoldService_;
+  rclcpp::Service<mission_control_interfaces::srv::ContinueRetreat>::SharedPtr
+      continueRetreatService_;
   rclcpp::TimerBase::SharedPtr controlTimer_;
 };
 

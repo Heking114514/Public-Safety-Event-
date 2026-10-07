@@ -24,6 +24,7 @@ class RecordCameraSamplesTest(unittest.TestCase):
         self.daemon = self.root / "mock_daemon.py"
         self.daemon.write_text(
             "#!/usr/bin/env python3\n"
+            "import os\n"
             "import signal\n"
             "import sys\n"
             "import time\n"
@@ -31,8 +32,17 @@ class RecordCameraSamplesTest(unittest.TestCase):
             "output = Path(sys.argv[2]) if len(sys.argv) > 2 else None\n"
             "def stop(_signum, _frame):\n"
             "    if output is not None:\n"
+            "        count = 0 if os.environ.get('MOCK_EMPTY_BAG') == '1' else 15\n"
             "        (output / 'metadata.yaml').write_text(\n"
-            "            'rosbag2_bagfile_information: {}\\n'\n"
+            "            'rosbag2_bagfile_information:\\n'\n"
+            "            '  message_count: ' + str(count * 2) + '\\n'\n"
+            "            '  topics_with_message_count:\\n'\n"
+            "            '    - topic_metadata:\\n'\n"
+            "            '        name: /camera/camera/color/image_raw\\n'\n"
+            "            '      message_count: ' + str(count) + '\\n'\n"
+            "            '    - topic_metadata:\\n'\n"
+            "            '        name: /camera/camera/aligned_depth_to_color/image_raw\\n'\n"
+            "            '      message_count: ' + str(count) + '\\n'\n"
             "        )\n"
             "    raise SystemExit(0)\n"
             "signal.signal(signal.SIGINT, stop)\n"
@@ -92,6 +102,10 @@ if [[ "$1" == "bag" && "$2" == "record" ]]; then
   printf 'bag data\n' >"$output/camera.db3.zstd"
   exec "$MOCK_DAEMON" bag "$output"
 fi
+if [[ "$1" == "bag" && "$2" == "info" ]]; then
+  printf 'MOCK BAG INFO: RGB Count: 0, depth Count: 0\n'
+  exit 0
+fi
 exit 2
 '''
 
@@ -122,6 +136,7 @@ exit 2
         )
 
         self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("RGB=15, depth=15", result.stdout)
         sessions = list(self.output.iterdir())
         self.assertEqual(1, len(sessions))
         session = sessions[0]
@@ -161,6 +176,7 @@ exit 2
         )
 
         self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("RGB=15", result.stdout)
         events = self.events.read_text()
         bag_event = next(
             line for line in events.splitlines()
@@ -169,6 +185,27 @@ exit 2
         self.assertIn("/camera/camera/color/image_raw", bag_event)
         self.assertNotIn("aligned_depth_to_color", bag_event)
         self.assertNotIn("ros2 run realsense2_camera", events)
+
+    def test_empty_camera_bag_prints_info_and_is_incomplete(self):
+        environment = self.environment()
+        environment["MOCK_EMPTY_BAG"] = "1"
+        result = subprocess.run(
+            [str(SCRIPT), "--duration", "1", "--samples", "1"],
+            input="empty_camera\n",
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=10,
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("ros2 bag info (recording anomaly)", result.stderr)
+        self.assertIn("MOCK BAG INFO: RGB Count: 0", result.stderr)
+        self.assertIn("contains no recorded frames", result.stderr)
+        session = next(self.output.iterdir())
+        self.assertIn("\tincomplete\t", (session / "samples.tsv").read_text())
+        self.assertIn("ros2 bag info", self.events.read_text())
 
     def test_rejects_zero_duration(self):
         result = subprocess.run(

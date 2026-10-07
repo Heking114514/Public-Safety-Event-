@@ -10,6 +10,8 @@ using visual_navigation::ObstacleRecoveryAction;
 using visual_navigation::ObstacleRecoveryConfig;
 using visual_navigation::ObstacleRecoveryController;
 using visual_navigation::RecoveryPoint;
+using visual_navigation::RecoveryReplayStep;
+using visual_navigation::RetreatExtensionResult;
 
 ObstacleRecoveryController::TimePoint At(double seconds) {
   return ObstacleRecoveryController::TimePoint{} +
@@ -24,12 +26,12 @@ TEST(ObstacleClassification, IgnoresKnownWallBeyondPlannedTurn) {
   EXPECT_FALSE(visual_navigation::UnexpectedObstacle(
       true, true, 0.30, true, 0.25, 0.096, 0.07425, 0.05));
 
-  EXPECT_TRUE(visual_navigation::UnexpectedObstacle(true, true, 0.10, true,
-                                                    0.40, 0.096, 0.07425, 0.05));
-  EXPECT_TRUE(visual_navigation::UnexpectedObstacle(true, false, 0.30, true,
-                                                    0.25, 0.096, 0.07425, 0.05));
-  EXPECT_TRUE(visual_navigation::UnexpectedObstacle(true, true, 0.30, false,
-                                                    0.25, 0.096, 0.07425, 0.05));
+  EXPECT_TRUE(visual_navigation::UnexpectedObstacle(
+      true, true, 0.10, true, 0.40, 0.096, 0.07425, 0.05));
+  EXPECT_TRUE(visual_navigation::UnexpectedObstacle(
+      true, false, 0.30, true, 0.25, 0.096, 0.07425, 0.05));
+  EXPECT_TRUE(visual_navigation::UnexpectedObstacle(
+      true, true, 0.30, false, 0.25, 0.096, 0.07425, 0.05));
 }
 
 TEST(ObstacleRecovery, ReversesRecordedTraceToSelectedAnchor) {
@@ -46,7 +48,7 @@ TEST(ObstacleRecovery, ReversesRecordedTraceToSelectedAnchor) {
   controller.record_pose(0.60, 0.0);
 
   ASSERT_TRUE(controller.trigger(0.60, 0.0, 0.20, 0.0));
-  EXPECT_EQ(controller.breadcrumb_count(), 3U);
+  EXPECT_EQ(controller.breadcrumb_count(), 4U);
   EXPECT_NEAR(controller.anchor().x, 0.20, 1.0e-12);
   controller.confirm_stopped(0.60, 0.0, At(0.2));
   ASSERT_TRUE(controller.reversing());
@@ -63,6 +65,147 @@ TEST(ObstacleRecovery, ReversesRecordedTraceToSelectedAnchor) {
   const auto complete = controller.update_reverse(0.20, 0.0, At(1.0));
   EXPECT_EQ(complete.action, ObstacleRecoveryAction::REPLAN_REQUIRED);
   EXPECT_TRUE(controller.replan_required());
+}
+
+TEST(ObstacleRecovery, PlannerMayRequestAnEarlierRetreatAnchor) {
+  ObstacleRecoveryConfig config;
+  config.breadcrumb_spacing = 0.10;
+  config.reverse_lookahead = 0.10;
+  config.target_tolerance = 0.05;
+  config.anchor_tolerance = 0.05;
+  ObstacleRecoveryController controller(config);
+  for (double x : {0.0, 0.2, 0.4, 0.6, 0.8})
+    controller.record_pose(x, 0.0);
+
+  ASSERT_TRUE(controller.trigger(0.8, 0.0, 0.4, 0.0));
+  controller.confirm_stopped(0.8, 0.0, At(0.0));
+  ASSERT_EQ(controller.update_reverse(0.4, 0.0, At(1.0)).action,
+            ObstacleRecoveryAction::REPLAN_REQUIRED);
+  ASSERT_EQ(controller.extend_retreat(0.30), RetreatExtensionResult::ACCEPTED);
+  EXPECT_TRUE(controller.braking());
+  EXPECT_NEAR(controller.anchor().x, 0.0, 1.0e-12);
+  EXPECT_EQ(controller.remaining_breadcrumbs_before_anchor(), 0U);
+
+  controller.confirm_stopped(0.4, 0.0, At(1.1));
+  for (int index = 0; index < 2; ++index) {
+    const auto replay =
+        controller.replay_step(0.4, 0.0, 0.0, 0.0, 0.0, At(1.2));
+    ASSERT_TRUE(replay.command_valid);
+  }
+  EXPECT_EQ(controller.replay_step(0.0, 0.0, 0.0, 0.0, 0.0, At(2.0)).action,
+            ObstacleRecoveryAction::REPLAN_REQUIRED);
+  EXPECT_EQ(controller.extend_retreat(0.30), RetreatExtensionResult::EXHAUSTED);
+}
+
+TEST(ObstacleRecovery, ExtendedRetreatReplaysCrossedTurnInTraceOrder) {
+  ObstacleRecoveryConfig config;
+  config.breadcrumb_spacing = 0.01;
+  config.maximum_breadcrumb_step = 0.40;
+  config.target_tolerance = 0.02;
+  config.anchor_tolerance = 0.08;
+  ObstacleRecoveryController controller(config);
+  controller.record_sample(0.00, 0.00, 0.0, 0.10, 0.00);
+  controller.record_sample(0.20, 0.00, 0.0, 0.10, 0.00);
+  controller.record_sample(0.40, 0.00, 0.0, 0.10, 0.00);     // Turn approach.
+  controller.record_sample(0.44, -0.04, -0.4, 0.02, -0.20);  // Forward shunt.
+  controller.record_sample(0.42, -0.08, -0.8, -0.02, -0.20); // Reverse shunt.
+  controller.record_sample(0.40, -0.07, -1.57, 0.02, -0.20); // Turn exit.
+  controller.record_sample(0.40, -0.20, -1.57, 0.10, 0.00);
+  controller.record_sample(0.40, -0.40, -1.57, 0.10, 0.00);
+  controller.record_sample(0.40, -0.60, -1.57, 0.10, 0.00);
+  controller.record_sample(0.40, -0.80, -1.57, 0.10, 0.00);
+
+  ASSERT_TRUE(controller.trigger(0.40, -0.80, -1.57, 0.10, 0.00, 0.40, 0.00));
+  EXPECT_NEAR(controller.anchor().y, -0.07, 1.0e-12);
+  controller.confirm_stopped(0.40, -0.80, At(0.0));
+  ASSERT_EQ(controller.update_reverse(0.40, -0.07, At(1.0)).action,
+            ObstacleRecoveryAction::REPLAN_REQUIRED);
+
+  ASSERT_EQ(controller.extend_retreat(0.30), RetreatExtensionResult::ACCEPTED);
+  controller.confirm_stopped(0.40, -0.07, At(1.1));
+
+  const std::vector<std::pair<double, double>> expected_commands{
+      {-0.02, 0.20}, {0.02, 0.20}, {-0.02, 0.20}, {-0.10, 0.00}};
+  double applied_linear = 0.0;
+  double applied_angular = 0.0;
+  auto alignment =
+      controller.replay_step(0.40, -0.07, -1.30, 0.0, 0.0, At(1.15));
+  ASSERT_TRUE(alignment.command_valid);
+  EXPECT_DOUBLE_EQ(alignment.linear_velocity, 0.0);
+  EXPECT_LT(alignment.angular_velocity, 0.0);
+
+  RecoveryReplayStep replay = controller.replay_step(
+      0.40, -0.07, -1.57, applied_linear, applied_angular, At(1.2));
+  ASSERT_TRUE(replay.command_valid);
+  EXPECT_FALSE(replay.publish_recorded);
+  EXPECT_NEAR(replay.linear_velocity, expected_commands[0].first, 1.0e-12);
+  EXPECT_NEAR(replay.angular_velocity, expected_commands[0].second, 1.0e-12);
+  applied_linear = expected_commands[0].first;
+  applied_angular = expected_commands[0].second;
+  replay = controller.replay_step(0.40, -0.07, -1.57, applied_linear,
+                                  applied_angular, At(1.3));
+  ASSERT_TRUE(replay.command_valid);
+  EXPECT_FALSE(replay.publish_recorded);
+
+  for (std::size_t index = 1; index < expected_commands.size(); ++index) {
+    const auto &expected = expected_commands[index];
+    replay = controller.replay_step(0.40, -0.07, -1.57, applied_linear,
+                                    applied_angular, At(1.4));
+    ASSERT_TRUE(replay.command_valid);
+    EXPECT_TRUE(replay.publish_recorded);
+    EXPECT_NEAR(replay.linear_velocity, expected.first, 1.0e-12);
+    EXPECT_NEAR(replay.angular_velocity, expected.second, 1.0e-12);
+    applied_linear = expected.first;
+    applied_angular = expected.second;
+  }
+  replay = controller.replay_step(0.20, 0.00, 0.0, applied_linear,
+                                  applied_angular, At(1.5));
+  EXPECT_EQ(replay.action, ObstacleRecoveryAction::REPLAN_REQUIRED);
+}
+
+TEST(ObstacleRecovery, ContinueRetreatRequiresReplanState) {
+  ObstacleRecoveryController controller;
+  controller.record_pose(0.0, 0.0);
+  controller.record_pose(0.5, 0.0);
+
+  EXPECT_EQ(controller.extend_retreat(0.20),
+            RetreatExtensionResult::INVALID_STATE);
+}
+
+TEST(ObstacleRecovery, CompletedRouteMayBeginBoundedRetreat) {
+  ObstacleRecoveryConfig config;
+  config.breadcrumb_spacing = 0.05;
+  ObstacleRecoveryController controller(config);
+  controller.record_sample(0.0, 0.0, 0.0, 0.10, 0.0);
+  controller.record_sample(0.2, 0.0, 0.0, 0.10, 0.0);
+  controller.record_sample(0.4, 0.0, 0.0, 0.10, 0.0);
+
+  EXPECT_EQ(controller.begin_retreat(0.20, 0.4, 0.0, 0.0),
+            RetreatExtensionResult::ACCEPTED);
+  EXPECT_TRUE(controller.braking());
+  EXPECT_NEAR(controller.replay_goal().point.x, 0.2, 1.0e-12);
+}
+
+TEST(ObstacleRecovery, ReplayRejectsLargeStartHeadingMismatch) {
+  ObstacleRecoveryConfig config;
+  config.breadcrumb_spacing = 0.10;
+  config.anchor_tolerance = 0.05;
+  config.replay_start_max_yaw_error = 0.35;
+  ObstacleRecoveryController controller(config);
+  controller.record_sample(0.0, 0.0, 0.0, 0.10, 0.0);
+  controller.record_sample(0.2, 0.0, 0.0, 0.10, 0.0);
+  controller.record_sample(0.4, 0.0, 0.0, 0.10, 0.0);
+  ASSERT_TRUE(controller.trigger(0.4, 0.0, 0.0, 0.10, 0.0, 0.2, 0.0));
+  controller.confirm_stopped(0.4, 0.0, At(0.0));
+  ASSERT_EQ(controller.update_reverse(0.2, 0.0, At(1.0)).action,
+            ObstacleRecoveryAction::REPLAN_REQUIRED);
+  ASSERT_EQ(controller.extend_retreat(0.10, 0.2, 0.0, 0.0),
+            RetreatExtensionResult::ACCEPTED);
+  controller.confirm_stopped(0.2, 0.0, At(1.1));
+
+  const auto replay = controller.replay_step(0.2, 0.0, 1.0, 0.0, 0.0, At(1.2));
+  EXPECT_EQ(replay.action, ObstacleRecoveryAction::FAULT_NO_PROGRESS);
+  EXPECT_GT(replay.yaw_error, config.replay_start_max_yaw_error);
 }
 
 TEST(ObstacleRecovery, IgnoresOneLargeFusionJumpInBreadcrumbTrace) {

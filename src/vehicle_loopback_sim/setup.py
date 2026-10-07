@@ -18,6 +18,7 @@ setup(
         (join("share", package_name, "web"), glob("vehicle_loopback_sim/web/*.html")),
     ],
     install_requires=["setuptools"],
+    tests_require=["pytest"],
     zip_safe=True,
     maintainer="hjh",
     maintainer_email="hjh@example.com",

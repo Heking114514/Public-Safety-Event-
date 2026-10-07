@@ -7,6 +7,11 @@ vehicle_loopback_sim:
     fusion_status_topic: /odometry/fusion_status
     actuator_health_topic: /cup_car_serial/actuator_healthy
     control_telemetry_topic: /cup_car_serial/control_telemetry
+    front_obstacle_topic: /obstacle/front_blocked
+    front_obstacle_range_topic: /obstacle/front_range
+    dynamic_obstacle_topic: /perception/dynamic_obstacle
+    manual_obstacle_topic: /vehicle_loopback_sim/manual_obstacle
+    clear_manual_obstacles_topic: /vehicle_loopback_sim/clear_obstacles
     status_topic: /vehicle_loopback_sim/status
 
     map_frame_id: map
@@ -29,6 +34,15 @@ vehicle_loopback_sim:
     publish_tf: true
     publish_actuator_health: true
     publish_control_telemetry: true
+    publish_obstacle_detection: true
+    obstacle_detection_frame_id: camera_link
+    obstacle_detection_trigger_range_m: 0.25
+    obstacle_detection_trigger_jitter_m: 0.0
+    obstacle_detection_lateral_tolerance_m: 0.08
+    obstacle_detection_fov_rad: 0.40
+    obstacle_detection_min_range_m: 0.03
+    obstacle_detection_stable_time_s: 0.0
+    obstacle_detection_random_seed: 0
 
 vehicle_loopback_gui:
   ros__parameters:
@@ -45,15 +59,26 @@ vehicle_loopback_gui:
     navigator_status_topic: /waypoint_navigation/status
     current_waypoint_topic: /waypoint_navigation/current_waypoint
     waypoint_path_topic: /waypoint_path
-    navigation_path_topic: /arena_path_planner/navigation_path
-    arena_path_topic: /arena_path_planner/arena_path
-    map_topic: /arena_path_planner/map
+    navigation_path_topic: /new_map_planner/navigation_path
+    arena_path_topic: /new_map_planner/arena_path
+    map_topic: /new_map_planner/map
     mission_status_topic: /vehicle_loopback_sim/mission_status
+    manual_obstacle_topic: /vehicle_loopback_sim/manual_obstacle
+    clear_manual_obstacles_topic: /vehicle_loopback_sim/clear_obstacles
+    manual_obstacle_width_m: 0.20
+    manual_obstacle_depth_m: 0.10
+    obstacle_detection_trigger_range_m: 0.25
+    obstacle_detection_trigger_jitter_m: 0.0
+    obstacle_detection_fov_rad: 0.40
 
 vehicle_loopback_mission:
   ros__parameters:
-    planner_service: /arena_path_planner/plan
+    planner_service: /new_map_planner/plan
     mode: layer1,layer2,layer3
+    target_ids: "1,2,3,4,5,6,7,8,9,10,11,12"
+    required_lane_ids: ""
+    return_home: true
+    allow_partial: true
     activate_navigation: true
     request_delay_s: 1.0
     status_topic: /vehicle_loopback_sim/mission_status

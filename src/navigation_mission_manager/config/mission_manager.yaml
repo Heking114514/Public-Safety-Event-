@@ -1,0 +1,45 @@
+navigation_mission_manager:
+  ros__parameters:
+    map_file: ""
+    planner_service: /new_map_planner/plan
+    odom_topic: /odometry/fused
+    navigator_status_topic: /waypoint_navigation/status
+    route_ack_topic: /waypoint_navigation/route_ack
+    route_input_topic: /waypoint_navigation/route_input
+    motion_hold_service: /waypoint_navigator/set_motion_hold
+    continue_retreat_service: /waypoint_navigator/continue_obstacle_retreat
+    motion_hold_state_topic: /waypoint_navigation/motion_hold_state
+    front_obstacle_topic: /obstacle/front_blocked
+    front_range_topic: /obstacle/front_range
+    dynamic_obstacle_topic: /perception/dynamic_obstacle
+    event_candidate_topic: /perception/event_candidate
+    reported_event_topic: /navigation_mission/reported_event
+    mission_state_topic: /navigation_mission/state
+    status_text_topic: /navigation_mission/status_text
+    control_service: /navigation_mission/control
+    report_action: /event_reporter/report
+
+    auto_start: false
+    target_ids: "1,2,3,4,5,6,7,8,9,10,11,12"
+    odom_timeout_s: 0.6
+    route_ack_timeout_s: 3.0
+    replan_delay_s: 0.15
+    plan_retry_delay_s: 1.0
+    max_plan_retries: 3
+    retreat_step_m: 0.40
+    max_retreat_extensions: 4
+    max_no_progress_routes: 2
+
+    obstacle_observation_timeout_s: 5.0
+    obstacle_range_sync_s: 0.5
+    obstacle_width_m: 0.24
+    obstacle_depth_m: 0.12
+    obstacle_merge_distance_m: 0.18
+    max_dynamic_obstacles: 20
+    dynamic_obstacle_retention_s: 120.0
+
+    event_confidence_threshold: 0.70
+    event_merge_distance_m: 0.35
+    report_requires_hold: true
+    report_server_timeout_s: 5.0
+    max_report_retries: 2

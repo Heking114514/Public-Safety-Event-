@@ -1,10 +1,11 @@
 # D455 视觉定位与小车控制使用手册
 
-本工作空间支持两种导航模式，另有一种不经过导航规划器的手动速度模式：
+本工作空间支持三种导航模式，另有一种不经过导航规划器的手动速度模式：
 
 1. **手动路点 / CSV 导航**：用户预先编辑 CSV 路点文件，或使用图形编辑器手动标点；`visual_navigation` 只负责跟随收到的路线，不执行 A*、动态避障或局部路径搜索。
-2. **自动规划导航**：`arena_path_planner` 根据地图、当前位姿、剩余目标和动态障碍物生成路线，并把通过安全及新增进展检查的完整路线或阶段路线交给 `visual_navigation` 执行，不需要 CSV。
-3. **手动速度控制**：不启动 `waypoint_navigator`，键盘或其他节点直接向 `/cmd_vel_nav` 发布速度；这不是导航模式。
+2. **新分层自动规划（推荐）**：`navigation_mission_manager` 负责比赛状态与自主重规划，`new_map_planner` 负责道路图搜索和车身几何验证，再把路线交给 `visual_navigation` 执行。
+3. **旧自动规划（回归对照）**：`arena_path_planner` 保留用于历史路线和算法比较，不再作为新实车任务的默认选择。
+4. **手动速度控制**：不启动 `waypoint_navigator`，键盘或其他节点直接向 `/cmd_vel_nav` 发布速度；这不是导航模式。
 
 两种导航模式和手动速度模式最终都使用标准 ROS 2 速度消息：
 
@@ -58,13 +59,13 @@ ros2 pkg list | grep -E 'orbslam3|visual_navigation|cup_car_serial|realsense2_ca
 ./scripts/start_visual_navigation.sh
 ```
 
-另开终端启动规划后端和 Python GUI，在界面确认路线后点击“开始导航”：
+另开终端启动新规划后端、自主任务节点和实车 UI：
 
 ```bash
-./scripts/start_arena_planner.sh
+./scripts/start_new_map_planner.sh
 ```
 
-该包装脚本启动 C++ 规划服务后执行 `scripts/arena_route_frontend.py`；不要绕过它单独运行 GUI，否则界面没有规划服务可调用。
+旧规划器仅用于回归对照，仍可通过 `./scripts/start_arena_planner.sh` 启动。两套规划 UI 不得同时运行，否则会竞争同一个实车路线输入。
 两个入口共用工作空间构建锁，即使两个终端紧接着启动，也不会并发写入 `build/`、`install/` 和 `log/`。规划入口会等待旧后端完全退出后再发布新服务，但不会关闭已经打开的规划、路线或地图 GUI。
 
 统一入口的设备、传感器和构建默认值集中在 `config/navigation_startup.yaml`；录包保留数量和 topic 清单集中在 `config/navigation_recording.yaml`。车身、轮组、编码器、轴心和相机安装位置统一写在 `src/vehicle_config/config/vehicle_physical.yaml`，规划、寻迹、里程计、融合、视觉校正和导航启动文件都从这里加载，不能再在各功能包 YAML 中复制一份。算法调节参数仍保留在各功能包自己的 YAML。无参数 GUI 模式和 `--autostart` CSV 模式不允许由 YAML 改写，相关命令行选项优先于 YAML 默认值。`navigation_startup.odom_topic` 默认是 `/odometry/fused`，导航、控制与规划 GUI 共用这个选择；传 `--odom-topic /odometry/landmark_corrected` 可切回地标修正流，此时会额外启动 `vision_correction_node`。录包仍同时保留融合与修正两个 topic 便于对比。
@@ -450,21 +451,35 @@ linear.x,angular.z\r\n
 
 ---
 
-# 导航模式二：自动规划导航
+# 导航模式二：新分层自动规划导航
 
 默认地图已经按正式比赛图转换为当前规划器使用的 YAML：总包络
 `3.2 × 4.4 m`、主场地 `3.2 × 3.2 m`、10 个 `800 × 800 mm` 障碍块、
-`200 mm` 道路和 4 段隧道。车辆采用实测的 `148.5 × 153.5 mm` 完整外廓，
-每侧保留 `15 mm` 余量后直行包络为 `178.5 × 183.5 mm`，可以通过名义道路；
+`200 mm` 道路和 4 段隧道。车辆采用最新实测的 `148.5 × 125.0 mm` 完整外廓，
+每侧保留 `15 mm` 余量后直行包络为 `178.5 × 155.0 mm`，可以通过名义道路；
 `146.6 mm` 运动学轮距是单独参数，与整车外廓不混用。图纸本身没有
 任务编号，配置中的 12 个编号点是项目现有的道路中心访问点。
 
-自动规划模式不读取 `route_file`，也不需要调用 `/waypoint_navigator/start`。规划前端向
-`/arena_path_planner/plan` 提交当前位姿、剩余目标、已完成道路、障碍物和规划模式。规划器找到完整路线时直接执行；后续目标暂时不可达时，只要已得到的阶段路线通过碰撞检查、确实有位移并能增加任务或道路进度，也会在 `activate_navigation=true` 时发布到 `/waypoint_navigation/route_input`。导航节点收到后自动激活。定位、融合健康状态和执行器健康检查仍然是实际发车的必要条件。
+自动规划模式不读取 `route_file`，也不需要调用 `/waypoint_navigator/start`。
+`navigation_mission_manager` 是正式任务状态的唯一拥有者：它读取最新融合位姿，维护
+剩余任务、已确认道路和动态障碍，再向 `/new_map_planner/plan` 发起规划。
+道路图负责全局顺序，状态包含路口与到达航向；独立几何层验证完整车身直行包络和
+每个转弯动作扫掠。只有完整验证通过且 `activate=true` 的路线才会发布到
+`/waypoint_navigation/route_input`。定位、融合健康状态和执行器健康检查仍然是实际发车的必要条件。
 
 当前只保留在线障碍话题，障碍识别本身尚未实现。导航始终订阅 `std_msgs/msg/Bool /obstacle/front_blocked` 和 `sensor_msgs/msg/Range /obstacle/front_range`；没有节点发布就等于没有障碍，不需要额外开关。后续独立感知节点先用 YOLO 确认目标，再从同一目标框内取得对齐深度并同步发布上述结果。默认启动不运行感知生产者，也不会用深度 ROI 猜障碍。
 
-`success` 只表示规划结果合法，`navigation_activated` 才表示路线真的已发布，`all_targets_reached` 表示整场任务完成。前端必须收到匹配的 route ACK、看到导航实际运行并最终收到 `GOAL_REACHED`，才记录本段完成的任务、隧道和道路；随后使用最新融合位姿与剩余访问项自动规划下一段。隧道只有入口、出口都跑到才算完成，单纯绕行不会被记成道路覆盖。
+任务节点把确认的动态障碍保留 120 秒，期间规划路线必须绕开它；超时未再次观测则释放。
+障碍仍存在时，车辆再次接近会重新检测并重新封路。永久封堵导致某条比赛必经道路无法
+覆盖时，系统会在有界后退耗尽后安全驻停，不会穿障碍或虚报任务完成。
+
+`success` 只表示规划与几何验证通过，`activated` 才表示路线真的已发布，`complete`
+表示本次请求没有延期项。任务节点必须收到匹配的 route ACK，并最终收到
+`GOAL_REACHED`，才提交本段任务与道路进度。
+
+“完整巡视”固定按三个业务阶段运行：`layer1` 访问 12 个任务点，`layer2` 从实测终点
+继续穿越 4 条隧道，`layer3` 禁用隧道连接边、补齐剩余普通道路并返回发车点。每个阶段
+可以因延期工作拆成多条执行路线，但不会把三个阶段预先拼成一条路线。
 
 ## 自动规划启动步骤
 
@@ -481,34 +496,42 @@ source install/setup.bash
 该终端会启动 D455、ORB-SLAM3、融合定位、`waypoint_navigator` 和
 `cup_car_serial`，并等待 `/waypoint_navigation/route_input`。此模式不加载 CSV。
 
-### 终端 2：启动自动规划前端
+### 终端 2：启动自主任务、规划器和操作台
 
 ```bash
 cd /path/to/your/workspace
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 
-./scripts/start_arena_planner.sh
+./scripts/start_new_map_planner.sh
 ```
 
-前端启动后：
+操作台启动后：
 
-1. 将模式切换为 `vehicle`，确认融合里程计已经就绪。
-2. 确认任务目标、目标顺序和必要的动态障碍物。
-3. 点击“开始规划”可只查看规划结果，不会驱动车辆。
-4. 检查预览没有明显穿障碍、坐标系或目标配置错误后，点击“开始导航”。
-5. 前端会请求并激活第一条安全可执行路线；收到导航确认后，车辆才会在健康 gate 通过时运动。
-6. 每段路线实际跑完后，前端自动提交本段进度并从当前位置续规划，直到剩余任务清零并完成回程。
+1. 确认顶部状态为 `ODOM: READY` 和 `PLANNER: READY`。
+2. 选择“任务点”“全路覆盖”或“完整巡视”；前两项是单次模式，完整巡视是正式三阶段任务。
+3. 点击“规划预览”只生成当前路线；完整巡视不会预先拼接三个阶段。
+4. 检查绿色路线和右侧动作序列后，点击“开始三阶段巡视”或“下发并导航”。
+5. 任务节点会用点击时的最新实车位姿规划；收到相同 route id 的 ACK 后才进入执行态。
+6. 完整巡视在每段 `GOAL_REACHED` 后自动续接；新障碍退回安全路口后自动重规划。若该
+   锚点仍无路，控制器按实际行驶轨迹分段继续后退，到更早锚点后再次规划，直至成功或
+   达到有界恢复条件。
+7. 操作员可暂停或继续任务。关闭 UI 不会停止比赛任务，任务节点仍独立运行。
 
-存在暂时无法到达的目标不会直接结束任务。能带来新进展的安全阶段路线会先执行，其余目标保留为 `deferred_targets`；当前没有安全新进展、规划失败、里程计尚未恢复或路线未被导航确认时，前端会有界退避并自动重新探测。与路线有关的导航故障只让同一路线短时冷却，之后仍允许重新规划尝试，避免一次普通失败永久停车。planner 服务请求超过 30 秒未响应时，前端会取消旧请求、释放等待状态并继续处理最新请求，不会永久卡在 `in_flight`。
+无法到达的目标或道路明确列入 `deferred_*`；任务点精确模式默认不发布部分路线，
+覆盖模式可返回仍有实际进展的安全部分路线。任务节点只对障碍退回执行自动重规划；
+定位、控制器或执行器故障进入 `FAULT` 并驻停，由操作员检查后恢复。
 
 自动规划模式的停止方式：
 
 ```bash
-ros2 service call /waypoint_navigator/stop std_srvs/srv/Trigger '{}'
+ros2 service call /navigation_mission/control \
+  mission_control_interfaces/srv/ControlMission \
+  '{command: 2, target_ids: []}'
 ```
 
-停止后关闭两个启动终端即可。不要同时启动 `route_editor.py`，否则它也可能向同一个
+上述命令暂停任务并驻停车辆；`command: 3` 继续，`command: 4` 终止。不要同时启动
+`route_editor.py`，否则它也可能向同一个
 `/waypoint_navigation/route_input` 发布路线。
 
 ---
@@ -807,7 +830,7 @@ Publisher count: 1
 
 规划 GUI 和 `--autostart` CSV 两种实车模式都会无条件录包。每次运行先保存在独立的 `navigation_runs/<run-id>/bag`；结束时严格只保留 `config/navigation_recording.yaml` 中 `retain_bags` 指定数量的最新实际 bag，默认是 3 份。较旧运行只删除 `bag/`，`run_manifest.json` 和参数快照仍保留。`latest_navigation_run` 始终指向最近一次运行；`latest_navigation_bag` 只会原子指向最近一次完整或正常中断且已生成元数据、并且仍在保留范围中的 bag。若连续失败使旧有效 bag 退出保留范围，该兼容链接会移除，最近一次原始记录仍可从 `latest_navigation_run/bag` 检查。
 
-启动脚本清理旧 ROS 节点时会明确保留 `arena_route_frontend.py`、`route_editor.py`、地图编辑器以及路线编辑器的 `ros2 launch/run` 父进程，不会关闭用户已经打开的 GUI。规划后端也保持独立，由第二终端的 `start_arena_planner.sh` 管理。
+启动脚本清理旧 ROS 节点时会明确保留自主任务节点、规划 UI、`route_editor.py`、地图编辑器以及路线编辑器的 `ros2 launch/run` 父进程。新任务节点和规划后端由第二终端的 `start_new_map_planner.sh` 管理；旧后端仍由 `start_arena_planner.sh` 管理。
 
 `run_manifest.json` 记录 commit、branch、dirty 状态、运行源码指纹、递归 submodule 状态、原始参数、有效设置、两份导航 YAML 及其读取器的 SHA-256、运行文件和二进制 SHA-256、bag topics、退出码，以及 `parameters/` 中从真实节点抓取的参数快照。可直接检查：
 
@@ -817,7 +840,7 @@ python3 -m json.tool latest_navigation_run/run_manifest.json | less
 
 默认清单不录制任何原始/压缩图像或点云，只保留两路 `camera_info`、IMU、ORB 跟踪与视觉里程输出、融合输入/输出、控制与执行器状态、规划路径/栅格、`/diagnostics`、`/parameter_events`、`/rosout` 和 TF。这样不会再产生两路 848x480 Y8 30 Hz 图像约 `1.47 GB/min` 的主要负载，也没有重复录制 `/odom`、`/pose` 等兼容输出或每帧增长的 ORB `/path`。代价是该 bag 只能分析在线 ORB 的结果，不能离线重新运行 ORB；比赛默认优先保证磁盘空间和在线导航稳定。
 
-ROS 2 Humble 的 rosbag 不记录 service 请求/响应。当前 bag 足以分析在线视觉定位结果，并排查 IMU、轮速融合、导航控制、执行器和规划结果，但不能离线重跑 ORB，也不能单独重建 `/arena_path_planner/plan` 请求中的目标标签、动态障碍和访问顺序。规划器算法回归仍应同时保留任务输入或测试用例。
+ROS 2 Humble 的 rosbag 不记录 service 请求/响应。当前 bag 足以分析在线视觉定位结果，并排查 IMU、轮速融合、导航控制、执行器和规划结果，但不能离线重跑 ORB，也不能单独重建 `/new_map_planner/plan` 请求中的目标标签、动态障碍和访问顺序。规划器算法回归仍应同时保留任务输入或测试用例。
 
 回放前可确认录制内容：
 
@@ -842,13 +865,18 @@ ros2 bag play latest_navigation_bag
 
 ### 15.2 自动规划导航
 
-- [ ] `arena_path_planner` 提供 `/arena_path_planner/plan` 服务。
-- [ ] 前端切换为 `vehicle`，并显示融合里程计就绪。
-- [ ] “开始规划”能生成完整或安全阶段路线；有延迟目标但能新增真实进度时允许激活，没有位移、起点不匹配或没有新进展时不激活。
-- [ ] 点击“开始导航”后 `/arena_path_planner/navigation_path` 和 `/waypoint_path` 内容一致。
+- [ ] `new_map_planner` 提供 `/new_map_planner/plan` 服务。
+- [ ] `navigation_mission_manager` 提供 `/navigation_mission/control`，并持续发布任务状态。
+- [ ] UI 显示 `ODOM: READY` 和 `PLANNER: READY`。
+- [ ] “规划预览”能生成完整或安全部分路线，但不发布实车路线。
+- [ ] 完整巡视依次显示 `layer1`、`layer2`、`layer3`，并从每段最新融合位姿续规划。
+- [ ] 点击执行后 `/new_map_planner/navigation_path` 和 `/waypoint_path` 内容一致。
 - [ ] `/waypoint_navigation/route_ack` 收到本次路线确认。
-- [ ] `GOAL_REACHED` 前不提交本段任务/道路；完成后从最新位姿自动续规划，隧道双检查点和道路覆盖结果正确。
-- [ ] 暂无安全路线、odom 暂失或 ACK 超时时自动等待重试，不需要人工重新点击；迟到 ACK 不提交旧路线进度。
+- [ ] `GOAL_REACHED` 前不提交本段任务/道路；完成后道路和任务进度正确。
+- [ ] 第三阶段不使用隧道连接边，补漏完成后返回发车点。
+- [ ] `OBSTACLE_REPLAN_REQUIRED` 后从安全退回位姿自动重规划；当前锚点无路时按历史轨迹
+  分段继续后退，到达更早锚点后再次规划。
+- [ ] 暂无安全路线、odom 暂失或 ACK 超时时保持停车，由操作员检查后重新规划。
 - [ ] 自动规划模式不传 `route_file`，也不同时启动 `route_editor.py`。
 
 ### 15.3 手动速度控制
@@ -924,10 +952,10 @@ ros2 service call /waypoint_navigator/stop std_srvs/srv/Trigger '{}'
 # 终端 1：视觉、融合、导航和串口
 ./scripts/start_visual_navigation.sh
 
-# 终端 2：自动规划后端和前端
-./scripts/start_arena_planner.sh
+# 终端 2：自主任务节点、规划后端和操作台
+./scripts/start_new_map_planner.sh
 
-# 在前端切换 vehicle，确认目标后点击“开始导航”
+# 确认 ODOM/PLANNER READY，点击“开始三阶段巡视”
 ```
 
 ### 手动速度控制

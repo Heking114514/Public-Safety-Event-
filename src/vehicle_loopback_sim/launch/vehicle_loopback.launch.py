@@ -14,7 +14,7 @@ def generate_launch_description():
         [package_share, "config", "vehicle_loopback.yaml"]
     )
     default_arena_config = PathJoinSubstitution(
-        [FindPackageShare("arena_path_planner"), "config", "arena_map.yaml"]
+        [FindPackageShare("new_map_planner"), "config", "arena.yaml"]
     )
     parameters_file = LaunchConfiguration("parameters_file")
     arena_config = LaunchConfiguration("arena_config")
@@ -27,6 +27,9 @@ def generate_launch_description():
     gui = LaunchConfiguration("gui")
     gui_host = LaunchConfiguration("gui_host")
     gui_port = LaunchConfiguration("gui_port")
+    simulate_obstacle_recognition = LaunchConfiguration(
+        "simulate_obstacle_recognition"
+    )
     physical = parameters_for("pure_line_following")
 
     loopback = Node(
@@ -39,6 +42,7 @@ def generate_launch_description():
             {
                 "cmd_vel_topic": ParameterValue(cmd_vel_topic, value_type=str),
                 "odom_topic": ParameterValue(odom_topic, value_type=str),
+                "arena_config": ParameterValue(arena_config, value_type=str),
                 "initial_x_m": ParameterValue(initial_x, value_type=float),
                 "initial_y_m": ParameterValue(initial_y, value_type=float),
                 "initial_yaw_rad": ParameterValue(initial_yaw, value_type=float),
@@ -46,6 +50,9 @@ def generate_launch_description():
                 "wheel_track_m": physical["wheel_track_m"],
                 "base_offset_x_m": physical["base_offset_x_m"],
                 "base_offset_y_m": physical["base_offset_y_m"],
+                "publish_obstacle_detection": ParameterValue(
+                    simulate_obstacle_recognition, value_type=bool
+                ),
             },
         ],
     )
@@ -86,6 +93,11 @@ def generate_launch_description():
             DeclareLaunchArgument("initial_y", default_value="0.0"),
             DeclareLaunchArgument("initial_yaw", default_value="0.0"),
             DeclareLaunchArgument("publish_tf", default_value="true"),
+            DeclareLaunchArgument(
+                "simulate_obstacle_recognition",
+                default_value="true",
+                description="Publish simulated front obstacle reports from the map",
+            ),
             DeclareLaunchArgument(
                 "gui",
                 default_value="true",

@@ -24,11 +24,10 @@ void WaypointNavigator::PublishMotionCommand(
   const double targetLinear =
       std::clamp(desired.linear.x, -maxLinearSpeed_, maxLinearSpeed_);
   limited.linear.x =
-      forceZeroLinear
-          ? 0.0
-          : visual_navigation::LimitRate(
-                targetLinear, lastMotionCommand_.linear.x,
-                maxLinearAcceleration_, maxLinearDeceleration_, dt);
+      forceZeroLinear ? 0.0
+                      : visual_navigation::LimitRate(
+                            targetLinear, lastMotionCommand_.linear.x,
+                            maxLinearAcceleration_, maxLinearDeceleration_, dt);
   limited.linear.x =
       std::clamp(limited.linear.x, -maxLinearSpeed_, maxLinearSpeed_);
   limited.angular.z = visual_navigation::LimitRate(
@@ -37,6 +36,19 @@ void WaypointNavigator::PublishMotionCommand(
   cmdVelPublisher_->publish(limited);
   lastMotionCommand_ = limited;
   lastMotionCommandTime_ = currentTime;
+  motionCommandInitialized_ = true;
+}
+
+void WaypointNavigator::PublishRecordedCommand(
+    const geometry_msgs::msg::Twist &recorded) {
+  geometry_msgs::msg::Twist command;
+  command.linear.x =
+      std::clamp(recorded.linear.x, -maxLinearSpeed_, maxLinearSpeed_);
+  command.angular.z =
+      std::clamp(recorded.angular.z, -maxAngularSpeed_, maxAngularSpeed_);
+  cmdVelPublisher_->publish(command);
+  lastMotionCommand_ = command;
+  lastMotionCommandTime_ = std::chrono::steady_clock::now();
   motionCommandInitialized_ = true;
 }
 

@@ -79,11 +79,12 @@ void WaypointNavigator::UpdateObservedLinearSpeed() {
 
 bool WaypointNavigator::WaypointBrakeHasCompleted() {
   const auto currentTime = std::chrono::steady_clock::now();
-  const double telemetryAge = controlTelemetryReceived_
-                                  ? std::chrono::duration<double>(
-                                        currentTime - lastControlTelemetryArrival_)
-                                        .count()
-                                  : std::numeric_limits<double>::infinity();
+  const double telemetryAge =
+      controlTelemetryReceived_
+          ? std::chrono::duration<double>(currentTime -
+                                          lastControlTelemetryArrival_)
+                .count()
+          : std::numeric_limits<double>::infinity();
   const double wheelEvidence = visual_navigation::IndependentWheelStopEvidence(
       measuredLeftWheelSpeed_, measuredRightWheelSpeed_, targetLeftWheelSpeed_,
       targetRightWheelSpeed_, preTurnStopSpeed_,
@@ -98,13 +99,12 @@ bool WaypointNavigator::WaypointBrakeHasCompleted() {
       !telemetryFresh ||
       std::max(std::abs(targetLeftWheelSpeed_),
                std::abs(targetRightWheelSpeed_)) <= preTurnStopSpeed_;
-  if (targetStopped && visual_navigation::BrakeFallbackMayConfirmStop(
-                           waypointBrakeRecoveryAttempts_,
-                           preTurnFallbackTimeouts_,
-                           pathTrackingController_.observed_speed_valid(),
-                           pathTrackingController_.observed_speed(),
-                           preTurnFallbackPoseSpeed_, ImuYawRateIsFresh(),
-                           imuYawRate_, turnSettleYawRate_)) {
+  if (targetStopped &&
+      visual_navigation::BrakeFallbackMayConfirmStop(
+          waypointBrakeRecoveryAttempts_, preTurnFallbackTimeouts_,
+          pathTrackingController_.observed_speed_valid(),
+          pathTrackingController_.observed_speed(), preTurnFallbackPoseSpeed_,
+          ImuYawRateIsFresh(), imuYawRate_, turnSettleYawRate_)) {
     speed.valid = true;
     speed.absolute_speed = 0.0;
     speed.from_wheel_telemetry = false;
@@ -114,8 +114,8 @@ bool WaypointNavigator::WaypointBrakeHasCompleted() {
         "telemetry confirmation timeouts",
         waypointBrakeRecoveryAttempts_);
   }
-  const bool complete = waypointBrakeController_.check(
-      currentTime, speed.valid, speed.absolute_speed);
+  const bool complete = waypointBrakeController_.check(currentTime, speed.valid,
+                                                       speed.absolute_speed);
   if (waypointBrakeController_.timed_out()) {
     RCLCPP_WARN(get_logger(),
                 "Waypoint brake confirmation timed out on retry %zu "
@@ -147,6 +147,7 @@ void WaypointNavigator::ResetRunControl() {
   firstHalfTurnPending_ = false;
   stoppedTurnArrivalHeading_ = 0.0;
   stoppedTurnTargetHeading_ = 0.0;
+  stoppedTurnReverseArrival_ = false;
   reverseSegmentActive_ = false;
   lastStoppedTurnIndex_ = std::numeric_limits<std::size_t>::max();
   ResetManeuver();

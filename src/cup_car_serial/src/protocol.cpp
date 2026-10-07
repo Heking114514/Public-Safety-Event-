@@ -1,5 +1,6 @@
 #include "cup_car_serial/protocol.hpp"
 
+#include <cctype>
 #include <cerrno>
 #include <climits>
 #include <cstdlib>
@@ -87,6 +88,29 @@ bool parse_uint8(const std::string & text, uint8_t * value)
     return false;
   }
   *value = static_cast<uint8_t>(parsed);
+  return true;
+}
+
+bool parse_uint16(const std::string & text, uint16_t * value)
+{
+  uint32_t parsed;
+  if (!parse_uint32(text, &parsed) || parsed > UINT16_MAX) {
+    return false;
+  }
+  *value = static_cast<uint16_t>(parsed);
+  return true;
+}
+
+bool uid_hex_is_valid(const std::string & text)
+{
+  if ((text.size() % 2U) != 0U) {
+    return false;
+  }
+  for (const char ch : text) {
+    if (std::isxdigit(static_cast<unsigned char>(ch)) == 0) {
+      return false;
+    }
+  }
   return true;
 }
 }  // namespace
@@ -203,6 +227,42 @@ bool parse_bmi088_attitude_frame(const std::string & line, Bmi088AttitudeFrame *
     !parse_int32(fields[6], &parsed.bias_z_mdps) ||
     !parse_uint32(fields[7], &parsed.startup_samples))
   {
+    return false;
+  }
+
+  *frame = parsed;
+  return true;
+}
+
+bool parse_rfid_frame(const std::string & line, RfidFrame * frame)
+{
+  if (frame == nullptr || line.rfind("RFID,", 0) != 0) {
+    return false;
+  }
+  const auto fields = split_fields(line);
+  if (fields.size() != 8 && fields.size() != 9) {
+    return false;
+  }
+
+  RfidFrame parsed;
+  if (!parse_uint32(fields[1], &parsed.mcu_time_ms) ||
+    !parse_uint32(fields[2], &parsed.card_sequence) ||
+    !parse_uint8(fields[3], &parsed.status) ||
+    !parse_uint8(fields[4], &parsed.protocol_status) ||
+    !parse_uint16(fields[5], &parsed.tag_type) ||
+    !parse_uint8(fields[6], &parsed.sak))
+  {
+    return false;
+  }
+
+  const size_t uid_field_index = fields.size() == 9 ? 8U : 7U;
+  if (fields.size() == 9) {
+    if (!parse_uint8(fields[7], &parsed.number) || parsed.number > 12U) {
+      return false;
+    }
+  }
+  parsed.uid_hex = fields[uid_field_index];
+  if (!uid_hex_is_valid(parsed.uid_hex)) {
     return false;
   }
 

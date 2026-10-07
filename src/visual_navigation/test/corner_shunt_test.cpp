@@ -1,7 +1,9 @@
 #include "visual_navigation/corner_shunt.hpp"
 #include "gtest/gtest.h"
 
+#include <chrono>
 #include <cmath>
+#include <thread>
 
 namespace {
 
@@ -29,9 +31,21 @@ visual_navigation::CornerShuntContext RightCornerContext(double x, double y,
   return context;
 }
 
-visual_navigation::CornerShuntPose Integrate(
-    visual_navigation::CornerShuntPose pose,
-    const visual_navigation::CornerShuntTwist &command, double elapsed_s) {
+visual_navigation::CornerShuntContext ReverseArrivalContext() {
+  visual_navigation::CornerShuntContext context;
+  context.pose = {0.005, 0.0, -0.5 * kPi};
+  context.junction_x = 0.0;
+  context.junction_y = 0.0;
+  context.incoming_heading = 0.5 * kPi;
+  context.target_heading = kPi;
+  context.reverse_arrival = true;
+  return context;
+}
+
+visual_navigation::CornerShuntPose
+Integrate(visual_navigation::CornerShuntPose pose,
+          const visual_navigation::CornerShuntTwist &command,
+          double elapsed_s) {
   if (std::abs(command.angular_z) <= 1.0e-6) {
     pose.x += command.linear_x * elapsed_s * std::cos(pose.yaw);
     pose.y += command.linear_x * elapsed_s * std::sin(pose.yaw);
@@ -51,31 +65,71 @@ bool CommandIsSafe(const visual_navigation::CornerShuntController &controller,
   if (!controller.pose_is_safe(context, context.pose))
     return false;
   auto pose = context.pose;
+  auto applied = context.applied_twist;
   for (int index = 0; index < 5; ++index) {
-    pose = Integrate(pose, command, 0.04);
+    applied.linear_x = visual_navigation::LimitRate(
+        command.linear_x, applied.linear_x, 0.25, 0.80, 0.04);
+    applied.angular_z = visual_navigation::LimitRate(
+        command.angular_z, applied.angular_z, 1.80, 3.00, 0.04);
+    pose = Integrate(pose, applied, 0.04);
     if (!controller.pose_is_safe(context, pose))
       return false;
   }
   return true;
 }
 
+void ApplyLimitedDecision(
+    visual_navigation::CornerShuntContext *context,
+    const visual_navigation::CornerShuntDecision &decision, double elapsed_s) {
+  if (decision.phase == visual_navigation::CornerShuntPhase::STOP ||
+      decision.phase == visual_navigation::CornerShuntPhase::CHECK ||
+      decision.phase == visual_navigation::CornerShuntPhase::BLOCKED) {
+    context->applied_twist = {};
+    return;
+  }
+  context->applied_twist.linear_x = visual_navigation::LimitRate(
+      decision.command.linear_x, context->applied_twist.linear_x, 0.25, 0.80,
+      elapsed_s);
+  context->applied_twist.angular_z = visual_navigation::LimitRate(
+      decision.command.angular_z, context->applied_twist.angular_z, 1.80, 3.00,
+      elapsed_s);
+  context->pose = Integrate(context->pose, context->applied_twist, elapsed_s);
+}
+
+visual_navigation::CornerShuntDecision
+AwaitPlannedMotion(visual_navigation::CornerShuntController &controller,
+                   const visual_navigation::CornerShuntContext &context,
+                   double *now) {
+  visual_navigation::CornerShuntDecision decision;
+  for (int attempt = 0; attempt < 300; ++attempt) {
+    decision = controller.update(context, *now);
+    if (decision.phase != visual_navigation::CornerShuntPhase::CHECK)
+      return decision;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    *now += 0.01;
+  }
+  return decision;
+}
+
 } // namespace
 
-TEST(CornerShunt, StartsWithStopThenChoosesSafeArc) {
+TEST(CornerShunt, StartsWithStopThenUsesCalibratedPlan) {
   visual_navigation::CornerShuntController controller;
   controller.begin(0.0);
 
-  auto decision = controller.update(LeftCornerContext(-0.07, 0.0, 0.0), 0.05);
+  auto decision = controller.update(LeftCornerContext(-0.05, 0.0, 0.0), 0.05);
   EXPECT_EQ(decision.phase, visual_navigation::CornerShuntPhase::STOP);
   EXPECT_DOUBLE_EQ(decision.command.linear_x, 0.0);
   EXPECT_DOUBLE_EQ(decision.command.angular_z, 0.0);
 
-  decision = controller.update(LeftCornerContext(-0.07, 0.0, 0.0), 0.30);
+  decision = controller.update(LeftCornerContext(-0.05, 0.0, 0.0), 0.30);
   EXPECT_EQ(decision.phase, visual_navigation::CornerShuntPhase::CHECK);
 
-  decision = controller.update(LeftCornerContext(-0.07, 0.0, 0.0), 0.36);
-  EXPECT_EQ(decision.phase, visual_navigation::CornerShuntPhase::ARC);
-  EXPECT_NEAR(decision.command.linear_x, 0.010, 1.0e-9);
+  double now = 0.36;
+  decision =
+      AwaitPlannedMotion(controller, LeftCornerContext(-0.05, 0.0, 0.0), &now);
+  EXPECT_EQ(decision.phase, visual_navigation::CornerShuntPhase::REVERSE);
+  EXPECT_NEAR(decision.command.linear_x, -0.020, 1.0e-9);
   EXPECT_NEAR(decision.command.angular_z, 0.24, 1.0e-9);
 }
 
@@ -83,17 +137,19 @@ TEST(CornerShunt, MirrorsRightTurns) {
   visual_navigation::CornerShuntController controller;
   controller.begin(0.0);
 
-  controller.update(RightCornerContext(-0.07, 0.0, 0.0), 0.30);
-  auto decision = controller.update(RightCornerContext(-0.07, 0.0, 0.0), 0.36);
-  EXPECT_EQ(decision.phase, visual_navigation::CornerShuntPhase::ARC);
-  EXPECT_NEAR(decision.command.linear_x, 0.010, 1.0e-9);
+  controller.update(RightCornerContext(-0.05, 0.0, 0.0), 0.30);
+  double now = 0.36;
+  auto decision =
+      AwaitPlannedMotion(controller, RightCornerContext(-0.05, 0.0, 0.0), &now);
+  EXPECT_EQ(decision.phase, visual_navigation::CornerShuntPhase::REVERSE);
+  EXPECT_NEAR(decision.command.linear_x, -0.020, 1.0e-9);
   EXPECT_NEAR(decision.command.angular_z, -0.24, 1.0e-9);
 }
 
-TEST(CornerShunt, UsesHtmlEightMillimeterSafetyMargin) {
+TEST(CornerShunt, KeepsEightMillimeterRoadMarginWithNarrowerChassis) {
   visual_navigation::CornerShuntController controller;
-  const auto safe = LeftCornerContext(-0.07, 0.015, 0.0);
-  const auto unsafe = LeftCornerContext(-0.07, 0.016, 0.0);
+  const auto safe = LeftCornerContext(-0.07, 0.029, 0.0);
+  const auto unsafe = LeftCornerContext(-0.07, 0.030, 0.0);
 
   EXPECT_TRUE(controller.pose_is_safe(safe, safe.pose));
   EXPECT_FALSE(controller.pose_is_safe(unsafe, unsafe.pose));
@@ -143,7 +199,7 @@ TEST(CornerShunt, DoesNotHandOffBeforeHtmlExitWindow) {
   EXPECT_NE(decision.phase, visual_navigation::CornerShuntPhase::COMPLETE);
 }
 
-TEST(CornerShunt, DISABLED_SimulatedWaypointStopPoseReachesHtmlExit) {
+TEST(CornerShunt, SimulatedWaypointStopPoseReachesSafeExit) {
   visual_navigation::CornerShuntController controller;
   auto context = LeftCornerContext(-0.05, 0.0, 0.0);
   controller.begin(0.0);
@@ -171,6 +227,8 @@ TEST(CornerShunt, DISABLED_SimulatedWaypointStopPoseReachesHtmlExit) {
     blocked = decision.blocked;
     if (complete || blocked)
       break;
+    if (decision.phase == visual_navigation::CornerShuntPhase::CHECK)
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
     if (decision.phase == visual_navigation::CornerShuntPhase::STOP)
       ++stop_steps;
     if (decision.phase == visual_navigation::CornerShuntPhase::CHECK)
@@ -197,37 +255,208 @@ TEST(CornerShunt, DISABLED_SimulatedWaypointStopPoseReachesHtmlExit) {
         decision.phase != visual_navigation::CornerShuntPhase::REVERSE)
       ++other_steps;
     angular_motion += std::abs(decision.command.angular_z) * kStep;
-    context.pose = Integrate(context.pose, decision.command, kStep);
+    ApplyLimitedDecision(&context, decision, kStep);
     now += kStep;
   }
 
-  EXPECT_TRUE(complete) << "phase="
-                        << visual_navigation::CornerShuntStatus(
-                               last_decision.phase)
-                        << " command=(" << last_decision.command.linear_x
-                        << ", " << last_decision.command.angular_z
-                        << ") pose=(" << context.pose.x << ", "
-                        << context.pose.y << ", " << context.pose.yaw
-                        << ") time=" << now << " arc_steps=" << arc_steps
-                        << " check_steps=" << check_steps
-                        << " stop_steps=" << stop_steps
-                        << " rotate_steps=" << rotate_steps
-                        << " creep_steps=" << creep_steps
-                        << " reverse_steps=" << reverse_steps
-                        << " idle_steps=" << idle_steps
-                        << " complete_steps=" << complete_steps
-                        << " blocked_steps=" << blocked_steps
-                        << " other_steps=" << other_steps
-                        << " angular_motion=" << angular_motion
-                        << " pose_safe="
-                        << controller.pose_is_safe(context, context.pose)
-                        << " rotate_safe="
-                        << CommandIsSafe(controller, context, {0.0, 0.20})
-                        << " creep_safe="
-                        << CommandIsSafe(controller, context, {0.020, 0.0})
-                        << " arc_safe="
-                        << CommandIsSafe(controller, context, {0.024, 0.05})
-                        << " reverse_safe="
-                        << CommandIsSafe(controller, context, {-0.008, 0.0});
+  EXPECT_TRUE(complete)
+      << "phase=" << visual_navigation::CornerShuntStatus(last_decision.phase)
+      << " command=(" << last_decision.command.linear_x << ", "
+      << last_decision.command.angular_z << ") pose=(" << context.pose.x << ", "
+      << context.pose.y << ", " << context.pose.yaw << ") time=" << now
+      << " arc_steps=" << arc_steps << " check_steps=" << check_steps
+      << " stop_steps=" << stop_steps << " rotate_steps=" << rotate_steps
+      << " creep_steps=" << creep_steps << " reverse_steps=" << reverse_steps
+      << " idle_steps=" << idle_steps << " complete_steps=" << complete_steps
+      << " blocked_steps=" << blocked_steps << " other_steps=" << other_steps
+      << " angular_motion=" << angular_motion
+      << " pose_safe=" << controller.pose_is_safe(context, context.pose)
+      << " rotate_safe=" << CommandIsSafe(controller, context, {0.0, 0.20})
+      << " creep_safe=" << CommandIsSafe(controller, context, {0.020, 0.0})
+      << " arc_safe=" << CommandIsSafe(controller, context, {0.024, 0.05})
+      << " reverse_safe=" << CommandIsSafe(controller, context, {-0.008, 0.0});
   EXPECT_FALSE(blocked);
+  EXPECT_LE(controller.plan_count(), 2);
+}
+
+TEST(CornerShunt, SimulatedRightTurnMirrorsSafeExit) {
+  visual_navigation::CornerShuntController controller;
+  auto context = RightCornerContext(-0.05, 0.0, 0.0);
+  controller.begin(0.0);
+
+  bool complete = false;
+  bool blocked = false;
+  double now = 0.0;
+  constexpr double kStep = 1.0 / 30.0;
+  for (int index = 0; index < 1800; ++index) {
+    const auto decision = controller.update(context, now);
+    complete = decision.complete;
+    blocked = decision.blocked;
+    if (complete || blocked)
+      break;
+    if (decision.phase == visual_navigation::CornerShuntPhase::CHECK)
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    ApplyLimitedDecision(&context, decision, kStep);
+    now += kStep;
+  }
+
+  EXPECT_TRUE(complete) << "pose=(" << context.pose.x << ", " << context.pose.y
+                        << ", " << context.pose.yaw << ")";
+  EXPECT_FALSE(blocked);
+  EXPECT_TRUE(controller.pose_is_safe(context, context.pose));
+  EXPECT_LE(controller.plan_count(), 2);
+}
+
+TEST(CornerShunt, ReverseArrivalCanLeaveDeadEndJunctionSafely) {
+  visual_navigation::CornerShuntController controller;
+  auto context = ReverseArrivalContext();
+  controller.begin(0.0);
+
+  bool complete = false;
+  bool blocked = false;
+  double now = 0.0;
+  constexpr double kStep = 1.0 / 30.0;
+  for (int index = 0; index < 1800; ++index) {
+    const auto decision = controller.update(context, now);
+    complete = decision.complete;
+    blocked = decision.blocked;
+    if (complete || blocked)
+      break;
+    if (decision.phase == visual_navigation::CornerShuntPhase::CHECK)
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    ApplyLimitedDecision(&context, decision, kStep);
+    now += kStep;
+  }
+
+  EXPECT_TRUE(complete) << "pose=(" << context.pose.x << ", " << context.pose.y
+                        << ", " << context.pose.yaw
+                        << ") plans=" << controller.plan_count();
+  EXPECT_FALSE(blocked);
+  EXPECT_TRUE(controller.pose_is_safe(context, context.pose));
+}
+
+TEST(CornerShunt, LateTurnPoseCanReplanToSafeExit) {
+  visual_navigation::CornerShuntController controller;
+  auto context = LeftCornerContext(-0.021584, 0.059336, 1.2453);
+  controller.begin(0.0);
+
+  bool complete = false;
+  bool blocked = false;
+  double now = 0.0;
+  constexpr double kStep = 1.0 / 30.0;
+  for (int index = 0; index < 1800; ++index) {
+    const auto decision = controller.update(context, now);
+    complete = decision.complete;
+    blocked = decision.blocked;
+    if (complete || blocked)
+      break;
+    if (decision.phase == visual_navigation::CornerShuntPhase::CHECK)
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    ApplyLimitedDecision(&context, decision, kStep);
+    now += kStep;
+  }
+
+  EXPECT_TRUE(complete) << "pose=(" << context.pose.x << ", " << context.pose.y
+                        << ", " << context.pose.yaw << ")";
+  EXPECT_FALSE(blocked);
+  EXPECT_TRUE(controller.pose_is_safe(context, context.pose));
+  EXPECT_LE(controller.plan_count(), 2);
+}
+
+TEST(CornerShunt, RecordedOffsetRightTurnReachesSafeExit) {
+  visual_navigation::CornerShuntController controller;
+  auto context = RightCornerContext(-0.075, 0.005, -0.021);
+  controller.begin(0.0);
+
+  bool complete = false;
+  bool blocked = false;
+  double now = 0.0;
+  constexpr double kStep = 1.0 / 30.0;
+  for (int index = 0; index < 1800; ++index) {
+    const auto decision = controller.update(context, now);
+    complete = decision.complete;
+    blocked = decision.blocked;
+    if (complete || blocked)
+      break;
+    if (decision.phase == visual_navigation::CornerShuntPhase::CHECK)
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    ApplyLimitedDecision(&context, decision, kStep);
+    now += kStep;
+  }
+
+  EXPECT_TRUE(complete) << "pose=(" << context.pose.x << ", " << context.pose.y
+                        << ", " << context.pose.yaw << ")";
+  EXPECT_FALSE(blocked);
+  EXPECT_TRUE(controller.pose_is_safe(context, context.pose));
+  EXPECT_LE(controller.plan_count(), 2);
+}
+
+TEST(CornerShunt, RecordedTangentPoseFindsFineRecovery) {
+  visual_navigation::CornerShuntController controller;
+  auto context = LeftCornerContext(-0.02521632034127061, 0.05001098729551654,
+                                   1.239131515872503);
+  controller.begin(0.0);
+
+  bool complete = false;
+  bool blocked = false;
+  double now = 0.0;
+  constexpr double kStep = 1.0 / 30.0;
+  for (int index = 0; index < 1800; ++index) {
+    const auto decision = controller.update(context, now);
+    complete = decision.complete;
+    blocked = decision.blocked;
+    if (complete || blocked)
+      break;
+    if (decision.phase == visual_navigation::CornerShuntPhase::CHECK)
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    ApplyLimitedDecision(&context, decision, kStep);
+    now += kStep;
+  }
+
+  EXPECT_TRUE(complete) << "pose=(" << context.pose.x << ", " << context.pose.y
+                        << ", " << context.pose.yaw << ")";
+  EXPECT_FALSE(blocked);
+  EXPECT_TRUE(controller.pose_is_safe(context, context.pose));
+  EXPECT_LE(controller.plan_count(), 2);
+}
+
+TEST(CornerShunt, OutsideTangentPoseFailsClosed) {
+  visual_navigation::CornerShuntController controller;
+  auto context = LeftCornerContext(-0.0450, 0.0506, 1.248);
+  ASSERT_FALSE(controller.pose_is_safe(context, context.pose));
+  const auto initial_pose = context.pose;
+  controller.begin(0.0);
+
+  double now = 0.0;
+  auto decision = controller.update(context, now);
+  for (int index = 0; index < 600 && !decision.blocked; ++index) {
+    if (decision.phase == visual_navigation::CornerShuntPhase::CHECK)
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    ApplyLimitedDecision(&context, decision, 1.0 / 30.0);
+    now += 1.0 / 30.0;
+    decision = controller.update(context, now);
+  }
+
+  EXPECT_TRUE(decision.blocked);
+  EXPECT_FALSE(decision.complete);
+  EXPECT_DOUBLE_EQ(context.pose.x, initial_pose.x);
+  EXPECT_DOUBLE_EQ(context.pose.y, initial_pose.y);
+  EXPECT_DOUBLE_EQ(context.pose.yaw, initial_pose.yaw);
+}
+
+TEST(CornerShunt, ResetDoesNotWaitForBackgroundPlan) {
+  visual_navigation::CornerShuntController controller;
+  const auto context = RightCornerContext(-0.075, 0.005, -0.021);
+  controller.begin(0.0);
+  controller.update(context, 0.30);
+  controller.update(context, 0.36);
+
+  const auto started = std::chrono::steady_clock::now();
+  controller.reset();
+  const double elapsed =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - started)
+          .count();
+
+  EXPECT_LT(elapsed, 0.10);
+  EXPECT_FALSE(controller.active());
 }

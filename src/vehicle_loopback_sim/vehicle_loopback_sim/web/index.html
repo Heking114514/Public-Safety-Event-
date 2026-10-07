@@ -21,6 +21,7 @@
       --trail: #1f2933;
       --ok: #1d8a55;
       --warn: #b76e00;
+      --detect: #0f8b8d;
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
 
@@ -174,6 +175,10 @@
       flex: 0 0 auto;
     }
 
+    .swatch.dashed {
+      background: repeating-linear-gradient(to right, currentColor 0 6px, transparent 6px 10px);
+    }
+
     .empty {
       position: absolute;
       left: 50%;
@@ -205,13 +210,15 @@
         <button id="fit">Fit</button>
         <button id="follow" class="active">Follow</button>
         <button id="grid" class="active">Grid</button>
+        <button id="obstacle">Obstacle</button>
+        <button id="clear-obstacles">Clear</button>
       </div>
       <div id="empty" class="empty">等待仿真话题数据</div>
     </section>
     <aside class="side">
       <header>
-        <h1>Loopback Navigation GUI</h1>
-        <div class="subtitle">http://127.0.0.1:8765</div>
+        <h1 id="display-name">Loopback Navigation GUI</h1>
+        <div id="page-url" class="subtitle"></div>
       </header>
 
       <div class="status-row">
@@ -235,6 +242,7 @@
         <div class="metric"><span>当前点</span><span id="waypoint">--</span></div>
         <div class="metric"><span>执行路径</span><span id="path-count">--</span></div>
         <div class="metric"><span>规划路径</span><span id="planner-count">--</span></div>
+        <div class="metric"><span>临时障碍</span><span id="obstacle-count">--</span></div>
         <div class="metric"><span>地图</span><span id="map-info">--</span></div>
       </section>
 
@@ -252,6 +260,8 @@
           <div class="legend-item" style="color: var(--waypoint)"><span class="swatch"></span><span>控制器执行路径</span></div>
           <div class="legend-item" style="color: var(--planner)"><span class="swatch"></span><span>场地覆盖路径</span></div>
           <div class="legend-item" style="color: var(--trail)"><span class="swatch"></span><span>小车轨迹</span></div>
+          <div class="legend-item" style="color: var(--warn)"><span class="swatch"></span><span>临时障碍</span></div>
+          <div class="legend-item" style="color: var(--detect)"><span class="swatch dashed"></span><span>探测扇形</span></div>
         </div>
       </section>
     </aside>
@@ -267,9 +277,12 @@
     let offsetY = 0;
     let follow = true;
     let showGrid = true;
+    let obstacleMode = false;
     let fitted = false;
 
     const els = {
+      displayName: document.getElementById("display-name"),
+      pageUrl: document.getElementById("page-url"),
       dot: document.getElementById("conn-dot"),
       conn: document.getElementById("conn-text"),
       poseX: document.getElementById("pose-x"),
@@ -282,6 +295,7 @@
       waypoint: document.getElementById("waypoint"),
       pathCount: document.getElementById("path-count"),
       plannerCount: document.getElementById("planner-count"),
+      obstacleCount: document.getElementById("obstacle-count"),
       mapInfo: document.getElementById("map-info"),
       targetWheels: document.getElementById("target-wheels"),
       measuredWheels: document.getElementById("measured-wheels"),
@@ -326,6 +340,9 @@
           x_m: m.origin.x_m + m.width * m.resolution_m,
           y_m: m.origin.y_m + m.height * m.resolution_m
         });
+      }
+      for (const polygon of state.manual_obstacles || []) {
+        for (const point of polygon) points.push(point);
       }
       const layout = state.arena_layout;
       if (layout) {
@@ -485,6 +502,12 @@
       }
     }
 
+    function drawManualObstacles() {
+      for (const polygon of state.manual_obstacles || []) {
+        drawPolygon(polygon, "rgba(183, 110, 0, 0.34)", "rgba(126, 68, 8, 0.92)", 2);
+      }
+    }
+
     function drawPolygon(points, fill, stroke, lineWidth) {
       if (!points?.length) return;
       ctx.beginPath();
@@ -575,6 +598,78 @@
       ctx.restore();
     }
 
+    function bodyPointToWorld(pose, forwardM, lateralM) {
+      const c = Math.cos(pose.yaw_rad);
+      const s = Math.sin(pose.yaw_rad);
+      return {
+        x_m: pose.x_m + c * forwardM - s * lateralM,
+        y_m: pose.y_m + s * forwardM + c * lateralM
+      };
+    }
+
+    function drawDetectionRange() {
+      if (!state.pose || !state.obstacle_detection) return;
+      const detection = state.obstacle_detection;
+      const rangeM = Number(detection.trigger_range_m);
+      if (!Number.isFinite(rangeM) || rangeM <= 0) return;
+      const jitterM = Math.max(0, Number(detection.trigger_jitter_m) || 0);
+      const center = worldToScreen(bodyPointToWorld(
+        state.pose,
+        Number(detection.sensor_x_m) || 0,
+        Number(detection.sensor_y_m) || 0
+      ));
+      const fov = Math.max(0.01, Number(detection.fov_rad) || 0.40);
+      const halfFov = Math.min(Math.PI * 0.48, fov * 0.5);
+      const heading = -state.pose.yaw_rad;
+      const startAngle = heading - halfFov;
+      const endAngle = heading + halfFov;
+      const maxRangeM = rangeM + jitterM;
+
+      function dashedArc(radiusM, stroke, width, dash) {
+        if (!Number.isFinite(radiusM) || radiusM <= 0) return;
+        ctx.setLineDash(dash);
+        ctx.strokeStyle = stroke;
+        ctx.lineWidth = width;
+        ctx.beginPath();
+        ctx.arc(center.x, center.y, radiusM * scale, startAngle, endAngle);
+        ctx.stroke();
+      }
+
+      function ray(angle, radiusM, stroke, width, dash) {
+        ctx.setLineDash(dash);
+        ctx.strokeStyle = stroke;
+        ctx.lineWidth = width;
+        ctx.beginPath();
+        ctx.moveTo(center.x, center.y);
+        ctx.lineTo(
+          center.x + Math.cos(angle) * radiusM * scale,
+          center.y + Math.sin(angle) * radiusM * scale
+        );
+        ctx.stroke();
+      }
+
+      ctx.save();
+      ctx.fillStyle = "rgba(15, 139, 141, 0.10)";
+      ctx.beginPath();
+      ctx.moveTo(center.x, center.y);
+      ctx.arc(center.x, center.y, maxRangeM * scale, startAngle, endAngle);
+      ctx.closePath();
+      ctx.fill();
+      ray(startAngle, maxRangeM, "rgba(15, 139, 141, 0.34)", 1, [4, 6]);
+      ray(endAngle, maxRangeM, "rgba(15, 139, 141, 0.34)", 1, [4, 6]);
+      if (jitterM > 0) {
+        dashedArc(Math.max(0, rangeM - jitterM), "rgba(15, 139, 141, 0.30)", 1, [3, 7]);
+        dashedArc(maxRangeM, "rgba(15, 139, 141, 0.30)", 1, [3, 7]);
+      }
+      dashedArc(rangeM, "rgba(15, 139, 141, 0.92)", 1.8, [7, 5]);
+      ctx.setLineDash([]);
+      ctx.fillStyle = "rgba(15, 139, 141, 0.9)";
+      ctx.beginPath();
+      ctx.arc(center.x, center.y, 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
     function draw() {
       const rect = canvas.getBoundingClientRect();
       ctx.clearRect(0, 0, rect.width, rect.height);
@@ -582,10 +677,12 @@
       ctx.fillRect(0, 0, rect.width, rect.height);
       drawGrid(rect);
       drawMap();
+      drawManualObstacles();
       drawPath(state.arena_path, getCss("--planner"), 3, true);
       drawPath(state.navigation_path, getCss("--route"), 4, false);
       drawPath(state.waypoint_path, getCss("--waypoint"), 2.5, false);
       drawTrail();
+      drawDetectionRange();
       drawVehicle();
       empty.style.display = state.pose || state.map || state.arena_layout ? "none" : "block";
     }
@@ -599,6 +696,10 @@
     }
 
     function updateMetrics() {
+      const displayName = state.display_name || "Loopback Navigation GUI";
+      els.displayName.textContent = displayName;
+      els.pageUrl.textContent = window.location.href;
+      document.title = displayName;
       const pose = state.pose;
       els.poseX.textContent = pose ? `${fmt(pose.x_m)} m` : "--";
       els.poseY.textContent = pose ? `${fmt(pose.y_m)} m` : "--";
@@ -612,6 +713,7 @@
       els.waypoint.textContent = Number.isInteger(state.current_waypoint) ? state.current_waypoint : "--";
       els.pathCount.textContent = `${state.waypoint_path?.poses?.length || 0} poses`;
       els.plannerCount.textContent = `${state.navigation_path?.poses?.length || 0} poses`;
+      els.obstacleCount.textContent = `${state.manual_obstacles?.length || 0}`;
       els.mapInfo.textContent = state.arena_layout
         ? `${fmt(state.arena_layout.width_m, 1)} x ${fmt(state.arena_layout.height_m, 1)} m`
         : (state.map ? `${state.map.width} x ${state.map.height}, ${fmt(state.map.resolution_m, 3)} m` : "--");
@@ -644,6 +746,18 @@
       };
     }
 
+    async function postJson(path, payload = {}) {
+      const response = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || response.statusText);
+      if (data.state) mergeState(data.state);
+      return data;
+    }
+
     document.getElementById("fit").addEventListener("click", () => {
       follow = false;
       document.getElementById("follow").classList.remove("active");
@@ -661,9 +775,22 @@
       event.currentTarget.classList.toggle("active", showGrid);
       draw();
     });
+    document.getElementById("obstacle").addEventListener("click", (event) => {
+      obstacleMode = !obstacleMode;
+      event.currentTarget.classList.toggle("active", obstacleMode);
+    });
+    document.getElementById("clear-obstacles").addEventListener("click", () => {
+      postJson("/manual_obstacles/clear").catch(console.error);
+    });
 
     let drag = null;
     canvas.addEventListener("pointerdown", (event) => {
+      if (obstacleMode) {
+        const rect = canvas.getBoundingClientRect();
+        const point = screenToWorld(event.clientX - rect.left, event.clientY - rect.top);
+        postJson("/manual_obstacles", point).catch(console.error);
+        return;
+      }
       drag = { x: event.clientX, y: event.clientY, ox: offsetX, oy: offsetY };
       canvas.setPointerCapture(event.pointerId);
       follow = false;

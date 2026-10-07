@@ -65,6 +65,8 @@ if(BUILD_TESTING)
   target_link_libraries(test_mcu_clock_mapper cup_car_serial_protocol)
   ament_add_gtest(actuator_tracking_monitor_test test/actuator_tracking_monitor_test.cpp)
   target_include_directories(actuator_tracking_monitor_test PRIVATE include)
+  ament_add_gtest(rfid_event_test test/rfid_event_test.cpp)
+  target_include_directories(rfid_event_test PRIVATE include)
 endif()
 
 ament_package()

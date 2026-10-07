@@ -1,0 +1,19 @@
+# start is expressed in the navigation map frame.
+geometry_msgs/Pose start
+string mode
+string[] target_ids
+string[] required_lane_ids
+string[] completed_lane_ids
+# Dynamic obstacle polygons are also expressed in the navigation map frame.
+geometry_msgs/Polygon[] dynamic_obstacles
+bool return_home
+bool allow_partial
+bool activate
+# Number of ordinary junctions visited since the last task junction.
+uint8 ordinary_nodes_since_task
+---
+bool success
+bool activated
+string message
+new_map_planner/RoutePlan plan
+float64 planning_time_ms

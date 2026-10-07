@@ -290,6 +290,21 @@ ros2 service call /waypoint_navigator/reset std_srvs/srv/Trigger '{}'
 
 任务完成后如需重新从头执行，应先调用 `reset`，再调用 `start`。
 
+#### `/waypoint_navigator/continue_obstacle_retreat`
+
+类型：
+
+```text
+mission_control_interfaces/srv/ContinueRetreat
+```
+
+该服务只在导航状态为 `OBSTACLE_REPLAN_REQUIRED` 时接受请求。任务层给出本段最小
+倒退距离，导航控制器从当前实测姿态匹配历史起点，先在小角度范围恢复历史航向，再把
+实际发布过的限速线速度和角速度按相反时间顺序执行，因而可以原样撤销紧路口内的
+前进、倒车和转向微调。到达更早锚点并校验位置/航向后，再次发布
+`OBSTACLE_REPLAN_REQUIRED`。若锚点之前已无轨迹，响应中的
+`trace_exhausted=true`，车辆保持停车。服务不允许任务层直接指定速度或任意坐标。
+
 ---
 
 ## 5. 航点数据结构
@@ -604,6 +619,9 @@ FOLLOW
 | `WAITING_FOR_INITIALIZATION` | ORB 暖机等待，不锁存，保持零速 |
 | `FOLLOWING` | 正在向当前航点运动 |
 | `ROTATING_TO_PATH` | 正在原地旋转以对齐当前路径 |
+| `TURN_STOP` / `TURN_CHECK` | 路口硬停车，等待异步状态格计划或安全续接 |
+| `TURN_ARC` / `TURN_ROTATE` / `TURN_CREEP` / `TURN_REVERSE` | 正在执行已验证的短时过弯原语 |
+| `TURN_BLOCKED` | 当前停车姿态找不到满足 8mm 整车包络的过弯计划 |
 | `TURN_HALF_SETTLED` | 180 度掉头的第一个 90 度已停稳，随后执行第二个 90 度 |
 | `PATH_ALIGNED` | 路径方向已对齐，准备进入路径跟随 |
 | `BRAKING_APPROACH` | 按剩余距离和实际车速执行航点接近制动 |
@@ -757,11 +775,14 @@ angular_z = path_pid_kp × path_error
 [-max_angular_speed, max_angular_speed]
 ```
 
-### 12.4 原地转向判断
+### 12.4 路口转向判断
 
-只有车辆已经在计划拐点停稳，且该拐点方向变化超过约 40 度时，才允许原地转向。普通直线路段的横向误差不会再触发原地转；180 度掉头固定拆成两个 90 度，每段都发零速确认停稳。
+只有车辆已经在规划器标记的拐点停稳，且方向变化超过约 40 度时，才允许进入转向动作。
+普通直线路段的横向误差不会触发该状态。90 度紧转使用异步状态格搜索，将轮轴位姿、
+当前受限速度和整车 8mm 安全包络同时纳入状态；动作可以是前进弧线、慢爬、倒车或原地
+微调。180 度掉头仍拆成两个 90 度，每段都先确认停稳。
 
-当：
+未进入紧转状态时，当：
 
 ```text
 abs(heading_error) >= rotate_in_place_threshold
@@ -773,7 +794,7 @@ abs(heading_error) >= rotate_in_place_threshold
 linear_x = 0
 ```
 
-车辆只旋转，不向前移动。
+车辆只旋转，不向前移动。紧转状态则执行完整已验证动作序列，并在计划衔接前硬停车。
 
 当误差小于阈值后才允许前进。
 
@@ -799,13 +820,17 @@ linear_x = min(requested_speed, v_limit, cross_track_limit) × heading_scale
 
 相邻路径方向变化小于 `pre_turn_stop_heading_threshold` 时可以连续通过；超过阈值时先停稳再转向。
 需要停车的拐点进站时，路径纠偏角速度还会被 `pre_turn_path_angular_ratio × linear_x`
-限制，避免刹车阶段演变成提前切弯；到点停稳后再进入原地转向。
+限制，避免刹车阶段演变成提前切弯；到点停稳后再进入路口状态格转向。
 
 ### 12.6 最终航点
 
 最终航点可能位于路中，因此路径消息携带的切线朝向不再授权原地调整；位置到达并确认停车后直接完成。需要改变行驶方向时，规划器必须把转向安排在前一个真实路口。
 
-动态 `nav_msgs/Path` 是二维路径。`pose.position.z=0.001` 表示该点是规划器确认的真实转向路口，`z=0` 表示普通路径点。导航只把这个标记当作普通路口转向授权；规划器不再发布 180 度掉头或短距离连续 90 度转向。遇到前方障碍需要退出时，由障碍恢复模块停车、倒回上一个恢复锚点/路口，再等待重规划；其他 z 值会被拒绝。
+动态 `nav_msgs/Path` 是二维路径。`pose.position.z=0.001` 表示普通真实转向路口，
+`z=0.002` 表示车辆沿上一段倒车回到路口后再转向，`z=0` 表示普通路径点。两种标记
+都必须由规划器完成扫掠验证；控制器对 `0.002` 使用反向进站几何建立状态格。规划器
+不发布 180 度掉头或短距离连续 90 度转向。遇到前方障碍需要退出时，由障碍恢复模块
+停车、倒回恢复锚点/路口，再等待重规划；其他 z 值会被拒绝。
 
 ---
 
@@ -907,8 +932,8 @@ config/waypoint_navigation.yaml
 | 参数 | 默认值 | 作用 |
 | --- | --- | --- |
 | `control_frequency` | `30.0` | 控制频率，Hz |
-| `default_speed` | `0.10` | CSV 未填写速度时的默认速度，m/s |
-| `max_linear_speed` | `0.10` | 最终速度发布口强制执行的全局最大线速度，m/s |
+| `default_speed` | `0.05` | CSV 未填写速度时的默认速度，m/s |
+| `max_linear_speed` | `0.05` | 最终速度发布口强制执行的全局最大线速度，m/s |
 | `max_angular_speed` | `0.75` | 最大角速度，rad/s |
 | `effective_braking_deceleration` | `0.35` | 实车有效制动减速度，m/s^2 |
 | `braking_control_delay` | `0.20` | 串口、控制与执行总延迟估计，s |
@@ -1219,9 +1244,10 @@ ros2 service call /waypoint_navigator/stop std_srvs/srv/Trigger '{}'
 
 车辆会按照预设航点运动，不知道路线中是否出现人员或临时障碍物。
 
-### 20.2 没有自动路径搜索
+### 20.2 没有全局自动路径搜索
 
-节点不会根据任意起点和终点生成新路线。CSV 中的航点顺序就是最终执行顺序。
+节点不会根据任意起点和终点生成全局路线。CSV 或动态 Path 中的航点顺序就是最终执行
+顺序；仅在明确标记的紧转路口内生成局部动作计划。
 
 ### 20.3 没有 TF 坐标转换
 
@@ -1231,9 +1257,10 @@ ros2 service call /waypoint_navigator/stop std_srvs/srv/Trigger '{}'
 
 输出速度同时受到最大线/角速度以及最大加速度、减速度限制；航点接近阶段还会依据制动模型提前降速。下位机仍应实现独立的速度闭环和通信看门狗，不能把 ROS 层斜坡当作唯一安全措施。
 
-### 20.5 不支持倒车规划
+### 20.5 只支持受限倒车
 
-控制器只输出非负线速度，通过原地转向后向前行驶到目标点。
+紧转状态格和障碍恢复可以在已验证局部区域内输出低速倒车；普通路径跟随不生成任意
+倒车路线，也不允许用倒车绕过全局规划。
 
 ### 20.6 不是连续曲线跟踪器
 

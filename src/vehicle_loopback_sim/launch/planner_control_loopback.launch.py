@@ -13,9 +13,7 @@ from vehicle_config import parameters_for
 
 def generate_launch_description():
     arena_config = str(
-        Path(get_package_share_directory("arena_path_planner"))
-        / "config"
-        / "arena_map.yaml"
+        Path(get_package_share_directory("new_map_planner")) / "config" / "arena.yaml"
     )
     waypoint_launch = str(
         Path(get_package_share_directory("visual_navigation"))
@@ -26,6 +24,11 @@ def generate_launch_description():
         Path(get_package_share_directory("vehicle_loopback_sim"))
         / "config"
         / "vehicle_loopback.yaml"
+    )
+    mission_config = str(
+        Path(get_package_share_directory("navigation_mission_manager"))
+        / "config"
+        / "mission_manager.yaml"
     )
 
     planner_config = LaunchConfiguration("planner_config")
@@ -39,19 +42,20 @@ def generate_launch_description():
     gui_host = LaunchConfiguration("gui_host")
     gui_port = LaunchConfiguration("gui_port")
     plan_on_start = LaunchConfiguration("plan_on_start")
-    planner_service = LaunchConfiguration("planner_service")
-    planner_mode = LaunchConfiguration("planner_mode")
-    plan_request_delay = LaunchConfiguration("plan_request_delay")
+    target_ids = LaunchConfiguration("target_ids")
     use_debug_controller = LaunchConfiguration("use_debug_controller")
     use_waypoint_navigator = LaunchConfiguration("use_waypoint_navigator")
+    simulate_obstacle_recognition = LaunchConfiguration(
+        "simulate_obstacle_recognition"
+    )
     physical = parameters_for("pure_line_following")
 
     planner = Node(
-        package="arena_path_planner",
-        executable="arena_planner_node",
-        name="arena_path_planner",
+        package="new_map_planner",
+        executable="new_map_planner_node",
+        name="new_map_planner",
         output="screen",
-        parameters=[{"config_file": planner_config}],
+        parameters=[{"map_file": planner_config}],
     )
 
     navigator = IncludeLaunchDescription(
@@ -96,12 +100,16 @@ def generate_launch_description():
             {
                 "cmd_vel_topic": "/cmd_vel_nav",
                 "odom_topic": "/odometry/fused",
+                "arena_config": ParameterValue(planner_config, value_type=str),
                 "initial_x_m": ParameterValue(initial_x, value_type=float),
                 "initial_y_m": ParameterValue(initial_y, value_type=float),
                 "initial_yaw_rad": ParameterValue(initial_yaw, value_type=float),
                 "wheel_track_m": physical["wheel_track_m"],
                 "base_offset_x_m": physical["base_offset_x_m"],
                 "base_offset_y_m": physical["base_offset_y_m"],
+                "publish_obstacle_detection": ParameterValue(
+                    simulate_obstacle_recognition, value_type=bool
+                ),
             },
         ],
     )
@@ -120,24 +128,38 @@ def generate_launch_description():
                 "arena_config": ParameterValue(planner_config, value_type=str),
                 "cmd_vel_topic": "/cmd_vel_nav",
                 "odom_topic": "/odometry/fused",
+                "navigation_path_topic": "/new_map_planner/navigation_path",
+                "arena_path_topic": "/new_map_planner/arena_path",
+                "map_topic": "/new_map_planner/map",
             },
         ],
     )
 
     mission = Node(
-        package="vehicle_loopback_sim",
-        executable="loopback_mission_node",
-        name="vehicle_loopback_mission",
+        package="navigation_mission_manager",
+        executable="mission_manager_node",
+        name="navigation_mission_manager",
         output="screen",
         condition=IfCondition(plan_on_start),
         parameters=[
-            loopback_parameters_file,
+            mission_config,
             {
-                "arena_config": ParameterValue(planner_config, value_type=str),
-                "planner_service": ParameterValue(planner_service, value_type=str),
-                "mode": ParameterValue(planner_mode, value_type=str),
-                "activate_navigation": True,
-                "request_delay_s": ParameterValue(plan_request_delay, value_type=float),
+                "map_file": ParameterValue(planner_config, value_type=str),
+                "auto_start": True,
+                "target_ids": ParameterValue(target_ids, value_type=str),
+                "planner_service": "/new_map_planner/plan",
+                "odom_topic": "/odometry/fused",
+                "navigator_status_topic": "/waypoint_navigation/status",
+                "route_ack_topic": "/waypoint_navigation/route_ack",
+                "motion_hold_service": "/waypoint_navigator/set_motion_hold",
+                "motion_hold_state_topic": (
+                    "/waypoint_navigation/motion_hold_state"
+                ),
+                "front_obstacle_topic": "/obstacle/front_blocked",
+                "front_range_topic": "/obstacle/front_range",
+                "status_text_topic": (
+                    "/vehicle_loopback_sim/mission_status"
+                ),
             },
         ],
     )
@@ -169,20 +191,39 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "plan_on_start",
                 default_value="true",
-                description="Send a real planner request and activate the route",
+                description="Start the formal navigation mission manager",
             ),
             DeclareLaunchArgument(
                 "planner_service",
-                default_value="/arena_path_planner/plan",
+                default_value="/new_map_planner/plan",
+                description=(
+                    "Legacy loopback mission argument kept for script "
+                    "compatibility; ignored by the default mission manager"
+                ),
             ),
             DeclareLaunchArgument(
                 "planner_mode",
                 default_value="layer1,layer2,layer3",
                 description=(
-                    "Planner mode or comma-separated mode sequence used by "
-                    "the startup loopback mission"
+                    "Legacy loopback mission argument kept for script "
+                    "compatibility; ignored by the default mission manager"
                 ),
             ),
+            DeclareLaunchArgument(
+                "target_ids",
+                default_value="1,2,3,4,5,6,7,8,9,10,11,12",
+                description="Comma-separated task ids; empty uses planner defaults",
+            ),
+            DeclareLaunchArgument(
+                "required_lane_ids",
+                default_value="",
+                description=(
+                    "Legacy loopback mission argument kept for script "
+                    "compatibility; ignored by the default mission manager"
+                ),
+            ),
+            DeclareLaunchArgument("return_home", default_value="true"),
+            DeclareLaunchArgument("allow_partial", default_value="true"),
             DeclareLaunchArgument("plan_request_delay", default_value="1.0"),
             DeclareLaunchArgument(
                 "use_debug_controller",
@@ -193,6 +234,11 @@ def generate_launch_description():
                 "use_waypoint_navigator",
                 default_value="true",
                 description="Use the formal visual_navigation waypoint navigator",
+            ),
+            DeclareLaunchArgument(
+                "simulate_obstacle_recognition",
+                default_value="true",
+                description="Publish simulated front obstacle reports from the map",
             ),
             loopback,
             planner,

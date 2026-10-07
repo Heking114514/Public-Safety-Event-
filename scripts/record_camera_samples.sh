@@ -346,6 +346,46 @@ printf 'camera_serial\t%s\ncolor_profile\t%s\ndepth_enabled\t%s\ndepth_profile\t
   "${CAMERA_SERIAL}" "${COLOR_PROFILE}" "${ENABLE_DEPTH}" \
   "${DEPTH_PROFILE}" "${DURATION_S}" >"${SESSION_DIR}/session.tsv"
 
+topic_message_count() {
+  local metadata_file="$1"
+  local expected_topic="$2"
+
+  awk -v expected_topic="${expected_topic}" '
+    $1 == "name:" {
+      current_topic = $2
+      gsub(/^"|"$/, "", current_topic)
+    }
+    $1 == "message_count:" && current_topic == expected_topic {
+      print $2
+      found = 1
+      exit
+    }
+    END {
+      if (!found) {
+        exit 1
+      }
+    }
+  ' "${metadata_file}"
+}
+
+print_recording_diagnostics() {
+  local bag_dir="$1"
+
+  printf '[camera-samples] ===== ros2 bag info (recording anomaly) =====\n' >&2
+  printf '[camera-samples] Bag: %s\n' "${bag_dir}" >&2
+  if [[ -f "${bag_dir}/metadata.yaml" ]]; then
+    "${ROS2_COMMAND}" bag info "${bag_dir}" >&2 ||
+      printf '[camera-samples] ERROR: ros2 bag info failed for %s\n' "${bag_dir}" >&2
+  else
+    printf '[camera-samples] metadata.yaml is missing: %s\n' "${bag_dir}" >&2
+  fi
+  if [[ -s "${CAMERA_LOG}" ]]; then
+    printf '[camera-samples] ===== camera.log (last 40 lines) =====\n' >&2
+    tail -n 40 "${CAMERA_LOG}" >&2 || true
+  fi
+  printf '[camera-samples] ===== end recording diagnostics =====\n' >&2
+}
+
 record_sample() {
   local sample_number="$1"
   local note="$2"
@@ -356,6 +396,9 @@ record_sample() {
   local bag_status=0
   local elapsed=0
   local final_status="complete"
+  local failure_reason=""
+  local color_message_count=""
+  local depth_message_count=""
 
   printf -v sample_id '%04d' "${sample_number}"
   sample_dir="${SAMPLES_DIR}/${sample_id}"
@@ -377,6 +420,10 @@ record_sample() {
     if ! process_is_running "${BAG_PID}"; then
       break
     fi
+    if [[ -n "${CAMERA_PID}" ]] && ! process_is_running "${CAMERA_PID}"; then
+      failure_reason="camera node exited during recording"
+      break
+    fi
     sleep 1
     ((elapsed += 1))
   done
@@ -391,7 +438,28 @@ record_sample() {
   fi
   BAG_PID=""
 
-  if [[ ! -f "${bag_dir}/metadata.yaml" ]]; then
+  if ((bag_status != 0)); then
+    failure_reason="rosbag process exited with status ${bag_status}"
+  elif [[ ! -f "${bag_dir}/metadata.yaml" ]]; then
+    failure_reason="metadata.yaml was not produced"
+  else
+    color_message_count="$(
+      topic_message_count "${bag_dir}/metadata.yaml" "${COLOR_TOPIC}" || true
+    )"
+    if [[ ! "${color_message_count}" =~ ^[0-9]+$ ]] ||
+       ((color_message_count == 0)); then
+      failure_reason="RGB topic ${COLOR_TOPIC} contains no recorded frames"
+    elif [[ "${ENABLE_DEPTH}" == "true" ]]; then
+      depth_message_count="$(
+        topic_message_count "${bag_dir}/metadata.yaml" "${DEPTH_TOPIC}" || true
+      )"
+      if [[ ! "${depth_message_count}" =~ ^[0-9]+$ ]] ||
+         ((depth_message_count == 0)); then
+        failure_reason="depth topic ${DEPTH_TOPIC} contains no recorded frames"
+      fi
+    fi
+  fi
+  if [[ -n "${failure_reason}" ]]; then
     final_status="incomplete"
   fi
   note="${note//$'\t'/ }"
@@ -400,9 +468,14 @@ record_sample() {
     "${final_status}" "${bag_dir}" >>"${INDEX_FILE}"
 
   if [[ "${final_status}" != "complete" ]]; then
-    fail "sample ${sample_id} did not produce metadata.yaml (rosbag status ${bag_status})"
+    print_recording_diagnostics "${bag_dir}"
+    fail "sample ${sample_id} is incomplete: ${failure_reason}"
   fi
-  log "Saved sample ${sample_id}: ${bag_dir}"
+  if [[ "${ENABLE_DEPTH}" == "true" ]]; then
+    log "Saved sample ${sample_id}: ${bag_dir} (RGB=${color_message_count}, depth=${depth_message_count})"
+  else
+    log "Saved sample ${sample_id}: ${bag_dir} (RGB=${color_message_count})"
+  fi
 }
 
 log "No drive or serial process was started"

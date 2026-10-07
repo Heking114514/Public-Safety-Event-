@@ -47,6 +47,18 @@ struct Bmi088AttitudeFrame
   uint32_t startup_samples{};
 };
 
+struct RfidFrame
+{
+  uint32_t mcu_time_ms{};
+  uint32_t card_sequence{};
+  uint8_t status{};
+  uint8_t protocol_status{};
+  uint16_t tag_type{};
+  uint8_t sak{};
+  uint8_t number{};
+  std::string uid_hex;
+};
+
 enum class SampleSequenceDisposition
 {
   NEW_SAMPLE,
@@ -59,6 +71,7 @@ bool parse_encoder_frame(const std::string & line, std::vector<int32_t> * values
 bool parse_control_telemetry_frame(const std::string & line, ControlTelemetryFrame * frame);
 bool parse_bmi088_imu_frame(const std::string & line, Bmi088ImuFrame * frame);
 bool parse_bmi088_attitude_frame(const std::string & line, Bmi088AttitudeFrame * frame);
+bool parse_rfid_frame(const std::string & line, RfidFrame * frame);
 bool control_state_is_healthy(const ControlTelemetryFrame & frame);
 SampleSequenceDisposition classify_sample_sequence(
   uint32_t previous_sequence, uint32_t previous_mcu_time_ms,

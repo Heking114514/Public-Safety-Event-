@@ -4,19 +4,41 @@ from __future__ import annotations
 
 import json
 import math
+from pathlib import Path
 
+from ament_index_python.packages import get_package_share_directory
 import rclpy
-from geometry_msgs.msg import PoseWithCovarianceStamped, TransformStamped, Twist
+from rclpy.executors import ExternalShutdownException
+from geometry_msgs.msg import (
+    Point32,
+    PolygonStamped,
+    PoseWithCovarianceStamped,
+    TransformStamped,
+    Twist,
+)
 from mission_control_interfaces.msg import ControlTelemetry
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from sensor_msgs.msg import Imu
-from std_msgs.msg import Bool, String
+from rclpy.qos import (
+    DurabilityPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+    qos_profile_sensor_data,
+)
+from sensor_msgs.msg import Imu, Range
+from std_msgs.msg import Bool, Empty, String
 from tf2_ros import TransformBroadcaster
 from vehicle_config import parameters_for
 
+from .arena_layout import layout_from_config
 from .motion import Pose2D, Twist2D, integrate_base_link, limited_twist, wheel_speeds
+from .obstacle import (
+    ObstacleDetection,
+    ObstacleDetectionConfig,
+    SimulatedObstacleDetector,
+    StableObstacleGate,
+    layout_obstacles,
+)
 
 
 def _yaw_from_quaternion(quaternion) -> float:
@@ -63,6 +85,29 @@ class VehicleLoopbackSim(Node):
         self._publish_control_telemetry = bool(
             self.get_parameter("publish_control_telemetry").value
         )
+        self._publish_obstacle_detection = bool(
+            self.get_parameter("publish_obstacle_detection").value
+        )
+        self._obstacle_frame_id = str(
+            self.get_parameter("obstacle_detection_frame_id").value
+        )
+        self._obstacle_gate = StableObstacleGate(
+            max(0.0, _finite_parameter(self, "obstacle_detection_stable_time_s"))
+        )
+        self._manual_obstacles: list[tuple[tuple[float, float], ...]] = []
+        self._map_obstacles = self._load_map_obstacles()
+        self._map_obstacle_detector = self._make_obstacle_detector(
+            self._map_obstacles,
+            "map",
+        )
+        self._manual_obstacle_detector = self._make_obstacle_detector(
+            self._manual_obstacles,
+            "manual",
+            activation_floor_m=_finite_parameter(
+                self, "obstacle_detection_min_range_m"
+            ),
+        )
+        self._last_obstacle_index: int | None = None
 
         self._pose = Pose2D(
             _finite_parameter(self, "initial_x_m"),
@@ -88,6 +133,18 @@ class VehicleLoopbackSim(Node):
             PoseWithCovarianceStamped,
             str(self.get_parameter("initial_pose_topic").value),
             self._initial_pose_callback,
+            10,
+        )
+        self._manual_obstacle_subscription = self.create_subscription(
+            PolygonStamped,
+            str(self.get_parameter("manual_obstacle_topic").value),
+            self._manual_obstacle_callback,
+            10,
+        )
+        self._clear_manual_obstacles_subscription = self.create_subscription(
+            Empty,
+            str(self.get_parameter("clear_manual_obstacles_topic").value),
+            self._clear_manual_obstacles_callback,
             10,
         )
         self._odom_publisher = self.create_publisher(
@@ -125,6 +182,21 @@ class VehicleLoopbackSim(Node):
             str(self.get_parameter("control_telemetry_topic").value),
             10,
         )
+        self._front_obstacle_publisher = self.create_publisher(
+            Bool,
+            str(self.get_parameter("front_obstacle_topic").value),
+            qos_profile_sensor_data,
+        )
+        self._front_range_publisher = self.create_publisher(
+            Range,
+            str(self.get_parameter("front_obstacle_range_topic").value),
+            qos_profile_sensor_data,
+        )
+        self._dynamic_obstacle_publisher = self.create_publisher(
+            PolygonStamped,
+            str(self.get_parameter("dynamic_obstacle_topic").value),
+            10,
+        )
 
         update_rate_hz = max(1.0, _finite_parameter(self, "update_rate_hz"))
         status_rate_hz = max(1.0, _finite_parameter(self, "status_rate_hz"))
@@ -153,7 +225,13 @@ class VehicleLoopbackSim(Node):
             "fusion_status_topic": "/odometry/fusion_status",
             "actuator_health_topic": "/cup_car_serial/actuator_healthy",
             "control_telemetry_topic": "/cup_car_serial/control_telemetry",
+            "front_obstacle_topic": "/obstacle/front_blocked",
+            "front_obstacle_range_topic": "/obstacle/front_range",
+            "dynamic_obstacle_topic": "/perception/dynamic_obstacle",
+            "manual_obstacle_topic": "/vehicle_loopback_sim/manual_obstacle",
+            "clear_manual_obstacles_topic": "/vehicle_loopback_sim/clear_obstacles",
             "status_topic": "/vehicle_loopback_sim/status",
+            "arena_config": self._default_arena_config(),
             "map_frame_id": "map",
             "base_frame_id": "base_link",
             "initial_x_m": 0.0,
@@ -172,8 +250,123 @@ class VehicleLoopbackSim(Node):
             "publish_tf": True,
             "publish_actuator_health": True,
             "publish_control_telemetry": True,
+            "publish_obstacle_detection": True,
+            "obstacle_detection_frame_id": "camera_link",
+            "obstacle_sensor_x_m": physical["camera_x_m"],
+            "obstacle_sensor_y_m": physical["camera_y_m"],
+            "obstacle_detection_trigger_range_m": 0.25,
+            "obstacle_detection_trigger_jitter_m": 0.0,
+            "obstacle_detection_lateral_tolerance_m": 0.08,
+            "obstacle_detection_fov_rad": 0.40,
+            "obstacle_detection_min_range_m": 0.03,
+            "obstacle_detection_stable_time_s": 0.0,
+            "obstacle_detection_random_seed": 0,
         }
         self.declare_parameters("", list(declarations.items()))
+
+    def _default_arena_config(self) -> str:
+        try:
+            return str(
+                Path(get_package_share_directory("new_map_planner"))
+                / "config"
+                / "arena.yaml"
+            )
+        except Exception:
+            return ""
+
+    def _load_map_obstacles(self) -> list[tuple[tuple[float, float], ...]]:
+        if not self._publish_obstacle_detection:
+            return []
+        arena_config = str(self.get_parameter("arena_config").value)
+        if not arena_config:
+            self.get_logger().warn("simulated obstacle recognition has no arena_config")
+            return []
+        try:
+            return layout_obstacles(layout_from_config(arena_config))
+        except Exception as error:
+            self.get_logger().warn(
+                f"failed to load simulated obstacle map from {arena_config}: {error}"
+            )
+            return []
+
+    def _make_obstacle_detector(
+        self,
+        obstacles: list[tuple[tuple[float, float], ...]],
+        label: str,
+        activation_floor_m: float | None = None,
+    ) -> SimulatedObstacleDetector | None:
+        if not self._publish_obstacle_detection:
+            return None
+        if not obstacles:
+            if label == "map":
+                self.get_logger().warn(
+                    "simulated obstacle recognition found no map obstacles"
+                )
+            return None
+        config = self._obstacle_config(activation_floor_m)
+        self.get_logger().info(
+            "simulated obstacle recognition ready: "
+            f"source={label} obstacles={len(obstacles)} "
+            f"trigger={config.trigger_range_m:.2f}+/-"
+            f"{config.trigger_jitter_m:.2f}m"
+        )
+        return SimulatedObstacleDetector(obstacles, config)
+
+    def _obstacle_config(
+        self,
+        activation_floor_m: float | None = None,
+    ) -> ObstacleDetectionConfig:
+        return ObstacleDetectionConfig(
+            sensor_x_m=_finite_parameter(self, "obstacle_sensor_x_m"),
+            sensor_y_m=_finite_parameter(self, "obstacle_sensor_y_m"),
+            trigger_range_m=max(
+                0.01, _finite_parameter(self, "obstacle_detection_trigger_range_m")
+            ),
+            trigger_jitter_m=max(
+                0.0, _finite_parameter(self, "obstacle_detection_trigger_jitter_m")
+            ),
+            lateral_tolerance_m=max(
+                0.0,
+                _finite_parameter(self, "obstacle_detection_lateral_tolerance_m"),
+            ),
+            min_range_m=max(
+                0.0, _finite_parameter(self, "obstacle_detection_min_range_m")
+            ),
+            random_seed=int(self.get_parameter("obstacle_detection_random_seed").value),
+            activation_floor_m=activation_floor_m,
+        )
+
+    def _detect_obstacle(self) -> ObstacleDetection | None:
+        detections = []
+        if self._map_obstacle_detector is not None:
+            detection = self._map_obstacle_detector.detect(self._pose)
+            if detection is not None:
+                detections.append(detection)
+        if self._manual_obstacle_detector is not None:
+            detection = self._manual_obstacle_detector.detect(self._pose)
+            if detection is not None:
+                detections.append(
+                    ObstacleDetection(
+                        detection.obstacle_index + len(self._map_obstacles),
+                        detection.range_m,
+                        detection.trigger_range_m,
+                    )
+                )
+        if not detections:
+            return None
+        return min(detections, key=lambda detection: detection.range_m)
+
+    def _detected_obstacle_polygon(
+        self,
+        detection: ObstacleDetection,
+    ) -> tuple[tuple[float, float], ...] | None:
+        index = detection.obstacle_index
+        if index < len(self._map_obstacles):
+            return self._map_obstacles[index]
+        manual_index = index - len(self._map_obstacles)
+        if 0 <= manual_index < len(self._manual_obstacles):
+            return self._manual_obstacles[manual_index]
+        return None
 
     def _cmd_vel_callback(self, message: Twist) -> None:
         self._desired_twist = Twist2D(
@@ -191,11 +384,58 @@ class VehicleLoopbackSim(Node):
         self._applied_twist = Twist2D()
         self._desired_twist = Twist2D()
         self._last_update_time = self.get_clock().now()
+        self._reset_obstacle_reporting()
         self.get_logger().info(
             "loopback pose reset to "
             f"x={self._pose.x:.3f} y={self._pose.y:.3f} "
             f"yaw={self._pose.yaw:.3f}"
         )
+
+    def _manual_obstacle_callback(self, message: PolygonStamped) -> None:
+        if message.header.frame_id and message.header.frame_id != self._map_frame:
+            self.get_logger().warn(
+                "ignoring manual obstacle in frame "
+                f"{message.header.frame_id}; expected {self._map_frame}"
+            )
+            return
+        obstacle = tuple(
+            (float(point.x), float(point.y)) for point in message.polygon.points
+        )
+        if len(obstacle) < 3 or not all(
+            math.isfinite(value) for point in obstacle for value in point
+        ):
+            self.get_logger().warn("ignoring invalid manual obstacle polygon")
+            return
+        self._manual_obstacles.append(obstacle)
+        self._manual_obstacle_detector = self._make_obstacle_detector(
+            self._manual_obstacles,
+            "manual",
+            activation_floor_m=_finite_parameter(
+                self, "obstacle_detection_min_range_m"
+            ),
+        )
+        self._reset_obstacle_reporting()
+        self.get_logger().info(
+            f"manual simulated obstacle added: count={len(self._manual_obstacles)}"
+        )
+
+    def _clear_manual_obstacles_callback(self, _: Empty) -> None:
+        if not self._manual_obstacles:
+            return
+        self._manual_obstacles.clear()
+        self._manual_obstacle_detector = self._make_obstacle_detector(
+            self._manual_obstacles,
+            "manual",
+            activation_floor_m=_finite_parameter(
+                self, "obstacle_detection_min_range_m"
+            ),
+        )
+        self._reset_obstacle_reporting()
+        self.get_logger().info("manual simulated obstacles cleared")
+
+    def _reset_obstacle_reporting(self) -> None:
+        self._obstacle_gate.reset()
+        self._last_obstacle_index = None
 
     def _update(self) -> None:
         now = self.get_clock().now()
@@ -297,6 +537,58 @@ class VehicleLoopbackSim(Node):
         message.measured_right_velocity_mps = measured_right
         self._telemetry_publisher.publish(message)
 
+    def _publish_obstacle_report(self, stamp) -> None:
+        if not self._publish_obstacle_detection:
+            return
+        raw_detection = self._detect_obstacle()
+        detection = self._obstacle_gate.update(
+            raw_detection,
+            stamp.nanoseconds * 1.0e-9,
+        )
+        if detection is not None:
+            range_message = Range()
+            range_message.header.stamp = stamp.to_msg()
+            range_message.header.frame_id = self._obstacle_frame_id
+            range_message.radiation_type = Range.INFRARED
+            range_message.field_of_view = max(
+                0.01, _finite_parameter(self, "obstacle_detection_fov_rad")
+            )
+            range_message.min_range = _finite_parameter(
+                self, "obstacle_detection_min_range_m"
+            )
+            range_message.max_range = detection.trigger_range_m
+            range_message.range = detection.range_m
+            self._front_range_publisher.publish(range_message)
+            self._publish_dynamic_obstacle(detection, stamp)
+
+        blocked = Bool()
+        blocked.data = detection is not None
+        self._front_obstacle_publisher.publish(blocked)
+
+        obstacle_index = detection.obstacle_index if detection is not None else None
+        if obstacle_index == self._last_obstacle_index:
+            return
+        self._last_obstacle_index = obstacle_index
+        if detection is None:
+            self.get_logger().info("simulated front obstacle clear")
+        else:
+            self.get_logger().warn(
+                "simulated front obstacle detected: "
+                f"index={detection.obstacle_index} range={detection.range_m:.2f}m "
+                f"trigger={detection.trigger_range_m:.2f}m"
+            )
+
+    def _publish_dynamic_obstacle(self, detection: ObstacleDetection, stamp) -> None:
+        polygon = self._detected_obstacle_polygon(detection)
+        if polygon is None:
+            return
+        message = PolygonStamped()
+        message.header.stamp = stamp.to_msg()
+        message.header.frame_id = self._map_frame
+        for x_m, y_m in polygon:
+            message.polygon.points.append(Point32(x=float(x_m), y=float(y_m), z=0.0))
+        self._dynamic_obstacle_publisher.publish(message)
+
     def _publish_status_bundle(self) -> None:
         fusion_status = String()
         fusion_status.data = "FULL"
@@ -306,6 +598,9 @@ class VehicleLoopbackSim(Node):
             health = Bool()
             health.data = True
             self._actuator_health_publisher.publish(health)
+
+        now = self.get_clock().now()
+        self._publish_obstacle_report(now)
 
         payload = {
             "pose": {
@@ -333,7 +628,7 @@ def main(args=None) -> None:
     node = VehicleLoopbackSim()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()

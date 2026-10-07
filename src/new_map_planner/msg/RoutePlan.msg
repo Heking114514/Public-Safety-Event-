@@ -1,0 +1,15 @@
+std_msgs/Header header
+uint64 plan_id
+string map_id
+string status
+nav_msgs/Path arena_path
+nav_msgs/Path navigation_path
+new_map_planner/Maneuver[] maneuvers
+string[] visit_order
+string[] covered_lane_ids
+string[] deferred_target_ids
+string[] deferred_lane_ids
+float64 length_m
+bool complete
+bool collision_checked
+uint8 ordinary_nodes_since_task

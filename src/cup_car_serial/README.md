@@ -1,6 +1,6 @@
 # cup_car_serial
 
-该 ROS 2 节点将导航速度和 IMU 姿态转发给下位机，并解析下位机回传的轮编码器与控制遥测。
+该 ROS 2 包转发导航速度和 IMU 姿态，解析下位机遥测，并通过串口让下位机播报新的 RFID 巡逻点。
 
 默认接口：
 
@@ -8,6 +8,9 @@
 输入话题：/cmd_vel_nav
 输入话题：/imu/rpy
 输出话题：/cup_car_serial/encoder_ticks
+输出话题：/cup_car_serial/rfid
+输出话题：/cup_car_serial/rfid_number
+输出话题：/cup_car_serial/rfid_uid
 输出话题：/cup_car_serial/bmi088_attitude
 输出话题：/cup_car_serial/bmi088_raw_imu
 输出话题：/cup_car_serial/control_telemetry
@@ -17,6 +20,7 @@
 波特率：115200，8N1
 发送频率：20 Hz
 命令超时：0.4 s
+RFID 播报：新读卡事件通过 `TTS,<GBK文本>\r\n` 发给下位机
 ```
 
 串口帧格式：
@@ -28,15 +32,30 @@ ENC,sample_time_ms,sample_sequence,left_total,right_total\r\n
 IMU,sample_time_ms,sample_sequence,status,gx,gy,gz,temp_cC\r\n
 ATT,sample_time_ms,att_sequence,status,yaw_mdeg,gyro_z_mdps,bias_z_mdps,startup_samples\r\n
 CTL,time_ms,sample_sequence,mode,estop,rx_valid,rx_age_ms,rx_vx_mmps,rx_wz_mradps,target_left_mmps,target_right_mmps,measured_left_mmps,measured_right_mmps,pwm_left,pwm_right\r\n
+RFID,time_ms,card_sequence,status,protocol_status,tag_type,sak,number,uid_hex\r\n
 ```
 
 - `vx`：`Twist.linear.x`，单位 m/s。
 - `az`：`Twist.angular.z`，单位 rad/s。
 - 数值保留三位小数，例如 `0.250,-1.500\r\n`。
 - `roll`、`pitch`、`yaw` 来自 `/imu/rpy`（`geometry_msgs/msg/Vector3Stamped`），单位 rad。
+- RFID 有效新读卡事件会发布到 `/cup_car_serial/rfid_number`，并将
+  `TTS,<GBK编码的“到达 X 号巡逻点”>\r\n` 命令通过同一串口发送给下位机 TTS 模块。
+  串口节点按卡片序号和 UID 去重，同一读卡事件只发送一次。下位机需要启用
+  `ROBOT_ENABLE_HOST_TTS_COMMAND` 并连接车载语音模块。
 - 编码器输出类型为 `std_msgs/msg/Int32MultiArray`，`data` 固定为
   `[sample_time_ms, sample_sequence, left_total_ticks, right_total_ticks]`。
   节点兼容旧固件的 `ENC,left_total,right_total`，其前两项补零。
+- `RFID` 来自下位机 UART10 读卡器。`time_ms` 为下位机 RFID 状态更新时间，
+  `card_sequence` 为读到新卡事件序号，`number` 是 0 扇区 1 块 0 字节解析出的
+  巡逻点编号，范围 `1..12`，无效时为 `0`。
+- `/cup_car_serial/rfid` 发布完整 RFID 串口行；`/cup_car_serial/rfid_number`
+  仅在新读到有效编号时发布 `std_msgs/msg/Int32`，避免同一张卡持续在场时重复触发；
+  `/cup_car_serial/rfid_uid` 同步发布本次事件的 UID 字符串。
+- 默认启用 RFID 临时驻停：每次新读到有效编号时，串口节点会调用
+  `/waypoint_navigator/set_motion_hold`，以 `source=rfid` 申请任务驻停，持续
+  `3.0 s` 后自动释放，让小车继续执行原导航任务。该逻辑可用
+  `rfid_motion_hold_enabled` 关闭，或用 `rfid_motion_hold_duration_s` 调整时长。
 - 控制遥测输出类型为
   `mission_control_interfaces/msg/ControlTelemetry`，速度整数毫单位会转换为
   `m/s` 和 `rad/s`。它保留下位机模式、急停、命令年龄、轮速目标/实测值和PWM。
@@ -84,6 +103,10 @@ CTL,time_ms,sample_sequence,mode,estop,rx_valid,rx_age_ms,rx_vx_mmps,rx_wz_mradp
 | `tracking_recovery_stop_s` | `0.5` | 停驶后允许重试的滞回时间 |
 | `tracking_retry_rearm_s` | `3.0` | 清除历史重试次数所需的正常跟踪时间 |
 | `tracking_maximum_recovery_attempts` | `2` | 锁存前允许的自动重试次数 |
+| `rfid_motion_hold_enabled` | `true` | RFID 有效新读卡事件是否申请导航驻停 |
+| `rfid_motion_hold_service` | `/waypoint_navigator/set_motion_hold` | 导航驻停服务名 |
+| `rfid_motion_hold_source` | `rfid` | 驻停来源名，同一来源重复读卡会刷新 3 秒计时 |
+| `rfid_motion_hold_duration_s` | `3.0` | RFID 触发驻停持续时间 |
 
 单独启动：
 
@@ -136,6 +159,9 @@ ros2 launch cup_car_serial cmd_vel_serial.launch.py \
 ros2 topic echo /cup_car_serial/connected --once
 ros2 topic echo /cup_car_serial/rx
 ros2 topic echo /cup_car_serial/encoder_ticks
+ros2 topic echo /cup_car_serial/rfid
+ros2 topic echo /cup_car_serial/rfid_number
+ros2 topic echo /cup_car_serial/rfid_uid
 ros2 topic echo /cup_car_serial/control_telemetry
 ros2 topic echo /cup_car_serial/actuator_healthy
 ros2 topic echo /cup_car_serial/actuator_tracking_status
@@ -144,6 +170,13 @@ ros2 topic echo /cup_car_serial/actuator_tracking_status
 连接正常时 `connected` 为 `true`。最新下位机固件每 20 ms 回传一次 `ENC`/`IMU`/`ATT`/`HLD`，
 每 100 ms 回传一次 `CTL`；串口桥会将原始帧同时保留在 `rx` 中，并发布结构化话题。
 固件默认处于遥控模式，切换到导航模式前 `actuator_healthy` 会保持 `false`。
+
+查看下位机播报帧与去重结果：
+
+```bash
+ros2 topic echo /cup_car_serial/rfid_number
+ros2 topic echo /cup_car_serial/rx
+```
 
 如果超过 `0.4 s` 没有收到新速度，节点会向串口发送零速度。`/imu/rpy` 超过
 `rpy_timeout_s`（默认 0.4 s）未更新时，节点暂停发送 RPY 帧。下位机仍应实现独立通信看门狗，并切换到允许接收导航速度的工作模式。

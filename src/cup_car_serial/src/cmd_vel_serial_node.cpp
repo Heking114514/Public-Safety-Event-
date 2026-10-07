@@ -7,6 +7,7 @@
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -19,15 +20,19 @@
 #include "geometry_msgs/msg/twist.hpp"
 #include "geometry_msgs/msg/vector3_stamped.hpp"
 #include "mission_control_interfaces/msg/control_telemetry.hpp"
+#include "mission_control_interfaces/srv/set_motion_hold.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/imu.hpp"
 #include "std_msgs/msg/bool.hpp"
+#include "std_msgs/msg/int32.hpp"
 #include "std_msgs/msg/int32_multi_array.hpp"
 #include "std_msgs/msg/string.hpp"
 
 #include "cup_car_serial/actuator_tracking_monitor.hpp"
 #include "cup_car_serial/mcu_clock_mapper.hpp"
 #include "cup_car_serial/protocol.hpp"
+#include "cup_car_serial/rfid_event_deduplicator.hpp"
+#include "cup_car_serial/rfid_tts_command.hpp"
 
 namespace
 {
@@ -43,6 +48,8 @@ constexpr uint8_t kBmi088StatusStationary = 0x10U;
 constexpr uint8_t kBmi088StatusSaturated = 0x20U;
 constexpr uint8_t kBmi088StatusSampleTimeout = 0x40U;
 constexpr uint32_t kBmi088StartupBiasSamples = 600U;
+constexpr uint8_t kRfidStatusCardPresent = 0x02U;
+constexpr uint8_t kRfidStatusNumberValid = 0x20U;
 
 std::string describe_bmi088_attitude_status(
   const cup_car_serial::Bmi088AttitudeFrame & frame)
@@ -221,6 +228,22 @@ public:
     baud_rate_ = declare_parameter<int>("baud_rate", 115200);
     topic_ = declare_parameter<std::string>("topic", "/cmd_vel_nav");
     rpy_topic_ = declare_parameter<std::string>("rpy_topic", "/imu/rpy");
+    rfid_topic_ = declare_parameter<std::string>(
+      "rfid_topic", "/cup_car_serial/rfid");
+    rfid_number_topic_ = declare_parameter<std::string>(
+      "rfid_number_topic", "/cup_car_serial/rfid_number");
+    rfid_uid_topic_ = declare_parameter<std::string>(
+      "rfid_uid_topic", "/cup_car_serial/rfid_uid");
+    rfid_motion_hold_enabled_ = declare_parameter<bool>(
+      "rfid_motion_hold_enabled", true);
+    rfid_motion_hold_service_ = declare_parameter<std::string>(
+      "rfid_motion_hold_service", "/waypoint_navigator/set_motion_hold");
+    rfid_motion_hold_source_ = declare_parameter<std::string>(
+      "rfid_motion_hold_source", "rfid");
+    rfid_motion_hold_reason_ = declare_parameter<std::string>(
+      "rfid_motion_hold_reason", "rfid card detected");
+    rfid_motion_hold_duration_s_ = declare_parameter<double>(
+      "rfid_motion_hold_duration_s", 3.0);
     bmi088_raw_imu_topic_ = declare_parameter<std::string>(
       "bmi088_raw_imu_topic", "/cup_car_serial/bmi088_raw_imu");
     bmi088_attitude_topic_ = declare_parameter<std::string>(
@@ -259,6 +282,12 @@ public:
       "/cup_car_serial/rx", 10);
     encoderPublisher_ = create_publisher<std_msgs::msg::Int32MultiArray>(
       "/cup_car_serial/encoder_ticks", 10);
+    rfidPublisher_ = create_publisher<std_msgs::msg::String>(
+      rfid_topic_, 10);
+    rfidNumberPublisher_ = create_publisher<std_msgs::msg::Int32>(
+      rfid_number_topic_, 10);
+    rfidUidPublisher_ = create_publisher<std_msgs::msg::String>(
+      rfid_uid_topic_, 10);
     controlTelemetryPublisher_ =
       create_publisher<mission_control_interfaces::msg::ControlTelemetry>(
       "/cup_car_serial/control_telemetry", 20);
@@ -273,12 +302,22 @@ public:
       rclcpp::QoS(1).transient_local().reliable());
 
     if (send_rate_hz_ <= 0.0 || command_timeout_s_ <= 0.0 || rpy_timeout_s_ <= 0.0 ||
-      control_telemetry_timeout_s_ <= 0.0)
+      control_telemetry_timeout_s_ <= 0.0 || rfid_motion_hold_duration_s_ <= 0.0)
     {
       throw std::invalid_argument(
               "send_rate_hz, command_timeout_s, rpy_timeout_s, and "
-              "control_telemetry_timeout_s must be positive");
+              "control_telemetry_timeout_s, and rfid_motion_hold_duration_s must be positive");
     }
+    if (rfid_motion_hold_enabled_ &&
+      (rfid_motion_hold_source_.empty() || rfid_motion_hold_source_.size() > 128U))
+    {
+      throw std::invalid_argument(
+              "rfid_motion_hold_source must contain 1 to 128 characters");
+    }
+
+    motionHoldClient_ =
+      create_client<mission_control_interfaces::srv::SetMotionHold>(
+      rfid_motion_hold_service_);
 
     subscription_ = create_subscription<geometry_msgs::msg::Twist>(
       topic_, rclcpp::QoS(10),
@@ -306,6 +345,9 @@ public:
     connectionHeartbeatTimer_ = rclcpp::create_timer(
       this, get_clock(), rclcpp::Duration::from_seconds(0.1),
       std::bind(&CmdVelSerialNode::publish_health_heartbeats, this));
+    rfidMotionHoldTimer_ = rclcpp::create_timer(
+      this, get_clock(), rclcpp::Duration::from_seconds(0.1),
+      std::bind(&CmdVelSerialNode::release_expired_rfid_motion_hold, this));
 
     connect();
     RCLCPP_INFO(
@@ -336,6 +378,7 @@ private:
       control_telemetry_received_ = false;
       control_sample_identity_initialized_ = false;
       reset_bmi088_attitude_stream();
+      reset_rfid_stream();
       trackingMonitor_.Reset();
       latestTrackingDecision_ = {};
       receive_buffer_.clear();
@@ -364,6 +407,7 @@ private:
       control_telemetry_received_ = false;
       control_sample_identity_initialized_ = false;
       reset_bmi088_attitude_stream();
+      reset_rfid_stream();
       trackingMonitor_.Reset();
       latestTrackingDecision_ = {};
       publish_tracking_status("DISCONNECTED");
@@ -434,6 +478,7 @@ private:
         publish_bmi088_imu_frame(line);
         publish_bmi088_attitude_frame(line);
         publish_control_telemetry_frame(line);
+        publish_rfid_frame(line);
       }
     }
 
@@ -463,6 +508,135 @@ private:
     // data: [mcu_time_ms, sequence, left_total_ticks, right_total_ticks]
     message.data = std::move(values);
     encoderPublisher_->publish(message);
+  }
+
+  void publish_rfid_frame(const std::string & line)
+  {
+    if (line.rfind("RFID,", 0) != 0) {
+      return;
+    }
+    cup_car_serial::RfidFrame frame;
+    if (!cup_car_serial::parse_rfid_frame(line, &frame)) {
+      RCLCPP_WARN(get_logger(), "Ignoring malformed RFID frame: '%s'", line.c_str());
+      return;
+    }
+
+    std_msgs::msg::String raw_message;
+    raw_message.data = line;
+    rfidPublisher_->publish(raw_message);
+
+    const bool number_is_valid =
+      (frame.status & (kRfidStatusCardPresent | kRfidStatusNumberValid)) ==
+      (kRfidStatusCardPresent | kRfidStatusNumberValid) &&
+      frame.number >= 1U && frame.number <= 12U;
+    if (!number_is_valid) {
+      return;
+    }
+
+    if (!rfidEventDeduplicator_.MarkIfNew(frame.card_sequence, frame.uid_hex)) {
+      return;
+    }
+
+    std_msgs::msg::Int32 number_message;
+    number_message.data = static_cast<int32_t>(frame.number);
+    rfidNumberPublisher_->publish(number_message);
+
+    std_msgs::msg::String uid_message;
+    uid_message.data = frame.uid_hex;
+    rfidUidPublisher_->publish(uid_message);
+
+    RCLCPP_INFO(
+      get_logger(), "RFID card event: number=%u uid=%s seq=%u",
+      static_cast<unsigned int>(frame.number), frame.uid_hex.c_str(),
+      frame.card_sequence);
+    const std::string tts_command = cup_car_serial::BuildRfidTtsCommand(frame.number);
+    if (!tts_command.empty()) {
+      serial_.write_all(tts_command);
+      RCLCPP_INFO(
+        get_logger(), "Sent patrol point %u announcement to MCU",
+        static_cast<unsigned int>(frame.number));
+    }
+    request_rfid_motion_hold(frame);
+  }
+
+  std::string build_rfid_motion_hold_reason(const cup_car_serial::RfidFrame & frame) const
+  {
+    std::string reason = rfid_motion_hold_reason_;
+    if (!reason.empty()) {
+      reason += ": ";
+    }
+    reason += "number=" + std::to_string(frame.number) + ",uid=" + frame.uid_hex;
+    if (reason.size() > 256U) {
+      reason.resize(256U);
+    }
+    return reason;
+  }
+
+  bool send_motion_hold_request(bool hold, const std::string & reason)
+  {
+    if (!motionHoldClient_ || !motionHoldClient_->service_is_ready()) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Motion hold service '%s' is not ready; RFID stop request skipped",
+        rfid_motion_hold_service_.c_str());
+      return false;
+    }
+
+    auto request = std::make_shared<mission_control_interfaces::srv::SetMotionHold::Request>();
+    request->source = rfid_motion_hold_source_;
+    request->hold = hold;
+    request->reason = reason;
+    using MotionHoldFuture =
+      rclcpp::Client<mission_control_interfaces::srv::SetMotionHold>::SharedFuture;
+    motionHoldClient_->async_send_request(
+      request,
+      [this, hold](MotionHoldFuture future) {
+        const auto response = future.get();
+        if (!response->success) {
+          RCLCPP_WARN(
+            get_logger(), "RFID motion hold %s rejected: %s",
+            hold ? "request" : "release", response->message.c_str());
+          return;
+        }
+        RCLCPP_INFO(
+          get_logger(), "RFID motion hold %s accepted: %s",
+          hold ? "request" : "release", response->message.c_str());
+      });
+    return true;
+  }
+
+  void request_rfid_motion_hold(const cup_car_serial::RfidFrame & frame)
+  {
+    if (!rfid_motion_hold_enabled_) {
+      return;
+    }
+
+    const auto hold_duration =
+      std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+      std::chrono::duration<double>(rfid_motion_hold_duration_s_));
+    const auto release_time = std::chrono::steady_clock::now() + hold_duration;
+    if (!send_motion_hold_request(true, build_rfid_motion_hold_reason(frame))) {
+      return;
+    }
+
+    rfid_motion_hold_active_ = true;
+    rfid_motion_hold_release_time_ = release_time;
+    RCLCPP_INFO(
+      get_logger(), "RFID requested navigation hold for %.2f s",
+      rfid_motion_hold_duration_s_);
+  }
+
+  void release_expired_rfid_motion_hold()
+  {
+    if (!rfid_motion_hold_active_ ||
+      std::chrono::steady_clock::now() < rfid_motion_hold_release_time_)
+    {
+      return;
+    }
+
+    if (send_motion_hold_request(false, "")) {
+      rfid_motion_hold_active_ = false;
+    }
   }
 
   void publish_bmi088_imu_frame(const std::string & line)
@@ -698,6 +872,11 @@ private:
     last_bmi088_attitude_stamp_ns_ = 0;
   }
 
+  void reset_rfid_stream()
+  {
+    rfidEventDeduplicator_.Reset();
+  }
+
   void send_command()
   {
     double vx = 0.0;
@@ -712,6 +891,8 @@ private:
       vx = 0.0;
       az = 0.0;
     }
+
+    std::lock_guard<std::mutex> lock(serial_mutex_);
 
     // A CH340 can remain open without delivering bytes. Start the feedback
     // deadline at open time as well as after each CTL frame so a connection
@@ -797,6 +978,12 @@ private:
   bool allow_generic_auto_device_{false};
   std::string topic_;
   std::string rpy_topic_;
+  std::string rfid_topic_;
+  std::string rfid_number_topic_;
+  std::string rfid_uid_topic_;
+  std::string rfid_motion_hold_service_;
+  std::string rfid_motion_hold_source_;
+  std::string rfid_motion_hold_reason_;
   std::string bmi088_raw_imu_topic_;
   std::string bmi088_attitude_topic_;
   std::string bmi088_frame_id_;
@@ -806,10 +993,12 @@ private:
   double command_timeout_s_{};
   double rpy_timeout_s_{};
   double control_telemetry_timeout_s_{};
+  double rfid_motion_hold_duration_s_{3.0};
   cup_car_serial::ActuatorTrackingMonitor trackingMonitor_;
   cup_car_serial::ActuatorTrackingDecision latestTrackingDecision_{};
   std::string lastTrackingStatus_;
   SerialPort serial_;
+  std::mutex serial_mutex_;
   bool serial_connected_{false};
   bool connection_state_published_{false};
   bool last_connection_state_{false};
@@ -819,6 +1008,9 @@ private:
   bool control_sample_identity_initialized_{false};
   bool bmi088_attitude_identity_initialized_{false};
   bool bmi088_attitude_stamp_initialized_{false};
+  cup_car_serial::RfidEventDeduplicator rfidEventDeduplicator_;
+  bool rfid_motion_hold_enabled_{true};
+  bool rfid_motion_hold_active_{false};
   uint32_t latest_control_sample_sequence_{0};
   uint32_t latest_control_mcu_time_ms_{0};
   uint32_t latest_bmi088_attitude_sequence_{0};
@@ -834,13 +1026,18 @@ private:
   std::chrono::steady_clock::time_point last_connect_attempt_{};
   std::chrono::steady_clock::time_point connection_started_{};
   std::chrono::steady_clock::time_point last_control_telemetry_arrival_{};
+  std::chrono::steady_clock::time_point rfid_motion_hold_release_time_{};
   cup_car_serial::ControlTelemetryFrame latest_control_telemetry_{};
   cup_car_serial::McuClockMapper bmi088_attitude_clock_mapper_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr subscription_;
   rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr rpySubscription_;
+  rclcpp::Client<mission_control_interfaces::srv::SetMotionHold>::SharedPtr motionHoldClient_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr connectedPublisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr receivePublisher_;
   rclcpp::Publisher<std_msgs::msg::Int32MultiArray>::SharedPtr encoderPublisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr rfidPublisher_;
+  rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr rfidNumberPublisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr rfidUidPublisher_;
   rclcpp::Publisher<mission_control_interfaces::msg::ControlTelemetry>::SharedPtr
     controlTelemetryPublisher_;
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr bmi088RawImuPublisher_;
@@ -849,6 +1046,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr actuatorTrackingStatusPublisher_;
   rclcpp::TimerBase::SharedPtr timer_;
   rclcpp::TimerBase::SharedPtr connectionHeartbeatTimer_;
+  rclcpp::TimerBase::SharedPtr rfidMotionHoldTimer_;
 };
 
 int main(int argc, char * argv[])

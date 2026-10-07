@@ -22,6 +22,11 @@ find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(mission_control_interfaces REQUIRED)
 
+add_library(corner_shunt_core src/corner_plan.cpp)
+target_include_directories(corner_shunt_core PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+
 # waypoint_navigator.cpp composes focused navigation members from src/;
 # the ROS-facing node name and interfaces are unchanged.
 add_executable(waypoint_navigator
@@ -38,6 +43,7 @@ add_executable(waypoint_navigator
   src/navigation.cpp
   src/output.cpp)
 target_include_directories(waypoint_navigator PRIVATE include)
+target_link_libraries(waypoint_navigator corner_shunt_core)
 ament_target_dependencies(
   waypoint_navigator
   rclcpp
@@ -49,7 +55,39 @@ ament_target_dependencies(
   mission_control_interfaces
 )
 
-install(TARGETS waypoint_navigator
+# Frozen pre-shunt controller imported from the 71ddfde workspace snapshot.
+# It is a separate executable so A/B simulation exercises the original code
+# without compile-time flags or shared controller branches.
+add_executable(waypoint_navigator_legacy
+  legacy/src/waypoint_navigator.cpp
+  legacy/src/node_init.cpp
+  legacy/src/route.cpp
+  legacy/src/runtime.cpp
+  legacy/src/obstacle_recovery.cpp
+  legacy/src/control.cpp
+  legacy/src/maneuvers.cpp
+  legacy/src/path_following.cpp
+  legacy/src/progress.cpp
+  legacy/src/navigation.cpp
+  legacy/src/output.cpp)
+target_include_directories(waypoint_navigator_legacy PRIVATE legacy/include)
+ament_target_dependencies(
+  waypoint_navigator_legacy
+  rclcpp
+  nav_msgs
+  geometry_msgs
+  sensor_msgs
+  std_msgs
+  std_srvs
+  mission_control_interfaces
+)
+
+install(TARGETS corner_shunt_core
+  EXPORT corner_shunt_coreTargets
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib)
+
+install(TARGETS waypoint_navigator waypoint_navigator_legacy
   DESTINATION lib/${PROJECT_NAME})
 
 install(PROGRAMS scripts/route_editor.py
@@ -58,6 +96,7 @@ install(PROGRAMS scripts/route_editor.py
 install(DIRECTORY config launch routes
   DESTINATION share/${PROJECT_NAME}
   PATTERN "__pycache__" EXCLUDE)
+install(DIRECTORY include/ DESTINATION include)
 
 install(FILES README.md NAVIGATION_CODE_GUIDE.md
   DESTINATION share/${PROJECT_NAME})
@@ -91,6 +130,7 @@ if(BUILD_TESTING)
   target_include_directories(path_control_test PRIVATE include)
   ament_add_gtest(corner_shunt_test test/corner_shunt_test.cpp)
   target_include_directories(corner_shunt_test PRIVATE include)
+  target_link_libraries(corner_shunt_test corner_shunt_core)
   ament_add_gtest(path_progress_supervisor_test test/path_progress_supervisor_test.cpp)
   target_include_directories(path_progress_supervisor_test PRIVATE include)
   ament_add_gtest(turn_progress_supervisor_test test/turn_progress_supervisor_test.cpp)
@@ -118,5 +158,8 @@ if(BUILD_TESTING)
   target_include_directories(obstacle_recovery_test PRIVATE include)
   add_launch_test(test/waypoint_navigator_launch_test.py TIMEOUT 30)
 endif()
+
+ament_export_include_directories(include)
+ament_export_targets(corner_shunt_coreTargets HAS_LIBRARY_TARGET)
 
 ament_package()

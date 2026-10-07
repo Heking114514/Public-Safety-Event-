@@ -47,7 +47,9 @@ void WaypointNavigator::PublishRoutePath() {
     pose.header = path.header;
     pose.pose.position.x = waypoint.x;
     pose.pose.position.y = waypoint.y;
-    pose.pose.position.z = waypoint.turn_junction ? 1.0e-3 : 0.0;
+    pose.pose.position.z = waypoint.reverse_arrival_turn
+                               ? 2.0e-3
+                               : (waypoint.turn_junction ? 1.0e-3 : 0.0);
     pose.pose.orientation = QuaternionFromYaw(yaw);
     path.poses.push_back(pose);
   }

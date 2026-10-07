@@ -61,6 +61,68 @@ void WaypointNavigator::HandleFrontObstacleRange(
     ClassifyPendingObstacle();
 }
 
+void WaypointNavigator::HandleContinueRetreat(
+    const mission_control_interfaces::srv::ContinueRetreat::Request::SharedPtr
+        request,
+    mission_control_interfaces::srv::ContinueRetreat::Response::SharedPtr
+        response) {
+  response->accepted = false;
+  response->trace_exhausted = false;
+  response->remaining_breadcrumbs = static_cast<std::uint32_t>(
+      obstacleRecoveryController_.remaining_breadcrumbs_before_anchor());
+  if (!request || !std::isfinite(request->minimum_distance_m) ||
+      request->minimum_distance_m <= 0.0) {
+    response->message = "minimum retreat distance must be positive and finite";
+    return;
+  }
+  if (MotionHeld()) {
+    response->message = "motion is held by another mission source";
+    return;
+  }
+
+  auto result = obstacleRecoveryController_.extend_retreat(
+      request->minimum_distance_m, currentX_, currentY_, currentYaw_);
+  if (result == visual_navigation::RetreatExtensionResult::INVALID_STATE &&
+      state_ == "GOAL_REACHED") {
+    result = obstacleRecoveryController_.begin_retreat(
+        request->minimum_distance_m, currentX_, currentY_, currentYaw_);
+  }
+  if (result == visual_navigation::RetreatExtensionResult::INVALID_STATE) {
+    response->message = "obstacle recovery is not waiting for a new route";
+    return;
+  }
+  if (result == visual_navigation::RetreatExtensionResult::EXHAUSTED) {
+    response->trace_exhausted = true;
+    response->message = "executed breadcrumb trace is exhausted";
+    return;
+  }
+
+  navigationActive_ = true;
+  pathSegmentInitialized_ = false;
+  pathProgressSupervisor_.Reset();
+  turnProgressSupervisor_.Reset();
+  ResetManeuver();
+  BeginObstacleBrakeConfirmation();
+  PublishStop();
+  SetState("OBSTACLE_BRAKING");
+  response->accepted = true;
+  response->remaining_breadcrumbs = static_cast<std::uint32_t>(
+      obstacleRecoveryController_.remaining_breadcrumbs_before_anchor());
+  response->message = "continuing retreat along the executed breadcrumb trace";
+  const auto replayStart = obstacleRecoveryController_.replay_start();
+  const auto replayGoal = obstacleRecoveryController_.replay_goal();
+  RCLCPP_WARN(get_logger(),
+              "Planner requested another %.3fm retreat; %u earlier "
+              "samples remain; current=(%.3f, %.3f, %.1fdeg) "
+              "trace_start=(%.3f, %.3f, %.1fdeg) "
+              "trace_goal=(%.3f, %.3f, %.1fdeg)",
+              request->minimum_distance_m, response->remaining_breadcrumbs,
+              currentX_, currentY_, currentYaw_ * 180.0 / kPi,
+              replayStart.point.x, replayStart.point.y,
+              replayStart.yaw * 180.0 / kPi, replayGoal.point.x,
+              replayGoal.point.y, replayGoal.yaw * 180.0 / kPi);
+}
+
 void WaypointNavigator::ClearPendingObstacleSignal(const char *reason) {
   if (!pendingFrontObstacle_ || !obstacleRecoveryController_.idle())
     return;
@@ -158,9 +220,10 @@ bool WaypointNavigator::BeginJunctionRetreat() {
       lastStoppedTurnIndex_ < waypoints_.size();
   visual_navigation::RecoveryPoint anchor =
       confirmedJunction
-          ? visual_navigation::RecoveryPoint{
-                waypoints_[lastStoppedTurnIndex_].x,
-                waypoints_[lastStoppedTurnIndex_].y}
+          ? visual_navigation::RecoveryPoint{waypoints_[lastStoppedTurnIndex_]
+                                                 .x,
+                                             waypoints_[lastStoppedTurnIndex_]
+                                                 .y}
           : obstacleRecoveryController_.anchor();
   if (obstacleRecoveryController_.breadcrumb_count() < 2) {
     navigationActive_ = false;
@@ -173,7 +236,8 @@ bool WaypointNavigator::BeginJunctionRetreat() {
     return false;
   }
   if (!obstacleRecoveryController_.trigger(
-          currentX_, currentY_, anchor.x, anchor.y)) {
+          currentX_, currentY_, currentYaw_, lastMotionCommand_.linear.x,
+          lastMotionCommand_.angular.z, anchor.x, anchor.y)) {
     PublishStop();
     return false;
   }
@@ -193,7 +257,9 @@ bool WaypointNavigator::BeginJunctionRetreat() {
 }
 
 void WaypointNavigator::RecordExecutedPose() {
-  obstacleRecoveryController_.record_pose(currentX_, currentY_);
+  obstacleRecoveryController_.record_sample(currentX_, currentY_, currentYaw_,
+                                            lastMotionCommand_.linear.x,
+                                            lastMotionCommand_.angular.z);
 }
 
 void WaypointNavigator::BeginObstacleRecovery() {
@@ -201,8 +267,9 @@ void WaypointNavigator::BeginObstacleRecovery() {
     return;
   pendingFrontObstacle_ = false;
   const auto anchor = SelectObstacleRecoveryAnchor();
-  if (!obstacleRecoveryController_.trigger(currentX_, currentY_, anchor.x,
-                                           anchor.y)) {
+  if (!obstacleRecoveryController_.trigger(
+          currentX_, currentY_, currentYaw_, lastMotionCommand_.linear.x,
+          lastMotionCommand_.angular.z, anchor.x, anchor.y)) {
     return;
   }
   pathProgressSupervisor_.Reset();
@@ -288,6 +355,51 @@ void WaypointNavigator::RunObstacleRecovery() {
     return;
   }
 
+  if (obstacleRecoveryController_.replaying()) {
+    const auto replay = obstacleRecoveryController_.replay_step(
+        currentX_, currentY_, currentYaw_, lastMotionCommand_.linear.x,
+        lastMotionCommand_.angular.z, std::chrono::steady_clock::now());
+    if (replay.action ==
+        visual_navigation::ObstacleRecoveryAction::REPLAN_REQUIRED) {
+      navigationActive_ = false;
+      pathSegmentInitialized_ = false;
+      PublishStop();
+      SetState("OBSTACLE_REPLAN_REQUIRED");
+      return;
+    }
+    if (replay.action ==
+            visual_navigation::ObstacleRecoveryAction::FAULT_NO_PROGRESS ||
+        replay.action ==
+            visual_navigation::ObstacleRecoveryAction::FAULT_TIMEOUT) {
+      RCLCPP_ERROR(get_logger(),
+                   "Obstacle trace replay failed: position_error=%.3fm "
+                   "yaw_error=%.1fdeg",
+                   replay.position_error, replay.yaw_error * 180.0 / kPi);
+      navigationActive_ = false;
+      PublishStop();
+      SetState(replay.action ==
+                       visual_navigation::ObstacleRecoveryAction::FAULT_TIMEOUT
+                   ? "FAULT_OBSTACLE_REVERSE_TIMEOUT"
+                   : "FAULT_OBSTACLE_REVERSE_NO_PROGRESS");
+      return;
+    }
+    if (!replay.command_valid) {
+      navigationActive_ = false;
+      PublishStop();
+      SetState("FAULT_OBSTACLE_REVERSE_PATH");
+      return;
+    }
+    geometry_msgs::msg::Twist command;
+    command.linear.x = replay.linear_velocity;
+    command.angular.z = replay.angular_velocity;
+    if (replay.publish_recorded)
+      PublishRecordedCommand(command);
+    else
+      PublishMotionCommand(command);
+    SetState("OBSTACLE_REPLAYING");
+    return;
+  }
+
   const auto decision = obstacleRecoveryController_.update_reverse(
       currentX_, currentY_, std::chrono::steady_clock::now());
   if (decision.action ==
@@ -329,11 +441,9 @@ void WaypointNavigator::RunObstacleRecovery() {
     return;
   }
   const auto reverseCommand = visual_navigation::ComputeReverseMotionCommand(
-      currentX_, currentY_, currentYaw_, target,
-      obstacleReverseSpeed_,
+      currentX_, currentY_, currentYaw_, target, obstacleReverseSpeed_,
       obstacleReverseAngularGain_, ControlYawRate(),
-      obstacleReverseYawRateDamping_,
-      obstacleReverseMaxAngularSpeed_,
+      obstacleReverseYawRateDamping_, obstacleReverseMaxAngularSpeed_,
       obstacleReverseMaxHeadingError_);
   if (!reverseCommand.valid) {
     navigationActive_ = false;

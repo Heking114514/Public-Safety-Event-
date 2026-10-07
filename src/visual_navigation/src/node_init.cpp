@@ -189,18 +189,8 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
       std::max(0.0, declare_parameter<double>("corner_shunt_stop_s", 0.18));
   cornerShuntConfig_.check_duration =
       std::max(0.0, declare_parameter<double>("corner_shunt_check_s", 0.05));
-  cornerShuntConfig_.arc_duration = std::max(
-      0.0, declare_parameter<double>("corner_shunt_arc_segment_s", 0.19));
-  cornerShuntConfig_.rotate_duration = std::max(
-      0.0, declare_parameter<double>("corner_shunt_rotate_segment_s", 0.19));
-  cornerShuntConfig_.creep_duration = std::max(
-      0.0, declare_parameter<double>("corner_shunt_creep_segment_s", 0.19));
-  cornerShuntConfig_.reverse_duration = std::max(
-      0.0, declare_parameter<double>("corner_shunt_reverse_segment_s", 0.19));
-  cornerShuntConfig_.start_x =
-      declare_parameter<double>("corner_shunt_start_x_m", -0.070);
-  cornerShuntConfig_.start_x_tolerance = std::max(
-      0.0, declare_parameter<double>("corner_shunt_start_x_tolerance_m", 0.005));
+  cornerShuntConfig_.step_duration =
+      std::max(0.01, declare_parameter<double>("corner_shunt_step_s", 0.20));
   cornerShuntConfig_.target_yaw_tolerance = std::max(
       0.0,
       declare_parameter<double>("corner_shunt_exit_yaw_tolerance_rad", 0.08));
@@ -221,45 +211,28 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
       declare_parameter<double>("corner_shunt_prediction_horizon_s", 0.20));
   cornerShuntConfig_.prediction_step = std::max(
       0.01, declare_parameter<double>("corner_shunt_prediction_step_s", 0.04));
-  cornerShuntConfig_.arc_linear_speed =
+  cornerShuntConfig_.plan_linear_speed =
       std::min(maxLinearSpeed_,
                std::max(0.0, declare_parameter<double>(
-                                 "corner_shunt_linear_speed_mps", 0.010)));
-  cornerShuntConfig_.arc_angular_speed =
-      std::min(maxAngularSpeed_,
-               std::max(0.0, declare_parameter<double>(
-                                 "corner_shunt_angular_speed_rps", 0.24)));
-  cornerShuntConfig_.late_turn_progress =
-      Clamp(declare_parameter<double>("corner_shunt_late_turn_progress", 0.83),
-            0.0, 1.0);
-  cornerShuntConfig_.late_linear_speed =
-      std::min(maxLinearSpeed_,
-               std::max(0.0, declare_parameter<double>(
-                                 "corner_shunt_late_linear_speed_mps", 0.014)));
-  cornerShuntConfig_.late_angular_speed =
-      std::min(maxAngularSpeed_,
-               std::max(0.0, declare_parameter<double>(
-                                 "corner_shunt_late_angular_speed_rps", 0.10)));
-  cornerShuntConfig_.rotate_angular_speed = std::min(
-      maxAngularSpeed_,
-      std::max(0.0, declare_parameter<double>(
-                        "corner_shunt_rotate_angular_speed_rps", 0.20)));
-  cornerShuntConfig_.creep_linear_speed = std::min(
-      maxLinearSpeed_,
-      std::max(0.0, declare_parameter<double>(
-                        "corner_shunt_creep_linear_speed_mps", 0.010)));
-  cornerShuntConfig_.reverse_linear_speed = std::max(
+                                 "corner_shunt_plan_linear_speed_mps", 0.020)));
+  cornerShuntConfig_.plan_reverse_speed = std::max(
       -maxLinearSpeed_,
       std::min(0.0, declare_parameter<double>(
-                        "corner_shunt_reverse_linear_speed_mps", -0.008)));
-  cornerShuntConfig_.reverse_angular_speed =
-      std::max(-maxAngularSpeed_,
-               std::min(maxAngularSpeed_,
-                        declare_parameter<double>(
-                            "corner_shunt_reverse_angular_speed_rps", -0.10)));
-  cornerShuntConfig_.max_reverse_count =
-      std::max(0, static_cast<int>(declare_parameter<int64_t>(
-                      "corner_shunt_max_reverse_count", 80)));
+                        "corner_shunt_plan_reverse_speed_mps", -0.020)));
+  cornerShuntConfig_.plan_angular_speed =
+      std::min(maxAngularSpeed_,
+               std::max(0.0, declare_parameter<double>(
+                                 "corner_shunt_plan_angular_speed_rps", 0.24)));
+  cornerShuntConfig_.plan_clearance = std::max(
+      0.0, declare_parameter<double>("corner_shunt_plan_clearance_m", 0.001));
+  cornerShuntConfig_.control_frequency = controlFrequency_;
+  cornerShuntConfig_.linear_acceleration = maxLinearAcceleration_;
+  cornerShuntConfig_.linear_deceleration = maxLinearDeceleration_;
+  cornerShuntConfig_.angular_acceleration = maxAngularAcceleration_;
+  cornerShuntConfig_.angular_deceleration = maxAngularDeceleration_;
+  cornerShuntConfig_.max_plan_count =
+      std::max(1, static_cast<int>(declare_parameter<int64_t>(
+                      "corner_shunt_max_plan_count", 8)));
   cornerShuntController_.configure(cornerShuntConfig_);
   const double pathProgressTimeout =
       std::max(0.0, declare_parameter<double>("path_progress_timeout", 10.0));
@@ -421,13 +394,30 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
       declare_parameter<double>("obstacle_reverse_no_progress_timeout", 3.0));
   obstacleRecoveryConfig.attempt_timeout = std::max(
       obstacleRecoveryConfig.no_progress_timeout,
-      declare_parameter<double>("obstacle_reverse_attempt_timeout", 20.0));
+      declare_parameter<double>("obstacle_reverse_attempt_timeout", 30.0));
+  obstacleRecoveryConfig.replay_yaw_tolerance = std::max(
+      0.0, declare_parameter<double>("obstacle_replay_yaw_tolerance", 0.25));
+  obstacleRecoveryConfig.replay_start_yaw_tolerance = std::max(
+      0.0,
+      declare_parameter<double>("obstacle_replay_start_yaw_tolerance", 0.03));
+  obstacleRecoveryConfig.replay_start_max_yaw_error = std::max(
+      obstacleRecoveryConfig.replay_start_yaw_tolerance,
+      declare_parameter<double>("obstacle_replay_start_max_yaw_error", 0.35));
+  obstacleRecoveryConfig.replay_alignment_gain = std::max(
+      0.0, declare_parameter<double>("obstacle_replay_alignment_gain", 1.20));
+  obstacleRecoveryConfig.replay_alignment_max_angular_speed = std::min(
+      maxAngularSpeed_,
+      std::max(0.0, declare_parameter<double>(
+                        "obstacle_replay_alignment_max_angular_speed", 0.15)));
   obstacleRecoveryConfig.maximum_recovery_attempts =
       std::max(0, static_cast<int>(declare_parameter<int64_t>(
                       "obstacle_reverse_max_recovery_attempts", 2)));
   obstacleRecoveryConfig.maximum_breadcrumbs =
       static_cast<std::size_t>(std::max<int64_t>(
           2, declare_parameter<int64_t>("obstacle_maximum_breadcrumbs", 2000)));
+  obstacleRecoveryConfig.maximum_trace_samples = static_cast<std::size_t>(
+      std::max<int64_t>(2, declare_parameter<int64_t>(
+                               "obstacle_maximum_trace_samples", 12000)));
   obstacleRecoveryController_.configure(obstacleRecoveryConfig);
   stampFutureTolerance_ =
       std::max(0.0, declare_parameter<double>("stamp_future_tolerance", 0.20));
@@ -518,6 +508,11 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
       create_service<mission_control_interfaces::srv::SetMotionHold>(
           "~/set_motion_hold",
           std::bind(&WaypointNavigator::HandleSetMotionHold, this,
+                    std::placeholders::_1, std::placeholders::_2));
+  continueRetreatService_ =
+      create_service<mission_control_interfaces::srv::ContinueRetreat>(
+          "~/continue_obstacle_retreat",
+          std::bind(&WaypointNavigator::HandleContinueRetreat, this,
                     std::placeholders::_1, std::placeholders::_2));
 
   routeLoaded_ = LoadRoute(routeFile_);

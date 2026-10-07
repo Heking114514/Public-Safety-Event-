@@ -1,0 +1,13 @@
+mission_control_interfaces/EventCandidate event
+---
+bool success
+string report_id
+string message
+---
+uint8 QUEUED=0
+uint8 PREPARING=1
+uint8 PLAYING=2
+uint8 CONFIRMING=3
+
+uint8 phase
+string status
