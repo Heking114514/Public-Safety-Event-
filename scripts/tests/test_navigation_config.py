@@ -55,7 +55,6 @@ class NavigationConfigTest(unittest.TestCase):
             "/odometry/fused",
             "/cmd_vel_nav",
             "/cup_car_serial/control_telemetry",
-            "/arena_path_planner/map",
             "/new_map_planner/route_plan",
             "/new_map_planner/map",
             "/navigation_mission/state",

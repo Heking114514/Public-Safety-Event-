@@ -1,6 +1,6 @@
 # cup_car_serial
 
-该 ROS 2 包转发导航速度和 IMU 姿态，解析下位机遥测，并通过串口让下位机播报新的 RFID 巡逻点。
+该 ROS 2 包转发导航速度和 IMU 姿态，解析下位机遥测，并提供车载语音串口接口。
 
 默认接口：
 
@@ -20,7 +20,7 @@
 波特率：115200，8N1
 发送频率：20 Hz
 命令超时：0.4 s
-RFID 播报：新读卡事件通过 `TTS,<GBK文本>\r\n` 发给下位机
+语音服务：`/cup_car_serial/speak_text`，接收 UTF-8 文本并转为下位机 GBK TTS 帧
 ```
 
 串口帧格式：
@@ -39,10 +39,9 @@ RFID,time_ms,card_sequence,status,protocol_status,tag_type,sak,number,uid_hex\r\
 - `az`：`Twist.angular.z`，单位 rad/s。
 - 数值保留三位小数，例如 `0.250,-1.500\r\n`。
 - `roll`、`pitch`、`yaw` 来自 `/imu/rpy`（`geometry_msgs/msg/Vector3Stamped`），单位 rad。
-- RFID 有效新读卡事件会发布到 `/cup_car_serial/rfid_number`，并将
-  `TTS,<GBK编码的“到达 X 号巡逻点”>\r\n` 命令通过同一串口发送给下位机 TTS 模块。
-  串口节点按卡片序号和 UID 去重，同一读卡事件只发送一次。下位机需要启用
-  `ROBOT_ENABLE_HOST_TTS_COMMAND` 并连接车载语音模块。
+- RFID 有效新读卡事件只发布到 `/cup_car_serial/rfid_number` 和 UID 话题。任务去重、
+  驻停时间、播报文本和恢复行驶由 `navigation_mission_manager` 负责。串口节点的
+  `/cup_car_serial/speak_text` service 只执行 UTF-8 到 GBK 转码和串口发送。
 - 编码器输出类型为 `std_msgs/msg/Int32MultiArray`，`data` 固定为
   `[sample_time_ms, sample_sequence, left_total_ticks, right_total_ticks]`。
   节点兼容旧固件的 `ENC,left_total,right_total`，其前两项补零。
@@ -52,10 +51,6 @@ RFID,time_ms,card_sequence,status,protocol_status,tag_type,sak,number,uid_hex\r\
 - `/cup_car_serial/rfid` 发布完整 RFID 串口行；`/cup_car_serial/rfid_number`
   仅在新读到有效编号时发布 `std_msgs/msg/Int32`，避免同一张卡持续在场时重复触发；
   `/cup_car_serial/rfid_uid` 同步发布本次事件的 UID 字符串。
-- 默认启用 RFID 临时驻停：每次新读到有效编号时，串口节点会调用
-  `/waypoint_navigator/set_motion_hold`，以 `source=rfid` 申请任务驻停，持续
-  `3.0 s` 后自动释放，让小车继续执行原导航任务。该逻辑可用
-  `rfid_motion_hold_enabled` 关闭，或用 `rfid_motion_hold_duration_s` 调整时长。
 - 控制遥测输出类型为
   `mission_control_interfaces/msg/ControlTelemetry`，速度整数毫单位会转换为
   `m/s` 和 `rad/s`。它保留下位机模式、急停、命令年龄、轮速目标/实测值和PWM。
@@ -103,10 +98,7 @@ RFID,time_ms,card_sequence,status,protocol_status,tag_type,sak,number,uid_hex\r\
 | `tracking_recovery_stop_s` | `0.5` | 停驶后允许重试的滞回时间 |
 | `tracking_retry_rearm_s` | `3.0` | 清除历史重试次数所需的正常跟踪时间 |
 | `tracking_maximum_recovery_attempts` | `2` | 锁存前允许的自动重试次数 |
-| `rfid_motion_hold_enabled` | `true` | RFID 有效新读卡事件是否申请导航驻停 |
-| `rfid_motion_hold_service` | `/waypoint_navigator/set_motion_hold` | 导航驻停服务名 |
-| `rfid_motion_hold_source` | `rfid` | 驻停来源名，同一来源重复读卡会刷新 3 秒计时 |
-| `rfid_motion_hold_duration_s` | `3.0` | RFID 触发驻停持续时间 |
+| `speak_text_service` | `/cup_car_serial/speak_text` | 总控下发车载语音文本的 service |
 
 单独启动：
 
@@ -171,11 +163,18 @@ ros2 topic echo /cup_car_serial/actuator_tracking_status
 每 100 ms 回传一次 `CTL`；串口桥会将原始帧同时保留在 `rx` 中，并发布结构化话题。
 固件默认处于遥控模式，切换到导航模式前 `actuator_healthy` 会保持 `false`。
 
-查看下位机播报帧与去重结果：
+查看 RFID 上报：
 
 ```bash
 ros2 topic echo /cup_car_serial/rfid_number
 ros2 topic echo /cup_car_serial/rx
+```
+
+测试总控使用的底层语音接口：
+
+```bash
+ros2 service call /cup_car_serial/speak_text \
+  mission_control_interfaces/srv/SpeakText '{text: "到达一号巡逻点"}'
 ```
 
 如果超过 `0.4 s` 没有收到新速度，节点会向串口发送零速度。`/imu/rpy` 超过

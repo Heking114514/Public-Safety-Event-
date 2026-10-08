@@ -119,9 +119,6 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
                                     maxPathAngularSpeed_);
   rotateInPlaceThreshold_ = std::max(
       0.0, declare_parameter<double>("rotate_in_place_threshold", 0.18));
-  rotateInPlaceReentryThreshold_ = std::max(
-      rotateInPlaceThreshold_,
-      declare_parameter<double>("rotate_in_place_reentry_threshold", 0.44));
   rotateInPlaceExitThreshold_ =
       std::min(rotateInPlaceThreshold_,
                std::max(0.0, declare_parameter<double>(
@@ -231,23 +228,9 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
   const auto fallbackTimeouts = std::max<int64_t>(
       1, declare_parameter<int64_t>("pre_turn_fallback_timeouts", 2));
   preTurnFallbackTimeouts_ = static_cast<std::size_t>(fallbackTimeouts);
-  finalYawTolerance_ =
-      std::max(0.001, declare_parameter<double>("final_yaw_tolerance", 0.12));
   finalPositionReleaseTolerance_ = std::max(
       waypointTolerance_,
       declare_parameter<double>("final_position_release_tolerance", 0.05));
-  finalYawMaxAngularSpeed_ = std::min(
-      maxAngularSpeed_,
-      std::max(0.0,
-               declare_parameter<double>("final_yaw_max_angular_speed", 0.40)));
-  finalYawMinTurnSpeed_ = std::min(
-      finalYawMaxAngularSpeed_,
-      std::max(0.0,
-               declare_parameter<double>("final_yaw_min_turn_speed", 0.30)));
-  finalYawMinPrecisionSpeed_ =
-      std::min(finalYawMinTurnSpeed_,
-               std::max(0.0, declare_parameter<double>(
-                                 "final_yaw_min_precision_speed", 0.20)));
   odomTimeout_ =
       std::max(0.01, declare_parameter<double>("odom_timeout", 0.40));
   imuTimeout_ = std::max(0.01, declare_parameter<double>("imu_timeout", 0.15));

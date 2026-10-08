@@ -4,6 +4,11 @@
 arena planner and waypoint controller without the real chassis, wheel odometry,
 ORB-SLAM, or the fusion gate.
 
+Truth integration, sensor publication, obstacle simulation and the optional
+debug route controller are C++17 executables. The browser GUI, launch files and
+legacy comparison mission helper remain Python because they are operator/test
+tooling rather than the realtime simulation path.
+
 It subscribes to `/cmd_vel_nav` and publishes:
 
 - `/odometry/fused` as `map -> base_link` truth odometry
@@ -14,14 +19,15 @@ It subscribes to `/cmd_vel_nav` and publishes:
 - `/obstacle/front_range` and `/obstacle/front_blocked` as simulated front
   obstacle recognition
 
-The simulated obstacle recognition uses arena map obstacles and temporary GUI
-obstacles. Each obstacle uses a fixed `0.25 m` trigger distance; the simulator
-reports it only when the obstacle falls inside
-the vehicle's forward camera corridor. Disable it with:
+When enabled, simulated obstacle recognition uses only temporary GUI/manual
+obstacles. Static obstacles from `arena.yaml` remain known map geometry and are
+never published as sensor detections. Each temporary obstacle uses a fixed
+`0.25 m` trigger distance and is reported only inside the vehicle's forward
+camera corridor. The detector is disabled by default. Enable it with:
 
 ```bash
 ros2 launch vehicle_loopback_sim planner_control_loopback.launch.py \
-  simulate_obstacle_recognition:=false
+  simulate_obstacle_recognition:=true
 ```
 
 The GUI can also place temporary simulated obstacles without editing the map:
@@ -29,8 +35,8 @@ open the loopback page, enable `Obstacle`, then click the arena. `Clear` removes
 only these temporary GUI obstacles. GUI obstacles snap to the nearest road
 centerline and are placed crosswise to that lane at the configured `0.20 m`
 road width, with `0.10 m` depth, so clicking in a passage blocks that passage.
-The loopback node treats them the same as map obstacles for
-`/obstacle/front_range` and `/obstacle/front_blocked`. The GUI draws a dashed
+The loopback node publishes GUI obstacles on `/obstacle/front_range`,
+`/obstacle/front_blocked` and `/perception/dynamic_obstacle`. The GUI draws a dashed
 forward detection fan from the camera position.
 
 The launch files also start a small browser GUI by default. It renders
@@ -56,15 +62,36 @@ Run planner, the formal waypoint controller and loopback together:
 ros2 launch vehicle_loopback_sim planner_control_loopback.launch.py
 ```
 
+Run the same formal controller and truth vehicle with accelerated playback:
+
+```bash
+ros2 launch vehicle_loopback_sim planner_control_loopback.launch.py \
+  playback_speed:=3.0
+```
+
+`playback_speed` accelerates the controller timer and truth integration
+together, so calibrated turn geometry is preserved. The accepted range is
+`0.1` to `10.0`; the default remains `1.0`.
+
 This full launch starts `new_map_planner`, the formal
 `visual_navigation/waypoint_navigator`, the production
 `navigation_mission_manager`, and the truth vehicle. By default the mission
-manager auto-starts the production staged mission against truth odometry and the
-formal obstacle/replan interfaces. Disable mission startup when you only want
+manager auto-starts the production staged mission against truth odometry. Static
+map obstacle simulation is opt-in. This launch sets
+`task_confirmation_mode=route`, so a task is confirmed only after its route is
+acknowledged, executed, and reports `GOAL_REACHED`; no simulated RFID reader is
+required. Disable mission startup when you only want
 idle topics:
 
 ```bash
 ros2 launch vehicle_loopback_sim planner_control_loopback.launch.py plan_on_start:=false
+```
+
+Enable simulated map/manual obstacle reports explicitly:
+
+```bash
+ros2 launch vehicle_loopback_sim planner_control_loopback.launch.py \
+  simulate_obstacle_recognition:=true
 ```
 
 Run the debug-only simplified loopback route controller explicitly when you need

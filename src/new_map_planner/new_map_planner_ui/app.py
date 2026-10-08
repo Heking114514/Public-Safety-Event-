@@ -26,9 +26,14 @@ from .view import PlannerView
 
 
 MODE_NAMES = {
-    "任务点": "targets",
-    "全路覆盖": "coverage",
-    "完整巡视": "staged",
+    "第一阶段": "staged",
+    "第二阶段": "staged",
+    "第三阶段": "staged",
+}
+STAGE_LABELS = {
+    "layer1": "第一阶段",
+    "layer2": "第二阶段",
+    "layer3": "第三阶段",
 }
 
 
@@ -41,7 +46,7 @@ class PlannerApplication:
         self.runtime = RosRuntime(self.events)
         self.node = self.runtime.node
 
-        self.mode_var = tk.StringVar(value="完整巡视")
+        self.mode_var = tk.StringVar(value="第一阶段")
         self.status_var = tk.StringVar(value="等待融合里程计与规划服务")
         self.odom_var = tk.StringVar(value="ODOM: WAIT")
         self.planner_var = tk.StringVar(value="PLANNER: WAIT")
@@ -90,11 +95,16 @@ class PlannerApplication:
         self.selected_targets = set(self.view.selected_task_ids())
 
     def mode_changed(self) -> None:
-        targets_enabled = self._selected_mode() == "targets"
-        self.view.set_targets_enabled(targets_enabled)
-        if targets_enabled:
-            self.target_selection_changed()
+        # The phase selector mirrors the mission manager. It does not submit a
+        # separate route or let the UI skip a phase.
+        self._set_stage_selector(self.mission_state.stage if self.mission_state else "")
+        self.view.set_targets_enabled(False)
         self._update_stage_display()
+
+    def _set_stage_selector(self, stage: str) -> None:
+        label = STAGE_LABELS.get(str(stage), "第一阶段")
+        if self.mode_var.get() != label:
+            self.mode_var.set(label)
 
     def preview(self) -> None:
         if self._selected_mode() == "staged":
@@ -130,7 +140,7 @@ class PlannerApplication:
             return
         spec = self._manual_spec()
         if spec is not None:
-            self._send_plan(spec, activate=True)
+            self.status_var.set("手动路线只能预览；实车执行请通过任务总控")
 
     def _manual_spec(self) -> Optional[PlanSelection]:
         mode = self._selected_mode()
@@ -183,7 +193,11 @@ class PlannerApplication:
                 self.status_var.set(str(exception))
             return
         try:
-            self.node.request_hold(not self.motion_held)
+            own_hold = (
+                "navigation_mission_manager/external/new_map_planner_ui"
+                in self.hold_sources
+            )
+            self.node.request_hold(not own_hold)
         except RuntimeError as exception:
             self.status_var.set(str(exception))
 
@@ -208,11 +222,20 @@ class PlannerApplication:
         elif kind == "hold_state":
             self.motion_held, self.hold_sources = value
             if self._selected_mode() != "staged":
-                self.hold_var.set("解除驻停" if self.motion_held else "驻停")
+                own_hold = (
+                    "navigation_mission_manager/external/new_map_planner_ui"
+                    in self.hold_sources
+                )
+                self.hold_var.set("解除驻停" if own_hold else "驻停")
         elif kind == "hold_response":
-            success, held, message = value
+            success, held, sources, message = value
             self.motion_held = held
-            self.hold_var.set("解除驻停" if held else "驻停")
+            self.hold_sources = sources
+            own_hold = (
+                "navigation_mission_manager/external/new_map_planner_ui"
+                in self.hold_sources
+            )
+            self.hold_var.set("解除驻停" if own_hold else "驻停")
             self.status_var.set(message if success else f"驻停失败：{message}")
             if success and held and self.activation_timed_out:
                 self._clear_active_plan()
@@ -241,8 +264,10 @@ class PlannerApplication:
 
     def _handle_mission_state(self, state: MissionState) -> None:
         self.mission_state = state
+        self._set_stage_selector(state.stage)
+        stage_label = STAGE_LABELS.get(str(state.stage), "未开始")
         self.stage_var.set(
-            f"{state.stage or '--'} | 任务 {state.remaining_tasks} "
+            f"{stage_label} | 任务 {state.remaining_tasks} "
             f"隧道 {state.remaining_tunnels} 道路 {state.remaining_roads}"
         )
         self.motion_held = bool(state.motion_held)
@@ -365,7 +390,6 @@ class PlannerApplication:
             self._clear_active_plan()
             self.status_var.set("单次实车路线执行完成")
         elif status.startswith("FAULT_") or status in {
-            "TURN_BLOCKED",
             "OBSTACLE_REPLAN_REQUIRED",
         }:
             if self.active_plan_id is not None:
@@ -389,7 +413,7 @@ class PlannerApplication:
                 self.stage_var.set("等待自主任务节点")
             else:
                 self.stage_var.set(
-                    f"{self.mission_state.stage or '--'} | "
+                    f"{STAGE_LABELS.get(str(self.mission_state.stage), '未开始')} | "
                     f"任务 {self.mission_state.remaining_tasks} "
                     f"隧道 {self.mission_state.remaining_tunnels} "
                     f"道路 {self.mission_state.remaining_roads}"

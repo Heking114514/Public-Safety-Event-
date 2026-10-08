@@ -80,7 +80,6 @@ waypoint_navigator:
     pre_turn_path_angular_ratio: 1.20
     path_pid_integral_limit: 0.20
     rotate_in_place_threshold: 0.18
-    rotate_in_place_reentry_threshold: 0.44
     rotate_in_place_exit_threshold: 0.09
     precision_turn_threshold: 0.45
     turn_settle_yaw_rate: 0.15
@@ -126,14 +125,10 @@ waypoint_navigator:
     # fused translation and fresh IMU rotation confirm that the chassis is still.
     pre_turn_fallback_timeouts: 2
     pre_turn_fallback_pose_speed: 0.08
-    final_yaw_tolerance: 0.12
     # Keep final completion close to the captured point. Fused visual odometry
     # can read a few percent long, so a wide release window becomes early
     # physical stopping on short arena segments.
     final_position_release_tolerance: 0.05
-    final_yaw_max_angular_speed: 0.65
-    final_yaw_min_turn_speed: 0.35
-    final_yaw_min_precision_speed: 0.30
     odom_timeout: 0.40
     # /imu/control preserves the lower-controller measurement stamp. Full
     # system load currently leaves about 0.21 s of serial timestamp age.

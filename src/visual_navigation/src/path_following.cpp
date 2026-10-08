@@ -1,5 +1,33 @@
 #include "visual_navigation/waypoint_navigator.hpp"
 
+void WaypointNavigator::RunRfidScan(const ControlFrame &frame) {
+  pathProgressSupervisor_.Reset();
+  turnProgressSupervisor_.Reset();
+  rfidScanActive_ = true;
+  const double heading = frame.path_heading;
+  const double passed =
+      std::cos(heading) * (currentX_ - frame.target.x) +
+      std::sin(heading) * (currentY_ - frame.target.y);
+  if (passed + 1.0e-6 >= rfidScanMaxDistance_) {
+    PublishStop();
+    SetState("WAITING_FOR_RFID:" + std::to_string(currentWaypointIndex_));
+    return;
+  }
+
+  geometry_msgs::msg::Twist command;
+  const double scanDirection = reverseSegmentActive_ ? -1.0 : 1.0;
+  command.linear.x = scanDirection * rfidScanSpeed_;
+  const double vehicleHeading =
+      NormalizeAngle(heading + (reverseSegmentActive_ ? kPi : 0.0));
+  const double headingError = NormalizeAngle(vehicleHeading - currentYaw_);
+  command.angular.z = Clamp(
+      angularGain_ * headingError - turnYawRateDamping_ * frame.control_yaw_rate,
+      -std::min(maxPathAngularSpeed_, 0.25),
+      std::min(maxPathAngularSpeed_, 0.25));
+  PublishMotionCommand(command);
+  SetState("RFID_SCANNING:" + std::to_string(currentWaypointIndex_));
+}
+
 void WaypointNavigator::RunPath(const ControlFrame &frame) {
   const double headingError = NormalizeAngle(frame.path_heading - currentYaw_);
   // Positive cross-track error means the car is to the left of the path.

@@ -305,6 +305,10 @@ mission_control_interfaces/srv/ContinueRetreat
 `OBSTACLE_REPLAN_REQUIRED`。若锚点之前已无轨迹，响应中的
 `trace_exhausted=true`，车辆保持停车。服务不允许任务层直接指定速度或任意坐标。
 
+`/waypoint_navigator/continue_route_retreat` 使用相同的历史轨迹执行器，但只服务于完成路线后
+的几何衔接，状态为 `ROUTE_TRANSITION_BRAKING/REVERSING/REPLAYING/REPLAN_REQUIRED`，
+不得用于障碍语义或伪造障碍事件。
+
 ---
 
 ## 5. 航点数据结构
@@ -587,8 +591,8 @@ abort_on_tracking_loss: true
 FOLLOW
   ├── ALIGN_PATH ───────────────┐
   ├── RECOVER_WAYPOINT ── BRAKE ├── FOLLOW / WAIT
-  └── BRAKE ── ALIGN_GOAL ──────┴── GOAL_REACHED
-                    └── RECOVER_GOAL ── BRAKE ── ALIGN_GOAL
+  └── BRAKE ────────────────────┴── FOLLOW / WAIT / GOAL_REACHED
+       RECOVER_GOAL ── BRAKE ────── FOLLOW / GOAL_REACHED
 ```
 
 `GoalStage` 是终点动作的父状态，用于区分尚未到达终点、终点待停稳、已经停稳和
@@ -619,16 +623,16 @@ FOLLOW
 | `WAITING_FOR_INITIALIZATION` | ORB 暖机等待，不锁存，保持零速 |
 | `FOLLOWING` | 正在向当前航点运动 |
 | `ROTATING_TO_PATH` | 正在原地旋转以对齐当前路径 |
-| `TURN_STOP` / `TURN_CHECK` | 路口硬停车，等待异步状态格计划或安全续接 |
-| `TURN_ARC` / `TURN_ROTATE` / `TURN_CREEP` / `TURN_REVERSE` | 正在执行已验证的短时过弯原语 |
-| `TURN_BLOCKED` | 当前停车姿态找不到满足 8mm 整车包络的过弯计划 |
+| `TURN_STOP` / `TURN_CHECK` | 路口硬停车并确认闭环转弯入口姿态 |
+| `TURN_ARC` / `TURN_CREEP` | 正常路口闭环转弯：每周期依据实测位置和偏航更新正向速度命令 |
+| `TURN_ROTATE` / `TURN_REVERSE` | 仅用于显式反向进站的障碍恢复转弯 |
+| `FAULT_TURN_BLOCKED` | 转弯连续无位姿进展且恢复次数耗尽，已停车并锁存 |
 | `TURN_HALF_SETTLED` | 180 度掉头的第一个 90 度已停稳，随后执行第二个 90 度 |
 | `PATH_ALIGNED` | 路径方向已对齐，准备进入路径跟随 |
 | `BRAKING_APPROACH` | 按剩余距离和实际车速执行航点接近制动 |
 | `BRAKING_AT_WAYPOINT` | 已收点，持续发零速并等待车体停稳后再转向 |
 | `WAITING_AT_WAYPOINT` | 已到达航点，按照 `stop_time` 停车等待 |
-| `RECOVERING_FINAL_POSITION` | 最终朝向调整后发现位置超差，开始终点位置回收；后续回收周期沿用 `RECOVERING_WAYPOINT` |
-| `ALIGNING_FINAL_YAW` | 已到达最终位置，正在调整最终朝向 |
+| `RECOVERING_FINAL_POSITION` | 最终位置超差，开始终点位置回收；后续回收周期沿用 `RECOVERING_WAYPOINT` |
 | `RECOVERING_WAYPOINT` | 航点越过或位置超差，正在低速回收 |
 | `REVERSING_PLANNED_RETREAT` | 路段末端不可继续前进，保持车头方向并沿原路倒回路口 |
 | `RETREATING_TO_JUNCTION` | 路中出现过大方向误差，正沿实走轨迹倒回最后一个已确认路口 |
@@ -648,6 +652,7 @@ FOLLOW
 | `FAULT_ACTUATOR_DISCONNECTED` | 执行器连接或健康状态无效 |
 | `FAULT_NO_PATH_PROGRESS` | 路径进度恢复尝试耗尽 |
 | `FAULT_NO_TURN_PROGRESS` | 转向进度恢复尝试耗尽 |
+| `FAULT_JUNCTION_RETREAT_REJECTED` | 路口回退轨迹拒绝本次恢复，已停车并交给任务层处理 |
 
 ### 典型状态转换
 
@@ -665,10 +670,7 @@ WAITING_AT_WAYPOINT
   │ 等待结束
   ▼
 FOLLOWING
-  │ 到达最终位置且指定最终 yaw
-  ▼
-ALIGNING_FINAL_YAW
-  │ 朝向误差满足要求
+  │ 最终位置到达并确认停稳
   ▼
 GOAL_REACHED
 ```
@@ -777,10 +779,12 @@ angular_z = path_pid_kp × path_error
 
 ### 12.4 路口转向判断
 
-只有车辆已经在规划器标记的拐点停稳，且方向变化超过约 40 度时，才允许进入转向动作。
-普通直线路段的横向误差不会触发该状态。90 度紧转使用异步状态格搜索，将轮轴位姿、
-当前受限速度和整车 8mm 安全包络同时纳入状态；动作可以是前进弧线、慢爬、倒车或原地
-微调。180 度掉头仍拆成两个 90 度，每段都先确认停稳。
+只有规划器明确标记的拐点停稳后才进入转向动作。普通直线路段的横向误差不会触发该
+状态。正常转弯每个控制周期读取实测轮轴位置、偏航和角速度：车体中心尚未越过 RFID
+参考截面时，闭环修正入口横向和航向误差；进入路口后追踪出口道路上的目标点，并同时
+收敛出口偏航。线速度始终为正，角速度可随误差连续增减或反向修正，不回放固定动作
+序列。转弯过程每 3 秒至少要有 3 mm 位移或 0.03 rad 航向进展；连续四次无进展后发布
+`FAULT_TURN_BLOCKED`。只有显式反向进站的障碍恢复转弯继续使用状态格搜索。
 
 未进入紧转状态时，当：
 
@@ -794,7 +798,7 @@ abs(heading_error) >= rotate_in_place_threshold
 linear_x = 0
 ```
 
-车辆只旋转，不向前移动。紧转状态则执行完整已验证动作序列，并在计划衔接前硬停车。
+车辆只旋转，不向前移动。规划器授权的路口转弯不走这条普通路径对齐分支。
 
 当误差小于阈值后才允许前进。
 
@@ -820,15 +824,18 @@ linear_x = min(requested_speed, v_limit, cross_track_limit) × heading_scale
 
 相邻路径方向变化小于 `pre_turn_stop_heading_threshold` 时可以连续通过；超过阈值时先停稳再转向。
 需要停车的拐点进站时，路径纠偏角速度还会被 `pre_turn_path_angular_ratio × linear_x`
-限制，避免刹车阶段演变成提前切弯；到点停稳后再进入路口状态格转向。
+限制，避免刹车阶段演变成提前切弯；到点停稳后再进入路口闭环转向。
 
 ### 12.6 最终航点
 
-最终航点可能位于路中，因此路径消息携带的切线朝向不再授权原地调整；位置到达并确认停车后直接完成。需要改变行驶方向时，规划器必须把转向安排在前一个真实路口。
+最终航点可能位于路中，因此路径消息携带的切线朝向不授权原地调整；位置到达并确认停车后直接完成。需要改变行驶方向时，规划器必须把转向安排在前一个真实路口。`ALIGNING_FINAL_YAW` 已从正式控制状态中移除。
 
-动态 `nav_msgs/Path` 是二维路径。`pose.position.z=0.001` 表示普通真实转向路口，
-`z=0.002` 表示车辆沿上一段倒车回到路口后再转向，`z=0` 表示普通路径点。两种标记
-都必须由规划器完成扫掠验证；控制器对 `0.002` 使用反向进站几何建立状态格。规划器
+动态 `nav_msgs/Path` 的 `pose.position.z` 承载路径语义：`z=0.001` 表示普通真实转向路口，
+`z=0.002` 表示车辆沿上一段倒车回到路口后再转向，`z=0.003` 表示 RFID 超节点，
+`z=0.004`/`z=0.005` 分别表示带 RFID 标记的正向/倒车到达转向点，`z=0` 表示普通路径点。
+RFID 超节点到达后，导航器以低速沿来向扫描，最多越过节点配置距离，并等待任务总控确认；
+未经读卡、重定位和驻停流程授权，不会推进该航点或执行后续转弯。上述路径标记
+都必须由规划器完成拓扑验证；控制器对 `0.002`/`0.005` 使用反向进站几何建立状态格。规划器
 不发布 180 度掉头或短距离连续 90 度转向。遇到前方障碍需要退出时，由障碍恢复模块
 停车、倒回恢复锚点/路口，再等待重规划；其他 z 值会被拒绝。
 
@@ -939,7 +946,7 @@ config/waypoint_navigation.yaml
 | `braking_control_delay` | `0.20` | 串口、控制与执行总延迟估计，s |
 | `braking_safety_margin` | `0.025` | 航点前预留的制动距离，m |
 | `braking_distance_feedback_gain` | `1.00` | 实际停止距离超出剩余距离时的速度压低增益 |
-| `angular_gain` | `1.40` | 终点朝向对齐的比例增益 |
+| `angular_gain` | `1.40` | 航点回收时的朝向比例增益 |
 | `path_pid_kp` | `1.20` | 路径误差 PID 的比例增益 |
 | `path_pid_ki` | `0.08` | 路径误差 PID 的积分增益，用于补偿持续机械跑偏 |
 | `path_pid_kd` | `0.00` | 路径误差 PID 的微分增益 |
@@ -952,6 +959,21 @@ config/waypoint_navigation.yaml
 | `path_progress_no_motion_timeout` | `3.0` | 持续命令但无位移时的恢复超时，s |
 | `path_progress_no_motion_displacement` | `0.05` | 无运动检查窗口内允许的最大位移，m |
 | `rotate_in_place_threshold` | `0.18` | 超过该航向误差时禁止前进，rad |
+| `corner_shunt_road_margin_m` | `0.002` | 转弯车身扫掠边界余量，m；直行仍使用规划器的 15 mm 余量 |
+| `corner_shunt_entry_base_x_m` | `-0.015` | 开始追踪出口前，车体中心相对路口参考截面的位置，m |
+| `corner_shunt_closed_loop_min_speed_mps` | `0.008` | 闭环转弯误差较大时保持的最低正线速度，m/s |
+| `corner_shunt_closed_loop_max_angular_speed_rps` | `0.40` | 闭环正向弧线的最大角速度，rad/s |
+| `corner_shunt_closed_loop_bearing_gain` | `1.40` | 出口目标方位误差到角速度的比例增益 |
+| `corner_shunt_closed_loop_final_yaw_gain` | `0.60` | 出口最终偏航误差到角速度的比例增益 |
+| `corner_shunt_closed_loop_entry_heading_gain` | `1.40` | RFID 前入口航向纠偏增益 |
+| `corner_shunt_closed_loop_entry_lateral_gain` | `2.00` | RFID 前入口横向纠偏增益，rad/s/m |
+| `corner_shunt_closed_loop_yaw_rate_damping` | `0.35` | 实测角速度阻尼，抑制过冲 |
+| `corner_shunt_closed_loop_yaw_rate_filter_s` | `0.08` | 实测角速度一阶滤波时间常数，s |
+| `corner_shunt_closed_loop_exit_max_angular_speed_rps` | `0.12` | 出口窗口允许的最大反向微调角速度，rad/s |
+| `corner_shunt_no_progress_timeout_s` | `3.0` | 闭环转弯无位姿进展的检查周期，s |
+| `corner_shunt_no_progress_distance_m` | `0.003` | 转弯进展检测的最小位移，m |
+| `corner_shunt_no_progress_yaw_rad` | `0.03` | 转弯进展检测的最小航向变化，rad |
+| `corner_shunt_max_plan_count` | `4` | 转弯无进展后允许的总规划次数，耗尽后发布故障 |
 | `precision_turn_threshold` | `0.45` | 原地转向进入精调最低角速度区间的航向误差，rad |
 | `turn_cruise_speed` | `0.75` | 原地转向巡航角速度命令，rad/s |
 | `min_precision_turn_speed` | `0.50` | 精调阶段最低角速度命令，需高于实测底盘转向死区 |
@@ -968,8 +990,7 @@ config/waypoint_navigation.yaml
 | `pre_turn_minimum_stop_time` | `0.20` | 收点后最短制动等待时间，s |
 | `pre_turn_brake_timeout` | `1.00` | 单次停车确认时间窗；超时后保持零速并自动重新确认，s |
 | `control_telemetry_timeout` | `0.30` | MCU 轮速用于停车确认的最大到达间隔，s |
-| `final_yaw_tolerance` | `0.12` | 最终朝向容差，rad |
-| `final_position_release_tolerance` | `0.10` | 已进入最终点后允许完成的最大位置误差，m |
+| `final_position_release_tolerance` | `0.05` | 已进入最终点后允许完成的最大位置误差，m |
 | `odom_timeout` | `0.40` | 里程计到达超时时间，s |
 | `imu_timeout` | `0.15` | 控制 IMU 到达超时时间，s |
 | `fusion_status_timeout` | `0.60` | 融合健康状态超时时间，s |
@@ -1060,7 +1081,7 @@ odom_timeout
 ```bash
 # 规划模式：终端 1 录包并等待动态路线，终端 2 启动 Python 规划 GUI
 ./scripts/start_visual_navigation.sh
-./scripts/start_arena_planner.sh
+./scripts/start_new_map_planner.sh
 
 # 固定 CSV 模式：读取 scripts/waypoints.csv 并自动启动
 ./scripts/start_visual_navigation.sh --autostart
@@ -1365,7 +1386,7 @@ install/visual_navigation/share/visual_navigation/NAVIGATION_CODE_GUIDE.md
 ./scripts/start_visual_navigation.sh
 
 # 2. 终端 2：规划后端和 Python GUI，确认后在 GUI 点击“开始导航”
-./scripts/start_arena_planner.sh
+./scripts/start_new_map_planner.sh
 
 # 固定路线测试改用下面一条，并且不要启动规划 GUI：
 # ./scripts/start_visual_navigation.sh --autostart

@@ -176,6 +176,10 @@ map_odom_correction:
     # stream start-aligned and local by default; enable this only when a
     # separately validated global landmark source is connected.
     use_absolute_visual_correction: false
+    rfid_hold_state_topic: /waypoint_navigation/motion_hold_state
+    correct_map_position_service: /fused_odometry/correct_map_position
+    rfid_correction_time_constant_s: 0.15
+    rfid_correction_max_step_m: 0.10
     # Deprecated compatibility parameter. Visual corrections are always
     # smoothed before they update map->odom; true no longer bypasses filtering.
     direct_visual_tracking: false

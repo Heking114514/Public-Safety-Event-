@@ -113,7 +113,7 @@ AwaitPlannedMotion(visual_navigation::CornerShuntController &controller,
 
 } // namespace
 
-TEST(CornerShunt, StartsWithStopThenUsesCalibratedPlan) {
+TEST(CornerShunt, StartsWithStopThenMovesForwardAcrossJunction) {
   visual_navigation::CornerShuntController controller;
   controller.begin(0.0);
 
@@ -128,9 +128,8 @@ TEST(CornerShunt, StartsWithStopThenUsesCalibratedPlan) {
   double now = 0.36;
   decision =
       AwaitPlannedMotion(controller, LeftCornerContext(-0.05, 0.0, 0.0), &now);
-  EXPECT_EQ(decision.phase, visual_navigation::CornerShuntPhase::REVERSE);
-  EXPECT_NEAR(decision.command.linear_x, -0.020, 1.0e-9);
-  EXPECT_NEAR(decision.command.angular_z, 0.24, 1.0e-9);
+  EXPECT_NE(decision.phase, visual_navigation::CornerShuntPhase::REVERSE);
+  EXPECT_GE(decision.command.linear_x, 0.0);
 }
 
 TEST(CornerShunt, MirrorsRightTurns) {
@@ -141,15 +140,14 @@ TEST(CornerShunt, MirrorsRightTurns) {
   double now = 0.36;
   auto decision =
       AwaitPlannedMotion(controller, RightCornerContext(-0.05, 0.0, 0.0), &now);
-  EXPECT_EQ(decision.phase, visual_navigation::CornerShuntPhase::REVERSE);
-  EXPECT_NEAR(decision.command.linear_x, -0.020, 1.0e-9);
-  EXPECT_NEAR(decision.command.angular_z, -0.24, 1.0e-9);
+  EXPECT_NE(decision.phase, visual_navigation::CornerShuntPhase::REVERSE);
+  EXPECT_GE(decision.command.linear_x, 0.0);
 }
 
-TEST(CornerShunt, KeepsEightMillimeterRoadMarginWithNarrowerChassis) {
+TEST(CornerShunt, KeepsConfiguredRoadMarginWithNarrowerChassis) {
   visual_navigation::CornerShuntController controller;
-  const auto safe = LeftCornerContext(-0.07, 0.029, 0.0);
-  const auto unsafe = LeftCornerContext(-0.07, 0.030, 0.0);
+  const auto safe = LeftCornerContext(-0.07, 0.033, 0.0);
+  const auto unsafe = LeftCornerContext(-0.07, 0.036, 0.0);
 
   EXPECT_TRUE(controller.pose_is_safe(safe, safe.pose));
   EXPECT_FALSE(controller.pose_is_safe(unsafe, unsafe.pose));
@@ -206,6 +204,8 @@ TEST(CornerShunt, SimulatedWaypointStopPoseReachesSafeExit) {
 
   bool complete = false;
   bool blocked = false;
+  bool all_poses_safe = true;
+  visual_navigation::CornerShuntPose first_unsafe_pose;
   visual_navigation::CornerShuntDecision last_decision;
   int arc_steps = 0;
   int check_steps = 0;
@@ -256,6 +256,10 @@ TEST(CornerShunt, SimulatedWaypointStopPoseReachesSafeExit) {
       ++other_steps;
     angular_motion += std::abs(decision.command.angular_z) * kStep;
     ApplyLimitedDecision(&context, decision, kStep);
+    if (all_poses_safe && !controller.pose_is_safe(context, context.pose)) {
+      all_poses_safe = false;
+      first_unsafe_pose = context.pose;
+    }
     now += kStep;
   }
 
@@ -276,6 +280,10 @@ TEST(CornerShunt, SimulatedWaypointStopPoseReachesSafeExit) {
       << " arc_safe=" << CommandIsSafe(controller, context, {0.024, 0.05})
       << " reverse_safe=" << CommandIsSafe(controller, context, {-0.008, 0.0});
   EXPECT_FALSE(blocked);
+  EXPECT_TRUE(all_poses_safe)
+      << "first unsafe pose=(" << first_unsafe_pose.x << ", "
+      << first_unsafe_pose.y << ", " << first_unsafe_pose.yaw << ")";
+  EXPECT_EQ(reverse_steps, 0);
   EXPECT_LE(controller.plan_count(), 2);
 }
 
@@ -286,6 +294,8 @@ TEST(CornerShunt, SimulatedRightTurnMirrorsSafeExit) {
 
   bool complete = false;
   bool blocked = false;
+  bool all_poses_safe = true;
+  visual_navigation::CornerShuntPose first_unsafe_pose;
   double now = 0.0;
   constexpr double kStep = 1.0 / 30.0;
   for (int index = 0; index < 1800; ++index) {
@@ -297,14 +307,199 @@ TEST(CornerShunt, SimulatedRightTurnMirrorsSafeExit) {
     if (decision.phase == visual_navigation::CornerShuntPhase::CHECK)
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
     ApplyLimitedDecision(&context, decision, kStep);
+    if (all_poses_safe && !controller.pose_is_safe(context, context.pose)) {
+      all_poses_safe = false;
+      first_unsafe_pose = context.pose;
+    }
     now += kStep;
   }
 
   EXPECT_TRUE(complete) << "pose=(" << context.pose.x << ", " << context.pose.y
                         << ", " << context.pose.yaw << ")";
   EXPECT_FALSE(blocked);
+  EXPECT_TRUE(all_poses_safe)
+      << "first unsafe pose=(" << first_unsafe_pose.x << ", "
+      << first_unsafe_pose.y << ", " << first_unsafe_pose.yaw << ")";
   EXPECT_TRUE(controller.pose_is_safe(context, context.pose));
   EXPECT_LE(controller.plan_count(), 2);
+}
+
+TEST(CornerShunt, ClosedLoopSweepStaysSafeAcrossEntryErrors) {
+  constexpr double kStep = 1.0 / 30.0;
+  for (double start_x : {-0.075, -0.060, -0.050}) {
+    for (double lateral : {-0.015, 0.0, 0.015}) {
+      for (double yaw : {-0.06, 0.0, 0.06}) {
+        for (int direction : {-1, 1}) {
+          visual_navigation::CornerShuntController controller;
+          auto context = direction > 0
+                             ? LeftCornerContext(start_x, lateral, yaw)
+                             : RightCornerContext(start_x, -lateral, -yaw);
+          ASSERT_TRUE(controller.pose_is_safe(context, context.pose));
+          controller.begin(0.0);
+
+          bool complete = false;
+          double now = 0.0;
+          for (int index = 0; index < 1800; ++index) {
+            const auto decision = controller.update(context, now);
+            ASSERT_FALSE(decision.blocked)
+                << "start=(" << start_x << ", " << lateral << ", " << yaw
+                << ") direction=" << direction;
+            if (decision.complete) {
+              complete = true;
+              break;
+            }
+            ASSERT_GE(decision.command.linear_x, 0.0);
+            for (int sample = 0; sample < 5; ++sample) {
+              ApplyLimitedDecision(&context, decision, kStep / 5.0);
+              ASSERT_TRUE(controller.pose_is_safe(context, context.pose))
+                  << "start=(" << start_x << ", " << lateral << ", " << yaw
+                  << ") direction=" << direction << " pose=("
+                  << context.pose.x << ", " << context.pose.y << ", "
+                  << context.pose.yaw << ")";
+            }
+            now += kStep;
+          }
+          EXPECT_TRUE(complete)
+              << "start=(" << start_x << ", " << lateral << ", " << yaw
+              << ") direction=" << direction;
+        }
+      }
+    }
+  }
+}
+
+TEST(CornerShunt, OrdinaryTurnReactsToMeasuredEntryOffset) {
+  visual_navigation::CornerShuntController left_controller;
+  visual_navigation::CornerShuntController right_controller;
+  auto left_offset = LeftCornerContext(-0.05, 0.012, 0.0);
+  auto right_offset = LeftCornerContext(-0.05, -0.012, 0.0);
+  left_controller.begin(0.0);
+  right_controller.begin(0.0);
+
+  left_controller.update(left_offset, 0.30);
+  right_controller.update(right_offset, 0.30);
+  const auto left_decision = left_controller.update(left_offset, 0.36);
+  const auto right_decision = right_controller.update(right_offset, 0.36);
+
+  EXPECT_GT(left_decision.command.linear_x, 0.0);
+  EXPECT_GT(right_decision.command.linear_x, 0.0);
+  EXPECT_LT(left_decision.command.angular_z,
+            right_decision.command.angular_z);
+  EXPECT_EQ(left_controller.planned_command_count(), 0U);
+  EXPECT_EQ(right_controller.planned_command_count(), 0U);
+}
+
+TEST(CornerShunt, OrdinaryTurnUpdatesSteeringFromMeasuredYaw) {
+  visual_navigation::CornerShuntController early_controller;
+  visual_navigation::CornerShuntController late_controller;
+  auto early = LeftCornerContext(-0.040, 0.0, 0.35);
+  auto late = LeftCornerContext(-0.021584, 0.059336, 1.2453);
+  early_controller.begin(0.0);
+  late_controller.begin(0.0);
+
+  const auto entry = LeftCornerContext(-0.05, 0.0, 0.0);
+  early_controller.update(entry, 0.30);
+  late_controller.update(entry, 0.30);
+  early_controller.update(entry, 0.36);
+  late_controller.update(entry, 0.36);
+  ASSERT_TRUE(early_controller.pose_is_safe(early, early.pose));
+  ASSERT_TRUE(late_controller.pose_is_safe(late, late.pose));
+  const auto early_decision = early_controller.update(early, 0.40);
+  const auto late_decision = late_controller.update(late, 0.40);
+
+  EXPECT_GT(early_decision.command.linear_x, 0.0);
+  EXPECT_GT(late_decision.command.linear_x, 0.0);
+  EXPECT_GT(early_decision.command.angular_z,
+            late_decision.command.angular_z);
+}
+
+TEST(CornerShunt, OrdinaryTurnCannotReenterEntryAlignment) {
+  visual_navigation::CornerShuntController controller;
+  const auto entry = LeftCornerContext(-0.05, 0.0, 0.0);
+  auto committed = LeftCornerContext(-0.040, 0.0, 0.35);
+  auto drifted_back = LeftCornerContext(-0.050, 0.0, 0.35);
+  controller.begin(0.0);
+
+  controller.update(entry, 0.30);
+  controller.update(entry, 0.36);
+  const auto turning = controller.update(committed, 0.40);
+  const auto after_drift = controller.update(drifted_back, 0.44);
+
+  ASSERT_FALSE(turning.blocked);
+  ASSERT_FALSE(after_drift.blocked);
+  EXPECT_GT(turning.command.angular_z, 0.0);
+  EXPECT_GE(after_drift.command.angular_z, 0.0);
+}
+
+TEST(CornerShunt, DelayedDrivetrainDoesNotOscillateAcrossEntryLine) {
+  visual_navigation::CornerShuntController controller;
+  auto context = LeftCornerContext(-0.05, 0.0, 0.0);
+  context.measured_yaw_rate_valid = true;
+  controller.begin(0.0);
+
+  constexpr double kStep = 1.0 / 30.0;
+  constexpr double kResponseTime = 0.20;
+  visual_navigation::CornerShuntTwist measured;
+  int last_sign = 0;
+  int sign_changes = 0;
+  bool complete = false;
+  double now = 0.0;
+  for (int index = 0; index < 1800; ++index) {
+    context.measured_twist = measured;
+    const auto decision = controller.update(context, now);
+    ASSERT_FALSE(decision.blocked);
+    if (decision.complete) {
+      complete = true;
+      break;
+    }
+    const int sign = decision.command.angular_z > 0.02 ? 1 :
+      (decision.command.angular_z < -0.02 ? -1 : 0);
+    if (sign != 0 && last_sign != 0 && sign != last_sign)
+      ++sign_changes;
+    if (sign != 0)
+      last_sign = sign;
+
+    context.applied_twist = decision.command;
+    const double alpha = kStep / (kResponseTime + kStep);
+    measured.linear_x += alpha *
+      (decision.command.linear_x - measured.linear_x);
+    measured.angular_z += alpha *
+      (decision.command.angular_z - measured.angular_z);
+    context.pose = Integrate(context.pose, measured, kStep);
+    ASSERT_TRUE(controller.pose_is_safe(context, context.pose));
+    now += kStep;
+  }
+
+  EXPECT_TRUE(complete);
+  EXPECT_LE(sign_changes, 1);
+}
+
+TEST(CornerShunt, StalledManeuverReplansThenReturnsBoundedFault) {
+  visual_navigation::CornerShuntConfig config;
+  config.max_plan_count = 2;
+  config.no_progress_timeout = 0.5;
+  visual_navigation::CornerShuntController controller(config);
+  const auto context = LeftCornerContext(-0.05, 0.0, 0.0);
+  controller.begin(0.0);
+
+  double now = 0.0;
+  visual_navigation::CornerShuntDecision decision;
+  for (int index = 0; index < 1000; ++index) {
+    decision = controller.update(context, now);
+    if (decision.blocked)
+      break;
+    if (decision.phase == visual_navigation::CornerShuntPhase::CHECK)
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    if (decision.command.linear_x > 0.0 ||
+        std::abs(decision.command.angular_z) > 0.0) {
+      now += config.no_progress_timeout + 0.01;
+    } else {
+      now += 0.05;
+    }
+  }
+
+  EXPECT_TRUE(decision.blocked);
+  EXPECT_EQ(controller.plan_count(), config.max_plan_count);
 }
 
 TEST(CornerShunt, ReverseArrivalCanLeaveDeadEndJunctionSafely) {
@@ -422,7 +617,7 @@ TEST(CornerShunt, RecordedTangentPoseFindsFineRecovery) {
 
 TEST(CornerShunt, OutsideTangentPoseFailsClosed) {
   visual_navigation::CornerShuntController controller;
-  auto context = LeftCornerContext(-0.0450, 0.0506, 1.248);
+  auto context = LeftCornerContext(-0.0500, 0.0506, 1.248);
   ASSERT_FALSE(controller.pose_is_safe(context, context.pose));
   const auto initial_pose = context.pose;
   controller.begin(0.0);

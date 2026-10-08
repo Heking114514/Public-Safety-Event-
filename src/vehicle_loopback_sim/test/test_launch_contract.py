@@ -20,11 +20,16 @@ def test_loopback_launch_defaults_to_formal_waypoint_navigator():
     assert 'default_value="1,2,3,4,5,6,7,8,9,10,11,12"' in launch_text
     assert 'DeclareLaunchArgument("return_home", default_value="true")' in launch_text
     assert 'DeclareLaunchArgument("allow_partial", default_value="true")' in launch_text
+    assert 'default_value="false"' in launch_text
+    assert 'playback_speed = LaunchConfiguration("playback_speed")' in launch_text
+    assert '"control_rate_multiplier": playback_speed' in launch_text
+    assert '"playback_speed": ParameterValue(playback_speed' in launch_text
     assert 'package="new_map_planner"' in launch_text
     assert 'executable="new_map_planner_node"' in launch_text
     assert 'package="navigation_mission_manager"' in launch_text
     assert 'executable="mission_manager_node"' in launch_text
     assert 'name="navigation_mission_manager"' in launch_text
+    assert '"task_confirmation_mode": "route"' in launch_text
     assert 'executable="loopback_mission_node"' not in launch_text
     assert 'name="vehicle_loopback_mission"' not in launch_text
 
@@ -41,10 +46,28 @@ def test_loopback_package_declares_formal_navigation_dependency():
     assert "arena_path_planner" not in dependencies
 
 
-def test_python_package_registers_pytest_with_colcon():
-    setup_text = (PACKAGE_ROOT / "setup.py").read_text()
+def test_mixed_package_builds_runtime_simulator_in_cpp():
+    cmake = (PACKAGE_ROOT / "CMakeLists.txt").read_text()
 
-    assert 'tests_require=["pytest"]' in setup_text
+    assert "add_executable(vehicle_loopback_sim_node" in cmake
+    assert "ament_python_install_package(vehicle_loopback_sim)" in cmake
+
+
+def test_loopback_sensor_does_not_treat_static_map_as_dynamic_obstacle():
+    node_text = (PACKAGE_ROOT / "src" / "sim_obstacle.cpp").read_text()
+
+    assert "layout_obstacles" not in node_text
+    assert "manual_obstacles_" in node_text
+
+
+def test_gui_labels_reference_route_separately_from_actual_trail():
+    page = (PACKAGE_ROOT / "vehicle_loopback_sim" / "web" / "index.html").read_text()
+    gui = (PACKAGE_ROOT / "vehicle_loopback_sim" / "gui.py").read_text()
+
+    assert "导航器当前路线" in page
+    assert "实际车迹" in page
+    assert "function pathSummary(path)" in page
+    assert '"stamp_ns"' in gui
 
 
 def test_comparison_launch_runs_isolated_new_and_legacy_controllers():

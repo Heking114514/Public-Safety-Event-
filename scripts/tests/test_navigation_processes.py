@@ -31,9 +31,6 @@ source {str(HELPER)!r}
 
     def test_workspace_gui_scripts_are_preserved(self):
         gui_paths = [
-            WORKSPACE / "scripts" / "arena_route_frontend.py",
-            WORKSPACE / "scripts" / "arena_map_editor.py",
-            WORKSPACE / "scripts" / "start_arena_planner.sh",
             WORKSPACE / "scripts" / "start_new_map_planner.sh",
             WORKSPACE / "src" / "new_map_planner" / "scripts" / "new_map_planner_ui",
             WORKSPACE / "route_editor.py",
@@ -86,42 +83,6 @@ source {str(HELPER)!r}
             unrelated.write_text("# unrelated\n", encoding="utf-8")
             result = self.classify_self(unrelated)
         self.assertNotEqual(0, result.returncode)
-
-    def test_old_arena_planner_is_gone_before_restart_returns(self):
-        planner = subprocess.Popen(
-            [
-                "bash",
-                "-c",
-                "trap 'exit 0' TERM; while true; do sleep 0.05; done",
-                "/opt/ros/humble/bin/ros2",
-                "launch",
-                "arena_path_planner",
-                "arena_path_planner.launch.py",
-            ]
-        )
-        script = f"""
-set -euo pipefail
-WORKSPACE_ROOT={str(WORKSPACE)!r}
-log() {{ :; }}
-source {str(HELPER)!r}
-find_ros_processes() {{ printf '%s\\n' {planner.pid}; }}
-stop_arena_planner_processes
-"""
-        try:
-            result = subprocess.run(
-                ["bash", "-c", script],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=8,
-            )
-            self.assertEqual(0, result.returncode, result.stderr)
-            self.assertIsNotNone(planner.poll())
-        finally:
-            if planner.poll() is None:
-                planner.kill()
-            planner.wait(timeout=5)
-
 
 if __name__ == "__main__":
     unittest.main()

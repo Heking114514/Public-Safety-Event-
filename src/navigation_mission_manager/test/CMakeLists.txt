@@ -1,0 +1,4 @@
+ament_add_gtest(mission_manager_core_test core_test.cpp)
+target_link_libraries(mission_manager_core_test mission_manager_core)
+target_compile_definitions(mission_manager_core_test PRIVATE
+  MISSION_MANAGER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/..")

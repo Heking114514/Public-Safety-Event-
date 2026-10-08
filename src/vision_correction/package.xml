@@ -10,9 +10,9 @@
   <buildtool_depend>ament_python</buildtool_depend>
 
   <exec_depend>ament_index_python</exec_depend>
-  <exec_depend>arena_path_planner</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
+  <exec_depend>new_map_planner</exec_depend>
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>numpy</exec_depend>
   <exec_depend>python3-opencv</exec_depend>

@@ -186,6 +186,29 @@ TEST(ObstacleRecovery, CompletedRouteMayBeginBoundedRetreat) {
   EXPECT_NEAR(controller.replay_goal().point.x, 0.2, 1.0e-12);
 }
 
+TEST(ObstacleRecovery, RouteHandoffPreservesEarlierRetreatTrace) {
+  ObstacleRecoveryConfig config;
+  config.breadcrumb_spacing = 0.05;
+  config.maximum_breadcrumb_step = 0.30;
+  config.target_tolerance = 0.04;
+  config.anchor_tolerance = 0.06;
+  ObstacleRecoveryController controller(config);
+  controller.record_sample(0.0, 0.0, 0.0, 0.1, 0.0);
+  controller.record_sample(0.2, 0.0, 0.0, 0.1, 0.0);
+  controller.record_sample(0.4, 0.0, 0.0, 0.1, 0.0);
+
+  controller.prepare_for_route(true);
+  controller.record_sample(0.6, 0.0, 0.0, 0.1, 0.0);
+  controller.record_sample(0.8, 0.0, 0.0, 0.1, 0.0);
+
+  ASSERT_TRUE(controller.trigger(0.8, 0.0, 0.0, 0.1, 0.0, 0.6, 0.0));
+  controller.confirm_stopped(0.8, 0.0, At(0.0));
+  ASSERT_EQ(controller.update_reverse(0.6, 0.0, At(1.0)).action,
+            ObstacleRecoveryAction::REPLAN_REQUIRED);
+  EXPECT_EQ(controller.extend_retreat(0.30), RetreatExtensionResult::ACCEPTED);
+  EXPECT_GT(controller.remaining_breadcrumbs_before_anchor(), 0U);
+}
+
 TEST(ObstacleRecovery, ReplayRejectsLargeStartHeadingMismatch) {
   ObstacleRecoveryConfig config;
   config.breadcrumb_spacing = 0.10;
@@ -206,6 +229,30 @@ TEST(ObstacleRecovery, ReplayRejectsLargeStartHeadingMismatch) {
   const auto replay = controller.replay_step(0.2, 0.0, 1.0, 0.0, 0.0, At(1.2));
   EXPECT_EQ(replay.action, ObstacleRecoveryAction::FAULT_NO_PROGRESS);
   EXPECT_GT(replay.yaw_error, config.replay_start_max_yaw_error);
+}
+
+TEST(ObstacleRecovery, ReplayAlignsModerateRouteHandoffHeadingMismatch) {
+  ObstacleRecoveryConfig config;
+  config.breadcrumb_spacing = 0.10;
+  config.anchor_tolerance = 0.05;
+  config.replay_start_max_yaw_error = 0.70;
+  ObstacleRecoveryController controller(config);
+  controller.record_sample(0.0, 0.0, 0.0, 0.10, 0.0);
+  controller.record_sample(0.2, 0.0, 0.0, 0.10, 0.0);
+  controller.record_sample(0.4, 0.0, 0.0, 0.10, 0.0);
+  ASSERT_TRUE(controller.trigger(0.4, 0.0, 0.0, 0.10, 0.0, 0.2, 0.0));
+  controller.confirm_stopped(0.4, 0.0, At(0.0));
+  ASSERT_EQ(controller.update_reverse(0.2, 0.0, At(1.0)).action,
+            ObstacleRecoveryAction::REPLAN_REQUIRED);
+  ASSERT_EQ(controller.extend_retreat(0.10, 0.2, 0.0, 0.0),
+            RetreatExtensionResult::ACCEPTED);
+  controller.confirm_stopped(0.2, 0.0, At(1.1));
+
+  const auto replay = controller.replay_step(0.2, 0.0, 0.58, 0.0, 0.0, At(1.2));
+  EXPECT_EQ(replay.action, ObstacleRecoveryAction::NONE);
+  EXPECT_TRUE(replay.command_valid);
+  EXPECT_DOUBLE_EQ(replay.linear_velocity, 0.0);
+  EXPECT_LT(replay.angular_velocity, 0.0);
 }
 
 TEST(ObstacleRecovery, IgnoresOneLargeFusionJumpInBreadcrumbTrace) {

@@ -85,8 +85,6 @@ public:
         topics.navigation_path, durable_qos);
     map_publisher_ = create_publisher<nav_msgs::msg::OccupancyGrid>(
         topics.occupancy_grid, durable_qos);
-    route_publisher_ = create_publisher<nav_msgs::msg::Path>(
-        topics.route_input, rclcpp::QoS(1).reliable());
     service_ = create_service<srv::PlanRoute>(
         topics.service,
         std::bind(&PlannerNode::HandlePlan, this, std::placeholders::_1,
@@ -118,7 +116,14 @@ private:
         const bool reverse_arrival =
             index < result.reverse_arrival_turn_waypoints.size() &&
             result.reverse_arrival_turn_waypoints[index];
-        stamped.pose.position.z = reverse_arrival ? 2.0e-3 : 1.0e-3;
+        const bool rfid_supernode = index < result.waypoint_supernode_ids.size() &&
+            !result.waypoint_supernode_ids[index].empty();
+        stamped.pose.position.z = rfid_supernode ?
+            (reverse_arrival ? 5.0e-3 : 4.0e-3) :
+            (reverse_arrival ? 2.0e-3 : 1.0e-3);
+      } else if (frame == "map" && index < result.waypoint_supernode_ids.size() &&
+                 !result.waypoint_supernode_ids[index].empty()) {
+        stamped.pose.position.z = 3.0e-3;
       }
       path.poses.push_back(std::move(stamped));
     }
@@ -152,6 +157,7 @@ private:
     message.arena_path = MakePath(result.arena_path, "arena", stamp, result);
     message.navigation_path =
         MakePath(result.navigation_path, "map", stamp, result);
+    message.waypoint_supernode_ids = result.waypoint_supernode_ids;
     message.maneuvers.reserve(result.maneuvers.size());
     for (const Maneuver &maneuver : result.maneuvers) {
       message.maneuvers.push_back(MakeManeuverMessage(maneuver));
@@ -204,11 +210,7 @@ private:
         plan_publisher_->publish(response->plan);
         arena_path_publisher_->publish(response->plan.arena_path);
         navigation_path_publisher_->publish(response->plan.navigation_path);
-        if (request->activate && result.collision_checked &&
-            !response->plan.navigation_path.poses.empty()) {
-          route_publisher_->publish(response->plan.navigation_path);
-          response->activated = true;
-        }
+        response->activated = false;
       }
     } catch (const std::exception &exception) {
       response->success = false;
@@ -248,7 +250,6 @@ private:
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr arena_path_publisher_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr navigation_path_publisher_;
   rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr map_publisher_;
-  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr route_publisher_;
   rclcpp::Service<srv::PlanRoute>::SharedPtr service_;
 };
 

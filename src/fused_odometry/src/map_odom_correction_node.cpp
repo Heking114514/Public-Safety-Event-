@@ -9,10 +9,13 @@
 #include <optional>
 #include <string>
 #include <stdexcept>
+#include <vector>
 
 #include "fused_odometry/fusion_logic.hpp"
 #include "fused_odometry/fusion_status_authority.hpp"
 #include "geometry_msgs/msg/transform_stamped.hpp"
+#include "mission_control_interfaces/msg/motion_hold_state.hpp"
+#include "mission_control_interfaces/srv/correct_map_position.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/string.hpp"
@@ -102,6 +105,10 @@ public:
     output_topic_ = declare_parameter<std::string>("output_topic", "/odometry/fused");
     map_change_topic_ = declare_parameter<std::string>(
       "map_change_topic", "/orbslam3/map_change");
+    correct_position_service_ = declare_parameter<std::string>(
+      "correct_map_position_service", "/fused_odometry/correct_map_position");
+    rfid_hold_state_topic_ = declare_parameter<std::string>(
+      "rfid_hold_state_topic", "/waypoint_navigation/motion_hold_state");
     map_frame_ = declare_parameter<std::string>("map_frame", "map");
     odom_frame_ = declare_parameter<std::string>("odom_frame", "odom");
     base_frame_ = declare_parameter<std::string>("base_frame", "base_link");
@@ -150,6 +157,9 @@ public:
     turn_hold_entry_angular_speed_ = positive("turn_hold_entry_angular_speed_radps", 0.55);
     turn_hold_min_angular_speed_ = positive("turn_hold_min_angular_speed_radps", 0.12);
     turn_hold_release_delay_ = positive("turn_hold_release_delay_s", 0.28);
+    rfid_correction_time_constant_ = positive(
+      "rfid_correction_time_constant_s", 0.15);
+    rfid_correction_max_step_ = positive("rfid_correction_max_step_m", 0.10);
     if (turn_hold_min_angular_speed_ >= turn_hold_entry_angular_speed_) {
       throw std::invalid_argument(
               "turn_hold_min_angular_speed_radps must be less than entry speed");
@@ -168,6 +178,20 @@ public:
     map_change_subscription_ = create_subscription<std_msgs::msg::UInt64>(
       map_change_topic_, 10,
       std::bind(&MapOdomCorrectionNode::map_change_callback, this, std::placeholders::_1));
+    rfid_hold_subscription_ = create_subscription<mission_control_interfaces::msg::MotionHoldState>(
+      rfid_hold_state_topic_, rclcpp::QoS(1).reliable().transient_local(),
+      [this](const mission_control_interfaces::msg::MotionHoldState::SharedPtr message) {
+        rfid_hold_active_ = message->held && std::find(
+          message->active_sources.begin(), message->active_sources.end(),
+          "navigation_mission_manager/rfid") !=
+          message->active_sources.end();
+      });
+    correct_position_service_server_ = create_service<
+      mission_control_interfaces::srv::CorrectMapPosition>(
+      correct_position_service_,
+      std::bind(
+        &MapOdomCorrectionNode::correct_map_position, this,
+        std::placeholders::_1, std::placeholders::_2));
     publisher_ = create_publisher<nav_msgs::msg::Odometry>(
       output_topic_, rclcpp::QoS(10).reliable());
     if (publish_tf_) {
@@ -471,6 +495,42 @@ private:
       static_cast<unsigned long>(map_change_sequence_));
   }
 
+  void correct_map_position(
+    const mission_control_interfaces::srv::CorrectMapPosition::Request::SharedPtr request,
+    mission_control_interfaces::srv::CorrectMapPosition::Response::SharedPtr response)
+  {
+    if (request->source != "navigation_mission_manager/rfid") {
+      response->accepted = false;
+      response->message = "only the mission manager RFID workflow may request correction";
+      return;
+    }
+    if (!rfid_hold_active_) {
+      response->accepted = false;
+      response->message = "RFID motion hold is not active";
+      return;
+    }
+    if (!std::isfinite(request->x) || !std::isfinite(request->y) ||
+      !local_received_ || !correction_valid_)
+    {
+      response->accepted = false;
+      response->message = "map correction pose is unavailable or invalid";
+      return;
+    }
+    const Pose2d local_pose = message_pose(latest_local_);
+    const Pose2d current_global = fused_odometry::compose_pose(map_from_odom_, local_pose);
+    rfid_target_map_from_odom_ = map_from_odom_;
+    rfid_target_map_from_odom_.x += request->x - current_global.x;
+    rfid_target_map_from_odom_.y += request->y - current_global.y;
+    // RFID supplies position only. Preserve the current map/odom yaw.
+    rfid_target_map_from_odom_.yaw = map_from_odom_.yaw;
+    rfid_correction_active_ = true;
+    RCLCPP_INFO(
+      get_logger(), "Mission manager position correction target: (%.3f, %.3f)",
+      request->x, request->y);
+    response->accepted = true;
+    response->message = "position correction accepted";
+  }
+
   void publish()
   {
     const double current_time = steady_seconds();
@@ -536,6 +596,24 @@ private:
       map_from_odom_ = limit_pose_step(
         map_from_odom_, proposed_map_from_odom,
         max_correction_step, max_correction_yaw_step);
+    }
+    if (rfid_correction_active_) {
+      const double elapsed = std::max(0.0, current_time - last_update_at_);
+      const double fraction = 1.0 - std::exp(
+        -elapsed / rfid_correction_time_constant_);
+      const Pose2d proposed = fused_odometry::interpolate_pose(
+        map_from_odom_, rfid_target_map_from_odom_, fraction);
+      map_from_odom_ = limit_pose_step(
+        map_from_odom_, proposed, rfid_correction_max_step_, 0.0);
+      if (std::hypot(
+          map_from_odom_.x - rfid_target_map_from_odom_.x,
+          map_from_odom_.y - rfid_target_map_from_odom_.y) < 0.005)
+      {
+        map_from_odom_.x = rfid_target_map_from_odom_.x;
+        map_from_odom_.y = rfid_target_map_from_odom_.y;
+        rfid_correction_active_ = false;
+        RCLCPP_INFO(get_logger(), "RFID map correction completed");
+      }
     }
     last_update_at_ = current_time;
 
@@ -604,6 +682,8 @@ private:
   std::string fusion_status_topic_;
   std::string output_topic_;
   std::string map_change_topic_;
+  std::string correct_position_service_;
+  std::string rfid_hold_state_topic_;
   std::string map_frame_;
   std::string odom_frame_;
   std::string base_frame_;
@@ -635,6 +715,8 @@ private:
   double turn_hold_entry_angular_speed_{0.55};
   double turn_hold_min_angular_speed_{0.12};
   double turn_hold_release_delay_{0.28};
+  double rfid_correction_time_constant_{0.15};
+  double rfid_correction_max_step_{0.10};
 
   std::deque<TimedLocalPose> local_history_;
   std::optional<nav_msgs::msg::Odometry> pending_visual_;
@@ -665,6 +747,9 @@ private:
   double last_turn_motion_at_{0.0};
   uint64_t map_change_sequence_{0};
   uint64_t unsynchronized_visual_count_{0};
+  bool rfid_hold_active_{false};
+  bool rfid_correction_active_{false};
+  Pose2d rfid_target_map_from_odom_;
   rclcpp::Time last_output_stamp_{0, 0, RCL_ROS_TIME};
   double initial_map_x_{0.0};
   double initial_map_y_{0.0};
@@ -674,6 +759,10 @@ private:
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr visual_subscription_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr fusion_status_subscription_;
   rclcpp::Subscription<std_msgs::msg::UInt64>::SharedPtr map_change_subscription_;
+  rclcpp::Subscription<mission_control_interfaces::msg::MotionHoldState>::SharedPtr
+    rfid_hold_subscription_;
+  rclcpp::Service<mission_control_interfaces::srv::CorrectMapPosition>::SharedPtr
+    correct_position_service_server_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr publisher_;
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
   rclcpp::TimerBase::SharedPtr timer_;

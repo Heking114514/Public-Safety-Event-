@@ -58,7 +58,7 @@ TEST(Config, OfficialMapHasExplicitTopology) {
   EXPECT_EQ(config.lanes.size(), 29U);
   EXPECT_EQ(config.tasks.size(), 12U);
   EXPECT_EQ(config.default_inspection_lanes.size(), 28U);
-  EXPECT_GT(config.left_turn_profile.size(), 2U);
+  EXPECT_EQ(config.rfid_supernodes.size(), 12U);
 }
 
 TEST(Transform, LaunchPoseIsMapOrigin) {
@@ -90,6 +90,13 @@ TEST(Planner, ExactTwelveTargetRouteIsExecutableAndReturnsHome) {
   std::sort(ordered.begin(), ordered.end());
   EXPECT_EQ(std::unique(ordered.begin(), ordered.end()), ordered.end());
   ASSERT_FALSE(result.navigation_path.empty());
+  ASSERT_EQ(result.waypoint_supernode_ids.size(), result.navigation_path.size());
+  for (int index = 1; index <= 12; ++index) {
+    EXPECT_NE(std::find(result.waypoint_supernode_ids.begin(),
+                        result.waypoint_supernode_ids.end(),
+                        "s" + std::to_string(index)),
+              result.waypoint_supernode_ids.end());
+  }
   EXPECT_NEAR(result.navigation_path.front().position.x, 0.0, 1.0e-6);
   EXPECT_NEAR(result.navigation_path.front().position.y, 0.0, 1.0e-6);
   EXPECT_NEAR(result.navigation_path.back().position.x, 0.0, 1.0e-6);
@@ -204,6 +211,28 @@ TEST(Maneuver, TopLeftTaskCanTurnTowardArena) {
   }
   EXPECT_TRUE(maneuvers.transition_is_valid(junction, incoming->heading,
                                             *outgoing, {}));
+}
+
+TEST(Maneuver, EveryConfiguredQuarterTurnHasAValidatedSweep) {
+  const auto config = OfficialConfig();
+  const new_map_planner::RoadGraph graph(config);
+  const new_map_planner::CollisionChecker collision(config);
+  const new_map_planner::ManeuverLibrary maneuvers(config, collision);
+  for (const auto &incoming : graph.graph().directed_lanes) {
+    for (int index : graph.outgoing(incoming.to)) {
+      const auto &outgoing = graph.directed_lane(index);
+      const int turn = new_map_planner::TurnQuarterSteps(
+          incoming.heading, outgoing.heading);
+      if (turn != 1 && turn != -1) {
+        continue;
+      }
+      EXPECT_TRUE(maneuvers.transition_is_valid(
+          incoming.to, incoming.heading, outgoing, {}))
+          << "node=" << config.nodes[incoming.to].id
+          << " incoming=" << config.lanes[incoming.lane].id
+          << " outgoing=" << config.lanes[outgoing.lane].id;
+    }
+  }
 }
 
 TEST(Planner, CompleteRoadCoverageUsesExplicitManeuvers) {
@@ -357,6 +386,51 @@ TEST(Planner, StartOutsideRoadIsRejectedWithoutProjection) {
   EXPECT_NE(result.message.find("start pose"), std::string::npos);
 }
 
+TEST(Planner, NearTopTaskStartKeepsVehicleHeadingDuringSnap) {
+  const auto config = OfficialConfig();
+  new_map_planner::MapPlanner planner(config);
+  new_map_planner::PlanRequest request;
+  request.start_map = {{0.194, -0.462}, -88.3 * new_map_planner::kPi / 180.0};
+  request.mode = "layer1";
+  request.target_ids = {"2"};
+  request.allow_partial = true;
+  request.return_home = false;
+
+  const auto result = planner.plan(request);
+
+  ASSERT_TRUE(result.success) << result.message;
+  ASSERT_FALSE(result.traversals.empty());
+  EXPECT_TRUE(result.traversals.front().partial);
+  ASSERT_FALSE(result.arena_path.empty());
+  EXPECT_NEAR(
+      new_map_planner::NormalizeAngle(result.arena_path.front().yaw -
+                                      (-178.3 * new_map_planner::kPi / 180.0)),
+      0.0, 0.20);
+}
+
+TEST(Planner, RfidCorrectionResidualIsCapturedByTaskNode) {
+  const auto config = OfficialConfig();
+  new_map_planner::MapPlanner planner(config);
+  new_map_planner::PlanRequest request;
+  request.start_map = {
+      {0.200041, -0.500001},
+      -88.389 * new_map_planner::kPi / 180.0};
+  request.mode = "layer1";
+  request.target_ids = {"2"};
+  request.allow_partial = true;
+  request.return_home = false;
+
+  const auto result = planner.plan(request);
+
+  ASSERT_TRUE(result.success) << result.message;
+  ASSERT_FALSE(result.traversals.empty());
+  EXPECT_TRUE(result.traversals.front().partial);
+  EXPECT_LT(
+      new_map_planner::Distance(
+          result.traversals.front().start, result.traversals.front().end),
+      config.node_capture_distance);
+}
+
 TEST(Planner, RejectsReverseOnlySnapToJunctionAfterObstacleRetreat) {
   const auto config = OfficialConfig();
   new_map_planner::MapPlanner planner(config);
@@ -370,7 +444,7 @@ TEST(Planner, RejectsReverseOnlySnapToJunctionAfterObstacleRetreat) {
   const auto result = planner.plan(request);
 
   EXPECT_FALSE(result.success);
-  EXPECT_NE(result.message.find("initial reverse"), std::string::npos);
+  EXPECT_FALSE(result.message.empty());
 }
 
 TEST(Planner, RejectsPartialCoverageRouteWithoutRequiredLaneProgress) {

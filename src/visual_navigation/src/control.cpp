@@ -115,18 +115,25 @@ void WaypointNavigator::RunControl() {
     frontObstacleReceived_ = false;
     frontObstacleEventHandled_ = false;
     frontObstacleRangeReceived_ = false;
+    pendingObstacleAtActiveTurn_ = false;
+    pendingObstacleTurnDistance_ = std::numeric_limits<double>::infinity();
     ClearPendingObstacleSignal("front obstacle heartbeat expired");
   }
   if (pendingFrontObstacle_) {
     const double classificationWait =
         std::chrono::duration<double>(currentTime - pendingObstacleStartedAt_)
             .count();
-    if (classificationWait >= frontObstacleClassificationWait_)
-      ClassifyPendingObstacle();
-    if (pendingFrontObstacle_) {
-      PublishStop();
-      SetState("OBSTACLE_BRAKING");
-      return;
+    if (pendingObstacleAtActiveTurn_) {
+      if (classificationWait >= frontObstacleClassificationWait_)
+        ClassifyPendingObstacle();
+    } else {
+      if (classificationWait >= frontObstacleClassificationWait_)
+        ClassifyPendingObstacle();
+      if (pendingFrontObstacle_) {
+        PublishStop();
+        SetState("OBSTACLE_BRAKING");
+        return;
+      }
     }
   }
   if (!obstacleRecoveryController_.idle()) {
@@ -170,6 +177,14 @@ void WaypointNavigator::RunControl() {
     return;
   }
 
+  if (frame.target.rfid_supernode &&
+      (!authorizedRfidCheckpoint_.has_value() ||
+       *authorizedRfidCheckpoint_ != currentWaypointIndex_) &&
+      (frame.waypoint_reached || rfidScanActive_)) {
+    RunRfidScan(frame);
+    return;
+  }
+
   const bool stopAlreadyCompleted =
       frame.final_waypoint && controlState_.goal_stopped();
   if (!controlState_.in(visual_navigation::ControlPhase::BRAKE) &&
@@ -189,7 +204,6 @@ void WaypointNavigator::RunControl() {
   }
 
   if (controlState_.goal_captured()) {
-    controlState_.begin_goal_alignment();
     RunGoal(frame);
     return;
   }

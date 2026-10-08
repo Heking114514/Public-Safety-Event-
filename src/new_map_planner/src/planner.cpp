@@ -91,9 +91,22 @@ MapPlanner::start_seeds(const Pose &start,
     seed.node = static_cast<int>(node);
     seed.heading = start_heading;
     seed.cost = distance;
-    if (distance > 1.0e-6) {
-      if (!collision_.segment_is_free(
-              start.position, config_.nodes[node].position, obstacles)) {
+    if (distance <= config_.node_capture_distance) {
+      if (distance > 1.0e-6) {
+        seed.prefix.push_back(
+            {-1, start.position, config_.nodes[node].position, true});
+      }
+    } else {
+      const double snap_heading =
+          std::atan2(config_.nodes[node].position.y - start.position.y,
+                     config_.nodes[node].position.x - start.position.x);
+      if (std::abs(NormalizeAngle(snap_heading - start.yaw)) >
+          config_.start_heading_tolerance) {
+        continue;
+      }
+      if (!collision_.segment_is_free(start.position,
+                                      config_.nodes[node].position, start.yaw,
+                                      obstacles)) {
         continue;
       }
       seed.prefix.push_back(
@@ -116,6 +129,14 @@ MapPlanner::start_seeds(const Pose &start,
     const Point &lane_end = config_.nodes[directed.to].position;
     if (DistanceToSegment(start.position, lane_begin, lane_end) >
         config_.lane_snap_distance) {
+      continue;
+    }
+    const double snap_heading = std::atan2(lane_end.y - start.position.y,
+                                           lane_end.x - start.position.x);
+    if (std::abs(NormalizeAngle(snap_heading - HeadingYaw(directed.heading))) >
+        config_.start_heading_tolerance) {
+      // The compatibility Path cannot express an initial reverse segment.
+      // Reject a projection that would need to move away from lane_end.
       continue;
     }
     if (!collision_.segment_is_free(start.position, lane_end, obstacles)) {

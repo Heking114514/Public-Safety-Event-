@@ -19,7 +19,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "motion_hold_service",
-                default_value="/waypoint_navigator/set_motion_hold",
+                default_value="/navigation_mission/set_motion_hold",
             ),
             DeclareLaunchArgument(
                 "motion_hold_state_topic",

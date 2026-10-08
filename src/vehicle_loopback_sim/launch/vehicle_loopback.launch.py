@@ -30,6 +30,7 @@ def generate_launch_description():
     simulate_obstacle_recognition = LaunchConfiguration(
         "simulate_obstacle_recognition"
     )
+    playback_speed = LaunchConfiguration("playback_speed")
     physical = parameters_for("pure_line_following")
 
     loopback = Node(
@@ -53,6 +54,7 @@ def generate_launch_description():
                 "publish_obstacle_detection": ParameterValue(
                     simulate_obstacle_recognition, value_type=bool
                 ),
+                "playback_speed": ParameterValue(playback_speed, value_type=float),
             },
         ],
     )
@@ -95,8 +97,15 @@ def generate_launch_description():
             DeclareLaunchArgument("publish_tf", default_value="true"),
             DeclareLaunchArgument(
                 "simulate_obstacle_recognition",
-                default_value="true",
-                description="Publish simulated front obstacle reports from the map",
+                default_value="false",
+                description=(
+                    "Publish simulated front obstacle reports from map/manual obstacles"
+                ),
+            ),
+            DeclareLaunchArgument(
+                "playback_speed",
+                default_value="1.0",
+                description="Loopback playback speed multiplier (0.1 to 10.0)",
             ),
             DeclareLaunchArgument(
                 "gui",

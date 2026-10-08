@@ -35,6 +35,7 @@ private:
   const PlannerConfig &config_;
   PlannerConfig turn_config_;
   CollisionChecker collision_;
+  std::vector<Pose> local_left_turn_profile_;
 };
 
 } // namespace new_map_planner

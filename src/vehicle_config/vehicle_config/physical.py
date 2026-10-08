@@ -19,7 +19,8 @@ class VehiclePhysicalConfig:
     width_m: float
     wheel_radius_m: float
     wheel_track_m: float
-    encoder_counts_per_revolution: float
+    left_encoder_counts_per_revolution: float
+    right_encoder_counts_per_revolution: float
     left_distance_scale: float
     right_distance_scale: float
     yaw_slip_scale: float
@@ -40,6 +41,14 @@ class VehiclePhysicalConfig:
     @property
     def vehicle_front_offset_m(self) -> float:
         return 0.5 * self.length_m
+
+    @property
+    def encoder_counts_per_revolution(self) -> float:
+        """Backward-compatible mean of the independently calibrated wheels."""
+        return 0.5 * (
+            self.left_encoder_counts_per_revolution +
+            self.right_encoder_counts_per_revolution
+        )
 
 
 def rpy_rotation_matrix(
@@ -155,8 +164,15 @@ def load_vehicle_physical_config(
         width_m=_finite(chassis, "width_m", positive=True),
         wheel_radius_m=_finite(drive, "wheel_radius_m", positive=True),
         wheel_track_m=_finite(drive, "wheel_track_m", positive=True),
-        encoder_counts_per_revolution=_finite(
-            drive, "encoder_counts_per_revolution", positive=True
+        left_encoder_counts_per_revolution=_finite(
+            drive,
+            "left_encoder_counts_per_revolution",
+            positive=True,
+        ),
+        right_encoder_counts_per_revolution=_finite(
+            drive,
+            "right_encoder_counts_per_revolution",
+            positive=True,
         ),
         left_distance_scale=_nonzero(drive, "left_distance_scale"),
         right_distance_scale=_nonzero(drive, "right_distance_scale"),
@@ -185,10 +201,6 @@ def parameters_for(
 ) -> dict[str, float]:
     physical = config or load_vehicle_physical_config()
     mappings = {
-        "arena_path_planner": {
-            "vehicle_length_m": physical.length_m,
-            "vehicle_width_m": physical.width_m,
-        },
         "pure_line_following": {
             "vehicle_length_m": physical.length_m,
             "camera_x_m": physical.camera_x_m,
@@ -214,10 +226,10 @@ def parameters_for(
             "wheel_radius_m": physical.wheel_radius_m,
             "wheel_track_m": physical.wheel_track_m,
             "left_encoder_counts_per_revolution": (
-                physical.encoder_counts_per_revolution
+                physical.left_encoder_counts_per_revolution
             ),
             "right_encoder_counts_per_revolution": (
-                physical.encoder_counts_per_revolution
+                physical.right_encoder_counts_per_revolution
             ),
             "left_distance_scale": physical.left_distance_scale,
             "right_distance_scale": physical.right_distance_scale,
@@ -237,7 +249,6 @@ def parameters_for(
             "vehicle_front_offset": physical.vehicle_front_offset_m,
             "vehicle_length_m": physical.length_m,
             "vehicle_width_m": physical.width_m,
-            "wheel_track_m": physical.wheel_track_m,
             "base_offset_x_m": physical.base_link_offset_x_m,
             "base_offset_y_m": physical.base_link_offset_y_m,
         },

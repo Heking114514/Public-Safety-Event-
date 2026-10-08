@@ -10,7 +10,6 @@ enum class ControlPhase {
   RECOVER_WAYPOINT,
   BRAKE,
   WAIT,
-  ALIGN_GOAL,
   RECOVER_GOAL
 };
 
@@ -34,8 +33,6 @@ inline const char *phase_status(ControlPhase phase) {
     return "BRAKING_AT_WAYPOINT";
   case ControlPhase::WAIT:
     return "WAITING_AT_WAYPOINT";
-  case ControlPhase::ALIGN_GOAL:
-    return "ALIGNING_FINAL_YAW";
   }
   return "FOLLOWING";
 }
@@ -80,8 +77,7 @@ public:
 
   void clear_goal() {
     goal_stage_ = GoalStage::ROUTE;
-    if (phase_ == ControlPhase::ALIGN_GOAL ||
-        phase_ == ControlPhase::RECOVER_GOAL) {
+    if (phase_ == ControlPhase::RECOVER_GOAL) {
       phase_ = ControlPhase::FOLLOW;
     }
   }
@@ -126,7 +122,7 @@ public:
     clear_anchor();
     if (final_waypoint) {
       goal_stage_ = GoalStage::STOPPED;
-      phase_ = ControlPhase::ALIGN_GOAL;
+      phase_ = ControlPhase::FOLLOW;
     } else {
       goal_stage_ = GoalStage::ROUTE;
       phase_ = ControlPhase::FOLLOW;
@@ -145,8 +141,6 @@ public:
     wait_action_ = WaitAction::ADVANCE;
     return completed;
   }
-
-  void begin_goal_alignment() { phase_ = ControlPhase::ALIGN_GOAL; }
 
   void begin_goal_recovery() {
     goal_stage_ = GoalStage::RECOVERY;

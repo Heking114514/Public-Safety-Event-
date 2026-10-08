@@ -71,7 +71,7 @@ TEST(PathControl, FinalPositionCaptureIsLatchedAcrossRotationDrift)
   EXPECT_FALSE(visual_navigation::FinalPositionCaptured(false, false, 0.01, 0.08));
 }
 
-TEST(PathControl, FinalCompletionRechecksPositionAfterYawAlignment)
+TEST(PathControl, FinalCompletionRechecksPositionAfterCapturedDrift)
 {
   EXPECT_TRUE(visual_navigation::FinalPositionCanComplete(true, 0.039, 0.04));
   // The route follower may use a larger release tolerance after the goal was
@@ -238,13 +238,6 @@ TEST(PathControl, SignedApproachDistanceCannotGrowAfterEndpoint)
     visual_navigation::EndpointApproachDistance(0.40, before), 0.03);
   EXPECT_DOUBLE_EQ(
     visual_navigation::EndpointApproachDistance(0.40, passed), 0.0);
-}
-
-TEST(PathControl, TurnRequiresContinuousLowRateBeforeSettling)
-{
-  EXPECT_FALSE(visual_navigation::TurnHasSettled(0.20, 1.0, 0.12, 0.30));
-  EXPECT_FALSE(visual_navigation::TurnHasSettled(0.10, 0.29, 0.12, 0.30));
-  EXPECT_TRUE(visual_navigation::TurnHasSettled(0.10, 0.30, 0.12, 0.30));
 }
 
 TEST(PathControl, FreshSingleWheelMotionCannotConfirmTurnStopped)
@@ -439,62 +432,6 @@ TEST(PathControl, CompetitionSpeedScheduleAvoidsTheLowSpeedDrivetrainDeadZone)
     visual_navigation::CrossTrackSpeedLimit(0.5, 0.08, 0.015, 0.06, 0.20), 0.20);
 }
 
-TEST(PathControl, RotateInPlaceUsesHysteresis)
-{
-  EXPECT_FALSE(visual_navigation::ShouldRotateInPlace(false, 0.29, 0.0, 0.30, 0.04, 0.12));
-  EXPECT_TRUE(visual_navigation::ShouldRotateInPlace(false, 0.30, 0.0, 0.30, 0.04, 0.12));
-  EXPECT_TRUE(visual_navigation::ShouldRotateInPlace(true, 0.05, 0.0, 0.30, 0.04, 0.12));
-  EXPECT_FALSE(visual_navigation::ShouldRotateInPlace(true, 0.04, 0.12, 0.30, 0.04, 0.12));
-}
-
-TEST(PathControl, CompletedAlignmentRequiresLargeErrorToReenterRotation)
-{
-  EXPECT_DOUBLE_EQ(
-    visual_navigation::RotationEntryThreshold(false, 0.18, 0.44), 0.18);
-  EXPECT_DOUBLE_EQ(
-    visual_navigation::RotationEntryThreshold(true, 0.18, 0.44), 0.44);
-  EXPECT_DOUBLE_EQ(
-    visual_navigation::RotationEntryThreshold(true, 0.18, 0.10), 0.18);
-}
-
-TEST(PathControl, TurnDoesNotFinishWhileBodyIsStillRotating)
-{
-  EXPECT_TRUE(visual_navigation::ShouldRotateInPlace(
-      true, 0.02, 0.8, 0.18, 0.035, 0.12));
-  EXPECT_FALSE(visual_navigation::ShouldRotateInPlace(
-      true, 0.02, 0.1, 0.18, 0.035, 0.12));
-}
-
-TEST(PathControl, InterceptionHeadingDoesNotReenterRoadHeadingAlignment)
-{
-  constexpr double cross_track_error = 0.20;
-  const double initial_left_error = visual_navigation::StanleyPathError(
-    0.0, cross_track_error, 1.5, 0.15, 0.25, 0.7);
-  const double initial_right_error = visual_navigation::StanleyPathError(
-    0.0, -cross_track_error, 1.5, 0.15, 0.25, 0.7);
-  EXPECT_LT(initial_left_error, -0.44);
-  EXPECT_GT(initial_right_error, 0.44);
-  EXPECT_TRUE(visual_navigation::ShouldRotateInPlace(
-      false, std::abs(initial_left_error), 0.0, 0.44, 0.035, 0.12));
-  EXPECT_TRUE(visual_navigation::ShouldRotateInPlace(
-      false, std::abs(initial_right_error), 0.0, 0.44, 0.035, 0.12));
-
-  const double interception_correction = std::atan2(1.5 * cross_track_error,
-                                                     0.15 + 0.25);
-  const double road_heading_error = interception_correction;
-  const double path_error = visual_navigation::StanleyPathError(
-    road_heading_error, cross_track_error, 1.5, 0.15, 0.25, 0.7);
-
-  EXPECT_GT(std::abs(road_heading_error), 0.44);
-  EXPECT_NEAR(path_error, 0.0, 1e-12);
-  EXPECT_FALSE(visual_navigation::ShouldRotateInPlace(
-      false, std::abs(path_error), 0.0, 0.44, 0.035, 0.12));
-
-  const double mirrored_path_error = visual_navigation::StanleyPathError(
-    -road_heading_error, -cross_track_error, 1.5, 0.15, 0.25, 0.7);
-  EXPECT_NEAR(mirrored_path_error, 0.0, 1e-12);
-}
-
 TEST(PathControl, TurnSpeedDropsInsidePrecisionZone)
 {
   EXPECT_DOUBLE_EQ(
@@ -506,12 +443,6 @@ TEST(PathControl, TurnSpeedDropsInsidePrecisionZone)
   EXPECT_DOUBLE_EQ(
     visual_navigation::SelectMinimumTurnSpeed(
       std::numeric_limits<double>::quiet_NaN(), 0.12, 0.45, 0.85), 0.85);
-}
-
-TEST(PathControl, InvalidErrorKeepsRobotInRotateOnlyMode)
-{
-  EXPECT_TRUE(visual_navigation::ShouldRotateInPlace(
-      false, std::numeric_limits<double>::quiet_NaN(), 0.0, 0.30, 0.10, 0.12));
 }
 
 TEST(PathControl, MinimumTurnSpeedOvercomesDrivetrainDeadZone)

@@ -31,6 +31,8 @@ waypoint_navigator:
     control_frequency: 30.0
     default_speed: 0.05
     max_linear_speed: 0.05
+    rfid_scan_speed: 0.02
+    rfid_scan_max_distance_m: 0.20
     max_angular_speed: 0.75
     # The instantaneous limit is also constrained by max_lateral_acceleration.
     # This higher ceiling lets a slow, planned corner turn decisively without
@@ -81,7 +83,6 @@ waypoint_navigator:
     pre_turn_path_angular_ratio: 1.20
     path_pid_integral_limit: 0.20
     rotate_in_place_threshold: 0.18
-    rotate_in_place_reentry_threshold: 0.44
     rotate_in_place_exit_threshold: 0.09
     precision_turn_threshold: 0.45
     turn_settle_yaw_rate: 0.15
@@ -93,12 +94,12 @@ waypoint_navigator:
     waypoint_recovery_speed: 0.10
     waypoint_recovery_heading_tolerance: 0.12
     waypoint_recovery_max_angular_speed: 0.40
-    # Planned junction turns use the stop-check-act shunt from
-    # corner_turn_shunt_animation.html. Vehicle footprint, wheel track and
-    # base_link-to-axle offset are injected from vehicle_physical.yaml by launch files.
+    # Normal junction turns use live odometry feedback: enter past the RFID,
+    # chase an exit-lane target, then hand back to ordinary path tracking.
+    # Vehicle dimensions and base_link-to-axle offset come from vehicle_physical.yaml.
     corner_shunt_enabled: true
     corner_shunt_road_width_m: 0.20
-    corner_shunt_road_margin_m: 0.008
+    corner_shunt_road_margin_m: 0.002
     corner_shunt_road_back_m: 0.60
     corner_shunt_road_forward_m: 0.56
     corner_shunt_stop_s: 0.18
@@ -107,20 +108,31 @@ waypoint_navigator:
     corner_shunt_exit_yaw_tolerance_rad: 0.08
     corner_shunt_exit_x_m: -0.0075
     corner_shunt_exit_y_m: 0.1225
-    corner_shunt_exit_x_tolerance_m: 0.025
+    corner_shunt_exit_x_tolerance_m: 0.050
     corner_shunt_exit_y_tolerance_m: 0.015
     corner_shunt_max_turn_angle_rad: 2.20
     corner_shunt_max_s: 60.00
     corner_shunt_prediction_horizon_s: 0.20
-    corner_shunt_prediction_step_s: 0.04
-    # A state-lattice plan is generated while stopped, then checked against
-    # truth/fused odometry before every short motion primitive.
     corner_shunt_plan_linear_speed_mps: 0.020
+    # Used only by an explicitly planned reverse-arrival recovery maneuver.
     corner_shunt_plan_reverse_speed_mps: -0.020
     corner_shunt_plan_angular_speed_rps: 0.24
     corner_shunt_plan_clearance_m: 0.001
-    corner_shunt_max_plan_count: 8
-    # Braking, mission holds, localization waits and final-yaw control pause
+    corner_shunt_entry_base_x_m: -0.015
+    corner_shunt_closed_loop_min_speed_mps: 0.008
+    corner_shunt_closed_loop_max_angular_speed_rps: 0.40
+    corner_shunt_closed_loop_bearing_gain: 1.40
+    corner_shunt_closed_loop_final_yaw_gain: 0.60
+    corner_shunt_closed_loop_entry_heading_gain: 1.40
+    corner_shunt_closed_loop_entry_lateral_gain: 2.00
+    corner_shunt_closed_loop_yaw_rate_damping: 0.35
+    corner_shunt_closed_loop_yaw_rate_filter_s: 0.08
+    corner_shunt_closed_loop_exit_max_angular_speed_rps: 0.12
+    corner_shunt_no_progress_timeout_s: 3.0
+    corner_shunt_no_progress_distance_m: 0.003
+    corner_shunt_no_progress_yaw_rad: 0.03
+    corner_shunt_max_plan_count: 4
+    # Braking, mission holds and localization waits pause
     # position progress. In-place turns remain safe through the displacement gate.
     path_progress_timeout: 10.0
     path_progress_minimum_advance: 0.05
@@ -154,14 +166,10 @@ waypoint_navigator:
     # fused translation and fresh IMU rotation confirm that the chassis is still.
     pre_turn_fallback_timeouts: 2
     pre_turn_fallback_pose_speed: 0.08
-    final_yaw_tolerance: 0.12
     # Keep final completion close to the captured point. Fused visual odometry
     # can read a few percent long, so a wide release window becomes early
     # physical stopping on short arena segments.
     final_position_release_tolerance: 0.05
-    final_yaw_max_angular_speed: 0.65
-    final_yaw_min_turn_speed: 0.35
-    final_yaw_min_precision_speed: 0.30
     odom_timeout: 0.40
     # /imu/control preserves the lower-controller measurement stamp. Full
     # system load currently leaves about 0.21 s of serial timestamp age.
@@ -193,7 +201,7 @@ waypoint_navigator:
     obstacle_reverse_no_progress_timeout: 3.0
     obstacle_reverse_attempt_timeout: 30.0
     obstacle_replay_start_yaw_tolerance: 0.03
-    obstacle_replay_start_max_yaw_error: 0.35
+    obstacle_replay_start_max_yaw_error: 0.70
     obstacle_replay_alignment_gain: 1.20
     obstacle_replay_alignment_max_angular_speed: 0.15
     obstacle_replay_yaw_tolerance: 0.25

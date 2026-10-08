@@ -60,7 +60,7 @@ class RouteEditorNode(Node):
         )
         self.declare_parameter("route_feedback_topic", "/waypoint_path")
         self.declare_parameter(
-            "motion_hold_service", "/waypoint_navigator/set_motion_hold"
+            "motion_hold_service", "/navigation_mission/set_motion_hold"
         )
         self.declare_parameter(
             "motion_hold_state_topic", "/waypoint_navigation/motion_hold_state"
@@ -360,7 +360,10 @@ class RouteEditorWindow:
         self.root.after(100, self.refresh_status)
 
     def update_motion_hold_controls(self):
-        own_hold = "route_editor" in self.node.active_hold_sources
+        own_hold = (
+            "navigation_mission_manager/external/route_editor"
+            in self.node.active_hold_sources
+        )
         if self.node.motion_hold_busy:
             text = "处理中..."
         else:
@@ -395,7 +398,10 @@ class RouteEditorWindow:
             or self.node.motion_hold_busy
         ):
             return "break"
-        own_hold = "route_editor" in self.node.active_hold_sources
+        own_hold = (
+            "navigation_mission_manager/external/route_editor"
+            in self.node.active_hold_sources
+        )
         try:
             self.node.request_motion_hold(
                 not own_hold, "route editor operator pause" if not own_hold else ""
@@ -410,7 +416,8 @@ class RouteEditorWindow:
             self.node.motion_hold_service_ready
             and self.node.motion_hold_state_received
             and not self.node.motion_hold_busy
-            and "route_editor" not in self.node.active_hold_sources
+            and "navigation_mission_manager/external/route_editor"
+            not in self.node.active_hold_sources
         ):
             try:
                 self.node.request_motion_hold(True, "route editor escape key")

@@ -1,7 +1,32 @@
 # Changelog
 
+## 2026-10-08
+
+- 将 `navigation_mission_manager` 的总控节点、任务模型、障碍/事件/RFID 状态机、服务代理
+  和测试播报器完整迁移到 C++17，ROS 接口和可执行文件名保持不变。
+- 将 `vehicle_loopback_sim_node`、仿真运动/障碍模型和可选调试路线控制器迁移到 C++17；
+  浏览器 GUI、launch、离线分析与兼容工具继续使用 Python。
+- 两个包切换到 `ament_cmake`/`ament_cmake_python`，新增对应 GTest，并完成 C++ 总控与
+  C++ loopback 的多段规划、ACK、运动、任务提交和驻停恢复组合验证。
+- `pure_line_following` 按要求保持现有 Python 实现，不参与本轮迁移。
+- 将 `rectangle_odometry_test` 的矩形路线发布/闭环监视节点和几何生成迁移到 C++17；
+  primitive A* 实验控制器保留 Python 兼容入口。
+- 修复 `start_visual_navigation.sh` 构建清单漏掉 `new_map_planner` 和
+  `navigation_mission_manager` 的问题；现在在构建融合里程计前安装其依赖包，并纳入
+  `--no-build` 运行产物核验。
+
 ## 2026-10-07
 
+- 扩展 `export_rosbag.py`：支持 MJPG AVI 导出，并随分析产物保存 `/rosout` CSV/文本日志、
+  下位机串口接收日志和原始运行清单，便于一次导出后复核视频、导航和 RFID 播报链路。
+- 新增固定 RFID 任务点与 `/odometry/fused` 的离线误差分析，输出逐次读卡、逐点均值、
+  重复读卡离散度、刚体对齐残差和可视化图，明确保留读卡器安装偏移这一测量假设。
+- 将统一车辆配置中的左右编码器每圈计数更新为 2026-10-06 实测值：左 `368867.22`、
+  右 `368883.7667`，轮式里程计分别注入左右标定参数。
+- 在 `map_odom_correction` 增加 RFID 固定点位置校正：只修正 `map -> odom` 的 x/y，
+  保留 IMU/局部 EKF 航向；同一点短时间重复上报按 3 秒冷却去重。
+- RFID 地标校正现在等待 `/waypoint_navigation/motion_hold_state` 确认 `rfid` 驻停后才开始，
+  在 3 秒驻停窗口内完成平滑位置修正，避免车辆尚未停稳时拉动融合位姿。
 - 完成临时障碍三阶段闭环：首次封路触发停车、历史退回和 15.34 m 绕行；障碍离场后
   自动完成 12 个任务点、4 条隧道、24 条普通道路并回到距原点约 38 mm 的终点。
 - 修复障碍绕行后的阶段交接死端：拒绝零阶段进展 partial 路线，并从刚完成路线有界
@@ -52,7 +77,7 @@
 - 将正式过弯控制器从逐步贪心切换改为停车后异步状态格规划：搜索显式包含轮轴位姿、
   当前受限速度、前进/倒车/原地转向原语和完整车身 8mm 安全包络；运行时每个控制周期
   复核下一步，危险或计划衔接时先硬停车再从零速重规划，避免减速惯性把车推过边界。
-- 新控制器已用正式 `arena_path_planner` 的 19 点、13.70m `layer1` 路线和带
+- 新控制器已用正式道路图的 19 点、13.70m `layer1` 路线和带
   `base_link` 杠臂的真值底盘完整跑到 `GOAL_REACHED`；覆盖左右转、偏移入口、凹角
   切点续接和越界姿态失败关闭。老控制器仍复现首弯前制动卡死，作为 A/B 基线保留。
 - 新增 `scripts/record_camera_samples.sh` 交互式定点相机采样工具：仅启动 D455，
@@ -77,7 +102,7 @@
   避免仿真绕过车体前偏/杠臂效应。
 - 新增/更新 `corner_shunt`、`waypoint_navigator` launch、`vehicle_config` 和
   `vehicle_loopback_sim` 契约测试。`planner_control_loopback.launch.py gui:=false`
-  已用真实 `arena_path_planner` 路线和正式 `waypoint_navigator` 跑完整 19 点路线，
+  已用真实道路图路线和正式 `waypoint_navigator` 跑完整 19 点路线，
   最终到达 `GOAL_REACHED`。
 - 新增 `vehicle_loopback_sim` 真值里程计仿真包：订阅 `/cmd_vel_nav`，
   发布 `/odometry/fused`、`/imu/control`、融合健康状态、执行器健康和理想控制遥测，

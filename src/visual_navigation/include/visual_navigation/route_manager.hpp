@@ -25,6 +25,7 @@ struct RouteWaypoint {
   double stop_time{0.0};
   bool turn_junction{false};
   bool reverse_arrival_turn{false};
+  bool rfid_supernode{false};
 };
 
 // Owns route parsing and comparison policy. The ROS node remains responsible
@@ -119,6 +120,7 @@ public:
           left[index].turn_junction != right[index].turn_junction ||
           left[index].reverse_arrival_turn !=
               right[index].reverse_arrival_turn ||
+          left[index].rfid_supernode != right[index].rfid_supernode ||
           left_yaw != right_yaw ||
           (left_yaw &&
            std::abs(normalize_angle(left[index].yaw - right[index].yaw)) >
@@ -151,9 +153,16 @@ public:
       const bool reverse_arrival_height =
           std::isfinite(pose.position.z) &&
           std::abs(pose.position.z - 2.0e-3) <= 1.0e-6;
+      const bool rfid_height = std::isfinite(pose.position.z) &&
+          std::abs(pose.position.z - 3.0e-3) <= 1.0e-6;
+      const bool rfid_turn_height = std::isfinite(pose.position.z) &&
+          std::abs(pose.position.z - 4.0e-3) <= 1.0e-6;
+      const bool rfid_reverse_turn_height = std::isfinite(pose.position.z) &&
+          std::abs(pose.position.z - 5.0e-3) <= 1.0e-6;
       if (!std::isfinite(pose.position.x) || !std::isfinite(pose.position.y) ||
           (!ordinary_height && !turn_junction_height &&
-           !reverse_arrival_height) ||
+           !reverse_arrival_height && !rfid_height && !rfid_turn_height &&
+           !rfid_reverse_turn_height) ||
           !valid_quaternion(pose.orientation)) {
         invalid_index = index;
         error = "waypoint pose is invalid";
@@ -164,7 +173,12 @@ public:
       waypoint.x = pose.position.x;
       waypoint.y = pose.position.y;
       waypoint.turn_junction = turn_junction_height || reverse_arrival_height;
-      waypoint.reverse_arrival_turn = reverse_arrival_height;
+      waypoint.turn_junction = waypoint.turn_junction || rfid_turn_height ||
+                               rfid_reverse_turn_height;
+      waypoint.reverse_arrival_turn = reverse_arrival_height ||
+                                      rfid_reverse_turn_height;
+      waypoint.rfid_supernode = rfid_height || rfid_turn_height ||
+                                rfid_reverse_turn_height;
       waypoint.yaw = quaternion_yaw(pose.orientation);
       waypoint.speed = default_speed;
       waypoint.tolerance = default_tolerance;

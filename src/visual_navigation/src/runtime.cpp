@@ -14,12 +14,12 @@ void WaypointNavigator::HandleOdometry(
       visual_navigation::OdometryPoseIsFinite(*message) &&
       QuaternionIsValid(message->pose.pose.orientation);
   if (!odometryFrameValid) {
-    RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 5000,
-                          "Rejecting odometry frames '%s' -> '%s'; expected '%s' "
-                          " -> '%s' (TF conversion is disabled)",
-                          message->header.frame_id.c_str(),
-                          message->child_frame_id.c_str(), routeFrame_.c_str(),
-                          odomChildFrame_.c_str());
+    RCLCPP_ERROR_THROTTLE(
+        get_logger(), *get_clock(), 5000,
+        "Rejecting odometry frames '%s' -> '%s'; expected '%s' "
+        " -> '%s' (TF conversion is disabled)",
+        message->header.frame_id.c_str(), message->child_frame_id.c_str(),
+        routeFrame_.c_str(), odomChildFrame_.c_str());
     return;
   }
   if (!odometryPoseValid) {
@@ -82,7 +82,8 @@ void WaypointNavigator::HandleActuatorHealth(
 }
 
 void WaypointNavigator::HandleControlTelemetry(
-    const mission_control_interfaces::msg::ControlTelemetry::SharedPtr message) {
+    const mission_control_interfaces::msg::ControlTelemetry::SharedPtr
+        message) {
   if (!message || !std::isfinite(message->measured_left_velocity_mps) ||
       !std::isfinite(message->measured_right_velocity_mps) ||
       !std::isfinite(message->target_left_velocity_mps) ||
@@ -95,8 +96,9 @@ void WaypointNavigator::HandleControlTelemetry(
     if (!visual_navigation::ControlTelemetrySampleIsFresh(
             lastControlTelemetrySequence_, lastControlTelemetryMcuTime_,
             message->sample_sequence, message->mcu_time_ms)) {
-      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
-                           "Ignoring duplicate or out-of-order wheel telemetry");
+      RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 2000,
+          "Ignoring duplicate or out-of-order wheel telemetry");
       return;
     }
   }
@@ -110,18 +112,22 @@ void WaypointNavigator::HandleControlTelemetry(
   controlTelemetryReceived_ = true;
   ++controlTelemetrySampleCount_;
   if (controlState_.in(visual_navigation::ControlPhase::BRAKE)) {
-    const double wheelEvidence = visual_navigation::IndependentWheelStopEvidence(
-        measuredLeftWheelSpeed_, measuredRightWheelSpeed_,
-        targetLeftWheelSpeed_, targetRightWheelSpeed_, preTurnStopSpeed_, 1, 1);
+    const double wheelEvidence =
+        visual_navigation::IndependentWheelStopEvidence(
+            measuredLeftWheelSpeed_, measuredRightWheelSpeed_,
+            targetLeftWheelSpeed_, targetRightWheelSpeed_, preTurnStopSpeed_, 1,
+            1);
     if (std::isfinite(wheelEvidence) && wheelEvidence <= preTurnStopSpeed_)
       ++waypointBrakeStoppedTelemetrySamples_;
     else
       waypointBrakeStoppedTelemetrySamples_ = 0;
   }
   if (obstacleRecoveryController_.braking()) {
-    const double wheelEvidence = visual_navigation::IndependentWheelStopEvidence(
-        measuredLeftWheelSpeed_, measuredRightWheelSpeed_,
-        targetLeftWheelSpeed_, targetRightWheelSpeed_, preTurnStopSpeed_, 1, 1);
+    const double wheelEvidence =
+        visual_navigation::IndependentWheelStopEvidence(
+            measuredLeftWheelSpeed_, measuredRightWheelSpeed_,
+            targetLeftWheelSpeed_, targetRightWheelSpeed_, preTurnStopSpeed_, 1,
+            1);
     if (std::isfinite(wheelEvidence) && wheelEvidence <= preTurnStopSpeed_)
       ++obstacleBrakeStoppedTelemetrySamples_;
     else
@@ -146,7 +152,8 @@ void WaypointNavigator::HandleStartTopic(
                 result.c_str());
 }
 
-bool WaypointNavigator::ActivateNavigation(std::string &result) {
+bool WaypointNavigator::ActivateNavigation(std::string &result,
+                                           bool preserveExecutedTrace) {
   if (!routeLoaded_) {
     result = "Waypoint route is not loaded";
     return false;
@@ -155,7 +162,8 @@ bool WaypointNavigator::ActivateNavigation(std::string &result) {
     result = "A new route is required after obstacle recovery";
     return false;
   }
-  obstacleRecoveryController_.reset_trace();
+  if (!preserveExecutedTrace)
+    obstacleRecoveryController_.reset_trace();
 
   const auto inputs = CurrentNavigationInputs();
   const auto readiness = visual_navigation::EvaluateNavigationStart(inputs);
@@ -167,9 +175,9 @@ bool WaypointNavigator::ActivateNavigation(std::string &result) {
     const bool structural_odometry_error =
         inputs.odometry_received &&
         (!inputs.odometry_frame_valid || !inputs.odometry_pose_valid);
-    const bool confirmed_fusion_fault =
-        inputs.fusion_status_received && inputs.fusion_status_fresh &&
-        inputs.fusion_health.fault;
+    const bool confirmed_fusion_fault = inputs.fusion_status_received &&
+                                        inputs.fusion_status_fresh &&
+                                        inputs.fusion_health.fault;
     if (!structural_odometry_error && !confirmed_fusion_fault) {
       navigationActive_ = true;
       if (currentWaypointIndex_ >= waypoints_.size())

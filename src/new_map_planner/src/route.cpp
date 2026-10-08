@@ -24,6 +24,7 @@ bool RouteCompiler::compile(const Pose &start_arena,
   result.navigation_path.clear();
   result.turn_waypoints.clear();
   result.reverse_arrival_turn_waypoints.clear();
+  result.waypoint_supernode_ids.clear();
   result.maneuvers.clear();
   result.length = 0.0;
   result.collision_checked = false;
@@ -39,13 +40,20 @@ bool RouteCompiler::compile(const Pose &start_arena,
   result.arena_path.push_back(start_arena);
   result.turn_waypoints.push_back(false);
   result.reverse_arrival_turn_waypoints.push_back(false);
+  result.waypoint_supernode_ids.emplace_back();
   int vehicle_heading = CardinalHeading(start_arena.yaw);
   int current_lane = -1;
   for (std::size_t index = 0; index < traversals.size(); ++index) {
     const Traversal &traversal = traversals[index];
+    const bool initial_partial =
+        index == 0 && traversal.partial && traversal.directed_lane < 0;
+    const double segment_heading =
+        initial_partial ? start_arena.yaw
+                        : std::atan2(traversal.end.y - traversal.start.y,
+                                     traversal.end.x - traversal.start.x);
     if (Distance(traversal.start, traversal.end) <= 1.0e-6 ||
         !collision_.segment_is_free(traversal.start, traversal.end,
-                                    dynamic_obstacles)) {
+                                    segment_heading, dynamic_obstacles)) {
       result.message = "route contains a blocked drive segment";
       return false;
     }
@@ -55,11 +63,9 @@ bool RouteCompiler::compile(const Pose &start_arena,
       return false;
     }
 
-    int drive_heading =
-        CardinalHeading(std::atan2(traversal.end.y - traversal.start.y,
-                                   traversal.end.x - traversal.start.x));
+    int drive_heading = CardinalHeading(segment_heading);
     int next_vehicle_heading = drive_heading;
-    if (index == 0 && traversal.partial && traversal.directed_lane < 0 &&
+    if (initial_partial &&
         TurnQuarterSteps(vehicle_heading, drive_heading) != 0) {
       result.message =
           "route requires an unsupported initial reverse or lateral approach";
@@ -140,7 +146,8 @@ bool RouteCompiler::compile(const Pose &start_arena,
       }
     }
 
-    const double yaw = HeadingYaw(next_vehicle_heading);
+    const double yaw =
+        initial_partial ? start_arena.yaw : HeadingYaw(next_vehicle_heading);
     Maneuver drive;
     drive.type =
         traversal.reverse ? ManeuverType::REVERSE : ManeuverType::DRIVE;
@@ -162,6 +169,7 @@ bool RouteCompiler::compile(const Pose &start_arena,
       result.arena_path.push_back({traversal.start, yaw});
       result.turn_waypoints.push_back(false);
       result.reverse_arrival_turn_waypoints.push_back(false);
+      result.waypoint_supernode_ids.emplace_back();
     }
     if (!result.turn_waypoints.back()) {
       result.arena_path.back().yaw = yaw;
@@ -169,6 +177,11 @@ bool RouteCompiler::compile(const Pose &start_arena,
     result.arena_path.push_back({traversal.end, yaw});
     result.turn_waypoints.push_back(false);
     result.reverse_arrival_turn_waypoints.push_back(false);
+    const auto supernode = traversal.directed_lane >= 0 ?
+      config_.rfid_supernodes.find(graph_.directed_lane(traversal.directed_lane).to) :
+      config_.rfid_supernodes.end();
+    result.waypoint_supernode_ids.push_back(
+      supernode == config_.rfid_supernodes.end() ? std::string{} : supernode->second);
     vehicle_heading = next_vehicle_heading;
     if (traversal.directed_lane >= 0) {
       current_lane = graph_.directed_lane(traversal.directed_lane).lane;
@@ -193,6 +206,10 @@ bool RouteCompiler::compile(const Pose &start_arena,
       result.arena_path.size()) {
     result.message =
         "compiled reverse-arrival metadata does not match the path";
+    return false;
+  }
+  if (result.waypoint_supernode_ids.size() != result.arena_path.size()) {
+    result.message = "compiled RFID supernode metadata does not match the path";
     return false;
   }
   result.collision_checked = true;

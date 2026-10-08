@@ -18,7 +18,10 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/MotionHoldState.msg"
   "srv/ContinueRetreat.srv"
   "srv/ControlMission.srv"
+  "srv/CorrectMapPosition.srv"
+  "srv/ConfirmRfidCheckpoint.srv"
   "srv/SetMotionHold.srv"
+  "srv/SpeakText.srv"
   "action/ReportEvent.action"
   DEPENDENCIES action_msgs geometry_msgs std_msgs
 )

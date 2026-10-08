@@ -30,12 +30,11 @@ enum class CornerShuntPhase {
 struct CornerShuntConfig {
   bool enabled{true};
   double road_width{0.20};
-  double road_margin{0.008};
+  double road_margin{0.002};
   double road_back{0.60};
   double road_forward{0.56};
   double vehicle_length{0.1485};
   double vehicle_width{0.1250};
-  double wheel_track{0.1466};
   double base_offset_x{0.030};
   double base_offset_y{0.0};
   double stop_duration{0.18};
@@ -44,16 +43,28 @@ struct CornerShuntConfig {
   double target_yaw_tolerance{0.08};
   double target_x{-0.0075};
   double target_y{0.1225};
-  double target_x_tolerance{0.025};
+  double target_x_tolerance{0.050};
   double target_y_tolerance{0.015};
   double max_turn_angle{2.20};
   double max_turn_duration{60.00};
   double prediction_horizon{0.20};
-  double prediction_step{0.04};
   double plan_linear_speed{0.020};
   double plan_reverse_speed{-0.020};
   double plan_angular_speed{0.24};
   double plan_clearance{0.001};
+  double entry_base_x{-0.015};
+  double closed_loop_min_speed{0.008};
+  double closed_loop_max_angular_speed{0.40};
+  double closed_loop_bearing_gain{1.40};
+  double closed_loop_final_yaw_gain{0.60};
+  double closed_loop_entry_heading_gain{1.40};
+  double closed_loop_entry_lateral_gain{2.00};
+  double closed_loop_yaw_rate_damping{0.35};
+  double closed_loop_yaw_rate_filter_s{0.08};
+  double closed_loop_exit_max_angular_speed{0.12};
+  double no_progress_timeout{3.0};
+  double no_progress_distance{0.003};
+  double no_progress_yaw{0.03};
   double control_frequency{30.0};
   double linear_acceleration{0.25};
   double linear_deceleration{0.80};
@@ -76,6 +87,8 @@ struct CornerShuntTwist {
 struct CornerShuntContext {
   CornerShuntPose pose;
   CornerShuntTwist applied_twist;
+  CornerShuntTwist measured_twist;
+  bool measured_yaw_rate_valid{false};
   double junction_x{0.0};
   double junction_y{0.0};
   double incoming_heading{0.0};
@@ -107,7 +120,7 @@ inline const char *CornerShuntStatus(CornerShuntPhase phase) {
   case CornerShuntPhase::COMPLETE:
     return "PATH_ALIGNED";
   case CornerShuntPhase::BLOCKED:
-    return "TURN_BLOCKED";
+    return "FAULT_TURN_BLOCKED";
   case CornerShuntPhase::IDLE:
     break;
   }
@@ -140,6 +153,13 @@ public:
     plan_future_ = {};
     command_cycles_remaining_ = 0;
     last_command_ = {};
+    progress_initialized_ = false;
+    progress_started_at_ = 0.0;
+    progress_pose_ = {};
+    yaw_rate_feedback_initialized_ = false;
+    filtered_yaw_rate_ = 0.0;
+    last_yaw_rate_feedback_at_ = 0.0;
+    corner_entry_committed_ = false;
   }
 
   void begin(double now_s) {
@@ -153,6 +173,13 @@ public:
     plan_future_ = {};
     command_cycles_remaining_ = 0;
     last_command_ = {};
+    progress_initialized_ = false;
+    progress_started_at_ = now_s;
+    progress_pose_ = {};
+    yaw_rate_feedback_initialized_ = false;
+    filtered_yaw_rate_ = 0.0;
+    last_yaw_rate_feedback_at_ = now_s;
+    corner_entry_committed_ = false;
   }
 
   bool active() const { return active_; }
@@ -169,8 +196,25 @@ public:
   CornerShuntDecision update(const CornerShuntContext &context, double now_s) {
     if (!active_)
       begin(now_s);
+    update_yaw_rate_feedback(context, now_s);
     if (now_s - started_at_ > std::max(0.0, config_.max_turn_duration))
       return block();
+    if (motion_stalled(context, now_s)) {
+      planned_commands_.clear();
+      planned_command_index_ = 0;
+      command_cycles_remaining_ = 0;
+      last_command_ = {};
+      progress_started_at_ = now_s;
+      progress_pose_ = context.pose;
+      if (!context.reverse_arrival) {
+        ++plan_count_;
+        if (plan_count_ >= std::max(1, config_.max_plan_count))
+          return block();
+      } else if (plan_count_ >= std::max(1, config_.max_plan_count)) {
+        return block();
+      }
+      return set_phase(CornerShuntPhase::CHECK, now_s, {});
+    }
     if (target_reached(context)) {
       active_ = false;
       phase_ = CornerShuntPhase::COMPLETE;
@@ -186,10 +230,18 @@ public:
     if (phase_ == CornerShuntPhase::CHECK) {
       if (phase_elapsed < std::max(0.0, config_.check_duration))
         return {phase_, {}, false, false};
+      if (!context.reverse_arrival) {
+        if (!pose_is_safe(context, context.pose))
+          return block();
+        return closed_loop_action(context, now_s);
+      }
       return choose_action(context, now_s);
     }
     if (phase_ == CornerShuntPhase::BLOCKED)
       return block();
+
+    if (!context.reverse_arrival)
+      return closed_loop_action(context, now_s);
 
     if (command_cycles_remaining_ > 1 &&
         command_is_safe(context, last_command_,
@@ -226,9 +278,6 @@ public:
         return false;
     }
 
-    // The L-shaped road is its outer rectangle minus the upper-left block.
-    // A separating-axis test rejects any positive-area overlap with that block;
-    // touching x=-safe_half or y=safe_half remains valid road boundary contact.
     const std::array<CornerShuntPose, 4> blocked{{
         {-back, safe_half, 0.0},
         {-safe_half, safe_half, 0.0},
@@ -302,6 +351,83 @@ private:
     return set_phase(command_phase(command), now_s, command);
   }
 
+  CornerShuntDecision closed_loop_action(const CornerShuntContext &context,
+                                         double now_s) {
+    const auto local = local_turn_pose(context, context.pose);
+    const double direction = turn_sign(context);
+    const double base_x =
+        local.x + config_.base_offset_x * std::cos(local.yaw) -
+        direction * config_.base_offset_y * std::sin(local.yaw);
+    const double forward_speed = std::max(0.005, config_.plan_linear_speed);
+    const double minimum_speed =
+        ClampShunt(config_.closed_loop_min_speed, 0.005, forward_speed);
+    const double yaw_rate_local = filtered_yaw_rate_ * direction;
+    if (base_x >= config_.entry_base_x)
+      corner_entry_committed_ = true;
+
+    double omega_local = 0.0;
+    double steering_error = local.yaw;
+    bool aligning_exit = false;
+    if (!corner_entry_committed_) {
+      omega_local = -config_.closed_loop_entry_heading_gain * local.yaw -
+                    config_.closed_loop_entry_lateral_gain * local.y -
+                    config_.closed_loop_yaw_rate_damping * yaw_rate_local;
+    } else {
+      const double target_scale =
+          ClampShunt(std::abs(turn_error(context)) / (0.5 * 3.14159265358979323846),
+                     0.45, 1.40);
+      const double target_x = config_.target_x * target_scale;
+      const double target_y = config_.target_y * target_scale;
+      const double final_yaw = std::abs(turn_error(context));
+      const double final_yaw_error =
+          NormalizeShuntAngle(final_yaw - local.yaw);
+      aligning_exit =
+          local.y >= target_y - std::max(0.03, config_.target_y_tolerance);
+      if (aligning_exit) {
+        steering_error = final_yaw_error;
+        omega_local =
+            config_.closed_loop_bearing_gain * final_yaw_error +
+            config_.closed_loop_entry_lateral_gain * (local.x - target_x) -
+            config_.closed_loop_yaw_rate_damping * yaw_rate_local;
+      } else {
+        const double bearing =
+            std::atan2(target_y - local.y, target_x - local.x);
+        const double bearing_error =
+            NormalizeShuntAngle(bearing - local.yaw);
+        steering_error = bearing_error;
+        omega_local = config_.closed_loop_bearing_gain * bearing_error +
+                      config_.closed_loop_final_yaw_gain * final_yaw_error -
+                      config_.closed_loop_yaw_rate_damping * yaw_rate_local;
+      }
+    }
+
+    const double maximum_omega =
+        std::max(0.05, config_.closed_loop_max_angular_speed);
+    if (corner_entry_committed_ && !aligning_exit) {
+      // Once the axle has entered the junction, never return to the entry
+      // controller or counter-steer toward the incoming road.
+      omega_local = ClampShunt(omega_local, 0.0, maximum_omega);
+    } else if (aligning_exit) {
+      const double exit_limit = std::min(
+        maximum_omega,
+        std::max(0.0, config_.closed_loop_exit_max_angular_speed));
+      omega_local = ClampShunt(omega_local, -exit_limit, exit_limit);
+    } else {
+      omega_local = ClampShunt(omega_local, -maximum_omega, maximum_omega);
+    }
+    double heading_scale = ClampShunt(
+        std::cos(std::min(std::abs(steering_error),
+                          0.5 * 3.14159265358979323846)),
+        minimum_speed / forward_speed, 1.0);
+    if (aligning_exit && std::abs(steering_error) > 0.20)
+      heading_scale = minimum_speed / forward_speed;
+    const CornerShuntTwist command{forward_speed * heading_scale,
+                                   direction * omega_local};
+    if (!command_is_safe(context, command))
+      return block();
+    return set_phase(command_phase(command), now_s, command);
+  }
+
   PlanAvailability ensure_plan(const CornerShuntContext &context) {
     if (planned_command_index_ < planned_commands_.size())
       return PlanAvailability::READY;
@@ -341,6 +467,33 @@ private:
     if (std::abs(command.angular_z) <= 1.0e-9)
       return CornerShuntPhase::CREEP;
     return CornerShuntPhase::ARC;
+  }
+
+  bool motion_stalled(const CornerShuntContext &context, double now_s) {
+    if (!progress_initialized_) {
+      progress_initialized_ = true;
+      progress_started_at_ = now_s;
+      progress_pose_ = context.pose;
+      return false;
+    }
+    const double distance =
+        std::hypot(context.pose.x - progress_pose_.x,
+                   context.pose.y - progress_pose_.y);
+    const double yaw = std::abs(
+        NormalizeShuntAngle(context.pose.yaw - progress_pose_.yaw));
+    if (distance >= std::max(0.0, config_.no_progress_distance) ||
+        yaw >= std::max(0.0, config_.no_progress_yaw)) {
+      progress_started_at_ = now_s;
+      progress_pose_ = context.pose;
+      return false;
+    }
+    const bool commanding_motion =
+        phase_ == CornerShuntPhase::ARC ||
+        phase_ == CornerShuntPhase::ROTATE ||
+        phase_ == CornerShuntPhase::CREEP ||
+        phase_ == CornerShuntPhase::REVERSE;
+    return commanding_motion && config_.no_progress_timeout > 0.0 &&
+           now_s - progress_started_at_ >= config_.no_progress_timeout;
   }
 
   CornerShuntDecision set_phase(CornerShuntPhase phase, double now_s,
@@ -457,28 +610,6 @@ private:
     return corners;
   }
 
-  bool point_inside_safe_road(const CornerShuntContext &context,
-                              CornerShuntPose point) const {
-    const double cos_heading = std::cos(context.incoming_heading);
-    const double sin_heading = std::sin(context.incoming_heading);
-    const double dx = point.x - context.junction_x;
-    const double dy = point.y - context.junction_y;
-    const double local_x = cos_heading * dx + sin_heading * dy;
-    double local_y = -sin_heading * dx + cos_heading * dy;
-    local_y *= turn_sign(context);
-
-    const double half = std::max(0.0, 0.5 * config_.road_width);
-    const double margin = ClampShunt(config_.road_margin, 0.0, half - 1.0e-6);
-    const double safe_half = half - margin;
-    const double back = std::max(0.0, config_.road_back) - margin;
-    const double forward = std::max(0.0, config_.road_forward) - margin;
-    const bool in_entry = -back <= local_x && local_x <= safe_half &&
-                          -safe_half <= local_y && local_y <= safe_half;
-    const bool in_exit = -safe_half <= local_x && local_x <= safe_half &&
-                         -safe_half <= local_y && local_y <= forward;
-    return in_entry || in_exit;
-  }
-
   bool target_reached(const CornerShuntContext &context) const {
     return target_pose_reached(context, context.pose);
   }
@@ -513,6 +644,31 @@ private:
     return turn_error(context) >= 0.0 ? 1.0 : -1.0;
   }
 
+  void update_yaw_rate_feedback(const CornerShuntContext &context,
+                                double now_s) {
+    if (!context.measured_yaw_rate_valid ||
+        !std::isfinite(context.measured_twist.angular_z)) {
+      yaw_rate_feedback_initialized_ = false;
+      filtered_yaw_rate_ = context.applied_twist.angular_z;
+      last_yaw_rate_feedback_at_ = now_s;
+      return;
+    }
+    if (!yaw_rate_feedback_initialized_) {
+      filtered_yaw_rate_ = context.measured_twist.angular_z;
+      yaw_rate_feedback_initialized_ = true;
+      last_yaw_rate_feedback_at_ = now_s;
+      return;
+    }
+    const double elapsed = std::max(0.0, now_s - last_yaw_rate_feedback_at_);
+    const double filter_time =
+      std::max(0.0, config_.closed_loop_yaw_rate_filter_s);
+    const double alpha = filter_time <= 0.0
+      ? 1.0 : elapsed / (filter_time + elapsed);
+    filtered_yaw_rate_ += alpha *
+      (context.measured_twist.angular_z - filtered_yaw_rate_);
+    last_yaw_rate_feedback_at_ = now_s;
+  }
+
   CornerShuntConfig config_;
   bool active_{false};
   CornerShuntPhase phase_{CornerShuntPhase::IDLE};
@@ -524,6 +680,13 @@ private:
   int command_cycles_remaining_{0};
   std::future<std::vector<CornerShuntTwist>> plan_future_;
   CornerShuntTwist last_command_;
+  bool yaw_rate_feedback_initialized_{false};
+  double filtered_yaw_rate_{0.0};
+  double last_yaw_rate_feedback_at_{0.0};
+  bool corner_entry_committed_{false};
+  bool progress_initialized_{false};
+  double progress_started_at_{0.0};
+  CornerShuntPose progress_pose_;
 };
 
 } // namespace visual_navigation

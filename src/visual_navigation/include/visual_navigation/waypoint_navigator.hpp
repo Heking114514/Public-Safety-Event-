@@ -20,6 +20,7 @@
 #include "mission_control_interfaces/msg/control_telemetry.hpp"
 #include "mission_control_interfaces/msg/motion_hold_state.hpp"
 #include "mission_control_interfaces/srv/continue_retreat.hpp"
+#include "mission_control_interfaces/srv/confirm_rfid_checkpoint.hpp"
 #include "mission_control_interfaces/srv/set_motion_hold.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "nav_msgs/msg/path.hpp"
@@ -174,7 +175,8 @@ private:
 
   void HandleStartTopic(const std_msgs::msg::Empty::SharedPtr);
 
-  bool ActivateNavigation(std::string &result);
+  bool ActivateNavigation(std::string &result,
+                          bool preserve_executed_trace = false);
 
   void HandleStop(const std_srvs::srv::Trigger::Request::SharedPtr,
                   std_srvs::srv::Trigger::Response::SharedPtr response);
@@ -189,6 +191,25 @@ private:
       const mission_control_interfaces::srv::ContinueRetreat::Request::SharedPtr
           request,
       mission_control_interfaces::srv::ContinueRetreat::Response::SharedPtr
+          response);
+
+  void HandleContinueRouteRetreat(
+      const mission_control_interfaces::srv::ContinueRetreat::Request::SharedPtr
+          request,
+      mission_control_interfaces::srv::ContinueRetreat::Response::SharedPtr
+          response);
+
+  void HandleRetreatRequest(
+      const mission_control_interfaces::srv::ContinueRetreat::Request::SharedPtr
+          request,
+      mission_control_interfaces::srv::ContinueRetreat::Response::SharedPtr
+          response,
+      bool route_transition);
+
+  void HandleConfirmRfidCheckpoint(
+      const mission_control_interfaces::srv::ConfirmRfidCheckpoint::Request::SharedPtr
+          request,
+      mission_control_interfaces::srv::ConfirmRfidCheckpoint::Response::SharedPtr
           response);
 
   void HandleReset(const std_srvs::srv::Trigger::Request::SharedPtr,
@@ -220,6 +241,7 @@ private:
   void RunRecovery(const ControlFrame &frame, bool plannedReverse = false);
 
   void RunPath(const ControlFrame &frame);
+  void RunRfidScan(const ControlFrame &frame);
 
   void RunCornerShunt(const ControlFrame &frame, double segmentProgress);
 
@@ -237,13 +259,17 @@ private:
 
   bool ObstacleBrakeHasCompleted();
 
-  void ResetObstacleRecovery();
+  void ResetObstacleRecovery(bool preserve_executed_trace = false);
 
   void RecordExecutedPose();
 
   visual_navigation::RecoveryPoint SelectObstacleRecoveryAnchor() const;
 
   bool CurrentWaypointIsPlannedTurn() const;
+
+  bool EarlyPlannedTurnActive() const;
+
+  double DistanceToStoppedTurn() const;
 
   void AdvanceWaypoint(bool preservePathFeedback = false);
 
@@ -332,6 +358,8 @@ private:
   double maxLinearSpeed_{0.10};
   double maxAngularSpeed_{0.75};
   double maxPathAngularSpeed_{0.65};
+  double rfidScanSpeed_{0.02};
+  double rfidScanMaxDistance_{0.20};
   double minPathAngularSpeed_{0.14};
   double pathAngularActivationError_{0.025};
   double pathYawResponseThreshold_{0.04};
@@ -362,7 +390,6 @@ private:
   double preTurnPathAngularRatio_{1.2};
   double pathPidIntegralLimit_{0.20};
   double rotateInPlaceThreshold_{0.18};
-  double rotateInPlaceReentryThreshold_{0.44};
   double rotateInPlaceExitThreshold_{0.035};
   double precisionTurnThreshold_{0.45};
   double turnSettleYawRate_{0.15};
@@ -385,11 +412,7 @@ private:
   double preTurnFallbackPoseSpeed_{0.08};
   std::size_t preTurnStopTelemetrySamples_{2};
   std::size_t preTurnFallbackTimeouts_{2};
-  double finalYawTolerance_{0.12};
   double finalPositionReleaseTolerance_{0.05};
-  double finalYawMaxAngularSpeed_{0.40};
-  double finalYawMinTurnSpeed_{0.30};
-  double finalYawMinPrecisionSpeed_{0.20};
   double odomTimeout_{0.40};
   double imuTimeout_{0.15};
   double fusionStatusTimeout_{0.60};
@@ -422,6 +445,9 @@ private:
 
   std::vector<Waypoint> waypoints_;
   std::size_t currentWaypointIndex_{0};
+  uint64_t activeRouteId_{0};
+  std::optional<std::size_t> authorizedRfidCheckpoint_;
+  bool rfidScanActive_{false};
   bool routeLoaded_{false};
   bool navigationActive_{false};
   bool resumePathFromCurrentPose_{false};
@@ -434,6 +460,7 @@ private:
   bool stoppedTurnReverseArrival_{false};
   bool reverseSegmentActive_{false};
   bool routeStartTurnAuthorized_{false};
+  bool routeTransitionRetreat_{false};
   std::size_t lastStoppedTurnIndex_{std::numeric_limits<std::size_t>::max()};
   bool motionHoldStartInitialized_{false};
   bool trackingReferenceInitialized_{false};
@@ -485,6 +512,10 @@ private:
   bool frontObstacleEventHandled_{false};
   bool frontObstacleRangeReceived_{false};
   bool pendingFrontObstacle_{false};
+  bool pendingObstacleAtActiveTurn_{false};
+  bool expectedTurnObstacleSuppressed_{false};
+  double pendingObstacleTurnDistance_{
+      std::numeric_limits<double>::infinity()};
   double frontObstacleRange_{std::numeric_limits<double>::infinity()};
 
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmdVelPublisher_;
@@ -517,6 +548,10 @@ private:
       motionHoldService_;
   rclcpp::Service<mission_control_interfaces::srv::ContinueRetreat>::SharedPtr
       continueRetreatService_;
+  rclcpp::Service<mission_control_interfaces::srv::ContinueRetreat>::SharedPtr
+      continueRouteRetreatService_;
+  rclcpp::Service<mission_control_interfaces::srv::ConfirmRfidCheckpoint>::SharedPtr
+      confirmRfidCheckpointService_;
   rclcpp::TimerBase::SharedPtr controlTimer_;
 };
 

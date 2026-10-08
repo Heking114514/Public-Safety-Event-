@@ -21,7 +21,8 @@ bool PointInRectangle(const Point &point, const Rectangle &rectangle) {
 CollisionChecker::CollisionChecker(const PlannerConfig &config)
     : config_(config),
       footprint_length_(config.vehicle_length + 2.0 * config.safety_margin),
-      footprint_width_(config.vehicle_width + 2.0 * config.safety_margin) {
+      footprint_width_(config.vehicle_width + 2.0 * config.safety_margin),
+      footprint_center_offset_x_(config.footprint_center_offset_x) {
   static_obstacles_.reserve(config.static_obstacles.size());
   for (const Rectangle &obstacle : config.static_obstacles) {
     static_obstacles_.push_back(RectanglePolygon(obstacle));
@@ -61,7 +62,8 @@ bool CollisionChecker::footprint_hits_obstacle(
 bool CollisionChecker::pose_is_free(
     const Pose &pose, const std::vector<Polygon> &dynamic_obstacles) const {
   const Polygon footprint =
-      FootprintPolygon(pose, footprint_length_, footprint_width_);
+      FootprintPolygon(pose, footprint_length_, footprint_width_,
+                       footprint_center_offset_x_);
   return footprint_in_free_space(footprint) &&
          !footprint_hits_obstacle(footprint, dynamic_obstacles);
 }
@@ -69,16 +71,23 @@ bool CollisionChecker::pose_is_free(
 bool CollisionChecker::segment_is_free(
     const Point &begin, const Point &end,
     const std::vector<Polygon> &dynamic_obstacles) const {
+  return segment_is_free(begin, end,
+                         std::atan2(end.y - begin.y, end.x - begin.x),
+                         dynamic_obstacles);
+}
+
+bool CollisionChecker::segment_is_free(
+    const Point &begin, const Point &end, double heading,
+    const std::vector<Polygon> &dynamic_obstacles) const {
   const double length = Distance(begin, end);
   if (length <= 1.0e-9) {
     return false;
   }
-  const double yaw = std::atan2(end.y - begin.y, end.x - begin.x);
   const int samples = std::max(
       1, static_cast<int>(std::ceil(length / config_.collision_sample_step)));
   for (int index = 0; index <= samples; ++index) {
     const double fraction = static_cast<double>(index) / samples;
-    if (!pose_is_free({Interpolate(begin, end, fraction), yaw},
+    if (!pose_is_free({Interpolate(begin, end, fraction), heading},
                       dynamic_obstacles)) {
       return false;
     }

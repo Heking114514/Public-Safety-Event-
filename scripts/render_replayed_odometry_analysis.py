@@ -35,7 +35,7 @@ import offline_image_track_correction as correction
 
 DEFAULT_RAW_BAG = Path("/media/hjh/E/rosbag_recording/latest_navigation_bag")
 DEFAULT_REPLAY_BAG = Path("/tmp/fused_odometry_replay_full_20260926")
-DEFAULT_MAP = Path("src/arena_path_planner/config/arena_map.yaml")
+DEFAULT_MAP = Path("src/new_map_planner/config/arena.yaml")
 DEFAULT_OUT_DIR = Path(
     "/media/hjh/E/rosbag_recording/bag_exports/"
     "20260926T095917.336700Z_a9ed0f6d431e/analysis"

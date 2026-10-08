@@ -33,7 +33,7 @@ class PlannerRosClient(Node):
         self.events = events
         self.plan_client = self.create_client(PlanRoute, "/new_map_planner/plan")
         self.hold_client = self.create_client(
-            SetMotionHold, "/waypoint_navigator/set_motion_hold"
+            SetMotionHold, "/navigation_mission/set_motion_hold"
         )
         self.mission_client = self.create_client(
             ControlMission, "/navigation_mission/control"
@@ -224,7 +224,12 @@ class PlannerRosClient(Node):
             response = future.result()
             self._emit(
                 "hold_response",
-                (bool(response.success), bool(response.motion_held), response.message),
+                (
+                    bool(response.success),
+                    bool(response.motion_held),
+                    tuple(response.active_sources),
+                    response.message,
+                ),
             )
         except Exception as exception:
             self._emit("error", f"驻停服务调用失败：{exception}")

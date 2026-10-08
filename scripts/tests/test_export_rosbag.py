@@ -252,6 +252,23 @@ class ExportRosbagTest(unittest.TestCase):
         capture.release()
         self.assertEqual(5, decoded)
 
+    def test_avi_output_uses_mjpg_and_decodes(self):
+        import cv2
+
+        result = self.export("--video-format", "avi", "--max-frames", "5")
+        self.assertEqual(0, result.returncode, result.stdout)
+
+        manifest = json.loads((self.out / "export_manifest.json").read_text())
+        video = manifest["video"]
+        self.assertEqual("MJPG", video["codec"])
+        self.assertTrue(video["path"].endswith(".avi"))
+        capture = cv2.VideoCapture(video["path"])
+        decoded = 0
+        while capture.read()[0]:
+            decoded += 1
+        capture.release()
+        self.assertEqual(5, decoded)
+
     def test_absent_camera_topic_skips_video_but_keeps_the_manifest(self):
         result = self.export("--image-topic", "/camera/absent/image_raw")
         self.assertEqual(0, result.returncode, result.stdout)

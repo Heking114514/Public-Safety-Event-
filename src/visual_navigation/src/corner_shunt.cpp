@@ -32,6 +32,11 @@ WaypointNavigator::BuildCornerShuntContext(const ControlFrame &frame) const {
                   currentYaw_};
   context.applied_twist = {lastMotionCommand_.linear.x,
                            lastMotionCommand_.angular.z};
+  context.measured_twist = {
+    inputCache_.odometry_velocity_valid() ? inputCache_.odometry_velocity() :
+    lastMotionCommand_.linear.x,
+    ControlYawRate()};
+  context.measured_yaw_rate_valid = ImuYawRateIsFresh();
   context.junction_x = junction.x;
   context.junction_y = junction.y;
   context.incoming_heading =
@@ -45,20 +50,28 @@ WaypointNavigator::BuildCornerShuntContext(const ControlFrame &frame) const {
 void WaypointNavigator::RunCornerShunt(const ControlFrame &frame,
                                        double segmentProgress) {
   (void)segmentProgress;
-  pathProgressSupervisor_.Reset();
-  turnProgressSupervisor_.Reset();
+  pathProgressSupervisor_.Pause();
+  turnProgressSupervisor_.Pause();
 
-  const auto decision = cornerShuntController_.update(
-      BuildCornerShuntContext(frame), SteadySeconds());
+  const auto context = BuildCornerShuntContext(frame);
+  const auto decision =
+      cornerShuntController_.update(context, SteadySeconds());
   if (state_ == "TURN_CHECK" &&
       decision.phase != visual_navigation::CornerShuntPhase::CHECK &&
       !decision.blocked) {
-    RCLCPP_INFO(get_logger(),
-                "Corner shunt plan ready: commands=%zu plans=%d "
-                "base=(%.3f, %.3f, %.1fdeg)",
-                cornerShuntController_.planned_command_count(),
-                cornerShuntController_.plan_count(), currentX_, currentY_,
-                currentYaw_ * 180.0 / kPi);
+    if (context.reverse_arrival) {
+      RCLCPP_INFO(get_logger(),
+                  "Corner recovery plan ready: commands=%zu plans=%d "
+                  "base=(%.3f, %.3f, %.1fdeg)",
+                  cornerShuntController_.planned_command_count(),
+                  cornerShuntController_.plan_count(), currentX_, currentY_,
+                  currentYaw_ * 180.0 / kPi);
+    } else {
+      RCLCPP_INFO(get_logger(),
+                  "Closed-loop corner control active: base=(%.3f, %.3f, "
+                  "%.1fdeg)",
+                  currentX_, currentY_, currentYaw_ * 180.0 / kPi);
+    }
   }
   if (decision.complete) {
     ResetPathFeedback();
@@ -71,13 +84,14 @@ void WaypointNavigator::RunCornerShunt(const ControlFrame &frame,
     return;
   }
   if (decision.blocked) {
-    RCLCPP_ERROR_THROTTLE(
-        get_logger(), *get_clock(), 3000,
-        "Corner shunt blocked after %d plan(s) at base=(%.3f, %.3f, %.1fdeg)",
+    navigationActive_ = false;
+    RCLCPP_ERROR(
+        get_logger(),
+        "Corner turn fault after %d plan(s) at base=(%.3f, %.3f, %.1fdeg)",
         cornerShuntController_.plan_count(), currentX_, currentY_,
         currentYaw_ * 180.0 / kPi);
     PublishStop();
-    SetState(visual_navigation::CornerShuntStatus(decision.phase));
+    SetState("FAULT_TURN_BLOCKED");
     return;
   }
   if (decision.phase == visual_navigation::CornerShuntPhase::STOP ||

@@ -96,15 +96,6 @@ WaypointNavigator::RunBrake(const ControlFrame &frame) {
 void WaypointNavigator::RunGoal(const ControlFrame &frame) {
   pathProgressSupervisor_.Reset();
   turnProgressSupervisor_.Reset();
-  // A terminal waypoint need not be a junction. Its pose yaw is a planning
-  // tangent, not permission to pivot the chassis after stopping in a lane.
-  if (std::isfinite(frame.target.yaw) &&
-      std::abs(NormalizeAngle(frame.target.yaw - currentYaw_)) >
-          finalYawTolerance_) {
-    RCLCPP_INFO_THROTTLE(
-        get_logger(), *get_clock(), 3000,
-        "Skipping terminal pivot away from a confirmed junction");
-  }
   if (!visual_navigation::FinalPositionCanComplete(
           controlState_.goal_captured(), frame.distance,
           std::max(frame.target.tolerance, finalPositionReleaseTolerance_))) {

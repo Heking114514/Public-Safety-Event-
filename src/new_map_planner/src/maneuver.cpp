@@ -4,6 +4,7 @@
 #include "visual_navigation/corner_shunt.hpp"
 
 #include <chrono>
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 #include <thread>
@@ -14,7 +15,23 @@ namespace {
 PlannerConfig TurnConfig(const PlannerConfig &config) {
   PlannerConfig turn_config = config;
   turn_config.safety_margin = config.turn_safety_margin;
+  // The local profile is expressed at base_link after the axle offset is
+  // applied in turn_sweep; CollisionChecker therefore uses its normal body
+  // centre convention here.
+  turn_config.footprint_center_offset_x = 0.0;
   return turn_config;
+}
+
+visual_navigation::CornerShuntConfig
+ShuntConfig(const PlannerConfig &config, double road_width) {
+  visual_navigation::CornerShuntConfig shunt;
+  shunt.road_width = road_width;
+  shunt.road_margin = config.turn_safety_margin;
+  shunt.vehicle_length = config.vehicle_length;
+  shunt.vehicle_width = config.vehicle_width;
+  shunt.base_offset_x = config.base_link_offset_x;
+  shunt.max_plan_count = 20;
+  return shunt;
 }
 
 visual_navigation::CornerShuntPose
@@ -40,13 +57,66 @@ Pose BasePose(const visual_navigation::CornerShuntPose &axle,
           NormalizeAngle(axle.yaw)};
 }
 
+std::vector<Pose> GenerateLocalTurnProfile(const PlannerConfig &config) {
+  const auto narrowest = std::min_element(
+      config.lanes.begin(), config.lanes.end(),
+      [](const Lane &left, const Lane &right) {
+        return left.width < right.width;
+      });
+  if (narrowest == config.lanes.end())
+    return {};
+  const auto shunt = ShuntConfig(config, narrowest->width);
+  visual_navigation::CornerShuntController controller(shunt);
+  visual_navigation::CornerShuntContext context;
+  context.pose = {-0.050, 0.0, 0.0};
+  context.junction_x = 0.0;
+  context.junction_y = 0.0;
+  context.incoming_heading = 0.0;
+  context.target_heading = 0.5 * 3.14159265358979323846;
+
+  std::vector<Pose> profile;
+  profile.push_back({{context.pose.x, context.pose.y}, context.pose.yaw});
+  controller.begin(0.0);
+  double now = 0.0;
+  const double step = 1.0 / shunt.control_frequency;
+  for (int iteration = 0; iteration < 1800; ++iteration) {
+    const auto decision = controller.update(context, now);
+    if (decision.complete)
+      return profile;
+    if (decision.blocked)
+      return {};
+    if (decision.phase == visual_navigation::CornerShuntPhase::CHECK)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    if (decision.phase == visual_navigation::CornerShuntPhase::STOP ||
+        decision.phase == visual_navigation::CornerShuntPhase::CHECK) {
+      context.applied_twist = {};
+    } else {
+      context.applied_twist.linear_x = visual_navigation::LimitRate(
+          decision.command.linear_x, context.applied_twist.linear_x,
+          shunt.linear_acceleration, shunt.linear_deceleration, step);
+      context.applied_twist.angular_z = visual_navigation::LimitRate(
+          decision.command.angular_z, context.applied_twist.angular_z,
+          shunt.angular_acceleration, shunt.angular_deceleration, step);
+      context.pose = Integrate(context.pose, context.applied_twist, step);
+    }
+    if (!controller.pose_is_safe(context, context.pose))
+      return {};
+    profile.push_back({{context.pose.x, context.pose.y}, context.pose.yaw});
+    now += step;
+  }
+  return {};
+}
+
 } // namespace
 
 ManeuverLibrary::ManeuverLibrary(const PlannerConfig &config,
                                  const CollisionChecker &collision)
     : config_(config), turn_config_(TurnConfig(config)),
-      collision_(turn_config_) {
+      collision_(turn_config_), local_left_turn_profile_(
+                                   GenerateLocalTurnProfile(config)) {
   (void)collision;
+  if (local_left_turn_profile_.empty())
+    throw std::runtime_error("closed-loop corner sweep is not feasible");
 }
 
 bool ManeuverLibrary::turn_pose_is_free(
@@ -66,9 +136,9 @@ std::vector<Pose> ManeuverLibrary::turn_sweep(int node, int incoming_heading,
   const double cosine = std::cos(incoming_yaw);
   const double sine = std::sin(incoming_yaw);
   std::vector<Pose> profile;
-  profile.reserve(config_.left_turn_profile.size());
-  for (const Pose &sample : config_.left_turn_profile) {
-    // The calibrated profile is measured at the axle midpoint, while all ROS
+  profile.reserve(local_left_turn_profile_.size());
+  for (const Pose &sample : local_left_turn_profile_) {
+    // The search profile is measured at the axle midpoint, while all ROS
     // paths use base_link. Convert before rotating the profile into the arena.
     const double local_yaw = static_cast<double>(turn) * sample.yaw;
     const double axle_y = turn > 0 ? sample.position.y : -sample.position.y;
@@ -160,13 +230,8 @@ Maneuver ManeuverLibrary::make_reverse_arrival_turn(
     throw std::runtime_error("invalid reverse-arrival turn request");
   }
 
-  visual_navigation::CornerShuntConfig shunt;
-  shunt.road_width = config_.lanes[outgoing.lane].width;
-  shunt.road_margin = config_.turn_safety_margin;
-  shunt.vehicle_length = config_.vehicle_length;
-  shunt.vehicle_width = config_.vehicle_width;
-  shunt.wheel_track = config_.wheel_track;
-  shunt.base_offset_x = config_.base_link_offset_x;
+  const auto shunt =
+      ShuntConfig(config_, config_.lanes[outgoing.lane].width);
   visual_navigation::CornerShuntController controller(shunt);
 
   const Point &junction =

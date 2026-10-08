@@ -177,6 +177,52 @@ exit 2
         self.assertNotIn("ros2 ", events)
         self.assertFalse(self.runs.exists())
 
+    def test_navigation_build_selects_fusion_runtime_dependencies(self):
+        script = START_SCRIPT.read_text(encoding="utf-8")
+        build_function = script.split("build_ros_packages() {", 1)[1].split(
+            "\nruntime_artifacts() {", 1
+        )[0]
+
+        for package in ("new_map_planner", "navigation_mission_manager", "fused_odometry"):
+            self.assertIn(package, build_function)
+
+    def test_build_only_records_build_then_verified_run_skips_build(self):
+        first = subprocess.run(
+            self.arguments() + ["--build-only"],
+            env=self.environment(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=20,
+        )
+        self.assertEqual(0, first.returncode, first.stderr)
+        self.assertTrue(self.build_manifest.is_file())
+        first_events = self.events.read_text().splitlines()
+        self.assertTrue(any(event.startswith("cmake ") for event in first_events))
+        ros_package_builds = [
+            event for event in first_events
+            if event.startswith("colcon ") and "--packages-select orbslam3" not in event
+        ]
+        self.assertEqual(1, len(ros_package_builds))
+        for package in ("new_map_planner", "navigation_mission_manager", "fused_odometry"):
+            self.assertIn(package, ros_package_builds[0])
+        self.assertFalse(any(event.startswith("ros2 ") for event in first_events))
+
+        second_start = len(first_events)
+        second = subprocess.run(
+            self.arguments(no_build=True) + ["--build-only"],
+            env=self.environment(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=20,
+        )
+        self.assertEqual(0, second.returncode, second.stderr)
+        second_events = self.events.read_text().splitlines()[second_start:]
+        self.assertFalse(any(event.startswith("cmake ") for event in second_events))
+        self.assertFalse(any(event.startswith("colcon ") for event in second_events))
+        self.assertFalse(any(event.startswith("ros2 ") for event in second_events))
+
     def test_existing_ros_processes_are_stopped_before_navigation_lock(self):
         self.runs.mkdir()
         lock_path = self.runs / ".navigation.lock"
@@ -351,17 +397,11 @@ exit 2
             event for event in events
             if event.startswith("cmake ") and "--target ORB_SLAM3" in event
         ]
-        self.assertEqual(2, len(orb_builds))
+        self.assertEqual(1, len(orb_builds))
         second_events = events[second_event_start:]
-        second_last_build = max(
-            index for index, event in enumerate(second_events)
-            if event.startswith("cmake ") or event.startswith("colcon ")
-        )
-        second_runtime = min(
-            index for index, event in enumerate(second_events)
-            if event.startswith("pgrep ") or event.startswith("ros2 ")
-        )
-        self.assertLess(second_last_build, second_runtime)
+        self.assertFalse(any(event.startswith("cmake ") for event in second_events))
+        self.assertFalse(any(event.startswith("colcon ") for event in second_events))
+        self.assertTrue(any(event.startswith("ros2 ") for event in second_events))
 
         serial_arguments = [
             argument for argument in self.arguments(no_build=True)

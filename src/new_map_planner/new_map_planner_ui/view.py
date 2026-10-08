@@ -124,19 +124,19 @@ class PlannerView:
         self.canvas.pack(fill=tk.BOTH, expand=True)
         self.canvas.bind("<Configure>", lambda _event: self.draw())
 
-        ttk.Label(side, text="任务", font=("Sans", 11, "bold")).pack(anchor=tk.W)
+        ttk.Label(side, text="任务阶段", font=("Sans", 11, "bold")).pack(anchor=tk.W)
         self.mode_box = ttk.Combobox(
             side,
             state="readonly",
             textvariable=self.controller.mode_var,
-            values=("任务点", "全路覆盖", "完整巡视"),
+            values=("第一阶段", "第二阶段", "第三阶段"),
         )
         self.mode_box.pack(fill=tk.X, pady=(5, 10))
         self.mode_box.bind(
             "<<ComboboxSelected>>", lambda _event: self.controller.mode_changed()
         )
 
-        ttk.Label(side, text="任务点选择").pack(anchor=tk.W)
+        ttk.Label(side, text="固定任务点（RFID 编号）").pack(anchor=tk.W)
         target_frame = ttk.Frame(side)
         target_frame.pack(fill=tk.X, pady=(4, 10))
         self.target_list = tk.Listbox(

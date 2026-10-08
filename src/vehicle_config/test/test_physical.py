@@ -18,7 +18,6 @@ CENTRAL_CONFIG = (
     REPOSITORY_ROOT / "src" / "vehicle_config" / "config" / "vehicle_physical.yaml"
 )
 VEHICLE_CONFIG_CONSUMERS = {
-    "arena_path_planner",
     "fused_odometry",
     "pure_line_following",
     "rectangle_odometry_test",
@@ -123,7 +122,6 @@ def test_component_mappings_follow_one_changed_physical_model():
     assert parameters_for("waypoint_navigation", physical)["vehicle_width_m"] == (
         physical.width_m
     )
-    assert parameters_for("waypoint_navigation", physical)["wheel_track_m"] == 0.2222
     assert parameters_for("waypoint_navigation", physical)["base_offset_x_m"] == 0.061
     assert parameters_for("waypoint_navigation", physical)["base_offset_y_m"] == -0.004
     assert parameters_for("pure_line_following", physical)["camera_y_m"] == -0.026

@@ -20,7 +20,7 @@ from vehicle_physical import VEHICLE_PHYSICAL
 
 
 DEFAULT_BAG = Path("/media/hjh/Data/rosbag_recording/latest_navigation_bag")
-DEFAULT_MAP = Path("src/arena_path_planner/config/arena_map.yaml")
+DEFAULT_MAP = Path("src/new_map_planner/config/arena.yaml")
 DEFAULT_OUT = Path(
     "analysis_bags/20260921T171415.029504Z_9ead9ca47d9b/rgb_landmark_detection.webm"
 )

@@ -48,6 +48,7 @@ def generate_launch_description():
     simulate_obstacle_recognition = LaunchConfiguration(
         "simulate_obstacle_recognition"
     )
+    playback_speed = LaunchConfiguration("playback_speed")
     physical = parameters_for("pure_line_following")
 
     planner = Node(
@@ -68,6 +69,7 @@ def generate_launch_description():
             "fusion_status_topic": "/odometry/fusion_status",
             "cmd_vel_topic": "/cmd_vel_nav",
             "autostart": autostart,
+            "control_rate_multiplier": playback_speed,
         }.items(),
     )
 
@@ -110,6 +112,7 @@ def generate_launch_description():
                 "publish_obstacle_detection": ParameterValue(
                     simulate_obstacle_recognition, value_type=bool
                 ),
+                "playback_speed": ParameterValue(playback_speed, value_type=float),
             },
         ],
     )
@@ -151,6 +154,7 @@ def generate_launch_description():
                 "odom_topic": "/odometry/fused",
                 "navigator_status_topic": "/waypoint_navigation/status",
                 "route_ack_topic": "/waypoint_navigation/route_ack",
+                "task_confirmation_mode": "route",
                 "motion_hold_service": "/waypoint_navigator/set_motion_hold",
                 "motion_hold_state_topic": (
                     "/waypoint_navigation/motion_hold_state"
@@ -237,8 +241,15 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "simulate_obstacle_recognition",
-                default_value="true",
-                description="Publish simulated front obstacle reports from the map",
+                default_value="false",
+                description=(
+                    "Publish simulated front obstacle reports from map/manual obstacles"
+                ),
+            ),
+            DeclareLaunchArgument(
+                "playback_speed",
+                default_value="1.0",
+                description="Loopback playback speed multiplier (0.1 to 10.0)",
             ),
             loopback,
             planner,

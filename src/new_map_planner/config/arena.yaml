@@ -97,6 +97,22 @@ tasks:
   "11": x3_y3
   "12": x2_y4
 
+# Physical RFID locations have stable map identities. Reader card numbers are
+# runtime observations and do not identify these locations.
+rfid_supernodes:
+  s1: "1"
+  s2: "2"
+  s3: "3"
+  s4: "4"
+  s5: "5"
+  s6: "6"
+  s7: "7"
+  s8: "8"
+  s9: "9"
+  s10: "10"
+  s11: "11"
+  s12: "12"
+
 missions:
   default_targets: ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"]
   default_inspection_lanes:
@@ -131,11 +147,13 @@ missions:
 
 planning:
   safety_margin_m: 0.015
-  # Tight turns use their complete calibrated sweep rather than weakening the
-  # straight-road footprint. The 125 mm chassis now supports the same 8 mm
-  # road boundary enforced by the executor.
-  turn_safety_margin_m: 0.008
+  # Closed-loop turns are checked with the real chassis plus this turn-only
+  # margin. Straight driving retains the larger 15 mm tracking margin.
+  turn_safety_margin_m: 0.002
   lane_snap_distance_m: 0.06
+  # RFID correction converges within millimetres. Once this close, the car is
+  # already at the graph node; the residual vector has no meaningful heading.
+  node_capture_distance_m: 0.005
   start_heading_tolerance_deg: 18.0
   turn_cost_m: 0.35
   reverse_cost_m: 0.20
@@ -145,10 +163,6 @@ planning:
   # action passed the full chassis sweep above.
   publish_shunt_markers: true
   return_home: true
-
-# Reference trajectory generated from the real controller's action lattice.
-maneuvers:
-  profile: tight_l_turn_v1
 
 topics:
   service: /new_map_planner/plan

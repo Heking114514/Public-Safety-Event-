@@ -3,8 +3,8 @@
 
 Mounts the recording volume when it is not mounted, decompresses the raw
 sqlite bags into a cache directory, runs the route/odometry analysis, renders
-the recorded camera stream to an Ubuntu-playable MP4, and writes a JSON
-manifest describing every output.
+the recorded camera stream to MP4 or MJPG AVI, exports ROS and serial logs,
+and writes a JSON manifest describing every output.
 
 Examples:
   python3 scripts/export_rosbag.py                     # newest run on the volume
@@ -17,6 +17,7 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import csv
 import datetime as dt
 import json
 import os
@@ -29,7 +30,9 @@ import cv2
 import numpy as np
 import yaml
 from rclpy.serialization import deserialize_message
+from rcl_interfaces.msg import Log
 from sensor_msgs.msg import Image
+from std_msgs.msg import String
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -55,9 +58,10 @@ VOLUMES = (
 RECORDING_SUBDIR = "rosbag_recording"
 DEFAULT_IMAGE_TOPIC = "/camera/camera/color/image_raw"
 DEFAULT_FPS = 30.0
-# H.264 in MP4 plays in the default Ubuntu viewer; mp4v is the fallback when
-# this OpenCV build lacks the H.264 encoder.
-CODECS = ("avc1", "mp4v")
+VIDEO_FORMATS = {
+    "mp4": (".mp4", ("avc1", "mp4v")),
+    "avi": (".avi", ("MJPG",)),
+}
 
 
 def log(message: str) -> None:
@@ -211,15 +215,17 @@ def image_to_bgr(message: Image) -> np.ndarray | None:
     return None
 
 
-def open_writer(path: Path, fps: float, size: tuple[int, int]):
-    for codec in CODECS:
+def open_writer(
+    path: Path, fps: float, size: tuple[int, int], codecs: tuple[str, ...]
+):
+    for codec in codecs:
         writer = cv2.VideoWriter(
             str(path), cv2.VideoWriter_fourcc(*codec), fps, size
         )
         if writer.isOpened():
             return writer, codec
         writer.release()
-    raise ExportError(f"no usable video encoder among {', '.join(CODECS)}")
+    raise ExportError(f"no usable video encoder among {', '.join(codecs)}")
 
 
 def render_video(
@@ -229,6 +235,7 @@ def render_video(
     fps: float,
     stride: int,
     max_frames: int,
+    codecs: tuple[str, ...],
 ) -> dict:
     """Render the recorded camera stream to a playable video file."""
     writer = None
@@ -252,7 +259,7 @@ def render_video(
                 continue
             if frame_size is None:
                 frame_size = (frame.shape[1], frame.shape[0])
-                writer, codec = open_writer(output_path, fps, frame_size)
+                writer, codec = open_writer(output_path, fps, frame_size, codecs)
             elif (frame.shape[1], frame.shape[0]) != frame_size:
                 frame = cv2.resize(frame, frame_size)
             writer.write(frame)
@@ -361,6 +368,60 @@ def topic_table(db_paths: list[Path]) -> dict[str, dict]:
     return table
 
 
+def export_logs(
+    db_paths: list[Path], output_dir: Path, topics: dict[str, dict]
+) -> dict:
+    """Export recorded ROS logs and raw controller receive lines."""
+    logs_dir = output_dir / "logs"
+    result: dict[str, dict] = {}
+
+    if "/rosout" in topics:
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        csv_path = logs_dir / "rosout.csv"
+        text_path = logs_dir / "rosout.log"
+        count = 0
+        with csv_path.open("w", newline="", encoding="utf-8") as csv_stream, \
+                text_path.open("w", encoding="utf-8") as text_stream:
+            writer = csv.writer(csv_stream)
+            writer.writerow(
+                ["bag_timestamp_ns", "level", "node", "message", "file", "function", "line"]
+            )
+            for timestamp_ns, data in correction.iter_topic(db_paths, "/rosout"):
+                message = deserialize_message(data, Log)
+                writer.writerow(
+                    [
+                        int(timestamp_ns), message.level, message.name, message.msg,
+                        message.file, message.function, message.line,
+                    ]
+                )
+                clean_message = message.msg.replace("\r", "\\r").replace("\n", "\\n")
+                text_stream.write(
+                    f"{int(timestamp_ns)} [{message.level}] {message.name}: {clean_message}\n"
+                )
+                count += 1
+        result["rosout"] = {
+            "messages": count,
+            "csv": str(csv_path),
+            "text": str(text_path),
+        }
+
+    if "/cup_car_serial/rx" in topics:
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        serial_path = logs_dir / "serial_rx.log"
+        count = 0
+        with serial_path.open("w", encoding="utf-8") as stream:
+            for timestamp_ns, data in correction.iter_topic(
+                db_paths, "/cup_car_serial/rx"
+            ):
+                message = deserialize_message(data, String)
+                clean_data = message.data.replace("\r", "\\r").replace("\n", "\\n")
+                stream.write(f"{int(timestamp_ns)}\t{clean_data}\n")
+                count += 1
+        result["serial_rx"] = {"messages": count, "path": str(serial_path)}
+
+    return result
+
+
 def build_manifest(
     bag_dir: Path,
     run_dir: Path | None,
@@ -370,6 +431,7 @@ def build_manifest(
     image_topic: str,
     metadata_path: Path | None = None,
     analysis: dict | None = None,
+    logs: dict | None = None,
 ) -> dict:
     manifest: dict = {
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(
@@ -385,6 +447,7 @@ def build_manifest(
         ],
         "topics": topic_table(db_paths),
         "analysis": analysis,
+        "logs": logs,
         "video": video,
     }
     if run_dir and (run_dir / "run_manifest.json").is_file():
@@ -423,6 +486,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--image-topic", default=DEFAULT_IMAGE_TOPIC)
     parser.add_argument("--fps", type=float, default=DEFAULT_FPS)
+    parser.add_argument(
+        "--video-format",
+        choices=tuple(VIDEO_FORMATS),
+        default="mp4",
+        help="video container/codec: mp4 or MJPG avi (default: mp4)",
+    )
     parser.add_argument(
         "--stride",
         type=int,
@@ -504,11 +573,20 @@ def main() -> int:
             analysis = run_analysis(cache_dir, output_dir / "analysis")
             log(f"analysis : {analysis['status']}")
 
+        topics = topic_table(db_paths)
+        logs = export_logs(db_paths, output_dir, topics)
+        if run_dir and (run_dir / "run_manifest.json").is_file():
+            shutil.copy2(run_dir / "run_manifest.json", output_dir / "run_manifest.json")
+        log(
+            "logs     : " +
+            (", ".join(sorted(logs)) if logs else "no recorded log topics")
+        )
+
         video = None
         if not args.no_video:
-            topics = topic_table(db_paths)
             if args.image_topic in topics:
-                video_path = output_dir / f"{run_id}.mp4"
+                extension, codecs = VIDEO_FORMATS[args.video_format]
+                video_path = output_dir / f"{run_id}{extension}"
                 log(f"rendering {args.image_topic} -> {video_path.name}")
                 video = render_video(
                     db_paths,
@@ -517,6 +595,7 @@ def main() -> int:
                     args.fps,
                     args.stride,
                     args.max_frames,
+                    codecs,
                 )
                 log(
                     f"video    : {video['frames_written']} frames, "
@@ -527,7 +606,7 @@ def main() -> int:
 
         manifest = build_manifest(
             bag_dir, run_dir, db_paths, cache_dir, video, args.image_topic,
-            metadata_path, analysis,
+            metadata_path, analysis, logs,
         )
         manifest_path = output_dir / "export_manifest.json"
         manifest_path.write_text(

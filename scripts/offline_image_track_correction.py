@@ -39,7 +39,7 @@ from vehicle_config import (  # noqa: E402
 
 
 DEFAULT_BAG = Path("/media/hjh/Data/rosbag_recording/latest_navigation_bag")
-DEFAULT_MAP = Path("src/arena_path_planner/config/arena_map.yaml")
+DEFAULT_MAP = Path("src/new_map_planner/config/arena.yaml")
 
 
 @dataclass(frozen=True)

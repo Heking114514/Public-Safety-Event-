@@ -123,7 +123,7 @@ DEFAULT_TRACKING_POINT_OFFSET_Y="$(
 )" || fail "could not read tracking point y from vehicle_physical.yaml"
 TRACKING_POINT_OFFSET_X="${NAVIGATION_TRACKING_POINT_OFFSET_X:-${DEFAULT_TRACKING_POINT_OFFSET_X}}"
 TRACKING_POINT_OFFSET_Y="${NAVIGATION_TRACKING_POINT_OFFSET_Y:-${DEFAULT_TRACKING_POINT_OFFSET_Y}}"
-DEFAULT_VISION_CORRECTION_MAP="${WORKSPACE_ROOT}/src/arena_path_planner/config/arena_map.yaml"
+DEFAULT_VISION_CORRECTION_MAP="${WORKSPACE_ROOT}/src/new_map_planner/config/arena.yaml"
 VISION_CORRECTION_MAP_FILE="${NAVIGATION_VISION_CORRECTION_MAP_FILE:-${DEFAULT_VISION_CORRECTION_MAP}}"
 VISION_CORRECTION_IMAGE_TOPIC="${NAVIGATION_VISION_CORRECTION_IMAGE_TOPIC:-/camera/camera/color/image_raw}"
 VISION_CORRECTION_FUSED_TOPIC="${NAVIGATION_VISION_CORRECTION_FUSED_TOPIC:-/odometry/fused}"
@@ -140,6 +140,7 @@ ROUTE_SOURCE="planner:/waypoint_navigation/route_input"
 CONTROL_MODE="waypoint"
 ENABLE_WAYPOINT_NAVIGATION="true"
 BUILD_IF_NEEDED="true"
+BUILD_ONLY="false"
 CHECK_CAMERA="true"
 FORCE_CAMERA_RESET="false"
 CAMERA_INITIAL_RESET="false"
@@ -147,10 +148,6 @@ BUILD_JOBS="2"
 RETAIN_BAGS="3"
 ROSBAG_OUTPUT=""
 ROSBAG_TOPICS=()
-
-if [[ -z "${NAVIGATION_RUNS_ROOT:-}" && -z "${DEFAULT_RECORDING_ROOT}" ]]; then
-  fail "no writable external rosbag directory found; mount /media/hjh/E or /media/hjh/Data writable, or set NAVIGATION_RUNS_ROOT"
-fi
 
 # shellcheck disable=SC1090
 [[ -f "${CONFIG_SHELL_HELPER}" ]] || fail "navigation config shell helper is missing: ${CONFIG_SHELL_HELPER}"
@@ -191,6 +188,7 @@ Options:
   --primitive-rectangle-test
                             Run the experimental A*/action-primitive 1.8 m rectangle controller instead of waypoint navigation
   --no-build                Use only a build verified against current source
+  --build-only              Build or verify current source, then exit
   --skip-camera-check       Launch without checking for a connected D455
   --reset-camera            Force a D455 firmware reset before opening streams
   --no-camera-reset         Skip camera reset (default)
@@ -306,6 +304,10 @@ while (($# > 0)); do
       BUILD_IF_NEEDED="false"
       shift
       ;;
+    --build-only)
+      BUILD_ONLY="true"
+      shift
+      ;;
     --skip-camera-check)
       CHECK_CAMERA="false"
       shift
@@ -332,6 +334,11 @@ while (($# > 0)); do
       ;;
   esac
 done
+
+if [[ "${BUILD_ONLY}" != "true" && -z "${NAVIGATION_RUNS_ROOT:-}" &&
+      -z "${DEFAULT_RECORDING_ROOT}" ]]; then
+  fail "no writable external rosbag directory found; mount /media/hjh/E or /media/hjh/Data writable, or set NAVIGATION_RUNS_ROOT"
+fi
 
 [[ -f "${ROS_SETUP}" ]] || fail "ROS 2 setup not found: ${ROS_SETUP}"
 [[ -x "${RUN_MANIFEST_HELPER}" ]] ||
@@ -555,7 +562,20 @@ build_orb_slam3() {
 
 build_ros_packages() {
   log "Building ROS 2 nodes"
-  local packages=(vehicle_config mission_control_interfaces imu_rpy_filter wheel_odometry fused_odometry visual_navigation)
+  # fused_odometry declares new_map_planner as an exec dependency and colcon
+  # needs its installed package marker even for this lower-level bringup.
+  # The planner launch also starts the C++ mission manager, so build both here
+  # before the runtime install tree is sourced by a clean workspace.
+  local packages=(
+    vehicle_config
+    mission_control_interfaces
+    imu_rpy_filter
+    wheel_odometry
+    visual_navigation
+    new_map_planner
+    navigation_mission_manager
+    fused_odometry
+  )
   if [[ -d "${WORKSPACE_ROOT}/src/rectangle_odometry_test" ]]; then
     packages+=(rectangle_odometry_test)
   fi
@@ -592,6 +612,9 @@ runtime_artifacts() {
     "map_odom_correction=${WORKSPACE_ROOT}/install/fused_odometry/lib/fused_odometry/map_odom_correction_node"
     "local_map_odometry=${WORKSPACE_ROOT}/install/fused_odometry/lib/fused_odometry/local_map_odometry_node"
     "waypoint_navigator=${WORKSPACE_ROOT}/install/visual_navigation/lib/visual_navigation/waypoint_navigator"
+    "new_map_planner=${WORKSPACE_ROOT}/install/new_map_planner/lib/new_map_planner/new_map_planner_node"
+    "mission_manager=${WORKSPACE_ROOT}/install/navigation_mission_manager/lib/navigation_mission_manager/mission_manager_node"
+    "planner_launch=${WORKSPACE_ROOT}/install/navigation_mission_manager/share/navigation_mission_manager/launch/mission_navigation.launch.py"
     "mission_typesupport=${WORKSPACE_ROOT}/install/mission_control_interfaces/lib/libmission_control_interfaces__rosidl_typesupport_cpp.so"
     "robot_localization_ekf=/opt/ros/${ROS_DISTRO_NAME}/lib/robot_localization/ekf_node"
     "odometry_launch=${WORKSPACE_ROOT}/install/fused_odometry/share/fused_odometry/launch/odometry_bringup.launch.py"
@@ -717,22 +740,31 @@ for artifact in "${RUNTIME_ARTIFACTS[@]}"; do
 done
 
 if [[ "${BUILD_IF_NEEDED}" == "true" ]]; then
-  build_orb_slam3
-  build_ros_packages
-  SOURCE_FINGERPRINT_AFTER="$(${RUN_MANIFEST_HELPER} fingerprint --workspace "${WORKSPACE_ROOT}")" ||
-    fail "could not recompute the runtime source fingerprint after building"
-  [[ "${SOURCE_FINGERPRINT_AFTER}" == "${SOURCE_FINGERPRINT_BEFORE}" ]] ||
-    fail "runtime source changed during the build; rerun after edits stop"
-  BUILD_ID="$(${RUN_MANIFEST_HELPER} record-build \
-    --workspace "${WORKSPACE_ROOT}" \
-    --output "${BUILD_MANIFEST}" \
-    --expected-fingerprint "${SOURCE_FINGERPRINT_AFTER}" \
-    --setting "ros_distro=${ROS_DISTRO_NAME}" \
-    --setting "use_imu=${USE_IMU}" \
-    --setting "use_serial=${USE_SERIAL}" \
-    "${ARTIFACT_ARGUMENTS[@]}")" ||
-    fail "could not record the successful runtime build manifest"
-  SOURCE_FINGERPRINT="${SOURCE_FINGERPRINT_AFTER}"
+  if BUILD_ID="$(${RUN_MANIFEST_HELPER} verify-build \
+      --workspace "${WORKSPACE_ROOT}" \
+      --manifest "${BUILD_MANIFEST}" \
+      "${ARTIFACT_ARGUMENTS[@]}" 2>/dev/null)"; then
+    log "Build artifacts match current source; skipping build"
+    SOURCE_FINGERPRINT="${SOURCE_FINGERPRINT_BEFORE}"
+  else
+    log "Source or build artifacts changed; running incremental build"
+    build_orb_slam3
+    build_ros_packages
+    SOURCE_FINGERPRINT_AFTER="$(${RUN_MANIFEST_HELPER} fingerprint --workspace "${WORKSPACE_ROOT}")" ||
+      fail "could not recompute the runtime source fingerprint after building"
+    [[ "${SOURCE_FINGERPRINT_AFTER}" == "${SOURCE_FINGERPRINT_BEFORE}" ]] ||
+      fail "runtime source changed during the build; rerun after edits stop"
+    BUILD_ID="$(${RUN_MANIFEST_HELPER} record-build \
+      --workspace "${WORKSPACE_ROOT}" \
+      --output "${BUILD_MANIFEST}" \
+      --expected-fingerprint "${SOURCE_FINGERPRINT_AFTER}" \
+      --setting "ros_distro=${ROS_DISTRO_NAME}" \
+      --setting "use_imu=${USE_IMU}" \
+      --setting "use_serial=${USE_SERIAL}" \
+      "${ARTIFACT_ARGUMENTS[@]}")" ||
+      fail "could not record the successful runtime build manifest"
+    SOURCE_FINGERPRINT="${SOURCE_FINGERPRINT_AFTER}"
+  fi
 else
   BUILD_ID="$(${RUN_MANIFEST_HELPER} verify-build \
     --workspace "${WORKSPACE_ROOT}" \
@@ -742,6 +774,11 @@ else
   SOURCE_FINGERPRINT="${SOURCE_FINGERPRINT_BEFORE}"
 fi
 release_workspace_build_lock
+
+if [[ "${BUILD_ONLY}" == "true" ]]; then
+  log "Build verification complete"
+  exit 0
+fi
 
 stop_existing_ros_nodes
 acquire_navigation_run_lock

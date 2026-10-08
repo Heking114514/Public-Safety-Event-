@@ -4,6 +4,7 @@ string map_id
 string status
 nav_msgs/Path arena_path
 nav_msgs/Path navigation_path
+string[] waypoint_supernode_ids
 new_map_planner/Maneuver[] maneuvers
 string[] visit_order
 string[] covered_lane_ids

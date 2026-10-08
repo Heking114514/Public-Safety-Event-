@@ -13,6 +13,7 @@ find_package(ament_cmake REQUIRED)
 find_package(diagnostic_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(mission_control_interfaces REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
@@ -40,6 +41,7 @@ ament_target_dependencies(
   diagnostic_msgs
   geometry_msgs
   nav_msgs
+  mission_control_interfaces
   rclcpp
   sensor_msgs
   std_msgs)
@@ -49,6 +51,7 @@ target_link_libraries(map_odom_correction_node fusion_logic)
 ament_target_dependencies(
   map_odom_correction_node
   geometry_msgs
+  mission_control_interfaces
   nav_msgs
   rclcpp
   std_msgs

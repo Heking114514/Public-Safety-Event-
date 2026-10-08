@@ -15,6 +15,8 @@ public:
                     const std::vector<Polygon> &dynamic_obstacles) const;
   bool segment_is_free(const Point &begin, const Point &end,
                        const std::vector<Polygon> &dynamic_obstacles) const;
+  bool segment_is_free(const Point &begin, const Point &end, double heading,
+                       const std::vector<Polygon> &dynamic_obstacles) const;
   bool sweep_is_free(const std::vector<Pose> &poses,
                      const std::vector<Polygon> &dynamic_obstacles) const;
   std::vector<int8_t> occupancy_data() const;
@@ -28,6 +30,7 @@ private:
   const PlannerConfig &config_;
   double footprint_length_{0.0};
   double footprint_width_{0.0};
+  double footprint_center_offset_x_{0.0};
   std::vector<Polygon> static_obstacles_;
 };
 

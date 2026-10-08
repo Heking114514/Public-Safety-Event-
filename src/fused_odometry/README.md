@@ -19,6 +19,10 @@ Inputs:
   for consistency diagnostics. Only `vx` enters the default EKF.
 - `/cup_car_serial/bmi088_attitude` (`sensor_msgs/Imu`): lower-controller
   processed BMI088 ATT yaw and gyro-z input.
+- `/fused_odometry/correct_map_position` (`mission_control_interfaces/CorrectMapPosition`):
+  accepts an RFID task-point coordinate from the mission manager while its RFID
+  motion hold is confirmed. The correction updates only `map -> odom` translation
+  and preserves yaw.
 
 Outputs:
 
@@ -65,6 +69,14 @@ report false translation during in-place turns. With the default, `/odometry/fus
 keeps the same start alignment and local motion as `/odometry/local_map`, while
 preserving the fused topic and `map -> odom` TF contract. Enable the parameter
 only after a trusted landmark/corner source has been validated.
+
+RFID position correction is independent of the visual correction switch. The
+mission manager reads task coordinates from `new_map_planner/config/arena.yaml`
+and sends the selected map coordinate through `/fused_odometry/correct_map_position`.
+The service accepts requests only while `navigation_mission_manager/rfid` is
+confirmed on `/waypoint_navigation/motion_hold_state`. It assumes the RFID
+trigger coordinate is the `base_link` center. The correction is smoothed over
+`rfid_correction_time_constant_s` and limited by `rfid_correction_max_step_m`.
 
 Turn-position holding is enabled by default (`hold_global_xy_during_turn:
 true`). It is released if local odometry measures more than

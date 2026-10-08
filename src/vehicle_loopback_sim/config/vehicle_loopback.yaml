@@ -23,6 +23,7 @@ vehicle_loopback_sim:
     update_rate_hz: 50.0
     status_rate_hz: 10.0
     command_timeout_s: 0.50
+    playback_speed: 1.0
 
     # <= 0 disables the corresponding limiter. Speed limits remain enabled
     # by default so runaway commands cannot jump the truth pose.
@@ -34,7 +35,7 @@ vehicle_loopback_sim:
     publish_tf: true
     publish_actuator_health: true
     publish_control_telemetry: true
-    publish_obstacle_detection: true
+    publish_obstacle_detection: false
     obstacle_detection_frame_id: camera_link
     obstacle_detection_trigger_range_m: 0.25
     obstacle_detection_trigger_jitter_m: 0.0

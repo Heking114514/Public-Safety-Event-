@@ -4,10 +4,12 @@ navigation_mission_manager:
     planner_service: /new_map_planner/plan
     odom_topic: /odometry/fused
     navigator_status_topic: /waypoint_navigation/status
+    current_waypoint_topic: /waypoint_navigation/current_waypoint
     route_ack_topic: /waypoint_navigation/route_ack
     route_input_topic: /waypoint_navigation/route_input
     motion_hold_service: /waypoint_navigator/set_motion_hold
     continue_retreat_service: /waypoint_navigator/continue_obstacle_retreat
+    continue_route_retreat_service: /waypoint_navigator/continue_route_retreat
     motion_hold_state_topic: /waypoint_navigation/motion_hold_state
     front_obstacle_topic: /obstacle/front_blocked
     front_range_topic: /obstacle/front_range
@@ -18,6 +20,16 @@ navigation_mission_manager:
     status_text_topic: /navigation_mission/status_text
     control_service: /navigation_mission/control
     report_action: /event_reporter/report
+    rfid_number_topic: /cup_car_serial/rfid_number
+    task_confirmation_mode: rfid
+    speak_text_service: /cup_car_serial/speak_text
+    correct_map_position_service: /fused_odometry/correct_map_position
+    confirm_rfid_checkpoint_service: /waypoint_navigator/confirm_rfid_checkpoint
+    speech_text_topic: /navigation_mission/speech_text
+    public_motion_hold_service: /navigation_mission/set_motion_hold
+    public_continue_retreat_service: /navigation_mission/continue_obstacle_retreat
+    public_service_timeout_s: 2.0
+    speech_hold_duration_s: 3.0
 
     auto_start: false
     target_ids: "1,2,3,4,5,6,7,8,9,10,11,12"
@@ -43,3 +55,16 @@ navigation_mission_manager:
     report_requires_hold: true
     report_server_timeout_s: 5.0
     max_report_retries: 2
+    rfid_event_cooldown_s: 3.0
+    rfid_hold_duration_s: 3.0
+    rfid_stop_duration_s: 1.0
+    rfid_detection_radius_m: 0.30
+    rfid_correction_tolerance_m: 0.025
+    rfid_correction_settle_s: 0.20
+    rfid_correction_timeout_s: 3.0
+    rfid_scan_max_distance_m: 0.20
+    rfid_stop_speed_mps: 0.02
+    rfid_stationary_position_tolerance_m: 0.005
+    rfid_stationary_settle_s: 0.20
+    rfid_announcement_template: "到达{number}号巡逻点"
+    rfid_max_speech_retries: 2

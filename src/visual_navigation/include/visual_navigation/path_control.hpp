@@ -249,20 +249,6 @@ inline bool SatisfiedRouteStartMayAdvance(
     distance <= std::max(0.0, tolerance);
 }
 
-inline bool TurnHasSettled(
-  double absolute_yaw_rate, double seconds_below_threshold,
-  double settle_yaw_rate, double settle_dwell)
-{
-  if (!std::isfinite(absolute_yaw_rate) ||
-    !std::isfinite(seconds_below_threshold) ||
-    !std::isfinite(settle_yaw_rate) || !std::isfinite(settle_dwell))
-  {
-    return false;
-  }
-  return absolute_yaw_rate <= std::max(0.0, settle_yaw_rate) &&
-    seconds_below_threshold >= std::max(0.0, settle_dwell);
-}
-
 inline bool TurnTranslationHasStopped(bool wheel_telemetry_received,
   double wheel_telemetry_age, double wheel_telemetry_timeout,
   double left_speed, double right_speed, double fallback_pose_speed,
@@ -502,32 +488,6 @@ inline double CompensatePathTurnDeadband(
     return command;
 
   return std::copysign(minimum, std::abs(command) > 1.0e-12 ? command : path_error);
-}
-
-inline bool ShouldRotateInPlace(
-  bool currently_rotating, double absolute_heading_error,
-  double absolute_yaw_rate, double enter_threshold, double exit_threshold,
-  double settle_yaw_rate)
-{
-  if (!std::isfinite(absolute_heading_error) || !std::isfinite(absolute_yaw_rate))
-    return true;
-  const double enter = std::max(0.0, enter_threshold);
-  const double exit = std::min(enter, std::max(0.0, exit_threshold));
-  const double settled_rate = std::max(0.0, settle_yaw_rate);
-  return currently_rotating ?
-    absolute_heading_error > exit || absolute_yaw_rate > settled_rate :
-    absolute_heading_error >= enter;
-}
-
-inline double RotationEntryThreshold(
-  bool path_alignment_completed, double initial_threshold,
-  double reentry_threshold)
-{
-  if (!std::isfinite(initial_threshold) || !std::isfinite(reentry_threshold))
-    return 0.0;
-  const double initial = std::max(0.0, initial_threshold);
-  return path_alignment_completed ?
-    std::max(initial, reentry_threshold) : initial;
 }
 
 inline double EnforceMinimumTurnSpeed(

@@ -4,7 +4,7 @@
 
 1. **手动路点 / CSV 导航**：用户预先编辑 CSV 路点文件，或使用图形编辑器手动标点；`visual_navigation` 只负责跟随收到的路线，不执行 A*、动态避障或局部路径搜索。
 2. **新分层自动规划（推荐）**：`navigation_mission_manager` 负责比赛状态与自主重规划，`new_map_planner` 负责道路图搜索和车身几何验证，再把路线交给 `visual_navigation` 执行。
-3. **旧自动规划（回归对照）**：`arena_path_planner` 保留用于历史路线和算法比较，不再作为新实车任务的默认选择。
+3. **统一自动规划**：`new_map_planner` 与 `navigation_mission_manager` 负责正式实车任务。
 4. **手动速度控制**：不启动 `waypoint_navigator`，键盘或其他节点直接向 `/cmd_vel_nav` 发布速度；这不是导航模式。
 
 两种导航模式和手动速度模式最终都使用标准 ROS 2 速度消息：
@@ -65,7 +65,7 @@ ros2 pkg list | grep -E 'orbslam3|visual_navigation|cup_car_serial|realsense2_ca
 ./scripts/start_new_map_planner.sh
 ```
 
-旧规划器仅用于回归对照，仍可通过 `./scripts/start_arena_planner.sh` 启动。两套规划 UI 不得同时运行，否则会竞争同一个实车路线输入。
+正式实车只启动 `./scripts/start_new_map_planner.sh`，由总控统一发布路线。
 两个入口共用工作空间构建锁，即使两个终端紧接着启动，也不会并发写入 `build/`、`install/` 和 `log/`。规划入口会等待旧后端完全退出后再发布新服务，但不会关闭已经打开的规划、路线或地图 GUI。
 
 统一入口的设备、传感器和构建默认值集中在 `config/navigation_startup.yaml`；录包保留数量和 topic 清单集中在 `config/navigation_recording.yaml`。车身、轮组、编码器、轴心和相机安装位置统一写在 `src/vehicle_config/config/vehicle_physical.yaml`，规划、寻迹、里程计、融合、视觉校正和导航启动文件都从这里加载，不能再在各功能包 YAML 中复制一份。算法调节参数仍保留在各功能包自己的 YAML。无参数 GUI 模式和 `--autostart` CSV 模式不允许由 YAML 改写，相关命令行选项优先于 YAML 默认值。`navigation_startup.odom_topic` 默认是 `/odometry/fused`，导航、控制与规划 GUI 共用这个选择；传 `--odom-topic /odometry/landmark_corrected` 可切回地标修正流，此时会额外启动 `vision_correction_node`。录包仍同时保留融合与修正两个 topic 便于对比。
@@ -380,7 +380,7 @@ ros2 topic echo /cmd_vel_nav
 任务侦察期间驻停但保留导航任务、定位和当前航点：
 
 ```bash
-ros2 service call /waypoint_navigator/set_motion_hold \
+ros2 service call /navigation_mission/set_motion_hold \
   mission_control_interfaces/srv/SetMotionHold \
   "{source: 'inspection', hold: true, reason: 'recognizing clue'}"
 ```
@@ -388,7 +388,7 @@ ros2 service call /waypoint_navigator/set_motion_hold \
 侦察完成后释放该任务来源：
 
 ```bash
-ros2 service call /waypoint_navigator/set_motion_hold \
+ros2 service call /navigation_mission/set_motion_hold \
   mission_control_interfaces/srv/SetMotionHold \
   "{source: 'inspection', hold: false, reason: ''}"
 ```
@@ -830,7 +830,7 @@ Publisher count: 1
 
 规划 GUI 和 `--autostart` CSV 两种实车模式都会无条件录包。每次运行先保存在独立的 `navigation_runs/<run-id>/bag`；结束时严格只保留 `config/navigation_recording.yaml` 中 `retain_bags` 指定数量的最新实际 bag，默认是 3 份。较旧运行只删除 `bag/`，`run_manifest.json` 和参数快照仍保留。`latest_navigation_run` 始终指向最近一次运行；`latest_navigation_bag` 只会原子指向最近一次完整或正常中断且已生成元数据、并且仍在保留范围中的 bag。若连续失败使旧有效 bag 退出保留范围，该兼容链接会移除，最近一次原始记录仍可从 `latest_navigation_run/bag` 检查。
 
-启动脚本清理旧 ROS 节点时会明确保留自主任务节点、规划 UI、`route_editor.py`、地图编辑器以及路线编辑器的 `ros2 launch/run` 父进程。新任务节点和规划后端由第二终端的 `start_new_map_planner.sh` 管理；旧后端仍由 `start_arena_planner.sh` 管理。
+启动脚本清理旧 ROS 节点时会保留新规划器 UI 和任务总控；正式路线由总控发布。
 
 `run_manifest.json` 记录 commit、branch、dirty 状态、运行源码指纹、递归 submodule 状态、原始参数、有效设置、两份导航 YAML 及其读取器的 SHA-256、运行文件和二进制 SHA-256、bag topics、退出码，以及 `parameters/` 中从真实节点抓取的参数快照。可直接检查：
 

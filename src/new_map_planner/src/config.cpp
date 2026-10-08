@@ -1,8 +1,6 @@
 #include "new_map_planner/config.hpp"
 
 #include "new_map_planner/geometry.hpp"
-#include "visual_navigation/calibrated_turn.hpp"
-
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
@@ -66,8 +64,6 @@ PlannerConfig LoadConfig(const std::string &map_path,
 
   config.vehicle_length = vehicle["chassis"]["length_m"].as<double>();
   config.vehicle_width = vehicle["chassis"]["width_m"].as<double>();
-  config.wheel_track =
-      vehicle["differential_drive"]["wheel_track_m"].as<double>();
   config.base_link_offset_x =
       vehicle["differential_drive"]["base_link_offset_x_m"].as<double>();
   config.safety_margin = root["planning"]["safety_margin_m"].as<double>();
@@ -75,6 +71,8 @@ PlannerConfig LoadConfig(const std::string &map_path,
       root["planning"]["turn_safety_margin_m"].as<double>();
   config.lane_snap_distance =
       root["planning"]["lane_snap_distance_m"].as<double>();
+  config.node_capture_distance =
+      root["planning"]["node_capture_distance_m"].as<double>();
   config.start_heading_tolerance =
       root["planning"]["start_heading_tolerance_deg"].as<double>() * kPi /
       180.0;
@@ -136,21 +134,33 @@ PlannerConfig LoadConfig(const std::string &map_path,
     task.node = node_indices.at(node_id);
     config.tasks.push_back(std::move(task));
   }
+  if (root["rfid_supernodes"]) {
+    std::unordered_map<std::string, int> task_nodes;
+    for (const Task &task : config.tasks) {
+      task_nodes.emplace(task.id, task.node);
+    }
+    std::unordered_set<int> supernode_nodes;
+    std::unordered_set<std::string> supernode_ids;
+    for (const auto &item : root["rfid_supernodes"]) {
+      const std::string supernode_id = item.first.as<std::string>();
+      const std::string task_id = item.second.as<std::string>();
+      const auto task = task_nodes.find(task_id);
+      if (supernode_id.empty() || task == task_nodes.end() ||
+          !supernode_ids.insert(supernode_id).second ||
+          !supernode_nodes.insert(task->second).second) {
+        throw std::runtime_error(
+            "RFID supernodes must uniquely reference configured task nodes");
+      }
+      config.rfid_supernodes.emplace(task->second, supernode_id);
+    }
+    if (config.rfid_supernodes.size() != config.tasks.size()) {
+      throw std::runtime_error(
+          "every configured task node must have one RFID supernode id");
+    }
+  }
   config.default_targets = ReadStrings(root["missions"]["default_targets"]);
   config.default_inspection_lanes =
       ReadStrings(root["missions"]["default_inspection_lanes"]);
-
-  const std::string turn_profile =
-      root["maneuvers"]["profile"].as<std::string>();
-  if (turn_profile != "tight_l_turn_v1") {
-    throw std::runtime_error("unsupported turn maneuver profile: " +
-                             turn_profile);
-  }
-  for (const visual_navigation::CalibratedTurnPose &sample :
-       visual_navigation::kTightLeftTurnProfile) {
-    config.left_turn_profile.push_back(
-        {{sample.axle_x, sample.axle_y}, sample.yaw});
-  }
 
   const YAML::Node topics = root["topics"];
   config.topics.service = topics["service"].as<std::string>();
@@ -158,7 +168,6 @@ PlannerConfig LoadConfig(const std::string &map_path,
   config.topics.arena_path = topics["arena_path"].as<std::string>();
   config.topics.navigation_path = topics["navigation_path"].as<std::string>();
   config.topics.occupancy_grid = topics["occupancy_grid"].as<std::string>();
-  config.topics.route_input = topics["route_input"].as<std::string>();
 
   ValidateConfig(config);
   return config;
@@ -167,8 +176,10 @@ PlannerConfig LoadConfig(const std::string &map_path,
 void ValidateConfig(const PlannerConfig &config) {
   if (config.map_id.empty() || config.width <= 0.0 || config.height <= 0.0 ||
       config.resolution <= 0.0 || config.vehicle_length <= 0.0 ||
-      config.vehicle_width <= 0.0 || config.wheel_track <= 0.0 ||
+      config.vehicle_width <= 0.0 ||
       config.safety_margin < 0.0 || config.turn_safety_margin < 0.0 ||
+      config.node_capture_distance < 0.0 ||
+      config.node_capture_distance > config.lane_snap_distance ||
       config.collision_sample_step <= 0.0) {
     throw std::runtime_error(
         "map dimensions and planning dimensions must be positive");
@@ -228,10 +239,6 @@ void ValidateConfig(const PlannerConfig &config) {
       throw std::runtime_error("default inspection lane " + lane +
                                " is not configured");
     }
-  }
-  if (config.left_turn_profile.size() < 2) {
-    throw std::runtime_error(
-        "left turn profile must contain at least two poses");
   }
 }
 

@@ -96,7 +96,7 @@ struct ObstacleRecoveryConfig {
   double no_progress_timeout{3.0};
   double attempt_timeout{30.0};
   double replay_start_yaw_tolerance{0.03};
-  double replay_start_max_yaw_error{0.35};
+  double replay_start_max_yaw_error{0.70};
   double replay_alignment_gain{1.20};
   double replay_alignment_max_angular_speed{0.15};
   double replay_yaw_tolerance{0.25};
@@ -142,7 +142,7 @@ public:
     config_.replay_start_yaw_tolerance =
         NonnegativeOrDefault(config_.replay_start_yaw_tolerance, 0.03);
     config_.replay_start_max_yaw_error =
-        NonnegativeOrDefault(config_.replay_start_max_yaw_error, 0.35);
+        NonnegativeOrDefault(config_.replay_start_max_yaw_error, 0.70);
     config_.replay_alignment_gain =
         NonnegativeOrDefault(config_.replay_alignment_gain, 1.20);
     config_.replay_alignment_max_angular_speed =
@@ -193,6 +193,29 @@ public:
     replay_started_ = false;
     replay_start_valid_ = false;
     replay_goal_valid_ = false;
+  }
+
+  void prepare_for_route(bool preserve_trace) {
+    if (!preserve_trace) {
+      reset();
+      return;
+    }
+    phase_ = ObstacleRecoveryPhase::IDLE;
+    anchor_index_ = breadcrumbs_.empty() ? 0 : breadcrumbs_.size() - 1;
+    target_index_ = anchor_index_;
+    target_valid_ = false;
+    trace_anchor_index_ = trace_.empty() ? 0 : trace_.size() - 1;
+    replay_index_ = 0;
+    replay_stop_index_ = 0;
+    replay_active_ = false;
+    replay_pose_aligned_ = false;
+    replay_started_ = false;
+    replay_start_valid_ = false;
+    replay_goal_valid_ = false;
+    recovery_attempts_ = 0;
+    attempt_timer_initialized_ = false;
+    progress_timer_initialized_ = false;
+    best_remaining_length_ = std::numeric_limits<double>::infinity();
   }
 
   // A latched navigation fault stops the control loop before obstacle retreat

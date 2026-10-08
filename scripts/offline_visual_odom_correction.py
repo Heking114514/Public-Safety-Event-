@@ -28,7 +28,7 @@ from rclpy.serialization import deserialize_message  # noqa: E402
 
 
 DEFAULT_BAG = Path("navigation_runs/20260921T150024.404580Z_bc4af70669a5/bag")
-DEFAULT_MAP = Path("src/arena_path_planner/config/arena_map.yaml")
+DEFAULT_MAP = Path("src/new_map_planner/config/arena.yaml")
 
 
 @dataclass(frozen=True)
@@ -585,7 +585,7 @@ def main() -> None:
     planned_paths = load_paths(
         db_path,
         [
-            "/arena_path_planner/navigation_path",
+            "/new_map_planner/navigation_path",
             "/waypoint_path",
             "/waypoint_navigation/route_input",
         ],

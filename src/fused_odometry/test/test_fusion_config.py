@@ -116,7 +116,7 @@ def test_wheel_distance_has_stronger_weight_than_visual_speed():
     assert parameters["wheel_vx_variance"] < parameters["visual_vx_variance"]
     assert parameters["wheel_vy_variance"] < parameters["visual_vy_variance"]
     assert "wheel_base_offset_x_m" not in parameters
-    assert physical_parameters["wheel_base_offset_x_m"] == 0.05
+    assert physical_parameters["wheel_base_offset_x_m"] == 0.03
 
 
 def test_moving_arc_is_not_classified_as_in_place_turn():

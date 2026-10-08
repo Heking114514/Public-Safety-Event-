@@ -47,14 +47,14 @@ TEST(ControlState, WaitActionIsConsumedOnce) {
   EXPECT_EQ(state.wait_action(), WaitAction::ADVANCE);
 }
 
-TEST(ControlState, GoalRecoveryReturnsThroughBrakeAndAlignment) {
+TEST(ControlState, GoalRecoveryReturnsThroughBrakeAndCompletion) {
   ControlState state;
   state.capture_goal();
   EXPECT_EQ(state.goal_stage(), GoalStage::PENDING_STOP);
 
   state.begin_braking();
   state.finish_braking(true);
-  EXPECT_EQ(state.phase(), ControlPhase::ALIGN_GOAL);
+  EXPECT_EQ(state.phase(), ControlPhase::FOLLOW);
   EXPECT_TRUE(state.goal_stopped());
 
   state.begin_goal_recovery();
@@ -64,14 +64,13 @@ TEST(ControlState, GoalRecoveryReturnsThroughBrakeAndAlignment) {
   state.capture_goal();
   state.begin_braking();
   state.finish_braking(true);
-  EXPECT_EQ(state.phase(), ControlPhase::ALIGN_GOAL);
+  EXPECT_EQ(state.phase(), ControlPhase::FOLLOW);
   EXPECT_TRUE(state.goal_stopped());
 }
 
 TEST(ControlState, ManeuverInterruptPreservesGoalAndWait) {
   ControlState state;
   state.capture_goal();
-  state.begin_goal_alignment();
   state.interrupt_maneuver();
   EXPECT_EQ(state.phase(), ControlPhase::FOLLOW);
   EXPECT_TRUE(state.goal_captured());
@@ -135,8 +134,6 @@ TEST(ControlState, PersistentPhasesKeepTheirPublicStatusNames) {
                "BRAKING_AT_WAYPOINT");
   EXPECT_STREQ(visual_navigation::phase_status(ControlPhase::WAIT),
                "WAITING_AT_WAYPOINT");
-  EXPECT_STREQ(visual_navigation::phase_status(ControlPhase::ALIGN_GOAL),
-               "ALIGNING_FINAL_YAW");
 }
 
 } // namespace

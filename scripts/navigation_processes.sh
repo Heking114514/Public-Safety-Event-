@@ -47,9 +47,6 @@ is_user_gui_pid() {
   local pid="$1"
   read_process_argv "${pid}" || return 1
   local -a gui_paths=(
-    "${WORKSPACE_ROOT}/scripts/arena_route_frontend.py"
-    "${WORKSPACE_ROOT}/scripts/arena_map_editor.py"
-    "${WORKSPACE_ROOT}/scripts/start_arena_planner.sh"
     "${WORKSPACE_ROOT}/scripts/start_new_map_planner.sh"
     "${WORKSPACE_ROOT}/src/new_map_planner/scripts/new_map_planner_ui"
     "${WORKSPACE_ROOT}/install/new_map_planner/lib/new_map_planner/new_map_planner_ui"
@@ -69,22 +66,6 @@ is_user_gui_pid() {
     argv_has_sequence PROCESS_ARGV launch new_map_planner new_map_planner.launch.py ||
     argv_has_sequence PROCESS_ARGV launch navigation_mission_manager mission_navigation.launch.py ||
     argv_has_sequence PROCESS_ARGV run new_map_planner new_map_planner_ui
-}
-
-is_arena_planner_node_pid() {
-  local pid="$1"
-  read_process_argv "${pid}" || return 1
-  local backend="${WORKSPACE_ROOT}/install/arena_path_planner/lib/arena_path_planner/arena_planner_node"
-
-  [[ -e "${backend}" ]] || return 1
-  argv_contains_path PROCESS_ARGV "${backend}"
-}
-
-is_arena_planner_pid() {
-  local pid="$1"
-  is_arena_planner_node_pid "${pid}" && return 0
-  read_process_argv "${pid}" || return 1
-  argv_has_sequence PROCESS_ARGV launch arena_path_planner arena_path_planner.launch.py
 }
 
 is_new_map_planner_node_pid() {
@@ -114,7 +95,7 @@ is_mission_manager_node_pid() {
 }
 
 is_preserved_ros_pid() {
-  is_user_gui_pid "$1" || is_arena_planner_pid "$1" ||
+  is_user_gui_pid "$1" ||
     is_new_map_planner_pid "$1" || is_mission_manager_node_pid "$1"
 }
 

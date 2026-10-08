@@ -2,9 +2,17 @@
 
 ## Unreleased
 
-- Added simulated front-obstacle recognition that publishes the existing
-  `/obstacle/front_range` and `/obstacle/front_blocked` interfaces from arena
-  map obstacles.
+- Migrated `vehicle_loopback_sim_node`, its motion/obstacle models, and the
+  optional `loopback_route_controller` from Python to modular C++17 while
+  preserving executable names, topics and parameters.
+- Switched the package to `ament_cmake_python`: realtime nodes are compiled,
+  while the browser GUI and legacy comparison helper remain Python tools.
+- Added `playback_speed` to accelerate the formal controller timer and truth
+  integration together without changing real-vehicle parameters.
+- Static map geometry is no longer connected to the simulated sensor. Only
+  GUI/manual obstacles can publish simulated obstacle events.
+- Added simulated front-obstacle recognition for GUI/manual obstacles through
+  the existing `/obstacle/front_range` and `/obstacle/front_blocked` interfaces.
 - Added GUI placement and clearing for temporary simulated obstacles.
 - Tuned simulated obstacle recognition to use a fixed `0.25 m` trigger distance.
 - Snapped GUI temporary obstacles to the nearest road centerline and oriented
@@ -21,3 +29,7 @@
 - Switched the default planner/control loopback launch to the production
   `navigation_mission_manager` instead of the compatibility
   `loopback_mission_node`.
+## 2026-10-08
+
+- GUI 红色路线图例改为“导航器当前路线”，与黑色实际车迹明确区分；路线摘要展示 frame、
+  ROS 时间戳、点数和首末坐标，便于对照规划器输出与导航器接收内容。

@@ -16,11 +16,7 @@ cmd_vel_serial_node:
     rfid_topic: /cup_car_serial/rfid
     rfid_number_topic: /cup_car_serial/rfid_number
     rfid_uid_topic: /cup_car_serial/rfid_uid
-    rfid_motion_hold_enabled: true
-    rfid_motion_hold_service: /waypoint_navigator/set_motion_hold
-    rfid_motion_hold_source: rfid
-    rfid_motion_hold_reason: rfid card detected
-    rfid_motion_hold_duration_s: 3.0
+    speak_text_service: /cup_car_serial/speak_text
     bmi088_raw_imu_topic: /cup_car_serial/bmi088_raw_imu
     bmi088_attitude_topic: /cup_car_serial/bmi088_attitude
     bmi088_frame_id: base_link

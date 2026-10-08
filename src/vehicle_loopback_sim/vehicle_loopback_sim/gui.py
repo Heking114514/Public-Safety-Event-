@@ -550,6 +550,10 @@ class VehicleLoopbackGui(Node):
                         if message.header.frame_id == "arena"
                         else message.header.frame_id
                     ),
+                    "stamp_ns": (
+                        int(message.header.stamp.sec) * 1_000_000_000
+                        + int(message.header.stamp.nanosec)
+                    ),
                     "poses": poses,
                 }
             }

@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -101,7 +102,6 @@ struct PlannerTopics {
   std::string arena_path{"/new_map_planner/arena_path"};
   std::string navigation_path{"/new_map_planner/navigation_path"};
   std::string occupancy_grid{"/new_map_planner/map"};
-  std::string route_input{"/waypoint_navigation/route_input"};
 };
 
 struct PlannerConfig {
@@ -111,17 +111,17 @@ struct PlannerConfig {
   double resolution{0.02};
   double vehicle_length{0.0};
   double vehicle_width{0.0};
-  double wheel_track{0.0};
   double base_link_offset_x{0.0};
+  double footprint_center_offset_x{0.0};
   double safety_margin{0.0};
   double turn_safety_margin{0.0};
   double lane_snap_distance{0.08};
+  double node_capture_distance{0.005};
   double start_heading_tolerance{0.45};
   double turn_cost{0.35};
   double reverse_cost{0.20};
   double u_turn_threshold{2.6};
   double collision_sample_step{0.01};
-  std::vector<Pose> left_turn_profile;
   bool publish_shunt_markers{false};
   bool require_return_home{true};
   int home_node{-1};
@@ -131,6 +131,7 @@ struct PlannerConfig {
   std::vector<Node> nodes;
   std::vector<Lane> lanes;
   std::vector<Task> tasks;
+  std::map<int, std::string> rfid_supernodes;
   std::vector<std::string> default_targets;
   std::vector<std::string> default_inspection_lanes;
   PlannerTopics topics;
@@ -160,6 +161,7 @@ struct PlanResult {
   std::vector<Pose> navigation_path;
   std::vector<bool> turn_waypoints;
   std::vector<bool> reverse_arrival_turn_waypoints;
+  std::vector<std::string> waypoint_supernode_ids;
   std::vector<std::string> visit_order;
   std::vector<std::string> covered_lane_ids;
   std::vector<std::string> deferred_target_ids;

@@ -240,8 +240,8 @@
         <div class="metric"><span>状态</span><span id="nav-status">--</span></div>
         <div class="metric"><span>规划请求</span><span id="mission-status">--</span></div>
         <div class="metric"><span>当前点</span><span id="waypoint">--</span></div>
-        <div class="metric"><span>执行路径</span><span id="path-count">--</span></div>
-        <div class="metric"><span>规划路径</span><span id="planner-count">--</span></div>
+        <div class="metric"><span>导航器路线</span><span id="path-count">--</span></div>
+        <div class="metric"><span>规划器路线</span><span id="planner-count">--</span></div>
         <div class="metric"><span>临时障碍</span><span id="obstacle-count">--</span></div>
         <div class="metric"><span>地图</span><span id="map-info">--</span></div>
       </section>
@@ -257,9 +257,9 @@
         <h2>图例</h2>
         <div class="legend">
           <div class="legend-item" style="color: var(--route)"><span class="swatch"></span><span>导航路径</span></div>
-          <div class="legend-item" style="color: var(--waypoint)"><span class="swatch"></span><span>控制器执行路径</span></div>
+          <div class="legend-item" style="color: var(--waypoint)"><span class="swatch"></span><span>导航器当前路线</span></div>
           <div class="legend-item" style="color: var(--planner)"><span class="swatch"></span><span>场地覆盖路径</span></div>
-          <div class="legend-item" style="color: var(--trail)"><span class="swatch"></span><span>小车轨迹</span></div>
+          <div class="legend-item" style="color: var(--trail)"><span class="swatch"></span><span>实际车迹</span></div>
           <div class="legend-item" style="color: var(--warn)"><span class="swatch"></span><span>临时障碍</span></div>
           <div class="legend-item" style="color: var(--detect)"><span class="swatch dashed"></span><span>探测扇形</span></div>
         </div>
@@ -695,6 +695,18 @@
       return Number.isFinite(value) ? value.toFixed(digits) : "--";
     }
 
+    function pathSummary(path) {
+      const poses = path?.poses || [];
+      if (!poses.length) return "--";
+      const first = poses[0];
+      const last = poses[poses.length - 1];
+      const stamp = Number.isFinite(path?.stamp_ns)
+        ? `t=${fmt(path.stamp_ns / 1e9, 1)} ` : "";
+      return `${stamp}${path.frame_id || "?"} ${poses.length}点 ` +
+        `(${fmt(first.x_m, 2)},${fmt(first.y_m, 2)}→` +
+        `${fmt(last.x_m, 2)},${fmt(last.y_m, 2)})`;
+    }
+
     function updateMetrics() {
       const displayName = state.display_name || "Loopback Navigation GUI";
       els.displayName.textContent = displayName;
@@ -711,8 +723,8 @@
       els.navStatus.textContent = state.navigator_status || "--";
       els.missionStatus.textContent = state.mission_status || "--";
       els.waypoint.textContent = Number.isInteger(state.current_waypoint) ? state.current_waypoint : "--";
-      els.pathCount.textContent = `${state.waypoint_path?.poses?.length || 0} poses`;
-      els.plannerCount.textContent = `${state.navigation_path?.poses?.length || 0} poses`;
+      els.pathCount.textContent = pathSummary(state.waypoint_path);
+      els.plannerCount.textContent = pathSummary(state.navigation_path);
       els.obstacleCount.textContent = `${state.manual_obstacles?.length || 0}`;
       els.mapInfo.textContent = state.arena_layout
         ? `${fmt(state.arena_layout.width_m, 1)} x ${fmt(state.arena_layout.height_m, 1)} m`

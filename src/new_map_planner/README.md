@@ -16,11 +16,11 @@
             |
 动作层
   DRIVE / TURN_LEFT / TURN_RIGHT / REVERSE / FINISH
-  转弯采用 tight_l_turn_v1 标定动作
+  普通转弯使用控制器共享的实时位姿闭环
             |
 几何验证层
   直行：完整车身 + 15 mm 膨胀
-  紧转：按实车状态格参考轨迹逐姿态连续扫掠 + 8 mm 矩形膨胀
+  紧转：按同一闭环模型逐姿态连续扫掠 + 2 mm 矩形膨胀
   动态障碍：请求级多边形，不重建静态地图
             |
 ROS 适配层
@@ -29,8 +29,8 @@ ROS 适配层
 
 道路图负责选择，几何层只负责否决不可执行的直行段或动作。规划器不会把“位于路口”
 当成免碰撞条件。`visual_navigation` 的兼容路径只对已经通过扫掠验证的 90 度动作设置
-`z=0.001`；边缘道路倒车退回路口后的转弯使用 `z=0.002`。两者由同一个实车
-corner-shunt 状态格核心完成并在规划期连续扫掠。起点吸附到邻近路口的短接入段
+`z=0.001`；边缘道路倒车退回路口后的转弯使用 `z=0.002`。普通转弯由实车闭环控制器
+完成，反向进站仍使用受约束状态格；两者都在规划期连续扫掠。起点吸附到邻近路口的短接入段
 如果需要先倒车或横移，而兼容 `Path` 又没有对应动作语义，规划器必须返回失败；任务层
 会继续退到更早锚点，不能把它伪装成普通前进路线并报告 `success`。
 
@@ -43,7 +43,7 @@ corner-shunt 状态格核心完成并在规划期连续扫掠。起点吸附到�
 - `coverage`：逐段选择最近的可执行未覆盖道路，途经道路同步计入本次计划。
 - `mission`：兼容的一次性道路覆盖请求，并报告途经任务点。
 
-正式“完整巡视”由 `navigation_mission_manager` 按 `layer1 -> layer2 -> layer3` 编排。每段使用
+正式任务由 `navigation_mission_manager` 按第一阶段、第二阶段、第三阶段自动编排。每段使用
 最新 `map -> base_link` 位姿重新规划；只有匹配的 route ACK 和真实 `GOAL_REACHED`
 到达后才提交该段进度。覆盖模式是确定性的可执行优先策略，不宣称全局最短。无法到达
 的道路或任务会进入 `deferred_*`，只有请求设置 `allow_partial=true` 时才返回安全部分路线。
@@ -62,9 +62,13 @@ corner-shunt 状态格核心完成并在规划期连续扫掠。起点吸附到�
 | `/new_map_planner/map` | `nav_msgs/msg/OccupancyGrid` | UI/RViz 静态地图 |
 | `/waypoint_navigation/route_input` | `nav_msgs/msg/Path` | 经验证后才发布的实车路线 |
 
-`success` 表示规划与所有几何验证通过，`activated` 表示兼容路线已经发布给导航器。
+`success` 表示规划与所有几何验证通过。正式实车路线由
+`navigation_mission_manager` 发布到导航器；规划器和 UI 只负责计算与预览路线。
 任务节点等待相同 route id 的 `/waypoint_navigation/route_ack`，不会把服务成功当成
 车辆已经接收；规划器本身不保存任务进度或控制车辆。
+地图中的 12 个固定 RFID 物理位置以 `rfid_supernodes` 配置为 `s1`–`s12`；每个路线计划
+同时返回与 `navigation_path.poses` 对齐的 `waypoint_supernode_ids`，供任务总控和控制器
+执行逐超节点读卡、重定位和确认握手。卡片序号不参与地图节点编号。
 
 ## 实车启动
 
@@ -86,16 +90,17 @@ corner-shunt 状态格核心完成并在规划期连续扫掠。起点吸附到�
 ./scripts/start_new_map_planner.sh --no-ui
 ```
 
-UI 中“规划预览”绝不发布行驶路线；完整巡视的预览只显示第一阶段。点击“开始三阶段
-巡视”后，UI 只向任务节点发送开始命令。任务节点在后台独立完成阶段衔接、障碍重规划、
+UI 中“规划预览”绝不发布行驶路线；任务阶段显示器会随总控状态自动从第一阶段切换到
+第二阶段和第三阶段。点击“开始三阶段巡视”后，UI 只向任务节点发送开始命令。任务节点在后台独立完成阶段衔接、障碍重规划、
 路线 ACK 和进度提交；关闭 UI 不会终止或暂停正式任务。
+界面中的固定任务点列表用于查看 RFID 编号，正式巡视按总控阶段自动推进，列表不作为阶段切换控件。
 
 任务节点接收结构化 `/perception/dynamic_obstacle`；同时兼容
 `/obstacle/front_blocked` 与 `/obstacle/front_range`。只有控制器安全退回并发布
 `OBSTACLE_REPLAN_REQUIRED` 后，观测才进入动态地图并触发当前阶段重规划。
 
-不要同时启动 `arena_path_planner` GUI、CSV `--autostart` 或路线编辑器，它们会竞争
-`/waypoint_navigation/route_input`。
+正式实车只通过 `navigation_mission_manager` 发布路线；不要同时启动路线编辑器或其他
+会发布 `/waypoint_navigation/route_input` 的调试程序。
 
 ## 构建与测试
 

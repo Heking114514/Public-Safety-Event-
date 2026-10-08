@@ -9,7 +9,7 @@ import launch_testing
 import pytest
 import rclpy
 from mission_control_interfaces.msg import ControlTelemetry
-from mission_control_interfaces.srv import ContinueRetreat
+from mission_control_interfaces.srv import ConfirmRfidCheckpoint, ContinueRetreat
 from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Odometry, Path
 from rclpy.node import Node
@@ -118,6 +118,14 @@ class TestWaypointNavigatorContract(unittest.TestCase):
             ContinueRetreat,
             "/waypoint_navigator_test/continue_obstacle_retreat",
         )
+        cls.continue_route_retreat_client = cls.node.create_client(
+            ContinueRetreat,
+            "/waypoint_navigator_test/continue_route_retreat",
+        )
+        cls.confirm_rfid_client = cls.node.create_client(
+            ConfirmRfidCheckpoint,
+            "/waypoint_navigator_test/confirm_rfid_checkpoint",
+        )
 
     @classmethod
     def tearDownClass(cls):
@@ -187,6 +195,30 @@ class TestWaypointNavigatorContract(unittest.TestCase):
         assert future.done()
         return future.result()
 
+    def call_continue_route_retreat(self, minimum_distance):
+        assert self.continue_route_retreat_client.wait_for_service(timeout_sec=2.0)
+        request = ContinueRetreat.Request()
+        request.minimum_distance_m = minimum_distance
+        future = self.continue_route_retreat_client.call_async(request)
+        deadline = time.monotonic() + 2.0
+        while not future.done() and time.monotonic() < deadline:
+            rclpy.spin_once(self.node, timeout_sec=0.01)
+        assert future.done()
+        return future.result()
+
+    def call_confirm_rfid(self, route_id, waypoint_index, supernode_id="s1"):
+        assert self.confirm_rfid_client.wait_for_service(timeout_sec=2.0)
+        request = ConfirmRfidCheckpoint.Request()
+        request.route_id = route_id
+        request.waypoint_index = waypoint_index
+        request.supernode_id = supernode_id
+        future = self.confirm_rfid_client.call_async(request)
+        deadline = time.monotonic() + 2.0
+        while not future.done() and time.monotonic() < deadline:
+            rclpy.spin_once(self.node, timeout_sec=0.01)
+        assert future.done()
+        return future.result()
+
     def publish_obstacle(self, blocked, distance=None):
         message = Bool()
         message.data = blocked
@@ -236,13 +268,41 @@ class TestWaypointNavigatorContract(unittest.TestCase):
             stamp.to_msg(), [(0.0, 0.0), (0.30, 0.0, 0.001), (0.30, 1.0)]
         )
         self.hold_odometry(0.0, cycles=3)
+        self.hold_odometry(0.10, cycles=2)
+        self.hold_odometry(0.20, cycles=2)
+        for _ in range(12):
+            self.publish_fusion("FULL")
+            self.publish_odometry(x=0.30)
+            self.publish_stopped_wheels()
+            self.spin(0.04)
 
         self.publish_obstacle(True, distance=0.30)
-        self.spin(0.15)
+        self.hold_odometry(0.30, cycles=6)
 
         assert "OBSTACLE_REVERSING" not in self.states
         assert any(linear > 0.0 for linear, _ in self.commands)
         self.publish_obstacle(False)
+        self.call_trigger(self.stop_client)
+
+    def test_range_without_blocked_event_does_not_start_obstacle_recovery(self):
+        self.call_trigger(self.stop_client)
+        self.publish_obstacle(False)
+        self.spin(0.05)
+        self.states.clear()
+        self.commands.clear()
+        self.publish_odometry()
+        self.spin(0.05)
+        stamp = self.node.get_clock().now()
+        self.publish_route(stamp.to_msg(), [(0.0, 0.0), (1.0, 0.0)])
+        self.hold_odometry(0.0, cycles=3)
+
+        self.states.clear()
+        self.publish_obstacle_range(0.08)
+        self.hold_odometry(0.05, cycles=3)
+
+        assert "OBSTACLE_BRAKING" not in self.states, self.states
+        assert "OBSTACLE_REVERSING" not in self.states
+        assert any(linear > 0.0 for linear, _ in self.commands)
         self.call_trigger(self.stop_client)
 
     def test_unexpected_obstacle_stops_reverses_and_requests_replan(self):
@@ -281,14 +341,68 @@ class TestWaypointNavigatorContract(unittest.TestCase):
         assert retreat.trace_exhausted
         self.publish_obstacle(False)
 
-        # A new plan can be geometrically identical. Its new route id must
-        # still clear the completed recovery state and receive an ACK.
         replacement_stamp = self.node.get_clock().now()
         self.acks.clear()
         self.publish_route(replacement_stamp.to_msg(), [(0.0, 0.0), (1.0, 0.0)])
         self.spin(0.20)
         assert replacement_stamp.nanoseconds in self.acks
         assert self.states[-1] != "OBSTACLE_REPLAN_REQUIRED"
+        self.call_trigger(self.stop_client)
+
+    def test_route_takeover_does_not_retrigger_latched_obstacle(self):
+        self.call_trigger(self.stop_client)
+        self.publish_obstacle(False)
+        self.spin(0.05)
+        self.commands.clear()
+        self.states.clear()
+        self.publish_odometry()
+        self.spin(0.05)
+        stamp = self.node.get_clock().now()
+        self.publish_route(
+            stamp.to_msg(), [(0.0, 0.0), (0.80, 0.0, 0.001), (0.80, 1.0)]
+        )
+        self.hold_odometry(0.0, cycles=3)
+        self.hold_odometry(0.10, cycles=2)
+        self.hold_odometry(0.20, cycles=2)
+
+        # This obstacle is before the planned turn, so it starts bounded retreat.
+        self.publish_obstacle(True, distance=0.25)
+        self.hold_odometry(0.20, cycles=8)
+        assert "OBSTACLE_REVERSING" in self.states
+        for x in (0.15, 0.10, 0.05, 0.0):
+            for _ in range(2):
+                self.publish_obstacle(True, distance=0.05)
+                self.publish_fusion("FULL")
+                self.publish_odometry(x=x)
+                self.spin(0.04)
+        self.spin(0.10)
+        assert self.states[-1] == "OBSTACLE_REPLAN_REQUIRED"
+        for _ in range(4):
+            self.publish_obstacle(True, distance=0.05)
+            self.publish_fusion("FULL")
+            self.publish_odometry(x=0.0)
+            self.spin(0.04)
+
+        # Planner route starts at the recovered junction and includes the
+        # authorized turn. The detector keeps the same true heartbeat active.
+        self.states.clear()
+        self.commands.clear()
+        replacement_stamp = self.node.get_clock().now()
+        self.acks.clear()
+        self.publish_route(
+            replacement_stamp.to_msg(),
+            [(0.0, 0.0, 0.001), (0.0, 1.0)],
+        )
+        self.hold_odometry(0.0, cycles=4)
+        assert replacement_stamp.nanoseconds in self.acks
+        self.commands.clear()
+        self.publish_obstacle(True, distance=0.05)
+        self.hold_odometry(0.0, yaw=0.0, cycles=8)
+
+        assert "OBSTACLE_BRAKING" not in self.states, self.states
+        assert "OBSTACLE_REVERSING" not in self.states
+        assert any(linear > 0.0 for linear, _ in self.commands)
+        self.publish_obstacle(False)
         self.call_trigger(self.stop_client)
 
     def test_latched_fusion_fault_during_reverse_allows_new_route_ack(self):
@@ -389,6 +503,32 @@ class TestWaypointNavigatorContract(unittest.TestCase):
         self.spin(0.5)
         assert self.acks == [stamp.nanoseconds]
 
+    def test_route_transition_retreat_has_distinct_state(self):
+        self.call_trigger(self.stop_client)
+        self.publish_obstacle(False)
+        self.states.clear()
+        self.commands.clear()
+        self.publish_odometry(x=0.0)
+        self.spin(0.05)
+        stamp = self.node.get_clock().now()
+        self.publish_route(stamp.to_msg(), [(0.0, 0.0), (0.20, 0.0)])
+        for x in (0.0, 0.05, 0.10, 0.15):
+            self.hold_odometry(x, cycles=3)
+        for _ in range(16):
+            self.publish_fusion("FULL")
+            self.publish_odometry(x=0.20)
+            self.publish_stopped_wheels()
+            self.spin(0.04)
+
+        assert "GOAL_REACHED" in self.states, self.states
+        self.states.clear()
+        response = self.call_continue_route_retreat(0.10)
+        assert response.accepted, response.message
+        self.spin(0.05)
+        assert "ROUTE_TRANSITION_BRAKING" in self.states, self.states
+        assert "OBSTACLE_BRAKING" not in self.states
+        self.call_trigger(self.stop_client)
+
     def test_planned_corner_uses_safe_shunt_arc_after_stop(self):
         self.call_trigger(self.stop_client)
         self.commands.clear()
@@ -425,6 +565,62 @@ class TestWaypointNavigatorContract(unittest.TestCase):
             if abs(command[0]) > 0.001 or abs(command[1]) > 0.02
         ]
         assert turn_commands
+        self.call_trigger(self.stop_client)
+
+    def test_z_active_turn_ignores_old_lane_obstacle_then_rearms(self):
+        self.spin(0.5)
+        self.publish_obstacle(False)
+        self.commands.clear()
+        self.states.clear()
+        stamp = self.node.get_clock().now()
+        self.publish_route(
+            stamp.to_msg(), [(0.0, 0.0), (0.30, 0.0, 0.001), (0.30, 1.0)]
+        )
+        self.spin(0.2)
+        self.publish_fusion("FULL")
+        self.publish_odometry()
+        self.spin(0.1)
+        assert self.call_trigger(self.start_client).success
+
+        for x in (0.10, 0.20, 0.30):
+            self.hold_odometry(x, cycles=2)
+        for _ in range(12):
+            self.publish_fusion("FULL")
+            self.publish_odometry(x=0.30)
+            self.publish_stopped_wheels()
+            self.spin(0.04)
+        self.hold_odometry(0.30, yaw=0.10, cycles=8)
+        assert "TURN_ARC" in self.states
+
+        self.commands.clear()
+        self.states.clear()
+        self.publish_obstacle(True, distance=0.25)
+        self.hold_odometry(0.30, yaw=0.10, cycles=6)
+
+        assert "OBSTACLE_REVERSING" not in self.states
+        assert "OBSTACLE_REPLAN_REQUIRED" not in self.states
+        assert any(linear > 0.0 for linear, _ in self.commands)
+        self.states.clear()
+
+        # A false edge at the sensor FOV boundary must not interrupt the
+        # closed-loop turn while the sensor still faces the incoming lane.
+        self.publish_obstacle(False)
+        self.spin(0.04)
+        self.publish_obstacle(True, distance=0.25)
+        self.hold_odometry(0.30, yaw=0.10, cycles=5)
+        assert "FAULT_TURN_BLOCKED" not in self.states
+        assert "OBSTACLE_REVERSING" not in self.states
+        assert any(linear > 0.0 for linear, _ in self.commands)
+
+        # After the car faces the outgoing lane, a new obstacle event stops it.
+        self.states.clear()
+        self.publish_obstacle(False)
+        self.hold_odometry(0.293, y=0.029, yaw=0.70, cycles=2)
+        self.publish_obstacle(True, distance=0.05)
+        assert "OBSTACLE_BRAKING" in self.states
+        assert abs(self.commands[-1][0]) < 1.0e-12
+
+        self.publish_obstacle(False)
         self.call_trigger(self.stop_client)
 
     def test_wrong_heading_without_known_junction_does_not_pivot(self):
@@ -476,12 +672,48 @@ class TestWaypointNavigatorContract(unittest.TestCase):
         self.spin(0.05)
         stamp = self.node.get_clock().now()
         self.publish_route(stamp.to_msg(), [(0.0, 0.0, 0.001), (0.0, 1.0)])
-        self.hold_odometry(0.0, cycles=16)
+        self.hold_odometry(0.0, cycles=14)
+        self.hold_odometry(0.01, cycles=14)
 
         assert "OBSTACLE_REPLAN_REQUIRED" not in self.states
         motion_states = {"TURN_REVERSE", "TURN_ROTATE", "TURN_ARC", "TURN_CREEP"}
         assert motion_states.intersection(self.states)
+        assert any(linear > 0.0 for linear, _ in self.commands)
         assert any(abs(angular) > 0.05 for _, angular in self.commands)
+        assert all(
+            linear > 0.0
+            for linear, angular in self.commands
+            if abs(angular) > 0.05
+        )
+        self.call_trigger(self.stop_client)
+
+    def test_rfid_supernode_waits_for_route_checkpoint_authorization(self):
+        self.call_trigger(self.stop_client)
+        self.publish_obstacle(False)
+        self.states.clear()
+        self.commands.clear()
+        self.acks.clear()
+        self.hold_odometry(0.0, cycles=3)
+        stamp = self.node.get_clock().now()
+        route_id = stamp.nanoseconds
+        self.publish_route(
+            stamp.to_msg(), [(0.0, 0.0), (0.10, 0.0, 0.004), (0.10, 1.0)]
+        )
+        self.spin(0.20)
+        assert route_id in self.acks
+
+        self.hold_odometry(0.10, cycles=3)
+        self.hold_odometry(0.20, cycles=3)
+        self.hold_odometry(0.31, cycles=8)
+        assert "WAITING_FOR_RFID:1" in self.states, self.states
+        assert self.commands
+        assert any(0.0 < linear <= 0.02 for linear, _ in self.commands)
+        assert not any(linear < 0.0 for linear, _ in self.commands)
+
+        rejected = self.call_confirm_rfid(route_id + 1, 1)
+        assert not rejected.accepted
+        accepted = self.call_confirm_rfid(route_id, 1, "s1")
+        assert accepted.accepted
         self.call_trigger(self.stop_client)
 
     def test_non_junction_out_and_back_uses_reverse_without_pivot(self):

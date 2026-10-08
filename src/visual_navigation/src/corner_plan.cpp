@@ -1,7 +1,5 @@
 #include "visual_navigation/corner_shunt.hpp"
 
-#include "visual_navigation/calibrated_turn.hpp"
-
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -15,7 +13,7 @@
 namespace visual_navigation {
 namespace {
 
-constexpr double kPositionResolution = 0.0025;
+constexpr double kPositionResolution = 0.0010;
 constexpr double kYawResolution = 0.04363323129985824;
 constexpr double kLinearResolution = 0.010;
 constexpr double kAngularResolution = 0.06;
@@ -86,16 +84,28 @@ CornerShuntController::compute_plan(const CornerShuntContext &context) const {
   const double forward_speed = std::max(0.005, config_.plan_linear_speed);
   const double reverse_speed = std::min(-0.005, config_.plan_reverse_speed);
   const double angular_speed = std::max(0.05, config_.plan_angular_speed);
-  const std::vector<SearchAction> base_actions{
-      {{forward_speed, angular_speed * direction}},
+  std::vector<SearchAction> base_actions{
       {{forward_speed, 0.0}},
-      {{forward_speed, -angular_speed * direction}},
-      {{0.0, angular_speed * direction}},
-      {{0.0, -angular_speed * direction}},
-      {{reverse_speed, angular_speed * direction}},
-      {{reverse_speed, 0.0}},
-      {{reverse_speed, -angular_speed * direction}},
+      {{forward_speed, 0.15 * angular_speed * direction}},
+      {{forward_speed, 0.25 * angular_speed * direction}},
+      {{forward_speed, 0.5 * angular_speed * direction}},
+      {{forward_speed, 0.75 * angular_speed * direction}},
+      {{forward_speed, angular_speed * direction}},
   };
+  // Ordinary junction turns follow the forward-only two-pivot maneuver seen in
+  // the teleoperated bag. Reverse actions remain available only after an
+  // explicitly planned reverse arrival from obstacle recovery.
+  if (context.reverse_arrival) {
+    base_actions.insert(base_actions.begin(),
+                        {{forward_speed, angular_speed * direction}});
+    base_actions.push_back(
+        {{forward_speed, -angular_speed * direction}});
+    base_actions.push_back({{0.0, -angular_speed * direction}});
+    base_actions.push_back({{reverse_speed, angular_speed * direction}});
+    base_actions.push_back({{reverse_speed, 0.0}});
+    base_actions.push_back(
+        {{reverse_speed, -angular_speed * direction}});
+  }
 
   CornerShuntConfig clearance_config = config_;
   clearance_config.road_margin += std::max(0.0, config_.plan_clearance);
@@ -176,88 +186,6 @@ CornerShuntController::compute_plan(const CornerShuntContext &context) const {
         return true;
       };
 
-  const auto local_start = local_turn_pose(context, context.pose);
-  const auto &reference_start = kTightLeftTurnProfile.front();
-  const bool calibrated_parameters =
-      std::abs(forward_speed - kTightTurnLinearSpeed) <= 1.0e-9 &&
-      std::abs(reverse_speed + kTightTurnLinearSpeed) <= 1.0e-9 &&
-      std::abs(angular_speed - kTightTurnAngularSpeed) <= 1.0e-9 &&
-      std::abs(duration - kTightTurnStepDuration) <= 1.0e-9 &&
-      std::abs(control_frequency - kTightTurnControlFrequency) <= 1.0e-9 &&
-      std::abs(config_.linear_acceleration - kTightTurnLinearAcceleration) <=
-          1.0e-9 &&
-      std::abs(config_.linear_deceleration - kTightTurnLinearDeceleration) <=
-          1.0e-9 &&
-      std::abs(config_.angular_acceleration - kTightTurnAngularAcceleration) <=
-          1.0e-9 &&
-      std::abs(config_.angular_deceleration - kTightTurnAngularDeceleration) <=
-          1.0e-9;
-  const bool calibrated_start =
-      std::abs(turn_amount - 0.5 * 3.14159265358979323846) <= 0.05 &&
-      std::abs(local_start.x - reference_start.axle_x) <= 0.008 &&
-      std::abs(local_start.y) <= 0.008 && std::abs(local_start.yaw) <= 0.08 &&
-      std::abs(context.applied_twist.linear_x) <= 0.01 &&
-      std::abs(context.applied_twist.angular_z) <= 0.08;
-  if (calibrated_parameters && calibrated_start) {
-    const bool left_turn = direction > 0.0;
-    const std::size_t action_count = left_turn ? kTightLeftTurnActions.size()
-                                               : kTightRightTurnActions.size();
-    std::vector<CornerShuntTwist> calibrated_plan;
-    calibrated_plan.reserve(action_count);
-    CornerShuntPose pose = context.pose;
-    CornerShuntTwist applied = context.applied_twist;
-    bool valid = true;
-    for (std::size_t index = 0; index < action_count; ++index) {
-      const uint8_t action = left_turn ? kTightLeftTurnActions[index]
-                                       : kTightRightTurnActions[index];
-      CornerShuntPose next_pose;
-      CornerShuntTwist next_twist;
-      bool clearance_safe = false;
-      CornerShuntTwist command;
-      switch (action) {
-      case FORWARD_LEFT:
-        command = {forward_speed, angular_speed};
-        break;
-      case FORWARD:
-        command = {forward_speed, 0.0};
-        break;
-      case FORWARD_RIGHT:
-        command = {forward_speed, -angular_speed};
-        break;
-      case PIVOT_LEFT:
-        command = {0.0, angular_speed};
-        break;
-      case PIVOT_RIGHT:
-        command = {0.0, -angular_speed};
-        break;
-      case REVERSE_LEFT:
-        command = {reverse_speed, angular_speed};
-        break;
-      case REVERSE:
-        command = {reverse_speed, 0.0};
-        break;
-      case REVERSE_RIGHT:
-        command = {reverse_speed, -angular_speed};
-        break;
-      default:
-        valid = false;
-        continue;
-      }
-      if (!advance(pose, applied, command, &next_pose, &next_twist,
-                   &clearance_safe) ||
-          !inside_search_window(next_pose)) {
-        valid = false;
-        break;
-      }
-      calibrated_plan.push_back(command);
-      pose = next_pose;
-      applied = next_twist;
-    }
-    if (valid && target_pose_reached(context, pose)) {
-      return calibrated_plan;
-    }
-  }
-
   const auto run_search = [&](const std::vector<SearchAction> &actions,
                               bool require_clearance) {
     std::vector<SearchNode> nodes;
@@ -320,6 +248,7 @@ CornerShuntController::compute_plan(const CornerShuntContext &context) const {
       }
     }
 
+
     std::vector<CornerShuntTwist> reverse_plan;
     if (goal_node < 0)
       return reverse_plan;
@@ -342,10 +271,14 @@ CornerShuntController::compute_plan(const CornerShuntContext &context) const {
     return base_plan;
 
   auto fine_actions = base_actions;
-  fine_actions.push_back({{forward_speed, 0.5 * angular_speed * direction}});
-  fine_actions.push_back({{forward_speed, -0.5 * angular_speed * direction}});
-  fine_actions.push_back({{reverse_speed, 0.5 * angular_speed * direction}});
-  fine_actions.push_back({{reverse_speed, -0.5 * angular_speed * direction}});
+  if (context.reverse_arrival) {
+    fine_actions.push_back(
+        {{forward_speed, -0.5 * angular_speed * direction}});
+    fine_actions.push_back(
+        {{reverse_speed, 0.5 * angular_speed * direction}});
+    fine_actions.push_back(
+        {{reverse_speed, -0.5 * angular_speed * direction}});
+  }
   return run_search(fine_actions, false);
 }
 

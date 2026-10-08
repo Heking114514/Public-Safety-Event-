@@ -347,7 +347,6 @@ private:
   double preTurnPathAngularRatio_{1.2};
   double pathPidIntegralLimit_{0.20};
   double rotateInPlaceThreshold_{0.18};
-  double rotateInPlaceReentryThreshold_{0.44};
   double rotateInPlaceExitThreshold_{0.035};
   double precisionTurnThreshold_{0.45};
   double turnSettleYawRate_{0.15};
@@ -369,11 +368,7 @@ private:
   double preTurnFallbackPoseSpeed_{0.08};
   std::size_t preTurnStopTelemetrySamples_{2};
   std::size_t preTurnFallbackTimeouts_{2};
-  double finalYawTolerance_{0.12};
   double finalPositionReleaseTolerance_{0.05};
-  double finalYawMaxAngularSpeed_{0.40};
-  double finalYawMinTurnSpeed_{0.30};
-  double finalYawMinPrecisionSpeed_{0.20};
   double odomTimeout_{0.40};
   double imuTimeout_{0.15};
   double fusionStatusTimeout_{0.60};

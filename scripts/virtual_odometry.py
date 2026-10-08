@@ -14,9 +14,9 @@ from typing import Optional
 DEFAULT_CONFIG = (
     Path(__file__).resolve().parents[1]
     / "src"
-    / "arena_path_planner"
+    / "new_map_planner"
     / "config"
-    / "arena_map.yaml"
+    / "arena.yaml"
 )
 
 

@@ -407,9 +407,9 @@ class VisionCorrectionNode(Node):
         if get_package_share_directory is not None:
             try:
                 return str(
-                    Path(get_package_share_directory("arena_path_planner"))
+                    Path(get_package_share_directory("new_map_planner"))
                     / "config"
-                    / "arena_map.yaml"
+                    / "arena.yaml"
                 )
             except Exception:
                 pass
@@ -425,8 +425,12 @@ class VisionCorrectionNode(Node):
             self.get_logger().error(f"Could not load map {path}: {error}")
             return []
 
-        start_x, start_y = map(float, root["start"]["position_m"])
-        start_yaw = math.radians(float(root["start"]["heading_deg"]))
+        if "start" in root:
+            start_x, start_y = map(float, root["start"]["position_m"])
+            start_yaw = math.radians(float(root["start"]["heading_deg"]))
+        else:
+            start_x, start_y = map(float, root["frame"]["map_origin_m"])
+            start_yaw = math.radians(float(root["frame"]["map_x_heading_deg"]))
         c = math.cos(start_yaw)
         s = math.sin(start_yaw)
 

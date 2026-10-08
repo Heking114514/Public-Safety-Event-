@@ -42,17 +42,17 @@ source install/setup.bash
 
 ```bash
 ros2 launch vision_correction vision_correction.launch.py \
-  map_file:=/home/hjh/cup_corporate/Public-Safety-Event-/src/arena_path_planner/config/arena_map.yaml
+  map_file:=/home/hjh/zhongzhouyanda/Public-Safety-Event-/src/new_map_planner/config/arena.yaml
 ```
 
 The empty `map_file` default resolves to the installed
-`arena_path_planner/config/arena_map.yaml`.
+`new_map_planner/config/arena.yaml`.
 
 ## Run navigation with the corrected odometry topic
 
 ```bash
 ros2 launch vision_correction vision_correction_navigation.launch.py \
-  map_file:=/home/hjh/cup_corporate/Public-Safety-Event-/src/arena_path_planner/config/arena_map.yaml
+  map_file:=/home/hjh/zhongzhouyanda/Public-Safety-Event-/src/new_map_planner/config/arena.yaml
 ```
 
 This wrapper starts the correction node and launches `visual_navigation` with

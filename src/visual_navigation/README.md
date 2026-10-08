@@ -8,14 +8,14 @@
 - 工作空间根目录的 `README.md`：纯上位机测试、真实视觉联调和下位机对接操作手册。
 
 `visual_navigation` 是路线执行器，不生成全局任务路线。它只在规划器明确标记的
-90 度路口内运行受车身包络约束的局部状态格搜索；A*、任务顺序和道路选择仍由外部
+路口内运行基于实测位姿的局部闭环转弯；A*、任务顺序和道路选择仍由外部
 规划器负责。全局路线由以下任一入口提供：
 
 1. **手动路点 / CSV 模式**：预先编辑 `route_file` 指向的 CSV，导航节点加载后按固定航点跟随；也可以启动 `route_editor.py` 在图形网格上手动标点并直接发布动态路线。编辑器发布 `nav_msgs/msg/Path`，不会自动保存 CSV。
-2. **自动规划模式**：由 `arena_path_planner` 根据地图、当前位姿、目标点和障碍物生成 `nav_msgs/msg/Path`；通过安全检查且能带来新进展的完整或阶段路线发布到 `/waypoint_navigation/route_input`，导航节点收到后自动激活执行。
+2. **自动规划模式**：由 `new_map_planner` 生成经过车身碰撞验证的路线，任务总控确认后发布到 `/waypoint_navigation/route_input`，导航节点负责执行。
 
 自动规划模式的启动入口和目标设置见工作空间根目录 `README.md` 以及
-`src/arena_path_planner/README.md`。
+`src/new_map_planner/README.md` 和 `src/navigation_mission_manager/README.md`。
 
 ## 接口
 
@@ -54,17 +54,18 @@ future than `stamp_future_tolerance`.
 | `/waypoint_navigator/start` | `std_srvs/srv/Trigger` | 从当前索引开始导航 |
 | `/waypoint_navigator/stop` | `std_srvs/srv/Trigger` | 停车并保持当前索引 |
 | `/waypoint_navigator/reset` | `std_srvs/srv/Trigger` | 停车并回到第 0 个航点 |
-| `/waypoint_navigator/set_motion_hold` | `mission_control_interfaces/srv/SetMotionHold` | 按来源申请或释放任务驻停 |
-| `/waypoint_navigator/continue_obstacle_retreat` | `mission_control_interfaces/srv/ContinueRetreat` | 当前恢复锚点无路时，沿保留的已执行轨迹继续倒退一段 |
+| `/waypoint_navigator/set_motion_hold` | `mission_control_interfaces/srv/SetMotionHold` | 总控调用的底层驻停执行接口 |
+| `/waypoint_navigator/continue_obstacle_retreat` | `mission_control_interfaces/srv/ContinueRetreat` | 总控调用的底层障碍倒退接口 |
+| `/waypoint_navigator/continue_route_retreat` | `mission_control_interfaces/srv/ContinueRetreat` | 总控调用的路线衔接历史轨迹倒退接口 |
 
 任务驻停只冻结路线控制并持续输出零速度，不关闭 ORB-SLAM3、相机、IMU、轮式里程计或融合定位。多个来源同时申请时，必须全部释放后才会恢复运动。
 
 ```bash
-ros2 service call /waypoint_navigator/set_motion_hold \
+ros2 service call /navigation_mission/set_motion_hold \
   mission_control_interfaces/srv/SetMotionHold \
   "{source: 'inspection', hold: true, reason: 'recognizing clue'}"
 
-ros2 service call /waypoint_navigator/set_motion_hold \
+ros2 service call /navigation_mission/set_motion_hold \
   mission_control_interfaces/srv/SetMotionHold \
   "{source: 'inspection', hold: false, reason: ''}"
 ```
@@ -107,8 +108,8 @@ x,y,yaw,speed,tolerance,stop_time
 自动恢复。
 
 最终航点首次进入位置容差后会锁定终点阶段。此后停车造成的
-`base_link` 位置摆动不会让导航重新追踪最后一段路径方向；达到最终
-`yaw` 容差后直接发布零速度并进入 `GOAL_REACHED`。
+`base_link` 位置摆动不会让导航重新追踪最后一段路径方向；到达最终位置并确认停车后
+直接发布零速度并进入 `GOAL_REACHED`。最终路径切线不会触发路中原地转向。
 
 路径控制连续 `10 s` 未取得 `0.05 m` 沿线进展，且车辆相对监督起点
 确实位移过 `0.25 m` 时，先停车一拍并重置路径反馈；另外，只有在直线前进阶段
@@ -120,10 +121,11 @@ x,y,yaw,speed,tolerance,stop_time
 制动、任务驻停、航点等待和定位等待期间不累计进度超时。
 
 需要停车的路口不会把下一段路径曲率提前施加到进站直线；进站时只保留受
-`pre_turn_path_angular_ratio` 限制的小幅路径纠偏。到点确认停稳后，90 度路口在后台
-生成包含慢速前进、倒车和原地微调的完整动作计划，搜索和执行都使用轮轴运动学、
-线角加速度限制以及整车 8mm 安全包络。计划衔接或下一周期不安全时先硬停车，再从
-实际零速姿态续规划；找不到安全解时保持 `TURN_BLOCKED`，不会放宽边界强行通过。
+`pre_turn_path_angular_ratio` 限制的小幅路径纠偏。到点确认停稳后，控制器先低速驶过 RFID
+参考截面，再根据每周期实测的位置、偏航和角速度追踪出口道路目标点。普通转弯始终保持
+正线速度，不使用固定动作回放，也不原地旋转；角速度会随横向和航向误差实时修正。连续
+3 秒无位姿进展会重置闭环，最多四次后进入 `FAULT_TURN_BLOCKED`。显式反向进站的障碍恢复
+转弯仍使用受车身包络约束的状态格搜索。
 
 如果需要使用已有地图中的绝对航点，需要后续增加 `外部地图 -> ORB里程计坐标` 的对齐节点，不能仅修改 CSV 中的 `frame_id`。
 
@@ -193,13 +195,14 @@ ros2 launch visual_navigation route_editor.launch.py
 动态路线中的速度和到达容差使用 `default_speed` 和 `waypoint_tolerance` 参数。当前默认巡航速度和最高线速度均为 `0.05 m/s`；最终速度发布口也会按该上限限幅。默认启动不加载 CSV，重启导航节点后需要再次点击发布按钮才能重新启用编辑路线。
 
 规划器发布的二维 `nav_msgs/Path` 用 `pose.position.z=0.001` 标记普通真实转向路口，
-`z=0.002` 标记“倒车退回路口后转弯”，普通点为 `0`。两种转弯都使用同一个车身包络
-状态格核心，但反向进站会从实际倒车到点姿态建模；未标记的精确 `A->B->A` 路末折返
-仍执行为直接倒车。其他 z 值会被拒绝。
+`z=0.002` 标记“倒车退回路口后转弯”，普通点为 `0`。普通转弯在线搜索第一段不超过
+约 `20°` 的同向转角，先越过路口参考截面，再前进后继续转向；转弯角度和动作段数根据
+实时姿态与车身扫掠确定。普通转弯不倒车；`z=0.002` 反向进站仍从实测倒车到点姿态
+建模。未标记的精确 `A->B->A` 路末折返仍执行为直接倒车。其他 z 值会被拒绝。
 
 ## 自动规划模式
 
-自动规划由 `arena_path_planner` 负责，`visual_navigation` 只接收规划结果并执行。该模式不读取
+自动规划由 `new_map_planner` 和 `navigation_mission_manager` 负责，`visual_navigation` 只接收规划结果并执行。该模式不读取
 `route_file`，也不需要手动调用 `/waypoint_navigator/start`。
 
 终端 1 使用无参数统一入口启动视觉、融合、导航和串口链路：
@@ -217,7 +220,7 @@ source install/setup.bash
 cd /path/to/your/workspace
 source /opt/ros/humble/setup.bash
 source install/setup.bash
-./scripts/start_arena_planner.sh
+./scripts/start_new_map_planner.sh
 ```
 
 在规划前端中切换到 `vehicle`，确认目标和障碍物后点击“开始导航”。规划器会把通过碰撞检查、

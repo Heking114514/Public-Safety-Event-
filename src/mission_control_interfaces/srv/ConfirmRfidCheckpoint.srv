@@ -1,0 +1,6 @@
+uint64 route_id
+uint32 waypoint_index
+string supernode_id
+---
+bool accepted
+string message

@@ -10,7 +10,9 @@ chassis:
 differential_drive:
   wheel_radius_m: 0.0302
   wheel_track_m: 0.1466
-  encoder_counts_per_revolution: 294912.0
+  # 2026-10-06 measured cumulative counts for ten wheel revolutions.
+  left_encoder_counts_per_revolution: 368867.22
+  right_encoder_counts_per_revolution: 368883.7667
   # Encoder counts decrease during ROS-forward wheel motion.
   left_distance_scale: -1.0
   right_distance_scale: -1.0

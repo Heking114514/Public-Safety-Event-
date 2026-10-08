@@ -28,6 +28,11 @@ void WaypointNavigator::BeginPathSegment() {
 }
 
 void WaypointNavigator::AdvanceWaypoint(bool preservePathFeedback) {
+  if (authorizedRfidCheckpoint_.has_value() &&
+      *authorizedRfidCheckpoint_ == currentWaypointIndex_) {
+    authorizedRfidCheckpoint_.reset();
+  }
+  rfidScanActive_ = false;
   ++currentWaypointIndex_;
   pathSegmentInitialized_ = false;
   continuePathControlOnNextSegment_ = preservePathFeedback;

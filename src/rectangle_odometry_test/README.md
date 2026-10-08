@@ -3,11 +3,14 @@
 独立的闭环底盘运动测试包。它不实现新的控制器，也不修改里程计；只调用现有
 `visual_navigation/waypoint_navigator` 的动态路线接口：
 
+矩形路线生成、发布和闭环监视节点使用 C++17；离散 primitive A* 实验控制器仍由
+Python 兼容入口提供。
+
 ```text
 /waypoint_navigation/route_input
 ```
 
-节点启动后等待 `/odometry/fused` 的有效位姿，以当前车体位置和朝向为矩形路线起点，
+`rectangle_route_node` 是 C++17 ROS 节点，启动后等待 `/odometry/fused` 的有效位姿，以当前车体位置和朝向为矩形路线起点，
 生成一个边长 `1.8 m` 的顺时针矩形：
 
 ```text
@@ -33,7 +36,7 @@ dx, dy, position_error, dyaw
 先启动现有的里程计、融合、导航和串口链路。例如：
 
 ```bash
-cd /home/hjh/cup_corporate/Public-Safety-Event-
+cd /home/hjh/zhongzhouyanda/Public-Safety-Event-
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 ./scripts/start_visual_navigation.sh --fused-odom
@@ -49,7 +52,7 @@ source install/setup.bash
 确认车辆周围没有障碍物、急停和串口状态正常后，另开终端启动测试：
 
 ```bash
-cd /home/hjh/cup_corporate/Public-Safety-Event-
+cd /home/hjh/zhongzhouyanda/Public-Safety-Event-
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 ros2 launch rectangle_odometry_test rectangle_test.launch.py
@@ -142,3 +145,6 @@ ROS 速度。默认使用 `30 mm` 平移步长、`3/6/12°` 曲率动作和 `±6
 colcon build --symlink-install --packages-select rectangle_odometry_test
 source install/setup.bash
 ```
+
+`rectangle_route_node` 安装后是编译出的 C++ 可执行文件；`primitive_controller_node`
+仍通过 Python 兼容脚本启动离散动作原语实验。
