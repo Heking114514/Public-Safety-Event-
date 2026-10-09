@@ -103,9 +103,9 @@ void WaypointNavigator::RunPath(const ControlFrame &frame) {
     ResetManeuver();
     const double plannedTurnError =
         NormalizeAngle(stoppedTurnTargetHeading_ - stoppedTurnArrivalHeading_);
-    if (cornerShuntController_.enabled_for(plannedTurnError)) {
+    if (turnManeuverController_.enabled_for(plannedTurnError)) {
       controlState_.begin_corner_shunt(currentX_, currentY_);
-      cornerShuntController_.begin(
+      turnManeuverController_.begin(
           std::chrono::duration<double>(
               std::chrono::steady_clock::now().time_since_epoch())
               .count());

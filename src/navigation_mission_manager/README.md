@@ -38,6 +38,10 @@ waypoint_navigator -> /cmd_vel_nav
 `max_retreat_extensions` 次；轨迹耗尽、控制器拒绝或达到次数上限才进入 `FAULT` 并驻停。
 任务节点始终不发布 `/cmd_vel`，后退跟踪与安全监督仍完全属于控制器。
 
+路口独立动作报告 `TURN_NEED_REPLAN` 时，表示当前入口和已确认的路口动作集合没有安全
+解，并不表示检测到障碍。任务节点清除旧路线，保留动态障碍记忆，直接从最新融合位姿重新
+请求当前阶段路线；该分支不调用倒退服务，也不进入 `RECOVERING_OBSTACLE`。
+
 完成一段路线后若下一段仅因几何衔接无路，总控改用
 `/waypoint_navigator/continue_route_retreat`，并保持 `REPLANNING`；控制器发布
 `ROUTE_TRANSITION_*` 状态。该流程复用同一条已执行轨迹和安全监督，但不属于障碍恢复，
@@ -62,7 +66,7 @@ waypoint_navigator -> /cmd_vel_nav
 读卡器返回的 1–12 卡号是到点事件数据，不代表地图点编号；任何有效卡号只会关联到当前路线
 预期的超节点，并且融合位姿必须位于该点的接近范围内。
 
-串口桥只发布 `/cup_car_serial/rfid_number`。导航器到达超节点后沿来向以 `0.02 m/s` 低速
+串口桥只发布 `/cup_car_serial/rfid_number`。导航器到达超节点后沿来向以 `0.035 m/s` 低速
 扫描，最多越过地图节点 `0.20 m` 并停等读卡；里程计本身不能确认节点、推进路线或触发转弯。
 读到卡后任务总控申请 `navigation_mission_manager/rfid` 驻停，等待驻停生效，向
 `/fused_odometry/correct_map_position` 请求校正，并等待融合位姿进入目标点 `0.025 m` 范围且

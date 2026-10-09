@@ -46,6 +46,240 @@
 
 ## 已确认问题
 
+### 2026-10-09 14:53:42 +0800：第二个转弯入口航向字段混用
+
+复现输入来自最近 rosbag 的第二个转弯入口：
+
+- `base_link = (0.200, -0.500)`；
+- 车辆实际到达航向约 `-86°`；
+- 道路几何入口方向为 `0°`；
+- 下一段道路目标方向为 `0°`。
+
+复现时，`RunBrake()` 将当前车辆航向写入 `stoppedTurnArrivalHeading_`，随后旧的
+`BuildCornerShuntContext()` 把这个值作为唯一的 `incoming_heading`。这会让同一个角度同时
+承担道路坐标系、车体扫掠、转弯方向和剩余偏航误差的语义。临时实验在约 20 个控制周期后
+进入 `FAULT_TURN_BLOCKED`，与 rosbag 日志一致；该现象不是 RFID 位置校正造成的，RFID
+校正只更新 XY，不更新 yaw。
+
+本轮修正（尚未作为稳定基线）：
+
+- `geometry_heading` 固定取路线道路方向，用于路口局部坐标和 footprint 安全检查；
+- `arrival_heading` 保存刹停时车辆实际航向，用于计算目标方向的剩余转角和入口姿态；
+- 普通控制器和 `new_map_planner` 的离线转弯上下文统一使用这两个字段；
+- 增加 `SeparatesRoadGeometryFromResidualArrivalYaw` 回归测试，覆盖道路方向为 `0°`、到达
+  航向为 `-1.50 rad` 的入口残差场景。
+
+实验记录（2026-10-09 15:26:49 +0800）：
+
+- `visual_navigation` 编译通过；字段拆分后的 `corner_shunt_test` 全部通过；
+- 将同一输入直接跑完整运动仿真时，控制器仍在约 1.03 s 后进入 `BLOCKED`，说明动态控制
+  仍存在独立问题，不能把本轮字段拆分称为完整修复；
+- 本轮回归测试只确认道路坐标和 footprint 安全检查不再随到达航向改变，并确认第一次更新
+  不立即阻塞。完整动态复现保留为下一轮控制律实验，当前不启动实车或仿真节点。
+
+在动态复现通过前，不得把本次修改视为新的控制器基线。
+
+## 转弯状态机候选设计
+
+记录时间：**2026-10-09 16:40:11 +0800**。本节只用于方案评审，所有状态名和迁移均未进入
+生产代码。02:30 控制器仍是稳定基线，不能用本节描述推断当前实车行为。
+
+### 设计边界
+
+转弯应作为一套独立动作，由上层导航启动、暂停、取消并接收结果。转弯动作不读取 RFID
+卡号、不决定任务顺序、不执行全局规划，也不直接修改融合里程计。它只接收一次冻结的路口
+上下文和持续更新的车辆状态：
+
+- 路口位置、道路入口方向、目标出口方向和道路宽度；
+- 当前实测位姿、速度、IMU 角速度和定位健康状态；
+- 车体 footprint、轴心偏移和安全余量；
+- 当前路口是否允许前进/倒车微调；
+- 障碍急停、任务暂停和动作取消信号。
+
+转弯动作只返回 `RUNNING`、`COMPLETED`、`NEED_REPLAN`、`CANCELED` 或 `FAULT`。RFID
+节点与普通节点最终调用同一个转弯动作，区别只存在于调用前的到点确认与位置校正。
+
+### 与当前生产状态的关系
+
+当前代码仍发布下列状态。本表只说明候选设计如何承接，不代表已经完成迁移：
+
+| 当前生产状态 | 当前含义 | 候选归属或处理 |
+| --- | --- | --- |
+| `FOLLOWING` | 普通路径跟踪 | `NAV_FOLLOWING` |
+| `BRAKING_APPROACH` | 航点前制动接近 | `NAV_APPROACH_NODE` |
+| `BRAKING_AT_WAYPOINT` | 航点停车确认 | `NAV_BRAKING` |
+| `WAITING_FOR_RFID:*` | 等待读卡确认 | `NAV_WAIT_RFID` |
+| `RFID_SCANNING:*` | 沿来向低速扫描 | `NAV_WAIT_RFID` 内部行为 |
+| `TURN_STOP` | 转弯动作入口停车 | 上层 `NAV_BRAKING`，不在动作内重复停车 |
+| `TURN_CHECK` | 检查或等待规划 | 拆为 `TURN_CAPTURE`、`TURN_ENTRY_CHECK`、`TURN_TRIM_SEARCH` |
+| `TURN_REVERSE` | 路口倒车动作 | `TURN_REVERSE_TRIM`，必须有空间目标和闭环终止条件 |
+| `TURN_CREEP` | 低速直行动作 | 按用途拆为 `TURN_FORWARD_TRIM` 或 `TURN_ARC` |
+| `TURN_ARC` | 带线速度转弯 | `TURN_ARC` |
+| `TURN_ROTATE` | 零线速度旋转 | 候选动作删除，不允许以原地旋转完成普通路口转弯 |
+| `TURN_HALF_SETTLED` | 大转角的中间稳定阶段 | 由 `TURN_TRIM_SETTLE` 或 `TURN_EXIT_ALIGN` 明确承接 |
+| `PATH_ALIGNED` | 转弯完成并交回路径控制 | `TURN_COMPLETE` 后进入 `NAV_RESUME_PATH` |
+| `FAULT_TURN_BLOCKED` | 候选动作失败或转弯卡死的汇总故障 | 拆为 `TURN_TRIM_SEARCH`、`TURN_NEED_REPLAN`、`TURN_FAULT` |
+| `OBSTACLE_*` | 障碍停车、倒退和重规划 | 不属于转弯动作；只能暂停或取消动作 |
+| `ROUTE_TRANSITION_*` | 路线衔接倒退 | 不属于转弯动作，不得复用转弯微调状态 |
+| `HELD_FOR_MISSION` | 任务层强制驻停 | `NAV_HELD`，抢占转弯命令所有权 |
+| `GOAL_REACHED` | 路线终点 | `NAV_GOAL` |
+
+迁移时不能保留一个统一的 `FAULT_TURN_BLOCKED` 再改名。当前动作不安全、当前微调目标不合适、
+路口内全部候选均不可行和控制器输入非法是四种不同结果，必须走不同迁移。
+
+### 上层导航候选状态
+
+| 状态 | 主要行为 | 正常出口 |
+| --- | --- | --- |
+| `NAV_WAIT_ROUTE` | 等待合法路线，不允许运动 | `NAV_FOLLOWING` |
+| `NAV_FOLLOWING` | 普通道路闭环跟踪 | `NAV_APPROACH_NODE`、`NAV_GOAL` |
+| `NAV_APPROACH_NODE` | 临近需停车节点时减速；RFID 前 0.20 m 限速 0.035 m/s | `NAV_BRAKING` |
+| `NAV_BRAKING` | 发布零速并确认车轮、位姿和角速度稳定 | `NAV_NODE_STOPPED` |
+| `NAV_NODE_STOPPED` | 区分 RFID 节点、普通转弯节点和任务停车点 | `NAV_WAIT_RFID`、`NAV_START_TURN`、`NAV_TASK_STOP` |
+| `NAV_WAIT_RFID` | 里程计到点但尚未读卡时继续低速扫描，不提前转弯 | `NAV_RFID_LATCHED` |
+| `NAV_RFID_LATCHED` | 锁存本次卡事件，只执行一次 XY 校正；重复读卡不再校正或暂停 | `NAV_START_TURN`、`NAV_TASK_STOP` |
+| `NAV_START_TURN` | 冻结路口上下文并启动独立转弯动作 | `NAV_TURN_ACTIVE` |
+| `NAV_TURN_ACTIVE` | 只转发转弯动作命令和状态，不运行普通路径控制 | `NAV_RESUME_PATH`、`NAV_REPLAN_REQUIRED` |
+| `NAV_RESUME_PATH` | 确认出口道路接管，清除本次 RFID 锁存 | `NAV_FOLLOWING` |
+| `NAV_TASK_STOP` | 执行任务播报要求的正常停车 | 由任务层决定 |
+| `NAV_REPLAN_REQUIRED` | 当前路口动作无法安全完成，请求上层换路或退到更早锚点 | 等待新路线 |
+| `NAV_HELD` | 安全、定位或任务请求导致的可恢复驻停 | 恢复到被暂停状态 |
+| `NAV_GOAL` | 本段路线完成并保持停车 | 等待新路线 |
+| `NAV_FAULT` | 只有不可恢复、输入非法或多次无进展时进入 | 人工或任务层复位 |
+
+候选主流程如下：
+
+```text
+NAV_FOLLOWING
+  -> NAV_APPROACH_NODE
+  -> NAV_BRAKING
+  -> NAV_NODE_STOPPED
+       | RFID 节点 -> NAV_WAIT_RFID -> NAV_RFID_LATCHED
+       | 普通节点 -------------------------------|
+                                                   v
+                                           NAV_START_TURN
+                                                   |
+                                           NAV_TURN_ACTIVE
+                                            /             \
+                                  NAV_RESUME_PATH    NAV_REPLAN_REQUIRED
+                                         |
+                                  NAV_FOLLOWING
+```
+
+### RFID 锁存子状态
+
+RFID 锁存必须独立于车辆是否再次经过读卡器：
+
+| 状态 | 含义 |
+| --- | --- |
+| `RFID_ARMED` | 当前目标允许接收一次匹配卡事件 |
+| `RFID_LATCHED` | 已保存路线 ID、航点索引、卡号和事件序号；后续同卡采样被忽略 |
+| `RFID_CORRECTED` | 本次事件的 XY 校正已经完成，禁止再次校正 |
+| `RFID_RELEASED` | 转弯完成、路线取消或任务明确放弃后释放锁存 |
+
+锁存顺序必须是“先锁存，后校正”。因此转弯前倒车再次压到 RFID 时，不会重新校正里程计、
+重新停车或重新触发任务播报。新路线只有在路线 ID 和目标航点都变化后才能重新武装。
+
+### 独立转弯动作候选状态
+
+| 状态 | 主要行为 | 允许的速度 |
+| --- | --- | --- |
+| `TURN_IDLE` | 未持有动作上下文，不发布运动命令 | `vx=0` |
+| `TURN_CAPTURE` | 校验并冻结路口几何；保存实际到达航向，不把它当道路方向 | `vx=0` |
+| `TURN_ENTRY_CHECK` | 用当前 footprint 判断能否直接进入一般转弯 | `vx=0` |
+| `TURN_TRIM_SEARCH` | 沿来向道路搜索距离最近的安全微调目标 | `vx=0` |
+| `TURN_REVERSE_TRIM` | 闭环倒退到搜索目标，同时修正横向和航向误差 | `vx=-0.035 m/s` |
+| `TURN_FORWARD_TRIM` | 倒退过量或入口位置不足时闭环小幅前进 | `vx=+0.035 m/s` |
+| `TURN_TRIM_SETTLE` | 微调到位后停稳，使用最新位姿重新检查 | `vx=0` |
+| `TURN_ARC` | 执行一般闭环转弯，每周期重算线速度和角速度 | `vx>=0.035 m/s` |
+| `TURN_EXIT_ALIGN` | 车辆已进入出口，收敛横向和航向误差 | `vx>=0.035 m/s` |
+| `TURN_COMPLETE` | 输出完成结果，命令权交回普通道路跟踪 | `vx=0` |
+| `TURN_PAUSED` | 障碍、任务驻停或定位暂时不可用；保存动作上下文 | `vx=0` |
+| `TURN_NEED_REPLAN` | 当前路口内没有安全动作，但不直接判为控制器故障 | `vx=0` |
+| `TURN_FAULT` | 上下文非法、越界且无法退回，或多次闭环无进展 | `vx=0` |
+
+内部正常迁移：
+
+```text
+TURN_CAPTURE
+  -> TURN_ENTRY_CHECK
+       | 直接可转 -> TURN_ARC
+       | 需要微调 -> TURN_TRIM_SEARCH
+                         | 后退目标 -> TURN_REVERSE_TRIM
+                         | 前进目标 -> TURN_FORWARD_TRIM
+                                            |
+                                    TURN_TRIM_SETTLE
+                                            |
+                                    TURN_ENTRY_CHECK
+  -> TURN_ARC
+  -> TURN_EXIT_ALIGN
+  -> TURN_COMPLETE
+```
+
+`TURN_ENTRY_CHECK` 或单个候选动作失败只表示“当前动作不可行”，应回到 `TURN_TRIM_SEARCH`；
+搜索完路口内全部候选仍无安全动作时才返回 `TURN_NEED_REPLAN`。只有越界后没有安全退路、
+输入不合法或达到有界无进展次数时，才允许进入 `TURN_FAULT`。
+
+### 微调距离候选规则
+
+微调距离不采用固定 0.20 m 或固定持续时间。`TURN_TRIM_SEARCH` 应在来向道路中心线上从近到
+远检查候选目标，例如按 0.02 m 空间分辨率搜索；分辨率是规划精度，不是车辆必须逐段停车。
+首个同时满足以下条件的最近目标即为微调终点：
+
+- 当前姿态到该目标存在全程安全的闭环前进或倒车轨迹；
+- 目标 footprint 完整位于来向道路与路口允许区域；
+- 从目标姿态能够生成完整、无碰撞的一般转弯轨迹；
+- 不越过上一个普通节点、路段边界或任务层给出的最大回退边界；
+- 不通过放宽道路边界或允许原地旋转来获得“可行”。
+
+执行时以沿道路有符号距离作为主误差，以横向误差和航向误差作为修正量，持续闭环到目标。
+到位后必须停车并重新测量，不能按搜索时估计的距离直接切换转弯。若车辆越过目标，可以进入
+`TURN_FORWARD_TRIM` 小幅修正，避免一次过冲直接卡死。
+
+### RFID 节点与普通节点
+
+RFID 节点流程：
+
+```text
+低速接近 -> 停车读卡 -> 锁存 -> XY 校正一次 -> 独立转弯动作 -> 出口接管 -> 释放锁存
+```
+
+普通转弯节点流程：
+
+```text
+融合里程计到点 -> 停车确认 -> 独立转弯动作 -> 出口接管
+```
+
+普通节点没有 RFID 锁存和 XY 校正，但不能因此退回旧的“一次失败即卡死”逻辑。只要地图确认
+当前位置是转弯节点、定位健康且微调轨迹没有越过允许区域，就可以使用同一套前进/倒车微调。
+普通直线采样点不启动转弯动作，也不允许倒车微调。
+
+### 抢占优先级
+
+为避免多个状态机同时发速度，命令所有权按以下顺序处理：
+
+```text
+安全急停 / 执行器故障
+  > 任务强制驻停
+  > 转弯动作
+  > RFID 低速扫描
+  > 普通路径跟踪
+```
+
+障碍信号只能暂停或取消转弯动作，不能让障碍恢复和转弯动作同时发布命令。定位短时失效进入
+`TURN_PAUSED`，恢复后从实测位姿重新执行 `TURN_ENTRY_CHECK`，不继续播放旧命令。
+
+### 待评审决策
+
+以下内容在编码前必须确定：
+
+- RFID 校正完成的确认接口，以及确认超时后是驻停还是允许降级；
+- 普通节点允许微调的地图标记，禁止仅靠距离附近猜测“这是路口”；
+- 来向道路上的最大回退边界由规划器提供，还是由控制器根据相邻节点计算；
+- 障碍打断转弯后是恢复同一动作，还是统一交给任务层重新规划；
+- `TURN_FORWARD_TRIM` 是否只用于倒车过冲，还是也允许作为初始入口调整；
+- `TURN_NEED_REPLAN` 的任务层响应协议，避免再次被错误映射成障碍恢复。
+
 ### 路口转弯
 
 最近 rosbag 显示，车辆在 RFID 路口可能带着数度航向残差进入下一段转弯。RFID 校正只改

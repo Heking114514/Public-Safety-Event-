@@ -12,6 +12,9 @@ ROS_DISTRO_NAME="${ROS_DISTRO:-humble}"
 ROS_SETUP="${ROS_SETUP:-/opt/ros/${ROS_DISTRO_NAME}/setup.bash}"
 COLCON_COMMAND="${NEW_MAP_PLANNER_COLCON_COMMAND:-colcon}"
 ROS2_COMMAND="${NEW_MAP_PLANNER_ROS2_COMMAND:-ros2}"
+STARTUP_CONFIG="${WORKSPACE_ROOT}/config/navigation_startup.yaml"
+RECORDING_CONFIG="${WORKSPACE_ROOT}/config/navigation_recording.yaml"
+CONFIG_HELPER="${SCRIPT_DIR}/navigation_config.py"
 
 log() {
   printf '[new-map-planner] %s\n' "$*"
@@ -61,6 +64,15 @@ fi
 [[ -r "${ROS_SETUP}" ]] || fail "ROS 环境不存在: ${ROS_SETUP}"
 [[ -f "${BUILD_LOCK_HELPER}" ]] || fail "构建锁脚本不存在: ${BUILD_LOCK_HELPER}"
 [[ -x "${BUILD_MANIFEST_HELPER}" ]] || fail "构建清单工具不存在: ${BUILD_MANIFEST_HELPER}"
+[[ -f "${STARTUP_CONFIG}" ]] || fail "启动配置不存在: ${STARTUP_CONFIG}"
+[[ -f "${RECORDING_CONFIG}" ]] || fail "录包配置不存在: ${RECORDING_CONFIG}"
+
+ROS_DOMAIN_ID_CONFIG="$(${CONFIG_HELPER} --startup "${STARTUP_CONFIG}" \
+  --recording "${RECORDING_CONFIG}" | awk -F '\t' '$1 == "ros_domain_id" {print $2}')" ||
+  fail "无法读取 ROS domain 配置"
+[[ "${ROS_DOMAIN_ID_CONFIG}" =~ ^[0-9]+$ ]] || fail "ROS domain 配置无效"
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID_CONFIG}"
+log "ROS domain: ROS_DOMAIN_ID=${ROS_DOMAIN_ID}"
 
 set +u
 # shellcheck disable=SC1090

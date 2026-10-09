@@ -36,7 +36,8 @@ WaypointNavigator::ControlFrame WaypointNavigator::BuildControlFrame(
       currentX_, currentY_);
   frame.waypoint_requires_stop =
       WaypointRequiresStop(frame.path_heading, frame.final_waypoint) ||
-      frame.target.stop_time > 0.0 || reverseSegmentActive_;
+      frame.target.turn_junction || frame.target.stop_time > 0.0 ||
+      reverseSegmentActive_;
   const bool continuousWaypointPassed =
       !controlState_.recovering_goal() &&
       visual_navigation::ContinuousPathWaypointPassed(
@@ -173,7 +174,15 @@ void WaypointNavigator::RunControl() {
       return;
     }
     AdvanceWaypoint();
-    routeStartTurnAuthorized_ = false;
+    const bool shortTurnPrefix =
+        currentWaypointIndex_ > 0 &&
+        currentWaypointIndex_ < waypoints_.size() &&
+        waypoints_[currentWaypointIndex_].turn_junction &&
+        std::hypot(waypoints_[currentWaypointIndex_].x -
+                       waypoints_[currentWaypointIndex_ - 1].x,
+                   waypoints_[currentWaypointIndex_].y -
+                       waypoints_[currentWaypointIndex_ - 1].y) <= 0.02;
+    routeStartTurnAuthorized_ = routeStartTurnAuthorized_ && shortTurnPrefix;
     return;
   }
 

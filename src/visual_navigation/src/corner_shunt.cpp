@@ -39,8 +39,12 @@ WaypointNavigator::BuildCornerShuntContext(const ControlFrame &frame) const {
   context.measured_yaw_rate_valid = ImuYawRateIsFresh();
   context.junction_x = junction.x;
   context.junction_y = junction.y;
-  context.incoming_heading =
-      stoppedAtPlannedTurn_ ? stoppedTurnArrivalHeading_ : frame.path_heading;
+  context.geometry_heading = stoppedAtPlannedTurn_
+                                 ? stoppedTurnGeometryHeading_
+                                 : frame.path_heading;
+  context.arrival_heading = stoppedAtPlannedTurn_
+                                ? stoppedTurnArrivalHeading_
+                                : frame.path_heading;
   context.target_heading =
       stoppedAtPlannedTurn_ ? stoppedTurnTargetHeading_ : frame.path_heading;
   context.reverse_arrival = stoppedTurnReverseArrival_;
@@ -54,50 +58,80 @@ void WaypointNavigator::RunCornerShunt(const ControlFrame &frame,
   turnProgressSupervisor_.Pause();
 
   const auto context = BuildCornerShuntContext(frame);
-  const auto decision =
-      cornerShuntController_.update(context, SteadySeconds());
-  if (state_ == "TURN_CHECK" &&
-      decision.phase != visual_navigation::CornerShuntPhase::CHECK &&
-      !decision.blocked) {
-    if (context.reverse_arrival) {
-      RCLCPP_INFO(get_logger(),
-                  "Corner recovery plan ready: commands=%zu plans=%d "
-                  "base=(%.3f, %.3f, %.1fdeg)",
-                  cornerShuntController_.planned_command_count(),
-                  cornerShuntController_.plan_count(), currentX_, currentY_,
-                  currentYaw_ * 180.0 / kPi);
-    } else {
-      RCLCPP_INFO(get_logger(),
-                  "Closed-loop corner control active: base=(%.3f, %.3f, "
-                  "%.1fdeg)",
-                  currentX_, currentY_, currentYaw_ * 180.0 / kPi);
-    }
+  visual_navigation::TurnManeuverInput input;
+  input.context = context;
+  const auto decision = turnManeuverController_.update(input, SteadySeconds());
+  if (decision.trim_target_selected) {
+    RCLCPP_INFO(get_logger(),
+                "Turn trim target selected: attempt=%zu/%d target_local_x=%.3f "
+                "candidates=%zu footprint_rejected=%zu turn_rejected=%zu",
+                decision.trim_attempts,
+                turnManeuverConfig_.max_trim_attempts,
+                decision.trim_target_local_x,
+                decision.trim_candidates_checked,
+                decision.trim_footprint_rejections,
+                decision.trim_turn_rejections);
   }
-  if (decision.complete) {
+  if (decision.has_safety_report) {
+    const auto &report = decision.safety_report;
+    RCLCPP_WARN(
+        get_logger(),
+        "Turn footprint rejected: source=%s reason=%s prediction_sample=%d "
+        "corner=%d corner_local=(%.3f, %.3f) overlap=%.3f "
+        "checked_pose=(%.3f, %.3f, %.1fdeg) attempted=(%.3f, %.3f) "
+        "geometry=%.1fdeg junction=(%.3f, %.3f)",
+        report.source,
+        visual_navigation::CornerShuntSafetyFailureName(report.failure),
+        report.prediction_sample, report.footprint_corner,
+        report.corner_local.x, report.corner_local.y, report.overlap_m,
+        report.checked_pose.x, report.checked_pose.y,
+        report.checked_pose.yaw * 180.0 / kPi,
+        report.attempted_command.linear_x,
+        report.attempted_command.angular_z,
+        context.geometry_heading * 180.0 / kPi, context.junction_x,
+        context.junction_y);
+  }
+  if (decision.result == visual_navigation::TurnManeuverResult::COMPLETED) {
     ResetPathFeedback();
-    cornerShuntController_.reset();
+    turnManeuverController_.reset();
     controlState_.finish_path_alignment();
     stoppedAtPlannedTurn_ = false;
     stoppedTurnReverseArrival_ = false;
     firstHalfTurnPending_ = false;
-    SetState(visual_navigation::CornerShuntStatus(decision.phase));
+    SetState(visual_navigation::TurnManeuverStatus(decision.phase));
     return;
   }
-  if (decision.blocked) {
+  if (decision.result == visual_navigation::TurnManeuverResult::NEED_REPLAN) {
     navigationActive_ = false;
-    RCLCPP_ERROR(
+    RCLCPP_WARN(
         get_logger(),
-        "Corner turn fault after %d plan(s) at base=(%.3f, %.3f, %.1fdeg)",
-        cornerShuntController_.plan_count(), currentX_, currentY_,
-        currentYaw_ * 180.0 / kPi);
+        "Junction maneuver search ended: reason=%s attempts=%zu/%d "
+        "candidates=%zu footprint_rejected=%zu turn_rejected=%zu "
+        "base=(%.3f, %.3f, %.1fdeg); requesting route-level recovery",
+        decision.trim_limit_reached ? "trim_limit" : "no_trim_candidate",
+        decision.trim_attempts,
+        turnManeuverConfig_.max_trim_attempts,
+        decision.trim_candidates_checked,
+        decision.trim_footprint_rejections,
+        decision.trim_turn_rejections,
+        currentX_, currentY_, currentYaw_ * 180.0 / kPi);
     PublishStop();
-    SetState("FAULT_TURN_BLOCKED");
+    SetState("TURN_NEED_REPLAN");
     return;
   }
-  if (decision.phase == visual_navigation::CornerShuntPhase::STOP ||
-      decision.phase == visual_navigation::CornerShuntPhase::CHECK) {
+  if (decision.result == visual_navigation::TurnManeuverResult::FAULT ||
+      decision.result == visual_navigation::TurnManeuverResult::CANCELED) {
+    navigationActive_ = false;
     PublishStop();
-    SetState(visual_navigation::CornerShuntStatus(decision.phase));
+    SetState(decision.result == visual_navigation::TurnManeuverResult::FAULT
+                 ? "FAULT_TURN_MANEUVER"
+                 : "TURN_CANCELED");
+    return;
+  }
+  if (std::abs(decision.command.linear_x) <= 1.0e-9 &&
+      std::abs(decision.command.angular_z) <= 1.0e-9) {
+    PublishStop();
+    SetState(visual_navigation::TurnManeuverStatus(decision.phase));
     return;
   }
 
@@ -105,5 +139,5 @@ void WaypointNavigator::RunCornerShunt(const ControlFrame &frame,
   command.linear.x = decision.command.linear_x;
   command.angular.z = decision.command.angular_z;
   PublishMotionCommand(command);
-  SetState(visual_navigation::CornerShuntStatus(decision.phase));
+  SetState(visual_navigation::TurnManeuverStatus(decision.phase));
 }

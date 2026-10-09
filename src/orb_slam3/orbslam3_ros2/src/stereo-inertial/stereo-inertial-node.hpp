@@ -28,6 +28,7 @@
 #include "Tracking.h"
 
 #include "utility.hpp"
+#include "planar_frame.hpp"
 #include "pose_continuity.hpp"
 #include "pose_velocity_estimator.hpp"
 

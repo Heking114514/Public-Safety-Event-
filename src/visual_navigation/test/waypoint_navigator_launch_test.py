@@ -280,7 +280,7 @@ class TestWaypointNavigatorContract(unittest.TestCase):
         self.hold_odometry(0.30, cycles=6)
 
         assert "OBSTACLE_REVERSING" not in self.states
-        assert any(linear > 0.0 for linear, _ in self.commands)
+        assert any(abs(linear) > 0.001 for linear, _ in self.commands)
         self.publish_obstacle(False)
         self.call_trigger(self.stop_client)
 
@@ -302,7 +302,7 @@ class TestWaypointNavigatorContract(unittest.TestCase):
 
         assert "OBSTACLE_BRAKING" not in self.states, self.states
         assert "OBSTACLE_REVERSING" not in self.states
-        assert any(linear > 0.0 for linear, _ in self.commands)
+        assert any(abs(linear) > 0.001 for linear, _ in self.commands)
         self.call_trigger(self.stop_client)
 
     def test_unexpected_obstacle_stops_reverses_and_requests_replan(self):
@@ -401,7 +401,7 @@ class TestWaypointNavigatorContract(unittest.TestCase):
 
         assert "OBSTACLE_BRAKING" not in self.states, self.states
         assert "OBSTACLE_REVERSING" not in self.states
-        assert any(linear > 0.0 for linear, _ in self.commands)
+        assert any(abs(linear) > 0.001 for linear, _ in self.commands)
         self.publish_obstacle(False)
         self.call_trigger(self.stop_client)
 
@@ -557,7 +557,12 @@ class TestWaypointNavigatorContract(unittest.TestCase):
             self.publish_odometry(x=0.30)
             self.spin(0.04)
 
-        motion_states = {"TURN_REVERSE", "TURN_ROTATE", "TURN_ARC", "TURN_CREEP"}
+        motion_states = {
+            "TURN_REVERSE_TRIM",
+            "TURN_FORWARD_TRIM",
+            "TURN_ARC",
+            "TURN_EXIT_ALIGN",
+        }
         assert motion_states.intersection(self.states)
         turn_commands = [
             command
@@ -565,6 +570,8 @@ class TestWaypointNavigatorContract(unittest.TestCase):
             if abs(command[0]) > 0.001 or abs(command[1]) > 0.02
         ]
         assert turn_commands
+        assert all(abs(linear) >= 0.0349 for linear, _ in turn_commands)
+        assert all(abs(linear) > 0.001 for linear, angular in turn_commands if abs(angular) > 0.02)
         self.call_trigger(self.stop_client)
 
     def test_z_active_turn_ignores_old_lane_obstacle_then_rearms(self):
@@ -589,7 +596,8 @@ class TestWaypointNavigatorContract(unittest.TestCase):
             self.publish_odometry(x=0.30)
             self.publish_stopped_wheels()
             self.spin(0.04)
-        self.hold_odometry(0.30, yaw=0.10, cycles=8)
+        self.hold_odometry(0.30, yaw=0.10, cycles=4)
+        self.hold_odometry(0.26, yaw=0.0, cycles=10)
         assert "TURN_ARC" in self.states
 
         self.commands.clear()
@@ -673,10 +681,15 @@ class TestWaypointNavigatorContract(unittest.TestCase):
         stamp = self.node.get_clock().now()
         self.publish_route(stamp.to_msg(), [(0.0, 0.0, 0.001), (0.0, 1.0)])
         self.hold_odometry(0.0, cycles=14)
-        self.hold_odometry(0.01, cycles=14)
+        self.hold_odometry(-0.04, cycles=14)
 
         assert "OBSTACLE_REPLAN_REQUIRED" not in self.states
-        motion_states = {"TURN_REVERSE", "TURN_ROTATE", "TURN_ARC", "TURN_CREEP"}
+        motion_states = {
+            "TURN_REVERSE_TRIM",
+            "TURN_FORWARD_TRIM",
+            "TURN_ARC",
+            "TURN_EXIT_ALIGN",
+        }
         assert motion_states.intersection(self.states)
         assert any(linear > 0.0 for linear, _ in self.commands)
         assert any(abs(angular) > 0.05 for _, angular in self.commands)
@@ -685,6 +698,29 @@ class TestWaypointNavigatorContract(unittest.TestCase):
             for linear, angular in self.commands
             if abs(angular) > 0.05
         )
+        self.call_trigger(self.stop_client)
+
+    def test_snap_prefix_before_route_start_turn_uses_arrival_heading(self):
+        self.call_trigger(self.stop_client)
+        self.commands.clear()
+        self.states.clear()
+        self.publish_odometry(x=0.30, yaw=-math.pi / 2.0)
+        self.spin(0.05)
+        stamp = self.node.get_clock().now()
+        self.publish_route(
+            stamp.to_msg(),
+            [(0.300, 0.0), (0.301, 0.0, 0.001), (1.300, 0.0)],
+        )
+        self.hold_odometry(0.30, yaw=-math.pi / 2.0, cycles=20)
+
+        assert "OBSTACLE_REPLAN_REQUIRED" not in self.states, self.states
+        assert {
+            "TURN_ENTRY_CHECK",
+            "TURN_TRIM_SEARCH",
+            "TURN_REVERSE_TRIM",
+            "TURN_ARC",
+        }.intersection(self.states), self.states
+        assert any(abs(linear) > 0.01 for linear, _ in self.commands)
         self.call_trigger(self.stop_client)
 
     def test_rfid_supernode_waits_for_route_checkpoint_authorization(self):
@@ -707,7 +743,7 @@ class TestWaypointNavigatorContract(unittest.TestCase):
         self.hold_odometry(0.31, cycles=8)
         assert "WAITING_FOR_RFID:1" in self.states, self.states
         assert self.commands
-        assert any(0.0 < linear <= 0.02 for linear, _ in self.commands)
+        assert any(0.0349 <= linear <= 0.0351 for linear, _ in self.commands)
         assert not any(linear < 0.0 for linear, _ in self.commands)
 
         rejected = self.call_confirm_rfid(route_id + 1, 1)

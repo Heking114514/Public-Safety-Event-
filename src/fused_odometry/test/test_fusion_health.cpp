@@ -107,7 +107,7 @@ TEST(FusionHealthMonitor, WheelOnlyDistanceLimitChangesModeWithoutFusedPose)
     fused_odometry::FusionMode::kFault);
 }
 
-TEST(FusionHealthMonitor, WheelAndImuNoVisionFallbackIsBounded)
+TEST(FusionHealthMonitor, WheelAndImuContinueBeyondVisionWarningLimit)
 {
   auto monitor = make_monitor();
   monitor.start_vision_outage(0.0);
@@ -118,10 +118,11 @@ TEST(FusionHealthMonitor, WheelAndImuNoVisionFallbackIsBounded)
   limits.max_dead_reckoning_distance = 0.30;
 
   EXPECT_EQ(monitor.evaluate(input, limits).mode,
-    fused_odometry::FusionMode::kNoVision);
+    fused_odometry::FusionMode::kDeadReckoning);
   input.now_seconds = 2.1;
-  EXPECT_EQ(monitor.evaluate(input, limits).mode,
-    fused_odometry::FusionMode::kFault);
+  const auto result = monitor.evaluate(input, limits);
+  EXPECT_EQ(result.mode, fused_odometry::FusionMode::kDeadReckoning);
+  EXPECT_TRUE(result.dead_reckoning_warning);
 }
 
 TEST(FusionHealthMonitor, VisualRecoveryClearsOutageState)

@@ -372,6 +372,7 @@ if rclpy is not None:
         def _safety_gate_reason(self, now_s: float) -> str:
             allowed_fusion_states = {
                 "FULL",
+                "DEGRADED_DEAD_RECKONING",
                 "DEGRADED_NO_VISION",
                 "DEGRADED_NO_IMU",
                 "DEGRADED_NO_WHEEL",

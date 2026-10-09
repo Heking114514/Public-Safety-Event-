@@ -4,8 +4,8 @@
 schema_version: 1
 
 chassis:
-  length_m: 0.1485
-  width_m: 0.1250
+  length_m: 0.1320
+  width_m: 0.1320
 
 differential_drive:
   wheel_radius_m: 0.0302

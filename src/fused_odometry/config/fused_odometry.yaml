@@ -44,8 +44,8 @@ fused_odometry_gate:
     visual_recovery_ramp_s: 0.75
     visual_recovery_initial_covariance_scale: 50.0
 
-    # The no-vision window covers the measured 0.8 m tunnel. It is still
-    # bounded so a permanent camera failure cannot run an entire mission.
+    # Diagnostic warning thresholds for visual loss. Healthy wheel+IMU dead
+    # reckoning remains drivable beyond them until ORB or an RFID anchor returns.
     max_dead_reckoning_time_s: 4.0
     max_dead_reckoning_distance_m: 1.0
     # Pure wheel fallback bridges a shorter simultaneous camera/IMU outage.
@@ -172,21 +172,24 @@ map_odom_correction:
     initial_map_x: 0.0
     initial_map_y: 0.0
     initial_map_yaw: 0.0
-    # ORB's absolute XY is not an arena truth source. Keep the public fused
-    # stream start-aligned and local by default; enable this only when a
-    # separately validated global landmark source is connected.
-    use_absolute_visual_correction: false
+    # ORB is the primary global pose source. Wheel+IMU keep /odometry/local
+    # continuous between frames and throughout visual outages.
+    use_absolute_visual_correction: true
     rfid_hold_state_topic: /waypoint_navigation/motion_hold_state
     correct_map_position_service: /fused_odometry/correct_map_position
     rfid_correction_time_constant_s: 0.15
     rfid_correction_max_step_m: 0.10
+    dead_reckoning_xy_variance_rate: 0.0025
+    dead_reckoning_yaw_variance_rate: 0.0010
     # Deprecated compatibility parameter. Visual corrections are always
     # smoothed before they update map->odom; true no longer bypasses filtering.
     direct_visual_tracking: false
-    visual_recovery_gap_s: 0.20
-    visual_recovery_time_constant_s: 1.50
-    visual_recovery_blend_duration_s: 2.50
-    # base_link is the geometric centre, 50 mm ahead of the wheel axle. Its
+    # Do not rebase on normal 15 Hz scheduling jitter; recovery starts only
+    # after the visual health timeout has actually elapsed.
+    visual_recovery_gap_s: 0.60
+    visual_recovery_time_constant_s: 1.00
+    visual_recovery_blend_duration_s: 2.00
+    # base_link is the geometric centre, 30 mm ahead of the wheel axle. Its
     # real circular translation is carried by local odometry; keep visual
     # map->odom correction frozen during the pivot so ORB jitter is not applied
     # as a global jump.
@@ -195,13 +198,12 @@ map_odom_correction:
     # long-term yaw correction through map->odom, exactly like its XY update.
     publish_tf: true
     publish_frequency: 30.0
-    # While driving, let local wheel/IMU propagation own short-term scale. Visual
-    # pose still trims global drift, but slowly enough that it should not stretch
-    # one straight segment and compress the next.
-    correction_time_constant_s: 1.60
+    # Follow healthy ORB position as the primary global constraint without
+    # passing frame-level jitter directly into navigation control.
+    correction_time_constant_s: 0.45
     # Once measured local motion is stationary or nearly stopped, settle the
     # remaining map correction before the next lane segment starts.
-    stationary_correction_time_constant_s: 0.25
+    stationary_correction_time_constant_s: 0.15
     loop_correction_time_constant_s: 2.00
     # Hard cap the map->odom correction applied per publish cycle. This keeps
     # recovered ORB origin shifts from appearing as meter-scale fused jumps.

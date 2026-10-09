@@ -20,6 +20,10 @@ TEST(FusionStatusAuthority, VisualStatesAreSharedAcrossDownstreamNodes)
   authority.update("DEGRADED_NO_VISION", start);
   EXPECT_FALSE(authority.visual_correction_allowed(
     start + std::chrono::milliseconds(100), 0.5));
+
+  authority.update("DEGRADED_DEAD_RECKONING", start);
+  EXPECT_FALSE(authority.visual_correction_allowed(
+    start + std::chrono::milliseconds(100), 0.5));
 }
 
 TEST(FusionStatusAuthority, StaleOrFutureStatusIsNotAuthoritative)

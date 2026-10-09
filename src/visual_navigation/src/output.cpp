@@ -30,6 +30,13 @@ void WaypointNavigator::PublishMotionCommand(
                             maxLinearAcceleration_, maxLinearDeceleration_, dt);
   limited.linear.x =
       std::clamp(limited.linear.x, -maxLinearSpeed_, maxLinearSpeed_);
+  if (!forceZeroLinear && std::abs(targetLinear) > 1.0e-9 &&
+      std::abs(limited.linear.x) < minLinearCommandSpeed_) {
+    limited.linear.x = std::copysign(minLinearCommandSpeed_, targetLinear);
+  } else if (std::abs(targetLinear) <= 1.0e-9 &&
+             std::abs(limited.linear.x) < minLinearCommandSpeed_) {
+    limited.linear.x = 0.0;
+  }
   limited.angular.z = visual_navigation::LimitRate(
       desired.angular.z, lastMotionCommand_.angular.z, maxAngularAcceleration_,
       maxAngularDeceleration_, dt);

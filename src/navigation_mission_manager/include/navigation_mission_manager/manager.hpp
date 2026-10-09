@@ -121,6 +121,7 @@ private:
   void fault(const std::string & message);
 
   void on_navigator_status(const std_msgs::msg::String::SharedPtr message);
+  void handle_turn_replan();
   void handle_obstacle_replan();
   void handle_plan_rejection(const std::string & message);
   void request_additional_retreat(const std::string & planner_message);

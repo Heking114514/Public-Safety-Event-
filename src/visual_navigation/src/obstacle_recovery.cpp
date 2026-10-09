@@ -468,6 +468,16 @@ void WaypointNavigator::RunObstacleRecovery() {
       return;
     }
     if (replay.action ==
+        visual_navigation::ObstacleRecoveryAction::RETRY_BRAKING) {
+      BeginObstacleBrakeConfirmation();
+      PublishStop();
+      SetState(recoveryState("OBSTACLE_BRAKING", "ROUTE_TRANSITION_BRAKING"));
+      RCLCPP_WARN(
+          get_logger(), "%s trace replay made no measured progress; retrying",
+          routeTransitionRetreat_ ? "Route transition" : "Obstacle");
+      return;
+    }
+    if (replay.action ==
             visual_navigation::ObstacleRecoveryAction::FAULT_NO_PROGRESS ||
         replay.action ==
             visual_navigation::ObstacleRecoveryAction::FAULT_TIMEOUT) {

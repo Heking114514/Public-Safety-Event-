@@ -41,6 +41,24 @@ TEST(PoseAligner, RecoveryPoseMatchesPredictionAndKeepsIncrements)
   EXPECT_NEAR(next.y, 6.0, 1e-9);
 }
 
+TEST(PoseAligner, RfidReanchorKeepsFutureVisualIncrements)
+{
+  fused_odometry::PoseAligner aligner;
+  aligner.align_to(Pose2d{0.0, 0.0, 0.0}, Pose2d{0.0, 0.0, 0.0});
+
+  const Pose2d raw_at_rfid{0.16, -0.43, -1.55};
+  const Pose2d rfid_global{0.20, -0.50, -1.55};
+  aligner.align_to(raw_at_rfid, rfid_global);
+
+  const Pose2d anchored = aligner.apply(raw_at_rfid);
+  EXPECT_NEAR(anchored.x, rfid_global.x, 1e-9);
+  EXPECT_NEAR(anchored.y, rfid_global.y, 1e-9);
+
+  const Pose2d next = aligner.apply(Pose2d{0.16, -0.53, -1.55});
+  EXPECT_NEAR(next.x, 0.20, 1e-9);
+  EXPECT_NEAR(next.y, -0.60, 1e-9);
+}
+
 TEST(TranslationAligner, RemovesTurnTranslationButKeepsYawAndFutureIncrements)
 {
   fused_odometry::TranslationAligner aligner;
@@ -57,6 +75,24 @@ TEST(TranslationAligner, RemovesTurnTranslationButKeepsYawAndFutureIncrements)
   EXPECT_NEAR(next.x, 2.0, 1e-9);
   EXPECT_NEAR(next.y, 0.50, 1e-9);
   EXPECT_NEAR(next.yaw, fused_odometry::kPi / 2.0, 1e-9);
+}
+
+TEST(TranslationAligner, RfidPositionReanchorDoesNotReplaceVisualYaw)
+{
+  fused_odometry::PoseAligner pose_aligner;
+  fused_odometry::TranslationAligner translation_aligner;
+  pose_aligner.align_to(Pose2d{}, Pose2d{});
+
+  const Pose2d visual_at_rfid{0.16, -0.43, -1.50};
+  const Pose2d rfid_position{0.20, -0.50, 0.25};
+  translation_aligner.align_to(
+    pose_aligner.apply(visual_at_rfid), rfid_position);
+  const Pose2d anchored = translation_aligner.apply(
+    pose_aligner.apply(visual_at_rfid));
+
+  EXPECT_NEAR(anchored.x, rfid_position.x, 1e-9);
+  EXPECT_NEAR(anchored.y, rfid_position.y, 1e-9);
+  EXPECT_NEAR(anchored.yaw, visual_at_rfid.yaw, 1e-9);
 }
 
 TEST(PoseResidual, GatesPositionAndWrappedYawWithoutChangingCoordinates)
@@ -179,11 +215,11 @@ TEST(FusionMode, ConservativeDegradation)
   EXPECT_EQ(
     fused_odometry::select_mode(
       true, false, true, true, false, false, false, 1.0, 0.2, 2.0, 0.3, 0.75, 0.1),
-    FusionMode::kNoVision);
+    FusionMode::kDeadReckoning);
   EXPECT_EQ(
     fused_odometry::select_mode(
       true, false, true, true, false, false, false, 2.1, 0.2, 2.0, 0.3, 0.75, 0.1),
-    FusionMode::kFault);
+    FusionMode::kDeadReckoning);
   EXPECT_EQ(
     fused_odometry::select_mode(
       true, false, true, false, true, false, false, 0.1, 0.01, 2.0, 0.3, 0.75, 0.1),
@@ -222,6 +258,9 @@ TEST(FusionMode, ConservativeDegradation)
 
 TEST(FusionMode, PublicNamesMatchNavigationPolicy)
 {
+  EXPECT_STREQ(
+    fused_odometry::mode_name(FusionMode::kDeadReckoning),
+    "DEGRADED_DEAD_RECKONING");
   EXPECT_STREQ(
     fused_odometry::mode_name(FusionMode::kVisualRealigned),
     "DEGRADED_VISUAL_REALIGNED");

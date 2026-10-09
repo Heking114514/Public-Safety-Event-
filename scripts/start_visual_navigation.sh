@@ -154,6 +154,9 @@ ROSBAG_TOPICS=()
 source "${CONFIG_SHELL_HELPER}"
 load_navigation_config
 
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID_CONFIG}"
+log "ROS domain: ROS_DOMAIN_ID=${ROS_DOMAIN_ID}"
+
 # Force the current test machine onto the low-load RK3588 trial profile by
 # default. Command-line overrides below can still be used for A/B checks.
 CAMERA_INFRA_PROFILE="848x480x15"

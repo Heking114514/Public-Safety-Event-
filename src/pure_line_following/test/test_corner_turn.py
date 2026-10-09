@@ -5,6 +5,13 @@ from pure_line_following.corner_turn import (
     CornerTurnStateMachine,
     MotionCommand,
 )
+
+
+def test_default_vehicle_dimensions_match_shared_chassis():
+    params = CornerTurnConfig()
+
+    assert params.vehicle_length_m == 0.132
+    assert params.vehicle_width_m == 0.132
 from pure_line_following.tracker import (
     JUNCTION,
     LEFT_BRANCH,

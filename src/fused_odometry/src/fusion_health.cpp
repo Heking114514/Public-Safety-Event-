@@ -80,6 +80,9 @@ FusionHealthSnapshot FusionHealthMonitor::evaluate(
   result.vision_outage_seconds = vision_outage_active_ ?
     std::max(0.0, input.now_seconds - vision_outage_started_at_) : 0.0;
   result.dead_reckoning_distance = dead_reckoning_distance_;
+  result.dead_reckoning_warning = vision_outage_active_ &&
+    (result.vision_outage_seconds > limits.max_dead_reckoning_time ||
+    result.dead_reckoning_distance > limits.max_dead_reckoning_distance);
   result.mode = select_mode(
       input.initialized, input.vision, result.wheel_healthy, input.imu,
       input.wheel_yaw_backup, input.visual_realigned,

@@ -116,7 +116,7 @@ public:
     initial_map_y_ = declare_parameter<double>("initial_map_y", 0.0);
     initial_map_yaw_ = declare_parameter<double>("initial_map_yaw", 0.0);
     use_absolute_visual_correction_ = declare_parameter<bool>(
-      "use_absolute_visual_correction", false);
+      "use_absolute_visual_correction", true);
     publish_tf_ = declare_parameter<bool>("publish_tf", true);
     const bool deprecated_direct_visual_tracking =
       declare_parameter<bool>("direct_visual_tracking", false);
@@ -124,7 +124,7 @@ public:
       RCLCPP_WARN(
         get_logger(), "direct_visual_tracking is deprecated; visual corrections remain smoothed");
     }
-    visual_recovery_gap_ = positive("visual_recovery_gap_s", 0.10);
+    visual_recovery_gap_ = positive("visual_recovery_gap_s", 0.60);
     visual_recovery_time_constant_ = positive(
       "visual_recovery_time_constant_s", 0.25);
     visual_recovery_blend_duration_ = positive(
@@ -160,6 +160,10 @@ public:
     rfid_correction_time_constant_ = positive(
       "rfid_correction_time_constant_s", 0.15);
     rfid_correction_max_step_ = positive("rfid_correction_max_step_m", 0.10);
+    dead_reckoning_xy_variance_rate_ = positive(
+      "dead_reckoning_xy_variance_rate", 0.0025);
+    dead_reckoning_yaw_variance_rate_ = positive(
+      "dead_reckoning_yaw_variance_rate", 0.0010);
     if (turn_hold_min_angular_speed_ >= turn_hold_entry_angular_speed_) {
       throw std::invalid_argument(
               "turn_hold_min_angular_speed_radps must be less than entry speed");
@@ -360,8 +364,9 @@ private:
     pending_visual_.reset();
 
     const double visual_arrival = steady_seconds();
+    const double recovery_gap = std::max(visual_recovery_gap_, visual_timeout_);
     const bool visual_recovered = correction_valid_ && visual_stamp_received_ &&
-      (visual_stamp - last_visual_stamp_).seconds() > visual_recovery_gap_;
+      (visual_stamp - last_visual_stamp_).seconds() > recovery_gap;
     latest_raw_visual_ = message_pose(message);
     latest_visual_local_ = local_pose;
     visual_xy_variance_ = finite_covariance(message.pose.covariance[0], 0.05);
@@ -371,6 +376,13 @@ private:
     last_visual_stamp_ = visual_stamp;
     visual_stamp_received_ = true;
 
+    if (rfid_correction_active_) {
+      // RFID owns map position while the vehicle is held. Keep the newest
+      // synchronized visual pair for re-anchoring, but do not compete with it.
+      desired_valid_ = false;
+      return;
+    }
+
     if (!visual_pose_aligner_.initialized()) {
       // ORB-SLAM's first map has an arbitrary planar yaw and origin. Align
       // that first visual pose to the start-relative map frame: the car starts
@@ -378,6 +390,10 @@ private:
       // remains zeroed at the same vehicle pose.
       visual_pose_aligner_.align_to(
         latest_raw_visual_, {initial_map_x_, initial_map_y_, initial_map_yaw_});
+    } else if (rfid_visual_reanchor_pending_) {
+      reanchor_visual(
+        latest_raw_visual_, latest_visual_local_, visual_arrival,
+        !visual_recovered);
     } else if (visual_recovered) {
       // ORB may restart its source origin after tracking loss. Keep the
       // vehicle at the locally propagated global pose on the first recovered
@@ -387,6 +403,7 @@ private:
       const Pose2d recovery_anchor = fused_odometry::compose_pose(
         map_from_odom_, latest_visual_local_);
       visual_pose_aligner_.align_to(latest_raw_visual_, recovery_anchor);
+      visual_translation_aligner_.clear();
       RCLCPP_WARN(
         get_logger(),
         "Visual tracking recovered; rebasing raw visual pose without jumping map->odom");
@@ -395,7 +412,8 @@ private:
     if (turn_hold_active_) {
       return;
     }
-    const Pose2d aligned_visual = visual_pose_aligner_.apply(latest_raw_visual_);
+    const Pose2d aligned_visual = visual_translation_aligner_.apply(
+      visual_pose_aligner_.apply(latest_raw_visual_));
     desired_map_from_odom_ = fused_odometry::compose_pose(
       aligned_visual,
       fused_odometry::inverse_pose(latest_visual_local_));
@@ -407,6 +425,41 @@ private:
     } else if (visual_recovered) {
       visual_recovery_blend_until_ = visual_arrival + visual_recovery_blend_duration_;
     }
+  }
+
+  void reanchor_visual(
+    const Pose2d & raw_visual, const Pose2d & synchronized_local,
+    double current_time, bool position_only)
+  {
+    const Pose2d corrected_global = fused_odometry::compose_pose(
+      map_from_odom_, synchronized_local);
+    if (position_only) {
+      visual_translation_aligner_.align_to(
+        visual_pose_aligner_.apply(raw_visual), corrected_global);
+    } else {
+      visual_pose_aligner_.align_to(raw_visual, corrected_global);
+      visual_translation_aligner_.clear();
+    }
+    desired_map_from_odom_ = map_from_odom_;
+    desired_valid_ = true;
+    rfid_visual_reanchor_pending_ = false;
+    visual_recovery_blend_until_ = current_time + visual_recovery_blend_duration_;
+    RCLCPP_INFO(
+      get_logger(),
+      "RFID_VISUAL_REANCHORED at map position (%.3f, %.3f)",
+      corrected_global.x, corrected_global.y);
+  }
+
+  void finish_rfid_correction(double current_time)
+  {
+    rfid_correction_active_ = false;
+    rfid_visual_reanchor_pending_ = use_absolute_visual_correction_;
+    if (rfid_visual_reanchor_pending_ && visual_pair_valid_ &&
+      current_time - visual_received_at_ <= visual_timeout_)
+    {
+      reanchor_visual(latest_raw_visual_, latest_visual_local_, current_time, true);
+    }
+    RCLCPP_INFO(get_logger(), "RFID map correction completed");
   }
 
   bool local_motion_is_stationary() const
@@ -462,16 +515,26 @@ private:
 
   void fusion_status_callback(const std_msgs::msg::String::SharedPtr message)
   {
+    const bool was_dead_reckoning =
+      fusion_status_authority_.status() == "DEGRADED_DEAD_RECKONING";
     fusion_status_authority_.update(message->data);
+    const bool is_dead_reckoning = message->data == "DEGRADED_DEAD_RECKONING";
+    if (is_dead_reckoning && !was_dead_reckoning) {
+      dead_reckoning_started_at_ = steady_seconds();
+    } else if (!is_dead_reckoning) {
+      dead_reckoning_started_at_.reset();
+    }
   }
 
   void finish_turn_hold()
   {
     if (visual_pair_valid_) {
-      // The hold only prevents a transient correction while the chassis is
-      // rotating. Never move the visual origin here: doing so would turn every
-      // detected turn into a permanent global position bias.
-      const Pose2d aligned_visual = visual_pose_aligner_.apply(latest_raw_visual_);
+      const Pose2d current_global = fused_odometry::compose_pose(
+        map_from_odom_, latest_visual_local_);
+      visual_translation_aligner_.align_to(
+        visual_pose_aligner_.apply(latest_raw_visual_), current_global);
+      const Pose2d aligned_visual = visual_translation_aligner_.apply(
+        visual_pose_aligner_.apply(latest_raw_visual_));
       desired_map_from_odom_ = fused_odometry::compose_pose(
         aligned_visual,
         fused_odometry::inverse_pose(latest_visual_local_));
@@ -524,6 +587,10 @@ private:
     // RFID supplies position only. Preserve the current map/odom yaw.
     rfid_target_map_from_odom_.yaw = map_from_odom_.yaw;
     rfid_correction_active_ = true;
+    rfid_visual_reanchor_pending_ = use_absolute_visual_correction_;
+    desired_valid_ = false;
+    turn_hold_active_ = false;
+    turn_hold_motion_rejected_ = false;
     RCLCPP_INFO(
       get_logger(), "Mission manager position correction target: (%.3f, %.3f)",
       request->x, request->y);
@@ -563,10 +630,12 @@ private:
     }
 
     const auto authority_time = fused_odometry::FusionStatusAuthority::Clock::now();
-    if (use_absolute_visual_correction_ && !turn_hold_active_ && desired_valid_ &&
+    const bool visual_correction_active = use_absolute_visual_correction_ &&
+      !rfid_correction_active_ && !turn_hold_active_ && desired_valid_ &&
       current_time - visual_received_at_ <= visual_timeout_ &&
       fusion_status_authority_.visual_correction_allowed(
-        authority_time, fusion_status_timeout_))
+        authority_time, fusion_status_timeout_);
+    if (visual_correction_active)
     {
       const double elapsed = std::max(0.0, current_time - last_update_at_);
       const bool recovery_blend = current_time <= visual_recovery_blend_until_;
@@ -611,8 +680,7 @@ private:
       {
         map_from_odom_.x = rfid_target_map_from_odom_.x;
         map_from_odom_.y = rfid_target_map_from_odom_.y;
-        rfid_correction_active_ = false;
-        RCLCPP_INFO(get_logger(), "RFID map correction completed");
+        finish_rfid_correction(current_time);
       }
     }
     last_update_at_ = current_time;
@@ -651,18 +719,24 @@ private:
     // covariance after applying the visual correction.
     output.pose.covariance.fill(0.0);
     const double visual_xy_contribution =
-      use_absolute_visual_correction_ && visual_pair_valid_ ? visual_xy_variance_ : 0.0;
+      visual_correction_active && visual_pair_valid_ ? visual_xy_variance_ : 0.0;
     const double visual_yaw_contribution =
-      use_absolute_visual_correction_ && visual_pair_valid_ ? visual_yaw_variance_ : 0.0;
+      visual_correction_active && visual_pair_valid_ ? visual_yaw_variance_ : 0.0;
+    const double dead_reckoning_seconds = dead_reckoning_started_at_.has_value() ?
+      std::max(0.0, current_time - *dead_reckoning_started_at_) : 0.0;
+    const double dead_reckoning_xy_contribution =
+      dead_reckoning_seconds * dead_reckoning_xy_variance_rate_;
+    const double dead_reckoning_yaw_contribution =
+      dead_reckoning_seconds * dead_reckoning_yaw_variance_rate_;
     output.pose.covariance[0] = finite_covariance(latest_local_.pose.covariance[0], 0.0) +
-      visual_xy_contribution;
+      visual_xy_contribution + dead_reckoning_xy_contribution;
     output.pose.covariance[7] = finite_covariance(latest_local_.pose.covariance[7], 0.0) +
-      visual_xy_contribution;
+      visual_xy_contribution + dead_reckoning_xy_contribution;
     output.pose.covariance[14] = 1.0e6;
     output.pose.covariance[21] = 1.0e6;
     output.pose.covariance[28] = 1.0e6;
     output.pose.covariance[35] = finite_covariance(latest_local_.pose.covariance[35], 0.0) +
-      visual_yaw_contribution;
+      visual_yaw_contribution + dead_reckoning_yaw_contribution;
     publisher_->publish(output);
 
     if (tf_broadcaster_) {
@@ -687,11 +761,11 @@ private:
   std::string map_frame_;
   std::string odom_frame_;
   std::string base_frame_;
-  bool use_absolute_visual_correction_{false};
+  bool use_absolute_visual_correction_{true};
   bool publish_tf_{true};
   bool hold_global_xy_during_turn_{false};
   double publish_frequency_{30.0};
-  double visual_recovery_gap_{0.10};
+  double visual_recovery_gap_{0.60};
   double visual_recovery_time_constant_{0.25};
   double visual_recovery_blend_duration_{0.80};
   double correction_time_constant_{0.15};
@@ -717,6 +791,8 @@ private:
   double turn_hold_release_delay_{0.28};
   double rfid_correction_time_constant_{0.15};
   double rfid_correction_max_step_{0.10};
+  double dead_reckoning_xy_variance_rate_{0.0025};
+  double dead_reckoning_yaw_variance_rate_{0.0010};
 
   std::deque<TimedLocalPose> local_history_;
   std::optional<nav_msgs::msg::Odometry> pending_visual_;
@@ -730,6 +806,7 @@ private:
   Pose2d turn_anchor_global_;
   Pose2d turn_anchor_local_;
   fused_odometry::PoseAligner visual_pose_aligner_;
+  fused_odometry::TranslationAligner visual_translation_aligner_;
   fused_odometry::FusionStatusAuthority fusion_status_authority_;
   bool local_received_{false};
   bool desired_valid_{false};
@@ -749,6 +826,8 @@ private:
   uint64_t unsynchronized_visual_count_{0};
   bool rfid_hold_active_{false};
   bool rfid_correction_active_{false};
+  bool rfid_visual_reanchor_pending_{false};
+  std::optional<double> dead_reckoning_started_at_;
   Pose2d rfid_target_map_from_odom_;
   rclcpp::Time last_output_stamp_{0, 0, RCL_ROS_TIME};
   double initial_map_x_{0.0};

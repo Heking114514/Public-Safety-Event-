@@ -210,8 +210,8 @@ def command_for(
     speed_scale = max(0.0, 1.0 - params.speed_turn_slowdown * turn_fraction)
     linear = speed_limit * speed_scale
 
-    # The nominal road is only 200 mm wide while the measured chassis envelope
-    # is 153.5 mm. Once the centre error is more than a few centimetres, moving
+    # The nominal road is only 200 mm wide while the configured chassis envelope
+    # is 132 mm. Once the centre error is more than a few centimetres, moving
     # forward is no longer a correction: it consumes the remaining clearance.
     # Pivot until the camera sees the centreline again.
     lateral_abs = abs(lateral_error)

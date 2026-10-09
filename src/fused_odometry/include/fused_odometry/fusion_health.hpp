@@ -50,6 +50,7 @@ struct FusionHealthSnapshot
   std::size_t angular_source_count{0};
   double vision_outage_seconds{0.0};
   double dead_reckoning_distance{0.0};
+  bool dead_reckoning_warning{false};
 };
 
 // Owns the stateful health decisions which must agree for a single status

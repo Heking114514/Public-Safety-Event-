@@ -5,6 +5,8 @@ geometry. It contains the chassis envelope, differential-drive geometry and
 calibration, encoder resolution, physical speed ceiling, axle-to-`base_link`
 offset, navigation tracking point, and camera mounting pose.
 
+The configured chassis envelope is `132 mm × 132 mm` (length × width).
+
 Coordinate convention follows ROS body axes: `+x` is forward, `+y` is left,
 and `+z` is up. The camera is 15 mm right of the centreline, so its configured
 `y_m` is `-0.015`.

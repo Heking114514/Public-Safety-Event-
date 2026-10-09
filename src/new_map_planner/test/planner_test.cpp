@@ -465,6 +465,39 @@ TEST(Planner, RejectsPartialCoverageRouteWithoutRequiredLaneProgress) {
   EXPECT_EQ(result.deferred_lane_ids.size(), 4U);
 }
 
+TEST(Planner, ReverseTargetSegmentKeepsVehicleYaw) {
+  const auto config = OfficialConfig();
+  new_map_planner::MapPlanner planner(config);
+  new_map_planner::PlanRequest request;
+  request.start_map = {{1.239, -1.500}, -179.9 * new_map_planner::kPi / 180.0};
+  request.mode = "layer1";
+  request.target_ids = {"4"};
+  request.allow_partial = true;
+  request.return_home = false;
+  request.dynamic_obstacles_map.push_back(new_map_planner::Polygon{
+      {{1.10, -1.093}, {1.30, -1.093}, {1.30, -0.993},
+       {1.10, -0.993}}});
+
+  const auto result = planner.plan(request);
+
+  ASSERT_TRUE(result.success) << result.message;
+  ASSERT_FALSE(result.traversals.empty());
+  EXPECT_TRUE(std::any_of(
+      result.traversals.begin(), result.traversals.end(),
+      [](const new_map_planner::Traversal &traversal) {
+        return traversal.reverse;
+      }));
+  const auto reverse_maneuver = std::find_if(
+      result.maneuvers.begin(), result.maneuvers.end(),
+      [](const new_map_planner::Maneuver &maneuver) {
+        return maneuver.type == new_map_planner::ManeuverType::REVERSE;
+      });
+  ASSERT_NE(reverse_maneuver, result.maneuvers.end());
+  EXPECT_NEAR(new_map_planner::NormalizeAngle(
+                  reverse_maneuver->start.yaw - reverse_maneuver->end.yaw),
+              0.0, 1.0e-6);
+}
+
 TEST(Planner, PlansTunnelStageAfterRetreatToEarlierJunction) {
   const auto config = OfficialConfig();
   new_map_planner::MapPlanner planner(config);

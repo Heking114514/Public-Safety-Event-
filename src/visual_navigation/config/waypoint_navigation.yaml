@@ -31,7 +31,8 @@ waypoint_navigator:
     control_frequency: 30.0
     default_speed: 0.05
     max_linear_speed: 0.05
-    rfid_scan_speed: 0.02
+    min_linear_command_speed: 0.035
+    rfid_scan_speed: 0.035
     rfid_scan_max_distance_m: 0.20
     max_angular_speed: 0.75
     # The instantaneous limit is also constrained by max_lateral_acceleration.
@@ -113,16 +114,16 @@ waypoint_navigator:
     corner_shunt_max_turn_angle_rad: 2.20
     corner_shunt_max_s: 60.00
     corner_shunt_prediction_horizon_s: 0.20
-    corner_shunt_plan_linear_speed_mps: 0.020
+    corner_shunt_plan_linear_speed_mps: 0.035
     # Used only by an explicitly planned reverse-arrival recovery maneuver.
-    corner_shunt_plan_reverse_speed_mps: -0.020
-    corner_shunt_plan_angular_speed_rps: 0.24
+    corner_shunt_plan_reverse_speed_mps: -0.035
+    corner_shunt_plan_angular_speed_rps: 0.40
     corner_shunt_plan_clearance_m: 0.001
-    corner_shunt_entry_base_x_m: -0.015
-    corner_shunt_closed_loop_min_speed_mps: 0.008
-    corner_shunt_closed_loop_max_angular_speed_rps: 0.40
-    corner_shunt_closed_loop_bearing_gain: 1.40
-    corner_shunt_closed_loop_final_yaw_gain: 0.60
+    corner_shunt_entry_base_x_m: -0.050
+    corner_shunt_closed_loop_min_speed_mps: 0.035
+    corner_shunt_closed_loop_max_angular_speed_rps: 0.65
+    corner_shunt_closed_loop_bearing_gain: 2.20
+    corner_shunt_closed_loop_final_yaw_gain: 1.00
     corner_shunt_closed_loop_entry_heading_gain: 1.40
     corner_shunt_closed_loop_entry_lateral_gain: 2.00
     corner_shunt_closed_loop_yaw_rate_damping: 0.35
@@ -132,6 +133,11 @@ waypoint_navigator:
     corner_shunt_no_progress_distance_m: 0.003
     corner_shunt_no_progress_yaw_rad: 0.03
     corner_shunt_max_plan_count: 4
+    turn_maneuver_trim_speed_mps: 0.035
+    turn_maneuver_trim_search_step_m: 0.020
+    turn_maneuver_trim_max_distance_m: 0.20
+    turn_maneuver_preferred_entry_x_m: -0.050
+    turn_maneuver_entry_yaw_tolerance_rad: 0.20
     # Braking, mission holds and localization waits pause
     # position progress. In-place turns remain safe through the displacement gate.
     path_progress_timeout: 10.0
@@ -205,6 +211,7 @@ waypoint_navigator:
     obstacle_replay_alignment_gain: 1.20
     obstacle_replay_alignment_max_angular_speed: 0.15
     obstacle_replay_yaw_tolerance: 0.25
+    obstacle_replay_fallback_speed: 0.035
     obstacle_reverse_max_recovery_attempts: 2
     obstacle_maximum_breadcrumbs: 2000
     obstacle_maximum_trace_samples: 12000

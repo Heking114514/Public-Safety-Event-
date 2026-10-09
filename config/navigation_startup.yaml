@@ -3,6 +3,7 @@
 # configurable here: no arguments always means GUI mode, while -a/--autostart
 # always means scripts/waypoints.csv (or the path below).
 navigation_startup:
+  ros_domain_id: 10
   serial_device: auto
   serial_baud_rate: 115200
   use_serial: true

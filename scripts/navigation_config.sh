@@ -25,6 +25,7 @@ load_navigation_config() {
   done <<<"${output}"
 
   SERIAL_DEVICE="${settings[serial_device]}"
+  ROS_DOMAIN_ID_CONFIG="${settings[ros_domain_id]}"
   SERIAL_BAUD_RATE="${settings[serial_baud_rate]}"
   USE_SERIAL="${settings[use_serial]}"
   CAMERA_SERIAL="${settings[camera_serial]#_}"

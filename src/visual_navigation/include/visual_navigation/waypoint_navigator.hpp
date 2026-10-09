@@ -46,6 +46,7 @@
 #include "visual_navigation/rate_limiter.hpp"
 #include "visual_navigation/route_manager.hpp"
 #include "visual_navigation/turn_progress_supervisor.hpp"
+#include "visual_navigation/turn_maneuver.hpp"
 #include "visual_navigation/turn_settle_controller.hpp"
 #include "visual_navigation/waypoint_brake_controller.hpp"
 
@@ -144,6 +145,8 @@ private:
   };
 
   bool LoadRoute(const std::string &routeFile);
+
+  bool RouteStartsWithTurn() const;
 
   void PublishRoutePath();
 
@@ -356,6 +359,7 @@ private:
   double trackingPointOffsetY_{std::numeric_limits<double>::quiet_NaN()};
   double defaultSpeed_{0.10};
   double maxLinearSpeed_{0.10};
+  double minLinearCommandSpeed_{0.035};
   double maxAngularSpeed_{0.75};
   double maxPathAngularSpeed_{0.65};
   double rfidScanSpeed_{0.02};
@@ -402,6 +406,7 @@ private:
   double waypointRecoveryHeadingTolerance_{0.12};
   double waypointRecoveryMaxAngularSpeed_{0.40};
   visual_navigation::CornerShuntConfig cornerShuntConfig_;
+  visual_navigation::TurnManeuverConfig turnManeuverConfig_;
   double turnProgressExpectedYawRate_{0.12};
   double preTurnStopHeadingThreshold_{0.18};
   double preTurnStopSpeed_{0.03};
@@ -441,7 +446,7 @@ private:
   visual_navigation::PathProgressSupervisor pathProgressSupervisor_;
   visual_navigation::TurnProgressSupervisor turnProgressSupervisor_;
   visual_navigation::ObstacleRecoveryController obstacleRecoveryController_;
-  visual_navigation::CornerShuntController cornerShuntController_;
+  visual_navigation::TurnManeuverController turnManeuverController_;
 
   std::vector<Waypoint> waypoints_;
   std::size_t currentWaypointIndex_{0};
@@ -455,6 +460,7 @@ private:
   bool stoppedAtPlannedTurn_{false};
   bool firstHalfTurnPending_{false};
   double firstHalfTurnYaw_{0.0};
+  double stoppedTurnGeometryHeading_{0.0};
   double stoppedTurnArrivalHeading_{0.0};
   double stoppedTurnTargetHeading_{0.0};
   bool stoppedTurnReverseArrival_{false};

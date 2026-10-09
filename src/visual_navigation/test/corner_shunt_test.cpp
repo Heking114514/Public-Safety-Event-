@@ -15,7 +15,8 @@ visual_navigation::CornerShuntContext LeftCornerContext(double x, double y,
   context.pose = {x, y, yaw};
   context.junction_x = 0.0;
   context.junction_y = 0.0;
-  context.incoming_heading = 0.0;
+  context.geometry_heading = 0.0;
+  context.arrival_heading = yaw;
   context.target_heading = kPi / 2.0;
   return context;
 }
@@ -26,7 +27,8 @@ visual_navigation::CornerShuntContext RightCornerContext(double x, double y,
   context.pose = {x, y, yaw};
   context.junction_x = 0.0;
   context.junction_y = 0.0;
-  context.incoming_heading = 0.0;
+  context.geometry_heading = 0.0;
+  context.arrival_heading = yaw;
   context.target_heading = -kPi / 2.0;
   return context;
 }
@@ -36,7 +38,8 @@ visual_navigation::CornerShuntContext ReverseArrivalContext() {
   context.pose = {0.005, 0.0, -0.5 * kPi};
   context.junction_x = 0.0;
   context.junction_y = 0.0;
-  context.incoming_heading = 0.5 * kPi;
+  context.geometry_heading = 0.5 * kPi;
+  context.arrival_heading = -0.5 * kPi;
   context.target_heading = kPi;
   context.reverse_arrival = true;
   return context;
@@ -144,10 +147,10 @@ TEST(CornerShunt, MirrorsRightTurns) {
   EXPECT_GE(decision.command.linear_x, 0.0);
 }
 
-TEST(CornerShunt, KeepsConfiguredRoadMarginWithNarrowerChassis) {
+TEST(CornerShunt, KeepsConfiguredRoadMarginWith132MillimeterChassis) {
   visual_navigation::CornerShuntController controller;
-  const auto safe = LeftCornerContext(-0.07, 0.033, 0.0);
-  const auto unsafe = LeftCornerContext(-0.07, 0.036, 0.0);
+  const auto safe = LeftCornerContext(-0.07, 0.031, 0.0);
+  const auto unsafe = LeftCornerContext(-0.07, 0.034, 0.0);
 
   EXPECT_TRUE(controller.pose_is_safe(safe, safe.pose));
   EXPECT_FALSE(controller.pose_is_safe(unsafe, unsafe.pose));
@@ -184,6 +187,22 @@ TEST(CornerShunt, DoesNotHandOffBeyondExitYawTolerance) {
 
   EXPECT_FALSE(decision.complete);
   EXPECT_NE(decision.phase, visual_navigation::CornerShuntPhase::COMPLETE);
+}
+
+TEST(CornerShunt, SeparatesRoadGeometryFromResidualArrivalYaw) {
+  visual_navigation::CornerShuntController controller;
+  auto context = LeftCornerContext(-0.05, 0.0, 0.0);
+  context.geometry_heading = 0.0;
+  context.arrival_heading = -1.50;
+  context.target_heading = 0.5 * kPi;
+  auto nominal = context;
+  nominal.arrival_heading = nominal.geometry_heading;
+  EXPECT_TRUE(controller.pose_is_safe(context, context.pose));
+  EXPECT_TRUE(controller.pose_is_safe(nominal, nominal.pose));
+
+  controller.begin(0.0);
+  const auto decision = controller.update(context, 0.30);
+  EXPECT_FALSE(decision.blocked);
 }
 
 TEST(CornerShunt, DoesNotHandOffBeforeHtmlExitWindow) {

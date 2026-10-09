@@ -151,6 +151,9 @@ void FusionGateNode::publish_status() {
       value("vision_outage_s", std::to_string(health.vision_outage_seconds)));
   item.values.push_back(value("dead_reckoning_distance_m",
                               std::to_string(health.dead_reckoning_distance)));
+  item.values.push_back(value(
+      "dead_reckoning_warning",
+      health.dead_reckoning_warning ? "true" : "false"));
   item.values.push_back(
       value("wheel_frame_approximation",
             wheel_expected_child_frame_ == base_frame_ ? "false" : "true"));
@@ -164,7 +167,17 @@ void FusionGateNode::publish_status() {
   diagnostics_publisher_->publish(diagnostics);
 
   if (mode != last_mode_) {
-    RCLCPP_WARN(get_logger(), "Fusion mode: %s", mode_name(mode));
+    if (mode == FusionMode::kDeadReckoning) {
+      RCLCPP_WARN(get_logger(), "Fusion transition: VISUAL_LOST_DEAD_RECKONING");
+    } else if (mode == FusionMode::kVisualRealigned) {
+      RCLCPP_INFO(get_logger(), "Fusion transition: VISUAL_RECOVERY_ALIGNING");
+    } else if (mode == FusionMode::kFull && last_mode_ == FusionMode::kVisualRealigned) {
+      RCLCPP_INFO(get_logger(), "Fusion transition: VISUAL_RECOVERED");
+    } else if (mode == FusionMode::kFull) {
+      RCLCPP_INFO(get_logger(), "Fusion transition: VISUAL_PRIMARY");
+    } else {
+      RCLCPP_WARN(get_logger(), "Fusion mode: %s", mode_name(mode));
+    }
     last_mode_ = mode;
   }
 }

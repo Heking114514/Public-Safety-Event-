@@ -3,7 +3,6 @@
 
 #include "new_map_planner/types.hpp"
 
-#include <array>
 #include <vector>
 
 namespace new_map_planner {
@@ -19,11 +18,6 @@ double SegmentFraction(const Point &point, const Point &begin,
 int CardinalHeading(double yaw);
 double HeadingYaw(int heading);
 int TurnQuarterSteps(int from_heading, int to_heading);
-bool PointInPolygon(const Point &point, const Polygon &polygon);
-bool PolygonsIntersect(const Polygon &left, const Polygon &right);
-Polygon RectanglePolygon(const Rectangle &rectangle);
-Polygon FootprintPolygon(const Pose &pose, double length, double width,
-                         double base_link_offset_x = 0.0);
 Point Interpolate(const Point &begin, const Point &end, double fraction);
 
 } // namespace new_map_planner

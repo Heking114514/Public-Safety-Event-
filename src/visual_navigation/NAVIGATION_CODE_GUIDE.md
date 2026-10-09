@@ -185,7 +185,7 @@ std_msgs/msg/Int32
 std_msgs/msg/String
 ```
 
-默认必须收到新鲜且位于 `allowed_fusion_states` 中的融合健康状态；`FAULT`、未知状态或状态超时会阻止运动。`WAITING_FOR_INITIALIZATION` 是 ORB 暖机期间的可恢复等待，路线保持激活但不发速度，初始化完成后自动继续。允许的 `DEGRADED_*` 状态不降低速度；它只表示融合基础设施已降级但仍可向控制器提供可用位姿。
+默认必须收到新鲜且位于 `allowed_fusion_states` 中的融合健康状态；`FAULT`、未知状态或状态超时会阻止运动。`WAITING_FOR_INITIALIZATION` 是 ORB 暖机期间的可恢复等待，路线保持激活但不发速度，初始化完成后自动继续。`DEGRADED_DEAD_RECKONING` 使用轮式和 IMU 继续导航，并按 `dead_reckoning_speed_scale` 限制线速度；其他允许的 `DEGRADED_*` 状态不额外限速。
 
 ### 4.2 发布话题
 
@@ -300,13 +300,13 @@ mission_control_interfaces/srv/ContinueRetreat
 
 该服务只在导航状态为 `OBSTACLE_REPLAN_REQUIRED` 时接受请求。任务层给出本段最小
 倒退距离，导航控制器从当前实测姿态匹配历史起点，先在小角度范围恢复历史航向，再把
-实际发布过的限速线速度和角速度按相反时间顺序执行，因而可以原样撤销紧路口内的
+实际发布过的限速线速度和角速度按实时位置误差闭环跟踪，倒退不会再原样回放紧路口内的
 前进、倒车和转向微调。到达更早锚点并校验位置/航向后，再次发布
 `OBSTACLE_REPLAN_REQUIRED`。若锚点之前已无轨迹，响应中的
 `trace_exhausted=true`，车辆保持停车。服务不允许任务层直接指定速度或任意坐标。
 
-`/waypoint_navigator/continue_route_retreat` 使用相同的历史轨迹执行器，但只服务于完成路线后
-的几何衔接，状态为 `ROUTE_TRANSITION_BRAKING/REVERSING/REPLAYING/REPLAN_REQUIRED`，
+`/waypoint_navigator/continue_route_retreat` 使用相同的 breadcrumb 闭环跟踪器，但只服务于完成路线后
+的几何衔接，状态为 `ROUTE_TRANSITION_BRAKING/REVERSING/REPLAN_REQUIRED`，
 不得用于障碍语义或伪造障碍事件。
 
 ---
@@ -622,11 +622,13 @@ FOLLOW
 | `HELD_FOR_MISSION` | 任务驻停来源仍存在，持续发布零速度 |
 | `WAITING_FOR_INITIALIZATION` | ORB 暖机等待，不锁存，保持零速 |
 | `FOLLOWING` | 正在向当前航点运动 |
-| `ROTATING_TO_PATH` | 正在原地旋转以对齐当前路径 |
-| `TURN_STOP` / `TURN_CHECK` | 路口硬停车并确认闭环转弯入口姿态 |
-| `TURN_ARC` / `TURN_CREEP` | 正常路口闭环转弯：每周期依据实测位置和偏航更新正向速度命令 |
-| `TURN_ROTATE` / `TURN_REVERSE` | 仅用于显式反向进站的障碍恢复转弯 |
-| `FAULT_TURN_BLOCKED` | 转弯连续无位姿进展且恢复次数耗尽，已停车并锁存 |
+| `ROTATING_TO_PATH` | 仅兼容旧路径对齐分支；独立路口动作不使用原地旋转 |
+| `TURN_ENTRY_CHECK` / `TURN_TRIM_SEARCH` | 冻结路口几何并搜索安全入口 |
+| `TURN_REVERSE_TRIM` / `TURN_FORWARD_TRIM` | 沿来向道路闭环微调，非零线速度为 ±0.035 m/s |
+| `TURN_TRIM_SETTLE` | 微调后停车并重新检查最新位姿 |
+| `TURN_ARC` / `TURN_EXIT_ALIGN` | 已确认路口内执行前进弧线并收敛出口姿态 |
+| `TURN_NEED_REPLAN` | 当前路口无安全动作，停车交给上层重新规划，不进入障碍恢复 |
+| `FAULT_TURN_MANEUVER` | 输入非法或动作不可恢复，已停车并锁存 |
 | `TURN_HALF_SETTLED` | 180 度掉头的第一个 90 度已停稳，随后执行第二个 90 度 |
 | `PATH_ALIGNED` | 路径方向已对齐，准备进入路径跟随 |
 | `BRAKING_APPROACH` | 按剩余距离和实际车速执行航点接近制动 |
@@ -941,6 +943,7 @@ config/waypoint_navigation.yaml
 | `control_frequency` | `30.0` | 控制频率，Hz |
 | `default_speed` | `0.05` | CSV 未填写速度时的默认速度，m/s |
 | `max_linear_speed` | `0.05` | 最终速度发布口强制执行的全局最大线速度，m/s |
+| `min_linear_command_speed` | `0.035` | 非零导航线速度下限，补偿电机死区；停车仍为零，m/s |
 | `max_angular_speed` | `0.75` | 最大角速度，rad/s |
 | `effective_braking_deceleration` | `0.35` | 实车有效制动减速度，m/s^2 |
 | `braking_control_delay` | `0.20` | 串口、控制与执行总延迟估计，s |
@@ -960,11 +963,14 @@ config/waypoint_navigation.yaml
 | `path_progress_no_motion_displacement` | `0.05` | 无运动检查窗口内允许的最大位移，m |
 | `rotate_in_place_threshold` | `0.18` | 超过该航向误差时禁止前进，rad |
 | `corner_shunt_road_margin_m` | `0.002` | 转弯车身扫掠边界余量，m；直行仍使用规划器的 15 mm 余量 |
-| `corner_shunt_entry_base_x_m` | `-0.015` | 开始追踪出口前，车体中心相对路口参考截面的位置，m |
-| `corner_shunt_closed_loop_min_speed_mps` | `0.008` | 闭环转弯误差较大时保持的最低正线速度，m/s |
-| `corner_shunt_closed_loop_max_angular_speed_rps` | `0.40` | 闭环正向弧线的最大角速度，rad/s |
-| `corner_shunt_closed_loop_bearing_gain` | `1.40` | 出口目标方位误差到角速度的比例增益 |
-| `corner_shunt_closed_loop_final_yaw_gain` | `0.60` | 出口最终偏航误差到角速度的比例增益 |
+| `corner_shunt_entry_base_x_m` | `-0.050` | 开始追踪出口前，车体中心相对路口参考截面的位置，m |
+| `corner_shunt_plan_linear_speed_mps` | `0.035` | 路口状态格前进线速度，m/s |
+| `corner_shunt_plan_reverse_speed_mps` | `-0.035` | 仅限已确认路口的倒车线速度，m/s |
+| `corner_shunt_plan_angular_speed_rps` | `0.40` | 路口状态格动作角速度，rad/s |
+| `corner_shunt_closed_loop_min_speed_mps` | `0.035` | 路口动作非零线速度下限，m/s |
+| `corner_shunt_closed_loop_max_angular_speed_rps` | `0.65` | 闭环安全检查允许的最大角速度，rad/s |
+| `corner_shunt_closed_loop_bearing_gain` | `2.20` | 出口目标方位误差到角速度的比例增益 |
+| `corner_shunt_closed_loop_final_yaw_gain` | `1.00` | 出口最终偏航误差到角速度的比例增益 |
 | `corner_shunt_closed_loop_entry_heading_gain` | `1.40` | RFID 前入口航向纠偏增益 |
 | `corner_shunt_closed_loop_entry_lateral_gain` | `2.00` | RFID 前入口横向纠偏增益，rad/s/m |
 | `corner_shunt_closed_loop_yaw_rate_damping` | `0.35` | 实测角速度阻尼，抑制过冲 |
@@ -974,6 +980,11 @@ config/waypoint_navigation.yaml
 | `corner_shunt_no_progress_distance_m` | `0.003` | 转弯进展检测的最小位移，m |
 | `corner_shunt_no_progress_yaw_rad` | `0.03` | 转弯进展检测的最小航向变化，rad |
 | `corner_shunt_max_plan_count` | `4` | 转弯无进展后允许的总规划次数，耗尽后发布故障 |
+| `turn_maneuver_trim_speed_mps` | `0.035` | 独立转弯动作微调线速度，m/s |
+| `turn_maneuver_trim_search_step_m` | `0.020` | 沿来向道路搜索微调目标的空间步长，m |
+| `turn_maneuver_trim_max_distance_m` | `0.20` | 单次路口微调允许的最大距离，m |
+| `turn_maneuver_preferred_entry_x_m` | `-0.050` | 优先搜索的安全入口纵向坐标，m |
+| `turn_maneuver_entry_yaw_tolerance_rad` | `0.20` | 允许直接开始转弯的入口航向误差，rad |
 | `precision_turn_threshold` | `0.45` | 原地转向进入精调最低角速度区间的航向误差，rad |
 | `turn_cruise_speed` | `0.75` | 原地转向巡航角速度命令，rad/s |
 | `min_precision_turn_speed` | `0.50` | 精调阶段最低角速度命令，需高于实测底盘转向死区 |
@@ -994,6 +1005,7 @@ config/waypoint_navigation.yaml
 | `odom_timeout` | `0.40` | 里程计到达超时时间，s |
 | `imu_timeout` | `0.15` | 控制 IMU 到达超时时间，s |
 | `fusion_status_timeout` | `0.60` | 融合健康状态超时时间，s |
+| `dead_reckoning_speed_scale` | `0.80` | ORB 丢图且轮式/IMU续航时的线速度比例 |
 | `actuator_health_timeout` | `0.80` | 执行器健康状态超时时间，s |
 
 ### 14.3 行为和安全参数
@@ -1001,7 +1013,7 @@ config/waypoint_navigation.yaml
 | 参数 | 默认值 | 作用 |
 | --- | --- | --- |
 | `require_fusion_status` | `true` | 是否要求融合健康状态有效且允许 |
-| `allowed_fusion_states` | 配置列表 | 允许导航的融合状态；允许的 `DEGRADED_*` 不触发额外限速 |
+| `allowed_fusion_states` | 配置列表 | 允许导航的融合状态；断图续航状态按专用比例限速 |
 | `require_actuator_health` | `false` | 是否要求执行器健康；串口 bringup 强制为 `true` |
 | `require_tracking_state` | `false` | 是否额外要求 ORB 跟踪状态为 `OK` 或 `OK_KLT` |
 | `abort_on_tracking_loss` | `false` | 在启用跟踪状态检查时，运行中跟踪丢失是否立即中止任务 |

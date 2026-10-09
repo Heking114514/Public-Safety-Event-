@@ -49,22 +49,22 @@ WaypointNavigator::RunBrake(const ControlFrame &frame) {
   const Waypoint &nextTarget = waypoints_[currentWaypointIndex_ + 1];
   const double nextHeading =
       std::atan2(nextTarget.y - frame.target.y, nextTarget.x - frame.target.x);
-  const bool routeStartTurn = currentWaypointIndex_ == 0 &&
-                              routeStartTurnAuthorized_ &&
+  const bool routeStartTurn = routeStartTurnAuthorized_ &&
                               frame.target.turn_junction;
   const bool plannedReverse = visual_navigation::IsOutAndBackWaypoint(
       pathSegmentStartX_, pathSegmentStartY_, frame.target.x, frame.target.y,
       nextTarget.x, nextTarget.y, 0.02, 0.05);
   const bool reverseArrivalTurn =
       frame.target.reverse_arrival_turn && reverseSegmentActive_;
-  const double arrivalHeading =
+  const double geometryHeading =
       routeStartTurn
           ? currentYaw_
           : NormalizeAngle(
                 frame.path_heading +
                 (reverseSegmentActive_ && !reverseArrivalTurn ? kPi : 0.0));
-  const double plannedTurnError = NormalizeAngle(nextHeading - arrivalHeading);
-  stoppedTurnArrivalHeading_ = arrivalHeading;
+  const double plannedTurnError = NormalizeAngle(nextHeading - geometryHeading);
+  stoppedTurnGeometryHeading_ = geometryHeading;
+  stoppedTurnArrivalHeading_ = currentYaw_;
   stoppedTurnTargetHeading_ = nextHeading;
   stoppedTurnReverseArrival_ = reverseArrivalTurn;
   stoppedAtPlannedTurn_ = frame.target.turn_junction && !plannedReverse &&
@@ -74,7 +74,7 @@ WaypointNavigator::RunBrake(const ControlFrame &frame) {
     firstHalfTurnPending_ = std::abs(plannedTurnError) > 2.35;
     if (firstHalfTurnPending_)
       firstHalfTurnYaw_ =
-          visual_navigation::FirstHalfTurnYaw(arrivalHeading, nextHeading);
+          visual_navigation::FirstHalfTurnYaw(geometryHeading, nextHeading);
   } else {
     firstHalfTurnPending_ = false;
     stoppedTurnReverseArrival_ = false;

@@ -314,8 +314,7 @@ void WaypointNavigator::HandleReset(
   turnProgressSupervisor_.Reset();
   pathSegmentInitialized_ = false;
   ResetRunControl();
-  routeStartTurnAuthorized_ =
-      !waypoints_.empty() && waypoints_.front().turn_junction;
+  routeStartTurnAuthorized_ = RouteStartsWithTurn();
   ResetObstacleRecovery();
   PublishStop();
   PublishCurrentWaypoint();

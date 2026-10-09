@@ -153,6 +153,7 @@ const char * motion_fault_name(MotionFault fault);
 enum class FusionMode
 {
   kFull,
+  kDeadReckoning,
   kNoVision,
   kNoWheel,
   kNoImu,

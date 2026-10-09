@@ -63,6 +63,10 @@ ros2 pkg list | grep -E 'orbslam3|visual_navigation|cup_car_serial|realsense2_ca
 
 ```bash
 ./scripts/start_new_map_planner.sh
+
+两个启动脚本都从 `config/navigation_startup.yaml` 的 `ros_domain_id` 读取同一个
+ROS 2 DDS 域，默认值为 `10`。调试时可以临时执行 `ROS_DOMAIN_ID=91` 覆盖配置，
+但两个终端必须使用同一个值。
 ```
 
 正式实车只启动 `./scripts/start_new_map_planner.sh`，由总控统一发布路线。

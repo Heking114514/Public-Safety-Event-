@@ -119,6 +119,10 @@ ARM64 板将 `./x86_build.sh` 替换为 `./arm_build.sh`。该 Launch 文件会�
 
 `/odometry/visual_continuous` 会在跟踪恢复时移动发布原点以保持连续，适合显示或作为可选视觉航向参考。`/odometry/visual_raw` 使用首帧机体位姿固定原点，保留重定位跳变，供融合器判断和渐进校正。该话题输出平面化的 `x、y、yaw`，ORB 内部仍保留完整 SE(3) 地图。两者使用相同的 `map_frame_id` 和 `body_frame_id`，但只有连续输出可对应节点发布的 TF。跟踪恢复的第一帧不会跨丢失区间计算速度，其 twist 为零且协方差设为高不确定度。导航的公共位姿输入是融合后的 `/odometry/fused`，不能直接用上述任一视觉话题替代。
 
+发布前会将 ORB 归一化平面的轴约定转换为 ROS `base_link` 约定：`+X` 向前、`+Y`
+向左、正偏航逆时针。该转换同时作用于固定原点和连续视觉输出，避免右转轨迹被镜像到
+地图左侧。
+
 `/odom` 和 `/odom/orb_raw` 只用于兼容已有启动文件、rosbag 和消费者，消息分别与两个 `/odometry/visual_*` 话题完全相同。新接入统一使用语义明确的话题；将 `legacy_odom_topic` 或 `legacy_raw_odom_topic` 设为空字符串可关闭对应兼容别名。
 
 默认机体坐标系为 `camera_link`。在机器人上使用时，请发布从 `base_link` 到 `camera_link` 的实测静态变换，然后运行：

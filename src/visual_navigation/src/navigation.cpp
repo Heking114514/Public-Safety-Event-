@@ -139,7 +139,7 @@ void WaypointNavigator::ResetManeuver() {
   continuePathControlOnNextSegment_ = false;
   ResetPathFeedback();
   controlState_.interrupt_maneuver();
-  cornerShuntController_.reset();
+  turnManeuverController_.reset();
   turnSettleController_.reset();
   waypointBrakeController_.reset();
   waypointBrakeRecovering_ = false;
@@ -150,6 +150,7 @@ void WaypointNavigator::ResetManeuver() {
 void WaypointNavigator::ResetRunControl() {
   stoppedAtPlannedTurn_ = false;
   firstHalfTurnPending_ = false;
+  stoppedTurnGeometryHeading_ = 0.0;
   stoppedTurnArrivalHeading_ = 0.0;
   stoppedTurnTargetHeading_ = 0.0;
   stoppedTurnReverseArrival_ = false;

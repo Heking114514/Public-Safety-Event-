@@ -1,7 +1,29 @@
 # Changelog
 
+## 2026-10-09
+
+- 新增 `gate_decline_design.md` 审阅稿，提出统一规划与导航共用的 footprint 轨迹安全判定器；仅为设计文档，未修改生产代码。
+- 将共享车体尺寸更新为 `132 mm × 132 mm`，并增加转弯 footprint 安全门控诊断日志，供下次实车 rosbag 定位弧线阻断原因；不调整控制门限或运动决策。
+- 将视觉巡线独立转弯参数的默认车体尺寸及对应说明同步为 `132 mm × 132 mm`，避免未注入共享参数时仍采用旧尺寸。
+- 新增 `problem2solve.md`，归档导航倒车回放、反向进站转弯、RFID 扫描和转弯死区补偿的
+  控制特征，并区分已确认缺口、待验证风险和当前能力边界。
+- 将 2026-10-09 19:40 左右 rosbag 的第二路口故障证据补入 `problem2solve.md`：转弯动作无安全解后
+  留下非道路航向，导致全局规划起点门控拒绝并最终驻停；确认该次不是障碍物触发。
+- 统一 `start_visual_navigation.sh` 和 `start_new_map_planner.sh` 的 `ROS_DOMAIN_ID`，
+  从 `config/navigation_startup.yaml` 读取，默认使用 domain `10`，避免两个终端发现不到彼此节点。
+
 ## 2026-10-08
 
+- 将 ORB 视觉位姿升级为 `/odometry/fused` 的主要全局位置约束，轮式与 BMI088 保留为
+  高频局部传播和断图续航；视觉丢失且轮式/IMU健康时发布
+  `DEGRADED_DEAD_RECKONING`，不再因单纯超过视觉丢失时长或距离而停车。
+- 修正 ORB 平面输出与 ROS `base_link` 之间横向和偏航方向相反的问题；视觉恢复采用当前
+  轮式/IMU 位姿重对齐，RFID 修正期间暂停视觉，修正完成后重锚 ORB，避免两个全局约束
+  相互拉扯或产生恢复跳变。
+- 视觉断图期间新增 `DEGRADED_DEAD_RECKONING` 协议：融合位置协方差随断图时间增长，
+  导航线速度按 `dead_reckoning_speed_scale` 降至 80%，轮式和 IMU健康时继续执行路线。
+- 将视觉恢复重锚阈值与视觉健康超时绑定，避免 15 Hz 调度抖动超过 0.20 s 时反复误报
+  `Visual tracking recovered`；正常抖动不再触发重锚。
 - 将 `navigation_mission_manager` 的总控节点、任务模型、障碍/事件/RFID 状态机、服务代理
   和测试播报器完整迁移到 C++17，ROS 接口和可执行文件名保持不变。
 - 将 `vehicle_loopback_sim_node`、仿真运动/障碍模型和可选调试路线控制器迁移到 C++17；

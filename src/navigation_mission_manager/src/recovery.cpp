@@ -75,6 +75,10 @@ void MissionManager::on_navigator_status(const std_msgs::msg::String::SharedPtr 
     handle_obstacle_replan();
     return;
   }
+  if (status == "TURN_NEED_REPLAN") {
+    handle_turn_replan();
+    return;
+  }
   if (status == "GOAL_REACHED") {
     handle_goal_reached();
     return;
@@ -94,6 +98,22 @@ void MissionManager::on_navigator_status(const std_msgs::msg::String::SharedPtr 
       active_route_->motion_seen = true;
     }
   }
+}
+
+void MissionManager::handle_turn_replan()
+{
+  // A junction maneuver can be geometrically infeasible without any obstacle.
+  // Replace the route from the measured pose; do not enter obstacle recovery.
+  if (!mission_->running() || !active_route_.has_value() ||
+    !active_route_->acknowledged || planning_pending_ || plan_due_at_.has_value())
+  {
+    return;
+  }
+  clear_active_route();
+  schedule_plan(true);
+  set_state(
+    mission_control_interfaces::msg::MissionState::REPLANNING,
+    "路口动作无安全解，按当前位姿重新规划");
 }
 
 void MissionManager::handle_obstacle_replan()

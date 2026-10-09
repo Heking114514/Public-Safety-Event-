@@ -25,6 +25,7 @@ struct TargetRecord {
   uint64_t previous{kNoKey};
   int via{-1};
   int seed{-1};
+  int arrival_lane{-1};
   bool reverse{false};
 };
 
@@ -232,8 +233,9 @@ MapPlanner::plan_targets(const PlanRequest &request, const Pose &start,
     return result;
   }
   const int count_states = 3;
-  const int state_count =
-      static_cast<int>(config_.nodes.size()) * kHeadingCount * count_states;
+  const int lane_states = static_cast<int>(config_.lanes.size()) + 1;
+  const int state_count = static_cast<int>(config_.nodes.size()) *
+                          kHeadingCount * count_states * lane_states;
   const auto is_task_node = [this](int node) {
     return std::any_of(config_.tasks.begin(), config_.tasks.end(),
                        [node](const Task &task) { return task.node == node; });
@@ -248,17 +250,22 @@ MapPlanner::plan_targets(const PlanRequest &request, const Pose &start,
     }
     return mask;
   };
-  const auto key_for = [state_count, count_states](uint64_t mask, int node,
-                                                   int heading, int count) {
+  const auto key_for = [state_count, count_states, lane_states](
+                           uint64_t mask, int node, int heading, int count,
+                           int arrival_lane) {
     return mask * static_cast<uint64_t>(state_count) +
            static_cast<uint64_t>(
-               (node * kHeadingCount + heading) * count_states + count);
+               (((node * kHeadingCount + heading) * count_states + count) *
+                    lane_states) +
+               static_cast<std::size_t>(arrival_lane + 1));
   };
-  const auto decode = [state_count, count_states](uint64_t key, uint64_t &mask,
-                                                  int &node, int &heading,
-                                                  int &count) {
+  const auto decode = [state_count, count_states, lane_states](
+                          uint64_t key, uint64_t &mask, int &node,
+                          int &heading, int &count, int &arrival_lane) {
     mask = key / static_cast<uint64_t>(state_count);
     int state = static_cast<int>(key % static_cast<uint64_t>(state_count));
+    arrival_lane = state % lane_states - 1;
+    state /= lane_states;
     count = state % count_states;
     state /= count_states;
     node = state / kHeadingCount;
@@ -294,7 +301,7 @@ MapPlanner::plan_targets(const PlanRequest &request, const Pose &start,
       continue;
     }
     const uint64_t key =
-        key_for(node_mask(seed.node), seed.node, seed.heading, count);
+        key_for(node_mask(seed.node), seed.node, seed.heading, count, -1);
     TargetRecord &record = records[key];
     if (seed.cost < record.cost) {
       record.cost = seed.cost;
@@ -319,7 +326,8 @@ MapPlanner::plan_targets(const PlanRequest &request, const Pose &start,
     int node = -1;
     int heading = -1;
     int count = 0;
-    decode(current.key, mask, node, heading, count);
+    int arrival_lane = -1;
+    decode(current.key, mask, node, heading, count, arrival_lane);
     const int completed = static_cast<int>(std::bitset<64>(mask).count());
     if (completed > best_partial_count ||
         (completed == best_partial_count && current.cost < best_partial_cost)) {
@@ -345,7 +353,8 @@ MapPlanner::plan_targets(const PlanRequest &request, const Pose &start,
       }
       const uint64_t next_mask = mask | node_mask(directed.to);
       const uint64_t next_key =
-          key_for(next_mask, directed.to, directed.heading, next_count);
+          key_for(next_mask, directed.to, directed.heading, next_count,
+                  directed.lane);
       const double turn = heading == directed.heading ? 0.0 : config_.turn_cost;
       const double candidate = current.cost + directed.length + turn;
       TargetRecord &next = records[next_key];
@@ -356,8 +365,37 @@ MapPlanner::plan_targets(const PlanRequest &request, const Pose &start,
       next.previous = current.key;
       next.via = directed_index;
       next.seed = current_record->second.seed;
+      next.arrival_lane = directed.lane;
       next.reverse = false;
       queue.push({candidate, next_key});
+    }
+
+    if (arrival_lane >= 0 || current_record->second.previous == kNoKey) {
+      for (int directed_index : graph_.outgoing(node)) {
+        const DirectedLane &retreat = graph_.directed_lane(directed_index);
+        if ((arrival_lane >= 0 && retreat.lane != arrival_lane) ||
+            (retreat.heading + 2) % kHeadingCount != heading ||
+            !lane_free[static_cast<std::size_t>(directed_index)]) {
+          continue;
+        }
+        const int reverse_count = is_task_node(retreat.to) ? 0 : count;
+        const uint64_t next_mask = mask | node_mask(retreat.to);
+        const uint64_t next_key = key_for(
+            next_mask, retreat.to, heading, reverse_count, retreat.lane);
+        const double candidate =
+            current.cost + retreat.length + config_.reverse_cost;
+        TargetRecord &next = records[next_key];
+        if (candidate + 1.0e-9 >= next.cost) {
+          continue;
+        }
+        next.cost = candidate;
+        next.previous = current.key;
+        next.via = directed_index;
+        next.seed = current_record->second.seed;
+        next.arrival_lane = retreat.lane;
+        next.reverse = true;
+        queue.push({candidate, next_key});
+      }
     }
   }
 
@@ -400,8 +438,9 @@ MapPlanner::plan_targets(const PlanRequest &request, const Pose &start,
   uint64_t reached_mask = 0;
   int selected_node = -1;
   int selected_heading = -1;
+  int selected_arrival_lane = -1;
   decode(selected_key, reached_mask, selected_node, selected_heading,
-         result.ordinary_nodes_since_task);
+         result.ordinary_nodes_since_task, selected_arrival_lane);
   (void)selected_node;
   (void)selected_heading;
   std::unordered_set<std::string> ordered_targets;

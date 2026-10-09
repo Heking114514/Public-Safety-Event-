@@ -70,13 +70,13 @@ ros2 service call /navigation_mission/set_motion_hold \
   "{source: 'inspection', hold: false, reason: ''}"
 ```
 
-正常情况下，只有里程计和融合健康消息均未超时、且健康状态位于 `allowed_fusion_states` 中，节点才会输出非零速度。`DEGRADED_*` 只是融合层可降级状态；只要列入允许列表，导航仍按原路线速度和全局上限执行，不做额外限速。ORB 暖机时融合状态为 `WAITING_FOR_INITIALIZATION`：路线可以保持激活但只输出零速等待；连续有效视觉样本到来后会自动转入允许状态，无需再次 `start`。融合端上报 `FAULT_*`、未知状态、消息陈旧、无效位姿或坐标系不一致都会停车；确认的融合 `FAULT_*` 会锁存任务，等待健康路线重启。控制 IMU 超时只会让角速度反馈临时回退为零，不参与降速策略。旧 `/tracking_state` 检查由 `require_tracking_state` 参数选择性启用。导航只订阅融合 gate 发布的 `/imu/control`，不直接消费原始 IMU。
+正常情况下，只有里程计和融合健康消息均未超时、且健康状态位于 `allowed_fusion_states` 中，节点才会输出非零速度。ORB 丢图但轮式和 IMU 健康时，融合状态为 `DEGRADED_DEAD_RECKONING`，导航继续原路线并按 `dead_reckoning_speed_scale` 限制线速度，默认从 `0.05 m/s` 降至 `0.04 m/s`。其他允许的 `DEGRADED_*` 状态不额外限速。ORB 暖机时融合状态为 `WAITING_FOR_INITIALIZATION`：路线可以保持激活但只输出零速等待；连续有效视觉样本到来后会自动转入允许状态，无需再次 `start`。融合端上报 `FAULT_*`、未知状态、消息陈旧、无效位姿或坐标系不一致都会停车；确认的融合 `FAULT_*` 会锁存任务，等待健康路线重启。控制 IMU 超时只会让角速度反馈临时回退为零，不参与降速策略。旧 `/tracking_state` 检查由 `require_tracking_state` 参数选择性启用。导航只订阅融合 gate 发布的 `/imu/control`，不直接消费原始 IMU。
 
 普通 bringup 的 `require_actuator_health` 默认为 `false`，便于不连接下位机时测试；`visual_navigation_serial_bringup.launch.py` 强制设为 `true`。此时启动前必须收到新鲜的 `actuator_healthy=true`，即下位机控制遥测新鲜、处于导航模式、未急停且命令没有超时。运行中状态变为 `false` 或心跳超过 `actuator_health_timeout`（默认 `0.8 s`）会立即发布零速度并进入 `WAITING_FOR_ACTUATOR_RECOVERY`，但保留当前路线和进度；健康状态恢复后自动续跑。
 
 本工程当前只定义感知接口，不提供障碍识别节点；后续 YOLO + 深度测距节点确认障碍后，应发布 `/obstacle/front_blocked` 和 `/obstacle/front_range`。导航始终订阅这两个话题，无发布者就按“没有障碍”继续运行，不需要开关。Bool 和 Range 都按传感器数据 QoS 订阅，可直接兼容常见的 best-effort 感知发布端。只有新鲜的 `front_blocked=true` 会立即发零速；在正式进入恢复前收到 `false` 或心跳超时会撤销这次停车，已经开始停稳确认或倒车则继续完成恢复，不因感知消息中断而停在路中间。Range 允许比同一次 Bool 最多早到 `0.1 s`，但 clear 边沿或新路线接管会丢弃缓存，上一障碍事件的旧 Range 不会复用。新路线接管也会重新启用 Bool 事件，因此感知连续发布 `true` 时，接管后的下一帧仍会再次制动。每次 `true` 事件都必须配对发布本次 Range；只发 Bool 时小车仍会停车倒退，但前端无法把障碍落到地图上，可能再次规划到同一条路。
 
-路段中出现障碍时，导航状态依次为 `OBSTACLE_BRAKING`、`OBSTACLE_REVERSING` 和 `OBSTACLE_REPLAN_REQUIRED`：先确认停稳，再沿本次实际行驶轨迹以独立的负速度控制退回上一语义航点（即当前道路入口），最后停住旧路线，等待任务协调器下发新路线。若规划器从该姿态确认无路，任务协调器可调用 `continue_obstacle_retreat`。控制器先把当前实测姿态匹配到历史起点，只允许在位置容差内和不超过 20 度的航向差内做零线速对齐；随后以 `OBSTACLE_REPLAYING` 按相反时间顺序执行此前实际发布且已经限速的控制命令，因此紧路口原有的前进、倒车和转向微调都会沿原安全轨迹撤销，而不是按空间最近点跳到另一条支路。到达新锚点并校验位置、航向后再次请求规划。该过程按距离分段且有任务层次数上限；历史轨迹耗尽、无进展或 30 秒单段总超时都会停车报错，不会无限后退。Range 显示障碍表面在当前计划转角之后时，按正常路口墙处理，不启动倒车。单帧融合位姿大跳不会写入恢复轨迹。规划器即使返回几何相同但 route ID 更新的路线，导航也会解除 `OBSTACLE_REPLAN_REQUIRED`、确认并重新执行。
+路段中出现障碍时，导航状态依次为 `OBSTACLE_BRAKING`、`OBSTACLE_REVERSING` 和 `OBSTACLE_REPLAN_REQUIRED`：先确认停稳，再沿已记录 breadcrumb 的实时位置闭环退回当前语义航点，最后停住旧路线，等待任务协调器下发新路线。若规划器从该姿态确认无路，任务协调器可调用 `continue_obstacle_retreat`，控制器切换到上一个语义航点；不再反向回放历史 `cmd_vel`。退倒过程中根据当前位置、目标点、航向和 IMU 角速度实时计算负速度与角速度，并在目标路口前完成闭环对齐。Range 显示障碍表面在当前计划转角之后时，按正常路口墙处理，不启动倒车。单帧融合位姿大跳不会写入恢复轨迹。规划器即使返回几何相同但 route ID 更新的路线，导航也会解除 `OBSTACLE_REPLAN_REQUIRED`、确认并重新执行。
 
 ## 航点文件
 
@@ -121,11 +121,17 @@ x,y,yaw,speed,tolerance,stop_time
 制动、任务驻停、航点等待和定位等待期间不累计进度超时。
 
 需要停车的路口不会把下一段路径曲率提前施加到进站直线；进站时只保留受
-`pre_turn_path_angular_ratio` 限制的小幅路径纠偏。到点确认停稳后，控制器先低速驶过 RFID
-参考截面，再根据每周期实测的位置、偏航和角速度追踪出口道路目标点。普通转弯始终保持
-正线速度，不使用固定动作回放，也不原地旋转；角速度会随横向和航向误差实时修正。连续
-3 秒无位姿进展会重置闭环，最多四次后进入 `FAULT_TURN_BLOCKED`。显式反向进站的障碍恢复
-转弯仍使用受车身包络约束的状态格搜索。
+`pre_turn_path_angular_ratio` 限制的小幅路径纠偏。到点确认停稳后，控制器冻结来向道路几何
+方向，并保存车辆实际停车航向；随后由独立转弯动作按 `TURN_ENTRY_CHECK`、`TURN_TRIM_SEARCH`、
+`TURN_REVERSE_TRIM`/`TURN_FORWARD_TRIM`、`TURN_TRIM_SETTLE`、`TURN_ARC` 和
+`TURN_EXIT_ALIGN` 闭环执行。转弯只在已确认路口允许前进/倒车组合，线速度幅值不低于
+`0.035 m/s`，动作集合不包含原地旋转。没有安全微调目标时停车并发布 `TURN_NEED_REPLAN`，
+不把路口动作失败伪装成障碍恢复；只有输入非法或动作本身不可恢复时才发布
+`FAULT_TURN_MANEUVER`。
+
+所有非零导航线速度经过 `min_linear_command_speed` 死区补偿，默认 `0.035 m/s`；停车命令仍
+直接为零。RFID 超节点接近扫描同样使用 `0.035 m/s`，读卡确认、任务播报和 XY 校正由任务
+总控负责，控制器不修改航向。
 
 如果需要使用已有地图中的绝对航点，需要后续增加 `外部地图 -> ORB里程计坐标` 的对齐节点，不能仅修改 CSV 中的 `frame_id`。
 
@@ -192,13 +198,15 @@ ros2 launch visual_navigation route_editor.launch.py
 
 导航节点收到合法动态路线后会立即发零速度、清零航点索引并开始导航。编辑器等待 `/waypoint_path` 回显确认本次路线；确认失败会在界面显示，不需要手动执行服务或发布启动话题。历史 transient-local 路线回显不会触发编辑器重复发布。
 
-动态路线中的速度和到达容差使用 `default_speed` 和 `waypoint_tolerance` 参数。当前默认巡航速度和最高线速度均为 `0.05 m/s`；最终速度发布口也会按该上限限幅。默认启动不加载 CSV，重启导航节点后需要再次点击发布按钮才能重新启用编辑路线。
+动态路线中的速度和到达容差使用 `default_speed` 和 `waypoint_tolerance` 参数。当前默认巡航
+速度和最高线速度均为 `0.12 m/s`，普通直行最低非零速度为 `0.035 m/s`；最终速度发布口会
+执行上下限和死区约束。默认启动不加载 CSV，重启导航节点后需要再次点击发布按钮才能重新启用编辑路线。
 
 规划器发布的二维 `nav_msgs/Path` 用 `pose.position.z=0.001` 标记普通真实转向路口，
 `z=0.002` 标记“倒车退回路口后转弯”，普通点为 `0`。普通转弯在线搜索第一段不超过
-约 `20°` 的同向转角，先越过路口参考截面，再前进后继续转向；转弯角度和动作段数根据
-实时姿态与车身扫掠确定。普通转弯不倒车；`z=0.002` 反向进站仍从实测倒车到点姿态
-建模。未标记的精确 `A->B->A` 路末折返仍执行为直接倒车。其他 z 值会被拒绝。
+约 `20°` 的同向转角，后续根据实时姿态与车身扫掠选择路口内前进/倒车动作；所有动作均
+保持非零线速度，禁止原地旋转。`z=0.002` 反向进站仍从实测倒车到点姿态建模。未标记的
+精确 `A->B->A` 路末折返仍执行为直接倒车。其他 z 值会被拒绝。
 
 ## 自动规划模式
 

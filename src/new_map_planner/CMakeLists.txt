@@ -18,6 +18,7 @@ find_package(ament_cmake_python REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(navigation_safety REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(std_msgs REQUIRED)
@@ -47,7 +48,7 @@ target_include_directories(new_map_planner_core PUBLIC
   $<INSTALL_INTERFACE:include>)
 target_include_directories(new_map_planner_core PRIVATE ${visual_navigation_INCLUDE_DIRS})
 target_link_libraries(new_map_planner_core yaml-cpp)
-ament_target_dependencies(new_map_planner_core visual_navigation)
+ament_target_dependencies(new_map_planner_core navigation_safety visual_navigation)
 
 add_executable(new_map_planner_node src/node.cpp)
 target_link_libraries(new_map_planner_node new_map_planner_core)
@@ -97,6 +98,7 @@ ament_export_dependencies(
   ament_index_cpp
   geometry_msgs
   nav_msgs
+  navigation_safety
   rosidl_default_runtime
   std_msgs
   visual_navigation

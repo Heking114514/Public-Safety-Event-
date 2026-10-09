@@ -448,11 +448,11 @@ FusionMode select_mode(
     seconds_without_vision <= max_wheel_only_seconds &&
     distance_without_vision <= max_wheel_only_distance;
 
-  // Wheel + IMU is the tunnel fallback, not an unlimited navigation mode.
-  // Bound it by both elapsed outage and travelled distance so a permanent
-  // camera failure cannot silently run the remainder of a mission.
-  if (wheel && imu && within_dead_reckoning_limit) {
-    return FusionMode::kNoVision;
+  // A healthy wheel/IMU pair owns continuous local propagation while vision
+  // is unavailable. The outage limits remain diagnostic warning thresholds;
+  // losing only the camera must not stop the vehicle before the next RFID.
+  if (wheel && imu) {
+    return FusionMode::kDeadReckoning;
   }
   if (wheel && !imu && wheel_yaw_backup &&
     within_dead_reckoning_limit && within_wheel_only_limit)
@@ -466,6 +466,7 @@ const char * mode_name(FusionMode mode)
 {
   switch (mode) {
     case FusionMode::kFull: return "FULL";
+    case FusionMode::kDeadReckoning: return "DEGRADED_DEAD_RECKONING";
     case FusionMode::kInitializing: return "WAITING_FOR_INITIALIZATION";
     case FusionMode::kNoVision: return "DEGRADED_NO_VISION";
     case FusionMode::kNoWheel: return "DEGRADED_NO_WHEEL";

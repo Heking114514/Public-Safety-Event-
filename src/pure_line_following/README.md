@@ -29,7 +29,7 @@ The detector:
    during approach, then follows the selected branch centreline once the branch
    entrance is still measurable near the configured lookahead.
 7. Adds a small bounded integral correction for persistent centre bias.
-8. Applies the measured 200 mm road width, 153.5 mm chassis width, and edge
+8. Applies the measured 200 mm road width, 132 mm chassis width, and edge
    margin before allowing forward motion.
 9. Publishes a bounded differential-drive `Twist`.
 

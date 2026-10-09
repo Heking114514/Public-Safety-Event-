@@ -71,8 +71,8 @@ class CornerTurnConfig:
     road_margin_m: float = 0.008
     road_back_m: float = 0.60
     road_forward_m: float = 0.56
-    vehicle_length_m: float = 0.1485
-    vehicle_width_m: float = 0.1535
+    vehicle_length_m: float = 0.132
+    vehicle_width_m: float = 0.132
     vehicle_center_x_m: float = 0.050
     wheel_track_m: float = 0.1466
     prediction_horizon_s: float = 0.24

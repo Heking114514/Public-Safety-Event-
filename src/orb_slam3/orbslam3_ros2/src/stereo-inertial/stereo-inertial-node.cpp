@@ -541,12 +541,14 @@ void StereoInertialNode::PublishPose(
     // ORB's world axes follow the optical camera convention. Normalize them
     // once against the first body pose before labeling the result as ROS map.
     // The fixed origin intentionally does not move on tracking recovery.
-    const Sophus::SE3f TrawMapBody = rawPoseOrigin_.Align(TworldBody);
+    const Sophus::SE3f TrawMapBody =
+        orbslam3_ros2::ToRosPlanarFrame(rawPoseOrigin_.Align(TworldBody));
     const double covarianceScale =
         trackingState == ORB_SLAM3::Tracking::OK_KLT ? kltCovarianceScale_ : 1.0;
     PublishRawOdometry(TrawMapBody, msgLeft->header.stamp, covarianceScale);
     const bool recoveredFromInterruption = poseContinuity_.RecoveryPending();
-    const Sophus::SE3f TmapBody = poseContinuity_.Align(TworldBody);
+    const Sophus::SE3f TmapBody =
+        orbslam3_ros2::ToRosPlanarFrame(poseContinuity_.Align(TworldBody));
     if (recoveredFromInterruption)
     {
         RCLCPP_INFO(this->get_logger(), "Tracking recovered; preserving the published odometry frame");

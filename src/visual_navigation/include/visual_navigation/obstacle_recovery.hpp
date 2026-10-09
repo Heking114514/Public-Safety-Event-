@@ -100,6 +100,7 @@ struct ObstacleRecoveryConfig {
   double replay_alignment_gain{1.20};
   double replay_alignment_max_angular_speed{0.15};
   double replay_yaw_tolerance{0.25};
+  double replay_fallback_linear_speed{0.035};
   int maximum_recovery_attempts{2};
   std::size_t maximum_breadcrumbs{2000};
   std::size_t maximum_trace_samples{12000};
@@ -149,6 +150,8 @@ public:
         NonnegativeOrDefault(config_.replay_alignment_max_angular_speed, 0.15);
     config_.replay_yaw_tolerance =
         NonnegativeOrDefault(config_.replay_yaw_tolerance, 0.25);
+    config_.replay_fallback_linear_speed = std::max(
+        0.035, NonnegativeOrDefault(config_.replay_fallback_linear_speed, 0.035));
     config_.maximum_recovery_attempts =
         std::max(0, config_.maximum_recovery_attempts);
     config_.maximum_breadcrumbs =
@@ -173,6 +176,7 @@ public:
     replay_started_ = false;
     replay_start_valid_ = false;
     replay_goal_valid_ = false;
+    replay_progress_initialized_ = false;
     recovery_attempts_ = 0;
     attempt_timer_initialized_ = false;
     progress_timer_initialized_ = false;
@@ -193,6 +197,7 @@ public:
     replay_started_ = false;
     replay_start_valid_ = false;
     replay_goal_valid_ = false;
+    replay_progress_initialized_ = false;
   }
 
   void prepare_for_route(bool preserve_trace) {
@@ -212,6 +217,7 @@ public:
     replay_started_ = false;
     replay_start_valid_ = false;
     replay_goal_valid_ = false;
+    replay_progress_initialized_ = false;
     recovery_attempts_ = 0;
     attempt_timer_initialized_ = false;
     progress_timer_initialized_ = false;
@@ -401,6 +407,7 @@ public:
     replay_active_ = true;
     replay_pose_aligned_ = false;
     replay_started_ = false;
+    replay_progress_initialized_ = false;
     target_valid_ = false;
     recovery_attempts_ = 0;
     attempt_timer_initialized_ = false;
@@ -468,9 +475,49 @@ public:
       }
       replay_pose_aligned_ = true;
     }
+    const double goal_distance =
+        RecoveryPointDistance({current_x, current_y}, replay_goal_.point);
+    if (!replay_progress_initialized_) {
+      replay_best_distance_ = goal_distance;
+      replay_progress_started_ = now;
+      replay_progress_initialized_ = true;
+    } else if (replay_best_distance_ - goal_distance >=
+               config_.minimum_progress) {
+      replay_best_distance_ = goal_distance;
+      replay_progress_started_ = now;
+    }
+    if (config_.no_progress_timeout > 0.0 &&
+        std::chrono::duration<double>(now - replay_progress_started_).count() >=
+            config_.no_progress_timeout) {
+      const auto retry = RetryOrFault(false);
+      if (retry.action == ObstacleRecoveryAction::FAULT_NO_PROGRESS)
+        replay_active_ = false;
+      step.position_error = goal_distance;
+      step.action = retry.action;
+      return step;
+    }
+
+    // Consume a historical sample only after the measured pose has moved
+    // from the current sample toward the next one. A control callback alone
+    // must never advance the replay cursor.
+    if (replay_started_ && replay_index_ > replay_stop_index_) {
+      const std::size_t next_index = replay_index_ - 1;
+      const double segment_distance = RecoveryPointDistance(
+          trace_[replay_index_].point, trace_[next_index].point);
+      const double required_motion = std::max(
+          0.005, std::min(0.5 * segment_distance, config_.minimum_progress));
+      const double moved_from_sample = RecoveryPointDistance(
+          {current_x, current_y}, trace_[replay_index_].point);
+      if (moved_from_sample >= required_motion &&
+          RecoveryPointDistance({current_x, current_y},
+                                trace_[next_index].point) <=
+              config_.target_tolerance) {
+        replay_index_ = next_index;
+      }
+    }
+
     if (replay_index_ <= replay_stop_index_) {
-      const double position_error =
-          RecoveryPointDistance({current_x, current_y}, replay_goal_.point);
+      const double position_error = goal_distance;
       const double yaw_error = std::abs(std::remainder(
           replay_goal_.yaw - current_yaw, 2.0 * 3.14159265358979323846));
       step.position_error = position_error;
@@ -489,7 +536,20 @@ public:
     }
 
     const auto &sample = trace_[replay_index_];
-    step.linear_velocity = -sample.linear_velocity;
+    double replay_speed = std::abs(sample.linear_velocity);
+    if (replay_speed < 1.0e-6) {
+      for (std::size_t index = replay_index_; index > replay_stop_index_;
+           --index) {
+        const double candidate = std::abs(trace_[index].linear_velocity);
+        if (candidate >= 1.0e-6) {
+          replay_speed = candidate;
+          break;
+        }
+      }
+    }
+    if (replay_speed < 1.0e-6)
+      replay_speed = config_.replay_fallback_linear_speed;
+    step.linear_velocity = -replay_speed;
     step.angular_velocity = -sample.angular_velocity;
     step.command_valid = true;
     constexpr double kCommandMatchTolerance = 1.0e-4;
@@ -499,11 +559,9 @@ public:
           std::abs(applied_angular - step.angular_velocity) <=
               kCommandMatchTolerance) {
         replay_started_ = true;
-        --replay_index_;
       }
     } else {
       step.publish_recorded = true;
-      --replay_index_;
     }
     return step;
   }
@@ -759,6 +817,9 @@ private:
   bool replay_start_valid_{false};
   RecoveryTraceSample replay_goal_;
   bool replay_goal_valid_{false};
+  bool replay_progress_initialized_{false};
+  double replay_best_distance_{std::numeric_limits<double>::infinity()};
+  TimePoint replay_progress_started_{};
   int recovery_attempts_{0};
   TimePoint attempt_started_{};
   TimePoint progress_started_{};

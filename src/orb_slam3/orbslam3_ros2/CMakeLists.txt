@@ -119,6 +119,10 @@ if(BUILD_TESTING)
   ament_add_gtest(pose_velocity_estimator_test test/pose_velocity_estimator_test.cpp)
   target_include_directories(pose_velocity_estimator_test PRIVATE include)
   target_link_libraries(pose_velocity_estimator_test Sophus::Sophus)
+
+  ament_add_gtest(planar_frame_test test/planar_frame_test.cpp)
+  target_include_directories(planar_frame_test PRIVATE include)
+  target_link_libraries(planar_frame_test Sophus::Sophus)
 endif()
 
 ament_package()

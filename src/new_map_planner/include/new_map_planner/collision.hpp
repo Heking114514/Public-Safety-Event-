@@ -2,6 +2,7 @@
 #define NEW_MAP_PLANNER__COLLISION_HPP_
 
 #include "new_map_planner/types.hpp"
+#include "navigation_safety/checker.hpp"
 
 #include <vector>
 
@@ -22,16 +23,10 @@ public:
   std::vector<int8_t> occupancy_data() const;
 
 private:
-  bool footprint_in_free_space(const Polygon &footprint) const;
-  bool
-  footprint_hits_obstacle(const Polygon &footprint,
-                          const std::vector<Polygon> &dynamic_obstacles) const;
-
   const PlannerConfig &config_;
-  double footprint_length_{0.0};
-  double footprint_width_{0.0};
-  double footprint_center_offset_x_{0.0};
-  std::vector<Polygon> static_obstacles_;
+  navigation_safety::Footprint footprint_;
+  std::vector<navigation_safety::Rectangle> free_regions_;
+  std::vector<navigation_safety::Polygon> static_obstacles_;
 };
 
 } // namespace new_map_planner

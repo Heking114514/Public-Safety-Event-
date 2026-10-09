@@ -16,56 +16,55 @@ bool PointInRectangle(const Point &point, const Rectangle &rectangle) {
          point.y <= rectangle.maximum_y + tolerance;
 }
 
+navigation_safety::Polygon ConvertPolygon(const Polygon &polygon) {
+  navigation_safety::Polygon converted;
+  converted.points.reserve(polygon.points.size());
+  for (const Point &point : polygon.points) {
+    converted.points.push_back({point.x, point.y});
+  }
+  return converted;
+}
+
+std::vector<navigation_safety::Polygon>
+ConvertPolygons(const std::vector<Polygon> &polygons) {
+  std::vector<navigation_safety::Polygon> converted;
+  converted.reserve(polygons.size());
+  for (const Polygon &polygon : polygons) {
+    converted.push_back(ConvertPolygon(polygon));
+  }
+  return converted;
+}
+
+navigation_safety::Pose ConvertPose(const Pose &pose) {
+  return {{pose.position.x, pose.position.y}, pose.yaw};
+}
+
 } // namespace
 
 CollisionChecker::CollisionChecker(const PlannerConfig &config)
     : config_(config),
-      footprint_length_(config.vehicle_length + 2.0 * config.safety_margin),
-      footprint_width_(config.vehicle_width + 2.0 * config.safety_margin),
-      footprint_center_offset_x_(config.footprint_center_offset_x) {
+      footprint_{config.vehicle_length, config.vehicle_width,
+                 config.footprint_center_offset_x, 0.0,
+                 config.safety_margin} {
+  free_regions_.reserve(config.free_regions.size());
+  for (const Rectangle &region : config.free_regions) {
+    free_regions_.push_back({region.minimum_x, region.minimum_y,
+                             region.maximum_x, region.maximum_y});
+  }
   static_obstacles_.reserve(config.static_obstacles.size());
   for (const Rectangle &obstacle : config.static_obstacles) {
-    static_obstacles_.push_back(RectanglePolygon(obstacle));
+    static_obstacles_.push_back(navigation_safety::rectangle_polygon(
+        {obstacle.minimum_x, obstacle.minimum_y, obstacle.maximum_x,
+         obstacle.maximum_y}));
   }
-}
-
-bool CollisionChecker::footprint_in_free_space(const Polygon &footprint) const {
-  for (const Point &corner : footprint.points) {
-    const bool inside =
-        std::any_of(config_.free_regions.begin(), config_.free_regions.end(),
-                    [&corner](const Rectangle &region) {
-                      return PointInRectangle(corner, region);
-                    });
-    if (!inside) {
-      return false;
-    }
-  }
-  return true;
-}
-
-bool CollisionChecker::footprint_hits_obstacle(
-    const Polygon &footprint,
-    const std::vector<Polygon> &dynamic_obstacles) const {
-  for (const Polygon &obstacle : static_obstacles_) {
-    if (PolygonsIntersect(footprint, obstacle)) {
-      return true;
-    }
-  }
-  for (const Polygon &obstacle : dynamic_obstacles) {
-    if (PolygonsIntersect(footprint, obstacle)) {
-      return true;
-    }
-  }
-  return false;
 }
 
 bool CollisionChecker::pose_is_free(
     const Pose &pose, const std::vector<Polygon> &dynamic_obstacles) const {
-  const Polygon footprint =
-      FootprintPolygon(pose, footprint_length_, footprint_width_,
-                       footprint_center_offset_x_);
-  return footprint_in_free_space(footprint) &&
-         !footprint_hits_obstacle(footprint, dynamic_obstacles);
+  const auto dynamic = ConvertPolygons(dynamic_obstacles);
+  return navigation_safety::pose_is_safe(ConvertPose(pose), footprint_,
+                                         free_regions_, static_obstacles_,
+                                         dynamic);
 }
 
 bool CollisionChecker::segment_is_free(
@@ -83,16 +82,9 @@ bool CollisionChecker::segment_is_free(
   if (length <= 1.0e-9) {
     return false;
   }
-  const int samples = std::max(
-      1, static_cast<int>(std::ceil(length / config_.collision_sample_step)));
-  for (int index = 0; index <= samples; ++index) {
-    const double fraction = static_cast<double>(index) / samples;
-    if (!pose_is_free({Interpolate(begin, end, fraction), heading},
-                      dynamic_obstacles)) {
-      return false;
-    }
-  }
-  return true;
+  return sweep_is_free({{{begin.x, begin.y}, heading},
+                        {{end.x, end.y}, heading}},
+                       dynamic_obstacles);
 }
 
 bool CollisionChecker::sweep_is_free(
@@ -101,35 +93,15 @@ bool CollisionChecker::sweep_is_free(
   if (poses.empty()) {
     return false;
   }
-  for (std::size_t index = 0; index < poses.size(); ++index) {
-    if (!pose_is_free(poses[index], dynamic_obstacles)) {
-      return false;
-    }
-    if (index == 0) {
-      continue;
-    }
-    const double distance =
-        Distance(poses[index - 1].position, poses[index].position);
-    const double yaw_change =
-        std::abs(NormalizeAngle(poses[index].yaw - poses[index - 1].yaw));
-    const int translation_samples =
-        static_cast<int>(std::ceil(distance / config_.collision_sample_step));
-    const int rotation_samples = static_cast<int>(std::ceil(yaw_change / 0.04));
-    const int samples = std::max({1, translation_samples, rotation_samples});
-    for (int sample = 1; sample < samples; ++sample) {
-      const double fraction = static_cast<double>(sample) / samples;
-      Pose interpolated;
-      interpolated.position = Interpolate(poses[index - 1].position,
-                                          poses[index].position, fraction);
-      interpolated.yaw = NormalizeAngle(
-          poses[index - 1].yaw +
-          fraction * NormalizeAngle(poses[index].yaw - poses[index - 1].yaw));
-      if (!pose_is_free(interpolated, dynamic_obstacles)) {
-        return false;
-      }
-    }
+  std::vector<navigation_safety::Pose> converted;
+  converted.reserve(poses.size());
+  for (const Pose &pose : poses) {
+    converted.push_back(ConvertPose(pose));
   }
-  return true;
+  const auto dynamic = ConvertPolygons(dynamic_obstacles);
+  return navigation_safety::sweep_is_safe(
+      converted, footprint_, free_regions_, static_obstacles_, dynamic,
+      config_.collision_sample_step, 0.04);
 }
 
 std::vector<int8_t> CollisionChecker::occupancy_data() const {

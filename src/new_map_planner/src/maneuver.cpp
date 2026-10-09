@@ -71,7 +71,8 @@ std::vector<Pose> GenerateLocalTurnProfile(const PlannerConfig &config) {
   context.pose = {-0.050, 0.0, 0.0};
   context.junction_x = 0.0;
   context.junction_y = 0.0;
-  context.incoming_heading = 0.0;
+  context.geometry_heading = 0.0;
+  context.arrival_heading = 0.0;
   context.target_heading = 0.5 * 3.14159265358979323846;
 
   std::vector<Pose> profile;
@@ -243,7 +244,8 @@ Maneuver ManeuverLibrary::make_reverse_arrival_turn(
                   HeadingYaw(vehicle_heading)};
   context.junction_x = junction.x;
   context.junction_y = junction.y;
-  context.incoming_heading = incoming_yaw;
+  context.geometry_heading = incoming_yaw;
+  context.arrival_heading = HeadingYaw(vehicle_heading);
   context.target_heading = HeadingYaw(outgoing.heading);
   context.reverse_arrival = true;
 

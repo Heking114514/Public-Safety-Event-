@@ -15,6 +15,7 @@ except ImportError as error:  # pragma: no cover - exercised by deployment setup
 
 
 STARTUP_KEYS = {
+    "ros_domain_id": int,
     "serial_device": str,
     "serial_baud_rate": int,
     "use_serial": bool,
@@ -71,6 +72,8 @@ def validate_startup(path: Path) -> dict:
             raise ValueError(f"startup key '{key}' must be true or false")
     if values["serial_baud_rate"] <= 0 or values["build_jobs"] <= 0:
         raise ValueError("serial_baud_rate and build_jobs must be positive")
+    if values["ros_domain_id"] < 0 or values["ros_domain_id"] > 232:
+        raise ValueError("ros_domain_id must be between 0 and 232")
     if values["odom_topic"] not in ODOM_TOPIC_CHOICES:
         choices = ", ".join(sorted(ODOM_TOPIC_CHOICES))
         raise ValueError(f"odom_topic must be one of: {choices}")

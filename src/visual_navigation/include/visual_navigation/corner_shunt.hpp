@@ -2,15 +2,14 @@
 #define VISUAL_NAVIGATION__CORNER_SHUNT_HPP_
 
 #include <algorithm>
-#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <future>
-#include <limits>
 #include <thread>
 #include <vector>
 
+#include "navigation_safety/checker.hpp"
 #include "visual_navigation/rate_limiter.hpp"
 
 namespace visual_navigation {
@@ -33,8 +32,8 @@ struct CornerShuntConfig {
   double road_margin{0.002};
   double road_back{0.60};
   double road_forward{0.56};
-  double vehicle_length{0.1485};
-  double vehicle_width{0.1250};
+  double vehicle_length{0.1320};
+  double vehicle_width{0.1320};
   double base_offset_x{0.030};
   double base_offset_y{0.0};
   double stop_duration{0.18};
@@ -84,6 +83,36 @@ struct CornerShuntTwist {
   double angular_z{0.0};
 };
 
+enum class CornerShuntSafetyFailure {
+  NONE,
+  FOOTPRINT_OUTSIDE_ENVELOPE,
+  FOOTPRINT_INTERSECTS_INNER_CORNER
+};
+
+struct CornerShuntSafetyReport {
+  CornerShuntSafetyFailure failure{CornerShuntSafetyFailure::NONE};
+  const char *source{"pose_check"};
+  int prediction_sample{-1};
+  int footprint_corner{-1};
+  CornerShuntPose checked_pose;
+  CornerShuntPose corner_local;
+  CornerShuntTwist attempted_command;
+  double overlap_m{0.0};
+};
+
+inline const char *CornerShuntSafetyFailureName(
+    CornerShuntSafetyFailure failure) {
+  switch (failure) {
+  case CornerShuntSafetyFailure::FOOTPRINT_OUTSIDE_ENVELOPE:
+    return "footprint_outside_envelope";
+  case CornerShuntSafetyFailure::FOOTPRINT_INTERSECTS_INNER_CORNER:
+    return "footprint_intersects_inner_corner";
+  case CornerShuntSafetyFailure::NONE:
+    return "none";
+  }
+  return "unknown";
+}
+
 struct CornerShuntContext {
   CornerShuntPose pose;
   CornerShuntTwist applied_twist;
@@ -91,7 +120,10 @@ struct CornerShuntContext {
   bool measured_yaw_rate_valid{false};
   double junction_x{0.0};
   double junction_y{0.0};
-  double incoming_heading{0.0};
+  // Road-frame heading used for junction coordinates and footprint checks.
+  double geometry_heading{0.0};
+  // Vehicle heading at the completed brake stop, used for residual turn error.
+  double arrival_heading{0.0};
   double target_heading{0.0};
   bool reverse_arrival{false};
 };
@@ -101,6 +133,15 @@ struct CornerShuntDecision {
   CornerShuntTwist command;
   bool complete{false};
   bool blocked{false};
+  CornerShuntSafetyReport safety_report;
+
+  CornerShuntDecision() = default;
+  CornerShuntDecision(CornerShuntPhase phase_value,
+                      CornerShuntTwist command_value, bool complete_value,
+                      bool blocked_value,
+                      CornerShuntSafetyReport report_value = {})
+      : phase(phase_value), command(command_value), complete(complete_value),
+        blocked(blocked_value), safety_report(report_value) {}
 };
 
 inline const char *CornerShuntStatus(CornerShuntPhase phase) {
@@ -253,69 +294,61 @@ public:
   }
 
   bool pose_is_safe(const CornerShuntContext &context,
-                    const CornerShuntPose &pose) const {
-    const auto world_corners = footprint_corners(pose);
-    std::array<CornerShuntPose, 4> corners{};
-    const double cos_heading = std::cos(context.incoming_heading);
-    const double sin_heading = std::sin(context.incoming_heading);
+                    const CornerShuntPose &pose,
+                    CornerShuntSafetyReport *report = nullptr) const {
+    const double cos_heading = std::cos(context.geometry_heading);
+    const double sin_heading = std::sin(context.geometry_heading);
     const double direction = turn_sign(context);
-    for (std::size_t index = 0; index < world_corners.size(); ++index) {
-      const double dx = world_corners[index].x - context.junction_x;
-      const double dy = world_corners[index].y - context.junction_y;
-      corners[index] = {cos_heading * dx + sin_heading * dy,
-                        (-sin_heading * dx + cos_heading * dy) * direction,
-                        0.0};
-    }
-
     const double half = std::max(0.0, 0.5 * config_.road_width);
     const double margin = ClampShunt(config_.road_margin, 0.0, half - 1.0e-6);
     const double safe_half = half - margin;
     const double back = std::max(0.0, config_.road_back) - margin;
     const double forward = std::max(0.0, config_.road_forward) - margin;
-    for (const auto &corner : corners) {
-      if (corner.x < -back || corner.x > safe_half || corner.y < -safe_half ||
-          corner.y > forward)
-        return false;
+    const double local_x =
+        cos_heading * (pose.x - context.junction_x) +
+        sin_heading * (pose.y - context.junction_y);
+    const double local_y =
+        (-sin_heading * (pose.x - context.junction_x) +
+         cos_heading * (pose.y - context.junction_y)) *
+        direction;
+    const double local_yaw =
+        NormalizeShuntAngle(pose.yaw - context.geometry_heading) * direction;
+    const navigation_safety::Pose local_pose{{local_x, local_y}, local_yaw};
+    const navigation_safety::Footprint footprint{
+        config_.vehicle_length, config_.vehicle_width, config_.base_offset_x,
+        direction * config_.base_offset_y, 0.0};
+    const std::vector<navigation_safety::Rectangle> free_regions{{
+        -back, -safe_half, safe_half, forward}};
+    const navigation_safety::Rectangle inner_corner{
+        -back, safe_half, -safe_half, forward};
+    const std::vector<navigation_safety::Polygon> blocked_regions{
+        navigation_safety::rectangle_polygon(inner_corner)};
+    navigation_safety::Report safety_report;
+    const bool safe = navigation_safety::pose_is_safe(
+        local_pose, footprint, free_regions, blocked_regions, {},
+        &safety_report);
+    if (safe) {
+      return true;
     }
-
-    const std::array<CornerShuntPose, 4> blocked{{
-        {-back, safe_half, 0.0},
-        {-safe_half, safe_half, 0.0},
-        {-safe_half, forward, 0.0},
-        {-back, forward, 0.0},
-    }};
-    const double edge_x = corners[1].x - corners[0].x;
-    const double edge_y = corners[1].y - corners[0].y;
-    const double side_x = corners[3].x - corners[0].x;
-    const double side_y = corners[3].y - corners[0].y;
-    const std::array<CornerShuntPose, 4> axes{{
-        {1.0, 0.0, 0.0},
-        {0.0, 1.0, 0.0},
-        {edge_x, edge_y, 0.0},
-        {side_x, side_y, 0.0},
-    }};
-    constexpr double kTouchTolerance = 1.0e-9;
-    for (const auto &axis : axes) {
-      double vehicle_min = std::numeric_limits<double>::infinity();
-      double vehicle_max = -std::numeric_limits<double>::infinity();
-      double blocked_min = std::numeric_limits<double>::infinity();
-      double blocked_max = -std::numeric_limits<double>::infinity();
-      for (const auto &corner : corners) {
-        const double projection = corner.x * axis.x + corner.y * axis.y;
-        vehicle_min = std::min(vehicle_min, projection);
-        vehicle_max = std::max(vehicle_max, projection);
+    if (report != nullptr) {
+      report->failure = safety_report.failure ==
+                                navigation_safety::Failure::OUTSIDE_FREE_SPACE
+                            ? CornerShuntSafetyFailure::FOOTPRINT_OUTSIDE_ENVELOPE
+                            : CornerShuntSafetyFailure::
+                                  FOOTPRINT_INTERSECTS_INNER_CORNER;
+      report->checked_pose = pose;
+      report->footprint_corner = safety_report.footprint_corner;
+      report->overlap_m = safety_report.overlap;
+      const auto corners = navigation_safety::footprint_corners(
+          local_pose, footprint);
+      if (report->footprint_corner >= 0 &&
+          static_cast<std::size_t>(report->footprint_corner) < corners.size()) {
+        const auto &corner =
+            corners[static_cast<std::size_t>(report->footprint_corner)];
+        report->corner_local = {corner.x, corner.y, 0.0};
       }
-      for (const auto &corner : blocked) {
-        const double projection = corner.x * axis.x + corner.y * axis.y;
-        blocked_min = std::min(blocked_min, projection);
-        blocked_max = std::max(blocked_max, projection);
-      }
-      const double overlap = std::min(vehicle_max, blocked_max) -
-                             std::max(vehicle_min, blocked_min);
-      if (overlap <= kTouchTolerance)
-        return true;
     }
-    return false;
+    return safe;
   }
 
 private:
@@ -378,9 +411,15 @@ private:
                      0.45, 1.40);
       const double target_x = config_.target_x * target_scale;
       const double target_y = config_.target_y * target_scale;
-      const double final_yaw = std::abs(turn_error(context));
-      const double final_yaw_error =
-          NormalizeShuntAngle(final_yaw - local.yaw);
+      // Preserve the measured arrival residual while evaluating progress from
+      // the actual current pose: target-arrival minus arrival-to-current.
+      const double arrival_turn_error = std::abs(NormalizeShuntAngle(
+          context.target_heading - context.arrival_heading));
+      const double arrival_progress =
+          NormalizeShuntAngle(context.pose.yaw - context.arrival_heading) *
+          turn_sign(context);
+      const double final_yaw_error = NormalizeShuntAngle(
+          arrival_turn_error - arrival_progress);
       aligning_exit =
           local.y >= target_y - std::max(0.03, config_.target_y_tolerance);
       if (aligning_exit) {
@@ -423,8 +462,12 @@ private:
       heading_scale = minimum_speed / forward_speed;
     const CornerShuntTwist command{forward_speed * heading_scale,
                                    direction * omega_local};
-    if (!command_is_safe(context, command))
-      return block();
+    CornerShuntSafetyReport report;
+    if (!command_is_safe(context, command, -1.0, &report)) {
+      report.source = "corner_arc_command";
+      report.attempted_command = command;
+      return block(report);
+    }
     return set_phase(command_phase(command), now_s, command);
   }
 
@@ -513,31 +556,33 @@ private:
     return {phase_, command, false, false};
   }
 
-  CornerShuntDecision block() {
+  CornerShuntDecision block(
+      const CornerShuntSafetyReport &report = CornerShuntSafetyReport{}) {
     phase_ = CornerShuntPhase::BLOCKED;
     last_command_ = {};
-    return {phase_, {}, false, true};
+    return {phase_, {}, false, true, report};
   }
 
   CornerShuntPose local_turn_pose(const CornerShuntContext &context,
                                   CornerShuntPose pose) const {
-    const double cos_heading = std::cos(context.incoming_heading);
-    const double sin_heading = std::sin(context.incoming_heading);
+    const double cos_heading = std::cos(context.geometry_heading);
+    const double sin_heading = std::sin(context.geometry_heading);
     const double dx = pose.x - context.junction_x;
     const double dy = pose.y - context.junction_y;
     const double sign = turn_sign(context);
     return {cos_heading * dx + sin_heading * dy,
             (-sin_heading * dx + cos_heading * dy) * sign,
-            NormalizeShuntAngle(pose.yaw - context.incoming_heading) * sign};
+            NormalizeShuntAngle(pose.yaw - context.geometry_heading) * sign};
   }
 
   bool command_is_safe(const CornerShuntContext &context,
                        CornerShuntTwist command,
-                       double horizon_s = -1.0) const {
+                       double horizon_s = -1.0,
+                       CornerShuntSafetyReport *report = nullptr) const {
     if (std::abs(command.linear_x) <= 1.0e-9 &&
         std::abs(command.angular_z) <= 1.0e-9)
       return true;
-    if (!pose_is_safe(context, context.pose))
+    if (!pose_is_safe(context, context.pose, report))
       return false;
 
     const double horizon = horizon_s >= 0.0
@@ -552,8 +597,11 @@ private:
       const double elapsed = horizon / static_cast<double>(samples);
       applied = limited_command(applied, command, elapsed);
       pose = integrate(pose, applied, elapsed);
-      if (!pose_is_safe(context, pose))
+      if (!pose_is_safe(context, pose, report)) {
+        if (report != nullptr)
+          report->prediction_sample = index;
         return false;
+      }
     }
     return true;
   }
@@ -576,38 +624,23 @@ private:
   CornerShuntTwist limited_command(CornerShuntTwist current,
                                    CornerShuntTwist target,
                                    double elapsed_s) const {
-    return {
+    current.linear_x =
         LimitRate(target.linear_x, current.linear_x,
                   config_.linear_acceleration, config_.linear_deceleration,
-                  elapsed_s),
+                  elapsed_s);
+    if (std::abs(target.linear_x) > 1.0e-9 &&
+        std::abs(current.linear_x) < config_.closed_loop_min_speed) {
+      current.linear_x =
+          std::copysign(config_.closed_loop_min_speed, target.linear_x);
+    } else if (std::abs(target.linear_x) <= 1.0e-9 &&
+               std::abs(current.linear_x) < config_.closed_loop_min_speed) {
+      current.linear_x = 0.0;
+    }
+    current.angular_z =
         LimitRate(target.angular_z, current.angular_z,
                   config_.angular_acceleration, config_.angular_deceleration,
-                  elapsed_s),
-    };
-  }
-
-  std::array<CornerShuntPose, 4>
-  footprint_corners(const CornerShuntPose &pose) const {
-    const double half_length = 0.5 * std::max(0.0, config_.vehicle_length);
-    const double half_width = 0.5 * std::max(0.0, config_.vehicle_width);
-    const CornerShuntPose center{config_.base_offset_x, config_.base_offset_y,
-                                 0.0};
-    const double cos_yaw = std::cos(pose.yaw);
-    const double sin_yaw = std::sin(pose.yaw);
-    std::array<CornerShuntPose, 4> corners{};
-    const std::array<CornerShuntPose, 4> local{{
-        {center.x - half_length, center.y - half_width, 0.0},
-        {center.x + half_length, center.y - half_width, 0.0},
-        {center.x + half_length, center.y + half_width, 0.0},
-        {center.x - half_length, center.y + half_width, 0.0},
-    }};
-    for (std::size_t index = 0; index < local.size(); ++index) {
-      corners[index].x =
-          pose.x + cos_yaw * local[index].x - sin_yaw * local[index].y;
-      corners[index].y =
-          pose.y + sin_yaw * local[index].x + cos_yaw * local[index].y;
-    }
-    return corners;
+                  elapsed_s);
+    return current;
   }
 
   bool target_reached(const CornerShuntContext &context) const {
@@ -637,7 +670,7 @@ private:
 
   double turn_error(const CornerShuntContext &context) const {
     return NormalizeShuntAngle(context.target_heading -
-                               context.incoming_heading);
+                               context.geometry_heading);
   }
 
   double turn_sign(const CornerShuntContext &context) const {

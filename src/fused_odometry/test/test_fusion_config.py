@@ -63,15 +63,18 @@ def test_control_imu_is_single_corrected_feedback_topic():
     assert ekf["imu0"] == CONTROL_IMU_TOPIC
 
 
-def test_visual_correction_does_not_bypass_smoothing_by_default():
+def test_visual_primary_correction_remains_smoothed():
     parameters = load_parameters("map_odom_correction")
-    assert parameters["use_absolute_visual_correction"] is False
+    assert parameters["use_absolute_visual_correction"] is True
     assert parameters["direct_visual_tracking"] is False
-    assert parameters["correction_time_constant_s"] >= 1.0
+    assert 0.2 <= parameters["correction_time_constant_s"] <= 0.75
     assert parameters["stationary_correction_time_constant_s"] < parameters[
         "correction_time_constant_s"
     ]
-    assert parameters["visual_recovery_time_constant_s"] >= 1.0
+    assert parameters["visual_recovery_time_constant_s"] >= parameters[
+        "correction_time_constant_s"
+    ]
+    assert parameters["visual_recovery_gap_s"] >= parameters["visual_timeout_s"]
     assert parameters["max_correction_step_m"] <= 0.05
     assert parameters["max_correction_yaw_step_rad"] <= 0.05
     assert parameters["moving_max_correction_step_m"] < parameters[
@@ -86,6 +89,8 @@ def test_visual_correction_does_not_bypass_smoothing_by_default():
     assert parameters["visual_recovery_max_correction_yaw_step_rad"] <= parameters[
         "moving_max_correction_yaw_step_rad"
     ]
+    assert parameters["dead_reckoning_xy_variance_rate"] > 0.0
+    assert parameters["dead_reckoning_yaw_variance_rate"] > 0.0
 
 
 def test_local_map_odometry_publishes_map_frame_bridge():

@@ -122,6 +122,102 @@ find_ros_processes() {
   "${PGREP_COMMAND}" -f "${pattern}" 2>/dev/null || true
 }
 
+is_loopback_process_pid() {
+  local pid="$1"
+  read_process_argv "${pid}" || return 1
+
+  local -a loopback_paths=(
+    "${WORKSPACE_ROOT}/install/vehicle_loopback_sim/lib/vehicle_loopback_sim/vehicle_loopback_sim_node"
+    "${WORKSPACE_ROOT}/install/vehicle_loopback_sim/lib/vehicle_loopback_sim/vehicle_loopback_gui_node"
+    "${WORKSPACE_ROOT}/install/vehicle_loopback_sim/lib/vehicle_loopback_sim/loopback_route_controller"
+    "${WORKSPACE_ROOT}/install/visual_navigation/lib/visual_navigation/waypoint_navigator"
+    "${WORKSPACE_ROOT}/install/new_map_planner/lib/new_map_planner/new_map_planner_node"
+    "${WORKSPACE_ROOT}/install/navigation_mission_manager/lib/navigation_mission_manager/mission_manager_node"
+  )
+  local path
+
+  for path in "${loopback_paths[@]}"; do
+    [[ -e "${path}" ]] && argv_contains_path PROCESS_ARGV "${path}" && return 0
+  done
+
+  argv_has_sequence PROCESS_ARGV launch vehicle_loopback_sim planner_control_loopback.launch.py ||
+    argv_has_sequence PROCESS_ARGV launch vehicle_loopback_sim vehicle_loopback.launch.py ||
+    argv_has_sequence PROCESS_ARGV launch vehicle_loopback_sim controller_comparison.launch.py
+}
+
+find_loopback_processes() {
+  local -a discovered=()
+  local pid
+
+  mapfile -t discovered < <(find_ros_processes)
+  for pid in "${discovered[@]}"; do
+    [[ "${pid}" =~ ^[0-9]+$ ]] || continue
+    process_is_running "${pid}" || continue
+    is_loopback_process_pid "${pid}" || continue
+    printf '%s\n' "${pid}"
+  done
+}
+
+stop_loopback_processes() {
+  local -a targets=()
+  local -a remaining=()
+  local -A start_times=()
+  local pid
+  local attempt
+  local current_start
+
+  mapfile -t targets < <(find_loopback_processes)
+  ((${#targets[@]} > 0)) || {
+    log "No existing loopback processes found"
+    return 0
+  }
+
+  for pid in "${targets[@]}"; do
+    current_start="$(process_start_time "${pid}" 2>/dev/null)" || continue
+    start_times["${pid}"]="${current_start}"
+  done
+  log "Stopping ${#targets[@]} previous loopback process(es)"
+  kill -INT "${targets[@]}" 2>/dev/null || true
+
+  for attempt in {1..40}; do
+    remaining=()
+    for pid in "${targets[@]}"; do
+      current_start="$(process_start_time "${pid}" 2>/dev/null)" || continue
+      [[ "${current_start}" == "${start_times[${pid}]:-}" ]] || continue
+      is_loopback_process_pid "${pid}" && remaining+=("${pid}")
+    done
+    ((${#remaining[@]} == 0)) && return 0
+    sleep 0.1
+  done
+
+  log "Forcing ${#remaining[@]} previous loopback process(es) to exit"
+  kill -TERM "${remaining[@]}" 2>/dev/null || true
+  for attempt in {1..20}; do
+    targets=()
+    for pid in "${remaining[@]}"; do
+      current_start="$(process_start_time "${pid}" 2>/dev/null)" || continue
+      [[ "${current_start}" == "${start_times[${pid}]:-}" ]] || continue
+      is_loopback_process_pid "${pid}" && targets+=("${pid}")
+    done
+    ((${#targets[@]} == 0)) && return 0
+    sleep 0.1
+  done
+
+  kill -KILL "${targets[@]}" 2>/dev/null || true
+  for attempt in {1..10}; do
+    remaining=()
+    for pid in "${targets[@]}"; do
+      current_start="$(process_start_time "${pid}" 2>/dev/null)" || continue
+      [[ "${current_start}" == "${start_times[${pid}]:-}" ]] || continue
+      is_loopback_process_pid "${pid}" && remaining+=("${pid}")
+    done
+    ((${#remaining[@]} == 0)) && return 0
+    sleep 0.1
+  done
+  log "Could not stop loopback process(es): ${remaining[*]}"
+  return 1
+}
+
 find_arena_planner_node_processes() {
   local -a discovered=()
   local pid

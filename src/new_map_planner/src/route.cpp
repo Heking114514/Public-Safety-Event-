@@ -81,9 +81,19 @@ bool RouteCompiler::compile(const Pose &start_arena,
     }
 
     if (traversal.reverse) {
-      if (traversal.directed_lane < 0 || current_lane < 0 ||
-          graph_.directed_lane(traversal.directed_lane).lane != current_lane ||
-          next_vehicle_heading != vehicle_heading) {
+      const bool initial_reverse =
+          current_lane < 0 &&
+          (index == 0 || traversals[index - 1].directed_lane < 0);
+      const bool same_lane_reverse =
+          current_lane >= 0 && traversal.directed_lane >= 0 &&
+          graph_.directed_lane(traversal.directed_lane).lane == current_lane;
+      if (traversal.directed_lane < 0 ||
+          (!initial_reverse && !same_lane_reverse) ||
+          next_vehicle_heading != vehicle_heading ||
+          (initial_reverse &&
+           Distance(traversal.start,
+                    config_.nodes[graph_.directed_lane(
+                        traversal.directed_lane).from].position) > 1.0e-6)) {
         result.message = "reverse action does not retrace the incoming road";
         return false;
       }

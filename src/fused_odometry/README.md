@@ -32,12 +32,12 @@ Outputs:
 - `/odometry/local_map` (`nav_msgs/Odometry`): start-aligned copy of
   `/odometry/local` expressed as `map -> base_link`; this is the temporary
   default navigation input while visual global correction is being recalibrated.
-- `/odometry/fused` (`nav_msgs/Odometry`): public map-frame pose. By default it
-  is only the start-aligned local EKF pose; absolute ORB XY correction is
-  opt-in and remains available for a separately validated global source.
+- `/odometry/fused` (`nav_msgs/Odometry`): public map-frame pose. Healthy ORB
+  tracking supplies the primary global correction; wheel and IMU preserve
+  continuous local motion between visual updates and during tracking loss.
 - `/odometry/fusion_status` (`std_msgs/String`, transient local):
   `WAITING_FOR_INITIALIZATION`, `FULL`,
-  `DEGRADED_NO_VISION`, `DEGRADED_NO_IMU`, `DEGRADED_NO_WHEEL`,
+  `DEGRADED_DEAD_RECKONING`, `DEGRADED_NO_IMU`, `DEGRADED_NO_WHEEL`,
   `DEGRADED_VISION_ONLY`, `DEGRADED_WHEEL_ONLY`,
   `DEGRADED_VISUAL_REALIGNED`, `FAULT_STALLED`, `FAULT_INIT_TIMEOUT`, or
   `FAULT`.
@@ -47,8 +47,8 @@ Outputs:
   EKF and navigation control.
 
 The gate publishes sanitized visual and wheel inputs below `/fusion/input/*`.
-The visual stream is retained for tracking health and future trusted landmark
-correction; it is not a local translation source.
+The visual stream drives the global `map -> odom` correction. It is not
+integrated into the local EKF, so losing ORB never breaks local pose continuity.
 The control IMU is intentionally public at `/imu/control` so that
 navigation damping and EKF prediction use the same yaw-rate sample.
 
@@ -63,12 +63,10 @@ ATT from `cup_car_serial`.
 include both the local odometry covariance and the accepted visual correction
 covariance; the local covariance is not relabeled as global covariance.
 
-`use_absolute_visual_correction` is `false` by default. This is intentional:
-the current ORB absolute XY stream is not an arena-map truth measurement and can
-report false translation during in-place turns. With the default, `/odometry/fused`
-keeps the same start alignment and local motion as `/odometry/local_map`, while
-preserving the fused topic and `map -> odom` TF contract. Enable the parameter
-only after a trusted landmark/corner source has been validated.
+`use_absolute_visual_correction` is enabled by default. The ORB pose is aligned
+to the start frame and smoothly updates `map -> odom`; it is never copied
+directly into the control pose. In-place-turn gating suppresses inconsistent
+visual translation without disabling valid visual motion on ordinary arcs.
 
 RFID position correction is independent of the visual correction switch. The
 mission manager reads task coordinates from `new_map_planner/config/arena.yaml`
@@ -77,6 +75,10 @@ The service accepts requests only while `navigation_mission_manager/rfid` is
 confirmed on `/waypoint_navigation/motion_hold_state`. It assumes the RFID
 trigger coordinate is the `base_link` center. The correction is smoothed over
 `rfid_correction_time_constant_s` and limited by `rfid_correction_max_step_m`.
+While that correction is active, visual correction is paused. Once the RFID
+target is reached, the current raw ORB pose is re-anchored to the corrected map
+pose before visual-primary tracking resumes, so the old visual reference cannot
+pull the result away from the fixed RFID point.
 
 Turn-position holding is enabled by default (`hold_global_xy_during_turn:
 true`). It is released if local odometry measures more than
@@ -92,7 +94,8 @@ nearest-sample scheduling approximation.
 
 Map correction also subscribes to `/odometry/fusion_status`. This latched status
 is the authoritative global permission for visual correction: `FAULT_*`,
-`DEGRADED_NO_VISION`, `DEGRADED_WHEEL_ONLY`, unknown, stale, or future-dated
+`DEGRADED_DEAD_RECKONING`, `DEGRADED_NO_VISION`, `DEGRADED_WHEEL_ONLY`,
+unknown, stale, or future-dated
 statuses block correction. The map node still checks its own visual/local pair
 freshness because that is a local timestamp-matching requirement, not a second
 global vision-health decision.
@@ -103,12 +106,8 @@ global vision-health decision.
 and processed BMI088 yaw/yaw-rate. ORB frame-to-frame velocity is not fused:
 the latest arena bags contain false forward motion during in-place turns.
 Wheel yaw does not modify this state. The correction node publishes `map ->
-odom` and `/odometry/fused`; by default that transform is fixed at the start
-alignment, so the public stream is a wheel/IMU local pose with the existing
-map-frame contract.
-When `use_absolute_visual_correction` is explicitly enabled, the node can
-smooth a trusted global pose source with the configured correction time
-constants. The current ORB absolute pose is not trusted by default.
+odom` and `/odometry/fused`; healthy ORB observations continuously correct
+that transform while wheel/IMU propagation supplies high-rate continuity.
 The gate independently validates
 finite values, expected frames, monotonic timestamps and source freshness. It
 uses median/MAD residual windows for diagnostics. IMU yaw rate is the primary
@@ -131,10 +130,13 @@ the diagnostic level to `WARN`; recovery has a separate dwell to prevent rapid
 state toggling.
 
 During visual loss, the local EKF continues from wheel `vx`/`vy` and BMI088
-yaw/yaw-rate while the configured time/distance limits bound this open-loop
-period. Fusion status is infrastructure health only: allowed degraded states do
-not lower navigation speed. `FAULT`, stale status, invalid odometry, or
-exceeded dead-reckoning limits stop navigation and wait for recovery.
+yaw/yaw-rate and publishes `DEGRADED_DEAD_RECKONING`. The configured
+time/distance limits become diagnostic warning thresholds; they do not stop a
+healthy wheel/IMU fallback before ORB or the next RFID anchor returns. Missing
+wheel or IMU data, stale fusion status, and invalid odometry remain stopping
+conditions. Position and yaw covariance grow for the duration of dead reckoning,
+so downstream consumers can distinguish continued motion from visual-primary
+localization.
 
 At startup the gate publishes `WAITING_FOR_INITIALIZATION` while ORB warms up
 and accumulates coherent visual increments. Navigation treats this state as a
@@ -154,14 +156,13 @@ The default `wheel_in_place_max_linear_speed_mps` is `0.02`, so slow moving arcs
 such as `0.06 m/s` rectangle turns keep their encoder distance instead of being
 misclassified as in-place rotation.
 
-After five good recovery frames, the gate accepts the configured raw visual
-topic. An existing raw-to-fused SE(2) alignment is checked against the current
-prediction. A
-reasonable recovery enters a 0.75-second covariance ramp so correction is
-gradual. A recovery beyond 1.50 m or 1.00 rad is rejected instead of moving the
-visual origin onto the open-loop local prediction. The established visual map
-transform is preserved across an outage, allowing accepted visual recovery to
-correct local prediction drift.
+After five coherent recovery frames, the gate accepts the configured raw visual
+topic. The correction node aligns that recovered ORB frame to the wheel/IMU
+prediction at the same measurement time, then restores visual-primary tracking
+through a bounded recovery blend. The first recovered pose therefore cannot
+jump the public map pose.
+Normal frame scheduling jitter below the visual health timeout does not trigger
+this re-alignment path.
 
 The ROS ORB wrapper publishes `/odometry/visual_raw` as planar `x`, `y`, and yaw
 while retaining the full SE(3) map internally. `/odom/orb_raw` is its legacy
@@ -174,8 +175,8 @@ relocalization jumps and are not odometry-fusion pose inputs.
 The shared physical configuration places `camera_link` 0.055 m forward,
 0.015 m right, and 0.121 m above the geometric vehicle center:
 `base_link -> camera_link = (0.055, -0.015, 0.121)`. The wheel axle midpoint is
-measured 0.050 m behind that center, so wheel odometry converts
-the axle pose to `base_link` with `base_offset_x_m: 0.050`. ORB, wheel odometry
+measured 0.030 m behind that center, so wheel odometry converts
+the axle pose to `base_link` with `base_offset_x_m: 0.030`. ORB, wheel odometry
 and processed BMI088 ATT publish the vehicle center as `base_link`.
 
 The local EKF broadcasts `odom -> base_link`; the correction node broadcasts

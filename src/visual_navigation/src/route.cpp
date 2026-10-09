@@ -1,5 +1,19 @@
 #include "visual_navigation/waypoint_navigator.hpp"
 
+bool WaypointNavigator::RouteStartsWithTurn() const {
+  if (waypoints_.empty())
+    return false;
+  if (waypoints_.front().turn_junction)
+    return true;
+  // Planner routes may contain the current pose followed by a turn marker.
+  // The short prefix is an activation/snap artifact, not a drivable lane.
+  constexpr double kMaximumSnapPrefix = 0.02;
+  return waypoints_.size() > 1 && waypoints_[1].turn_junction &&
+         std::hypot(waypoints_[1].x - waypoints_[0].x,
+                    waypoints_[1].y - waypoints_[0].y) <=
+             kMaximumSnapPrefix;
+}
+
 bool WaypointNavigator::LoadRoute(const std::string &routeFile) {
   std::vector<Waypoint> loadedWaypoints;
   std::string error;
@@ -15,8 +29,7 @@ bool WaypointNavigator::LoadRoute(const std::string &routeFile) {
   }
 
   waypoints_ = std::move(loadedWaypoints);
-  routeStartTurnAuthorized_ =
-      !waypoints_.empty() && waypoints_.front().turn_junction;
+  routeStartTurnAuthorized_ = RouteStartsWithTurn();
   RCLCPP_INFO(get_logger(), "Loaded %zu waypoints from %s", waypoints_.size(),
               routeFile.c_str());
   return true;
@@ -168,8 +181,7 @@ void WaypointNavigator::HandleRouteInput(
       ResetObstacleRecovery(preserveExecutedTrace);
     }
 
-    routeStartTurnAuthorized_ =
-        !waypoints_.empty() && waypoints_.front().turn_junction;
+    routeStartTurnAuthorized_ = RouteStartsWithTurn();
     activeRouteId_ = route_id;
     std::string activation_result;
     if (!ActivateNavigation(activation_result, preserveExecutedTrace)) {
@@ -205,8 +217,7 @@ void WaypointNavigator::HandleRouteInput(
   activeRouteId_ = route_id;
   authorizedRfidCheckpoint_.reset();
   rfidScanActive_ = false;
-  routeStartTurnAuthorized_ =
-      !waypoints_.empty() && waypoints_.front().turn_junction;
+  routeStartTurnAuthorized_ = RouteStartsWithTurn();
   routeLoaded_ = true;
   PublishRoutePath();
   PublishCurrentWaypoint();

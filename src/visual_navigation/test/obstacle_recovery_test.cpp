@@ -87,13 +87,21 @@ TEST(ObstacleRecovery, PlannerMayRequestAnEarlierRetreatAnchor) {
   EXPECT_EQ(controller.remaining_breadcrumbs_before_anchor(), 0U);
 
   controller.confirm_stopped(0.4, 0.0, At(1.1));
-  for (int index = 0; index < 2; ++index) {
-    const auto replay =
-        controller.replay_step(0.4, 0.0, 0.0, 0.0, 0.0, At(1.2));
-    ASSERT_TRUE(replay.command_valid);
-  }
-  EXPECT_EQ(controller.replay_step(0.0, 0.0, 0.0, 0.0, 0.0, At(2.0)).action,
-            ObstacleRecoveryAction::REPLAN_REQUIRED);
+  auto replay = controller.replay_step(0.4, 0.0, 0.0, 0.0, 0.0, At(1.2));
+  ASSERT_TRUE(replay.command_valid);
+  EXPECT_FALSE(replay.publish_recorded);
+  const double applied_linear = replay.linear_velocity;
+  const double applied_angular = replay.angular_velocity;
+  replay = controller.replay_step(0.4, 0.0, 0.0, applied_linear,
+                                  applied_angular, At(1.3));
+  ASSERT_TRUE(replay.command_valid);
+  EXPECT_FALSE(replay.publish_recorded);
+  replay = controller.replay_step(0.2, 0.0, 0.0, applied_linear,
+                                  applied_angular, At(1.4));
+  ASSERT_TRUE(replay.command_valid);
+  replay = controller.replay_step(0.0, 0.0, 0.0, replay.linear_velocity,
+                                  replay.angular_velocity, At(1.5));
+  EXPECT_EQ(replay.action, ObstacleRecoveryAction::REPLAN_REQUIRED);
   EXPECT_EQ(controller.extend_retreat(0.30), RetreatExtensionResult::EXHAUSTED);
 }
 
@@ -124,8 +132,6 @@ TEST(ObstacleRecovery, ExtendedRetreatReplaysCrossedTurnInTraceOrder) {
   ASSERT_EQ(controller.extend_retreat(0.30), RetreatExtensionResult::ACCEPTED);
   controller.confirm_stopped(0.40, -0.07, At(1.1));
 
-  const std::vector<std::pair<double, double>> expected_commands{
-      {-0.02, 0.20}, {0.02, 0.20}, {-0.02, 0.20}, {-0.10, 0.00}};
   double applied_linear = 0.0;
   double applied_angular = 0.0;
   auto alignment =
@@ -138,28 +144,38 @@ TEST(ObstacleRecovery, ExtendedRetreatReplaysCrossedTurnInTraceOrder) {
       0.40, -0.07, -1.57, applied_linear, applied_angular, At(1.2));
   ASSERT_TRUE(replay.command_valid);
   EXPECT_FALSE(replay.publish_recorded);
-  EXPECT_NEAR(replay.linear_velocity, expected_commands[0].first, 1.0e-12);
-  EXPECT_NEAR(replay.angular_velocity, expected_commands[0].second, 1.0e-12);
-  applied_linear = expected_commands[0].first;
-  applied_angular = expected_commands[0].second;
+  EXPECT_NEAR(replay.linear_velocity, -0.02, 1.0e-12);
+  EXPECT_NEAR(replay.angular_velocity, 0.20, 1.0e-12);
+  applied_linear = replay.linear_velocity;
+  applied_angular = replay.angular_velocity;
   replay = controller.replay_step(0.40, -0.07, -1.57, applied_linear,
                                   applied_angular, At(1.3));
   ASSERT_TRUE(replay.command_valid);
   EXPECT_FALSE(replay.publish_recorded);
-
-  for (std::size_t index = 1; index < expected_commands.size(); ++index) {
-    const auto &expected = expected_commands[index];
-    replay = controller.replay_step(0.40, -0.07, -1.57, applied_linear,
-                                    applied_angular, At(1.4));
-    ASSERT_TRUE(replay.command_valid);
-    EXPECT_TRUE(replay.publish_recorded);
-    EXPECT_NEAR(replay.linear_velocity, expected.first, 1.0e-12);
-    EXPECT_NEAR(replay.angular_velocity, expected.second, 1.0e-12);
-    applied_linear = expected.first;
-    applied_angular = expected.second;
-  }
-  replay = controller.replay_step(0.20, 0.00, 0.0, applied_linear,
+  replay = controller.replay_step(0.42, -0.08, -0.8, applied_linear,
+                                  applied_angular, At(1.4));
+  ASSERT_TRUE(replay.command_valid);
+  EXPECT_TRUE(replay.publish_recorded);
+  EXPECT_NEAR(replay.linear_velocity, -0.02, 1.0e-12);
+  EXPECT_NEAR(replay.angular_velocity, 0.20, 1.0e-12);
+  applied_linear = replay.linear_velocity;
+  applied_angular = replay.angular_velocity;
+  replay = controller.replay_step(0.44, -0.04, -0.4, applied_linear,
                                   applied_angular, At(1.5));
+  ASSERT_TRUE(replay.command_valid);
+  EXPECT_TRUE(replay.publish_recorded);
+  EXPECT_NEAR(replay.linear_velocity, -0.02, 1.0e-12);
+  EXPECT_NEAR(replay.angular_velocity, 0.20, 1.0e-12);
+  applied_linear = replay.linear_velocity;
+  applied_angular = replay.angular_velocity;
+  replay = controller.replay_step(0.40, 0.00, 0.0, applied_linear,
+                                  applied_angular, At(1.6));
+  ASSERT_TRUE(replay.command_valid);
+  EXPECT_TRUE(replay.publish_recorded);
+  EXPECT_NEAR(replay.linear_velocity, -0.10, 1.0e-12);
+  EXPECT_NEAR(replay.angular_velocity, 0.0, 1.0e-12);
+  replay = controller.replay_step(0.20, 0.00, 0.0, replay.linear_velocity,
+                                  replay.angular_velocity, At(1.7));
   EXPECT_EQ(replay.action, ObstacleRecoveryAction::REPLAN_REQUIRED);
 }
 
