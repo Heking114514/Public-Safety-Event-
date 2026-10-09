@@ -309,7 +309,8 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
       declare_parameter<bool>("require_actuator_health", false);
   allowedFusionStates_ = declare_parameter<std::vector<std::string>>(
       "allowed_fusion_states",
-      {"FULL", "DEGRADED_NO_VISION", "DEGRADED_NO_IMU", "DEGRADED_NO_WHEEL",
+      {"FULL", "DEGRADED_DEAD_RECKONING", "DEGRADED_NO_VISION",
+       "DEGRADED_NO_IMU", "DEGRADED_NO_WHEEL",
        "DEGRADED_VISION_ONLY", "DEGRADED_WHEEL_ONLY",
        "DEGRADED_VISUAL_REALIGNED"});
   fusionHealthPolicy_ =

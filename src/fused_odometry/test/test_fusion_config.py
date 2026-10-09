@@ -46,6 +46,22 @@ def test_default_ekf_uses_wheel_body_velocity_without_visual_translation():
     ]
 
 
+def test_wheel_yaw_is_not_fused_into_ekf():
+    gate = load_parameters("fused_odometry_gate")
+    ekf = load_parameters("fused_ekf")
+
+    assert gate["fuse_wheel_yaw"] is False
+    # The wheel input contributes vx/vy only; angular velocity comes from the
+    # processed control IMU stream.
+    assert ekf["odom0_config"][11] is False
+    assert ekf["imu0"] == CONTROL_IMU_TOPIC
+
+
+def test_dead_reckoning_has_no_speed_reduction_control_parameter():
+    gate = load_parameters("fused_odometry_gate")
+    assert "dead_reckoning_speed_scale" not in gate
+
+
 def test_wheel_stream_remains_available_to_supervision():
     parameters = load_parameters("fused_odometry_gate")
 

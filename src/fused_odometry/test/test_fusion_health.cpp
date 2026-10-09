@@ -125,6 +125,48 @@ TEST(FusionHealthMonitor, WheelAndImuContinueBeyondVisionWarningLimit)
   EXPECT_TRUE(result.dead_reckoning_warning);
 }
 
+TEST(FusionHealthMonitor, VisionResidualDoesNotRevokeWheelImuFallback)
+{
+  auto monitor = make_monitor();
+  monitor.start_vision_outage(0.0);
+  auto input = healthy_input(0.0);
+  input.vision = false;
+  // Keep the visual diagnostic sample deliberately inconsistent.  It must
+  // not turn a fresh wheel source into an unavailable source while the IMU
+  // remains available for dead reckoning.
+  input.visual_velocity = 0.0;
+  input.visual_motion_valid = true;
+
+  monitor.evaluate(input, {});
+  input.now_seconds = 1.0;
+  const auto result = monitor.evaluate(input, {});
+
+  EXPECT_EQ(result.motion_fault, fused_odometry::MotionFault::kSlip);
+  EXPECT_TRUE(result.wheel_healthy);
+  EXPECT_EQ(result.mode, fused_odometry::FusionMode::kDeadReckoning);
+}
+
+TEST(FusionHealthMonitor, WheelImuFallbackIgnoresOutageDistanceForMotionPermission)
+{
+  auto monitor = make_monitor();
+  monitor.start_vision_outage(0.0);
+  auto input = healthy_input(0.0);
+  input.vision = false;
+  fused_odometry::FusionHealthLimits limits;
+  limits.max_dead_reckoning_time = 0.01;
+  limits.max_dead_reckoning_distance = 0.01;
+
+  monitor.evaluate(input, limits);
+  input.now_seconds = 5.0;
+  const auto result = monitor.evaluate(input, limits);
+
+  // These limits are warning thresholds only when both fallback sources are
+  // healthy. They must not request a stop or speed reduction.
+  EXPECT_EQ(result.mode, fused_odometry::FusionMode::kDeadReckoning);
+  EXPECT_TRUE(result.dead_reckoning_warning);
+  EXPECT_TRUE(result.wheel_healthy);
+}
+
 TEST(FusionHealthMonitor, VisualRecoveryClearsOutageState)
 {
   auto monitor = make_monitor();

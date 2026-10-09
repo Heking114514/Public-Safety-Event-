@@ -185,7 +185,7 @@ std_msgs/msg/Int32
 std_msgs/msg/String
 ```
 
-默认必须收到新鲜且位于 `allowed_fusion_states` 中的融合健康状态；`FAULT`、未知状态或状态超时会阻止运动。`WAITING_FOR_INITIALIZATION` 是 ORB 暖机期间的可恢复等待，路线保持激活但不发速度，初始化完成后自动继续。`DEGRADED_DEAD_RECKONING` 使用轮式和 IMU 继续导航，并按 `dead_reckoning_speed_scale` 限制线速度；其他允许的 `DEGRADED_*` 状态不额外限速。
+默认必须收到新鲜且位于 `allowed_fusion_states` 中的融合健康状态；`FAULT`、未知状态或状态超时会阻止运动。`WAITING_FOR_INITIALIZATION` 是 ORB 暖机期间的可恢复等待，路线保持激活但不发速度，初始化完成后自动继续。`DEGRADED_DEAD_RECKONING` 使用轮式和 IMU 继续导航，保持当前控制器速度，不停车、不降速，直到视觉恢复；其他允许的 `DEGRADED_*` 状态不额外限速。该状态只表达定位来源降级，不触发转弯重规划或 `TURN_BLOCKED`。
 
 ### 4.2 发布话题
 
@@ -1005,7 +1005,6 @@ config/waypoint_navigation.yaml
 | `odom_timeout` | `0.40` | 里程计到达超时时间，s |
 | `imu_timeout` | `0.15` | 控制 IMU 到达超时时间，s |
 | `fusion_status_timeout` | `0.60` | 融合健康状态超时时间，s |
-| `dead_reckoning_speed_scale` | `0.80` | ORB 丢图且轮式/IMU续航时的线速度比例 |
 | `actuator_health_timeout` | `0.80` | 执行器健康状态超时时间，s |
 
 ### 14.3 行为和安全参数

@@ -70,7 +70,7 @@ ros2 service call /navigation_mission/set_motion_hold \
   "{source: 'inspection', hold: false, reason: ''}"
 ```
 
-正常情况下，只有里程计和融合健康消息均未超时、且健康状态位于 `allowed_fusion_states` 中，节点才会输出非零速度。ORB 丢图但轮式和 IMU 健康时，融合状态为 `DEGRADED_DEAD_RECKONING`，导航继续原路线并按 `dead_reckoning_speed_scale` 限制线速度，默认从 `0.05 m/s` 降至 `0.04 m/s`。其他允许的 `DEGRADED_*` 状态不额外限速。ORB 暖机时融合状态为 `WAITING_FOR_INITIALIZATION`：路线可以保持激活但只输出零速等待；连续有效视觉样本到来后会自动转入允许状态，无需再次 `start`。融合端上报 `FAULT_*`、未知状态、消息陈旧、无效位姿或坐标系不一致都会停车；确认的融合 `FAULT_*` 会锁存任务，等待健康路线重启。控制 IMU 超时只会让角速度反馈临时回退为零，不参与降速策略。旧 `/tracking_state` 检查由 `require_tracking_state` 参数选择性启用。导航只订阅融合 gate 发布的 `/imu/control`，不直接消费原始 IMU。
+正常情况下，只有里程计和融合健康消息均未超时、且健康状态位于 `allowed_fusion_states` 中，节点才会输出非零速度。ORB 丢图但轮式和 IMU 健康时，融合状态为 `DEGRADED_DEAD_RECKONING`，导航继续原路线，保持当前控制器给出的速度，不停车、不降速，直到视觉恢复。其他允许的 `DEGRADED_*` 状态不额外限速。ORB 暖机时融合状态为 `WAITING_FOR_INITIALIZATION`：路线可以保持激活但只输出零速等待；连续有效视觉样本到来后会自动转入允许状态，无需再次 `start`。融合端上报 `FAULT_*`、未知状态、消息陈旧、无效位姿或坐标系不一致都会停车；确认的融合 `FAULT_*` 会锁存任务，等待健康路线重启。控制 IMU 超时只会让角速度反馈临时回退为零，不参与降速策略。转弯姿态反馈使用 `/imu/control`；融合状态只提供定位来源契约，不触发 `TURN_NEED_REPLAN` 或 `FAULT_TURN_BLOCKED`。旧 `/tracking_state` 检查由 `require_tracking_state` 参数选择性启用。导航只订阅融合 gate 发布的 `/imu/control`，不直接消费原始 IMU。
 
 普通 bringup 的 `require_actuator_health` 默认为 `false`，便于不连接下位机时测试；`visual_navigation_serial_bringup.launch.py` 强制设为 `true`。此时启动前必须收到新鲜的 `actuator_healthy=true`，即下位机控制遥测新鲜、处于导航模式、未急停且命令没有超时。运行中状态变为 `false` 或心跳超过 `actuator_health_timeout`（默认 `0.8 s`）会立即发布零速度并进入 `WAITING_FOR_ACTUATOR_RECOVERY`，但保留当前路线和进度；健康状态恢复后自动续跑。
 

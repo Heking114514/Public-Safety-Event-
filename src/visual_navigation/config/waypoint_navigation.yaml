@@ -224,6 +224,7 @@ waypoint_navigator:
     require_actuator_health: false
     allowed_fusion_states:
       - "FULL"
+      - "DEGRADED_DEAD_RECKONING"
       - "DEGRADED_NO_VISION"
       - "DEGRADED_NO_IMU"
       - "DEGRADED_NO_WHEEL"
