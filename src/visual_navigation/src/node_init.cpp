@@ -451,6 +451,18 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
       maxAngularSpeed_,
       std::max(0.0, declare_parameter<double>(
                         "obstacle_replay_alignment_max_angular_speed", 0.15)));
+  obstacleRecoveryConfig.replay_tracking_gain = std::max(
+      0.0, declare_parameter<double>("obstacle_replay_tracking_gain", 1.20));
+  obstacleRecoveryConfig.replay_tracking_lateral_gain = std::max(
+      0.0, declare_parameter<double>(
+                 "obstacle_replay_tracking_lateral_gain", 1.50));
+  obstacleRecoveryConfig.replay_tracking_yaw_rate_damping = std::max(
+      0.0, declare_parameter<double>(
+                 "obstacle_replay_tracking_yaw_rate_damping", 0.20));
+  obstacleRecoveryConfig.replay_tracking_max_angular_speed = std::min(
+      maxAngularSpeed_,
+      std::max(0.0, declare_parameter<double>(
+                        "obstacle_replay_tracking_max_angular_speed", 0.30)));
   obstacleRecoveryConfig.maximum_recovery_attempts =
       std::max(0, static_cast<int>(declare_parameter<int64_t>(
                       "obstacle_reverse_max_recovery_attempts", 2)));

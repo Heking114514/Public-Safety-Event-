@@ -210,6 +210,10 @@ waypoint_navigator:
     obstacle_replay_start_max_yaw_error: 0.70
     obstacle_replay_alignment_gain: 1.20
     obstacle_replay_alignment_max_angular_speed: 0.15
+    obstacle_replay_tracking_gain: 1.20
+    obstacle_replay_tracking_lateral_gain: 1.50
+    obstacle_replay_tracking_yaw_rate_damping: 0.20
+    obstacle_replay_tracking_max_angular_speed: 0.30
     obstacle_replay_yaw_tolerance: 0.25
     obstacle_replay_fallback_speed: 0.035
     obstacle_reverse_max_recovery_attempts: 2

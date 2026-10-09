@@ -77,7 +77,6 @@ struct RecoveryReplayStep {
   double position_error{0.0};
   double yaw_error{0.0};
   bool command_valid{false};
-  bool publish_recorded{false};
   ObstacleRecoveryAction action{ObstacleRecoveryAction::NONE};
 };
 
@@ -99,6 +98,10 @@ struct ObstacleRecoveryConfig {
   double replay_start_max_yaw_error{0.70};
   double replay_alignment_gain{1.20};
   double replay_alignment_max_angular_speed{0.15};
+  double replay_tracking_gain{1.20};
+  double replay_tracking_lateral_gain{1.50};
+  double replay_tracking_yaw_rate_damping{0.20};
+  double replay_tracking_max_angular_speed{0.30};
   double replay_yaw_tolerance{0.25};
   double replay_fallback_linear_speed{0.035};
   int maximum_recovery_attempts{2};
@@ -148,6 +151,14 @@ public:
         NonnegativeOrDefault(config_.replay_alignment_gain, 1.20);
     config_.replay_alignment_max_angular_speed =
         NonnegativeOrDefault(config_.replay_alignment_max_angular_speed, 0.15);
+    config_.replay_tracking_gain =
+        NonnegativeOrDefault(config_.replay_tracking_gain, 1.20);
+    config_.replay_tracking_lateral_gain =
+        NonnegativeOrDefault(config_.replay_tracking_lateral_gain, 1.50);
+    config_.replay_tracking_yaw_rate_damping = NonnegativeOrDefault(
+        config_.replay_tracking_yaw_rate_damping, 0.20);
+    config_.replay_tracking_max_angular_speed = NonnegativeOrDefault(
+        config_.replay_tracking_max_angular_speed, 0.30);
     config_.replay_yaw_tolerance =
         NonnegativeOrDefault(config_.replay_yaw_tolerance, 0.25);
     config_.replay_fallback_linear_speed = std::max(
@@ -433,12 +444,13 @@ public:
 
   RecoveryReplayStep replay_step(double current_x, double current_y,
                                  double current_yaw, double applied_linear,
-                                 double applied_angular, TimePoint now) {
+                                 double applied_angular, TimePoint now,
+                                 double measured_yaw_rate = 0.0) {
     RecoveryReplayStep step;
     if (phase_ != ObstacleRecoveryPhase::REVERSING || !replay_active_ ||
         !CoordinatesAreFinite(current_x, current_y) ||
         !std::isfinite(current_yaw) || !std::isfinite(applied_linear) ||
-        !std::isfinite(applied_angular)) {
+        !std::isfinite(applied_angular) || !std::isfinite(measured_yaw_rate)) {
       return step;
     }
     const double attempt_seconds =
@@ -536,6 +548,8 @@ public:
     }
 
     const auto &sample = trace_[replay_index_];
+    const std::size_t next_index = replay_index_ - 1;
+    const auto &target_sample = trace_[next_index];
     double replay_speed = std::abs(sample.linear_velocity);
     if (replay_speed < 1.0e-6) {
       for (std::size_t index = replay_index_; index > replay_stop_index_;
@@ -549,20 +563,38 @@ public:
     }
     if (replay_speed < 1.0e-6)
       replay_speed = config_.replay_fallback_linear_speed;
-    step.linear_velocity = -replay_speed;
-    step.angular_velocity = -sample.angular_velocity;
-    step.command_valid = true;
-    constexpr double kCommandMatchTolerance = 1.0e-4;
-    if (!replay_started_) {
-      if (std::abs(applied_linear - step.linear_velocity) <=
-              kCommandMatchTolerance &&
-          std::abs(applied_angular - step.angular_velocity) <=
-              kCommandMatchTolerance) {
-        replay_started_ = true;
-      }
-    } else {
-      step.publish_recorded = true;
+    const double segment_x = target_sample.point.x - sample.point.x;
+    const double segment_y = target_sample.point.y - sample.point.y;
+    const double segment_distance = std::hypot(segment_x, segment_y);
+    constexpr double kPi = 3.14159265358979323846;
+    double desired_yaw = sample.yaw;
+    double lateral_error = 0.0;
+    if (segment_distance > 1.0e-6) {
+      desired_yaw = std::remainder(std::atan2(segment_y, segment_x) + kPi,
+                                   2.0 * kPi);
+      lateral_error =
+          (segment_x * (current_y - sample.point.y) -
+           segment_y * (current_x - sample.point.x)) /
+          segment_distance;
     }
+    const double heading_error = std::remainder(
+        desired_yaw - current_yaw, 2.0 * kPi);
+    const double lateral_heading = std::atan2(
+        config_.replay_tracking_lateral_gain * lateral_error,
+        std::max(0.05, std::abs(replay_speed)));
+    const double tracking_command =
+        config_.replay_tracking_gain * heading_error + lateral_heading -
+        config_.replay_tracking_yaw_rate_damping * measured_yaw_rate;
+    const double angular_limit =
+        std::max(0.0, config_.replay_tracking_max_angular_speed);
+    step.linear_velocity = -std::max(
+        config_.replay_fallback_linear_speed, replay_speed);
+    step.angular_velocity = std::max(
+        -angular_limit, std::min(angular_limit, tracking_command));
+    step.yaw_error = std::abs(heading_error);
+    step.command_valid = true;
+    // The command is generated from the measured pose on every cycle.
+    replay_started_ = true;
     return step;
   }
 

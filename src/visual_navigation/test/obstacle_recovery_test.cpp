@@ -89,13 +89,11 @@ TEST(ObstacleRecovery, PlannerMayRequestAnEarlierRetreatAnchor) {
   controller.confirm_stopped(0.4, 0.0, At(1.1));
   auto replay = controller.replay_step(0.4, 0.0, 0.0, 0.0, 0.0, At(1.2));
   ASSERT_TRUE(replay.command_valid);
-  EXPECT_FALSE(replay.publish_recorded);
   const double applied_linear = replay.linear_velocity;
   const double applied_angular = replay.angular_velocity;
   replay = controller.replay_step(0.4, 0.0, 0.0, applied_linear,
                                   applied_angular, At(1.3));
   ASSERT_TRUE(replay.command_valid);
-  EXPECT_FALSE(replay.publish_recorded);
   replay = controller.replay_step(0.2, 0.0, 0.0, applied_linear,
                                   applied_angular, At(1.4));
   ASSERT_TRUE(replay.command_valid);
@@ -143,40 +141,59 @@ TEST(ObstacleRecovery, ExtendedRetreatReplaysCrossedTurnInTraceOrder) {
   RecoveryReplayStep replay = controller.replay_step(
       0.40, -0.07, -1.57, applied_linear, applied_angular, At(1.2));
   ASSERT_TRUE(replay.command_valid);
-  EXPECT_FALSE(replay.publish_recorded);
-  EXPECT_NEAR(replay.linear_velocity, -0.02, 1.0e-12);
-  EXPECT_NEAR(replay.angular_velocity, 0.20, 1.0e-12);
+  EXPECT_LE(replay.linear_velocity, -0.035);
+  EXPECT_LE(std::abs(replay.angular_velocity), 0.30);
   applied_linear = replay.linear_velocity;
   applied_angular = replay.angular_velocity;
   replay = controller.replay_step(0.40, -0.07, -1.57, applied_linear,
                                   applied_angular, At(1.3));
   ASSERT_TRUE(replay.command_valid);
-  EXPECT_FALSE(replay.publish_recorded);
   replay = controller.replay_step(0.42, -0.08, -0.8, applied_linear,
                                   applied_angular, At(1.4));
   ASSERT_TRUE(replay.command_valid);
-  EXPECT_TRUE(replay.publish_recorded);
-  EXPECT_NEAR(replay.linear_velocity, -0.02, 1.0e-12);
-  EXPECT_NEAR(replay.angular_velocity, 0.20, 1.0e-12);
+  EXPECT_LE(replay.linear_velocity, -0.035);
+  EXPECT_LE(std::abs(replay.angular_velocity), 0.30);
   applied_linear = replay.linear_velocity;
   applied_angular = replay.angular_velocity;
   replay = controller.replay_step(0.44, -0.04, -0.4, applied_linear,
                                   applied_angular, At(1.5));
   ASSERT_TRUE(replay.command_valid);
-  EXPECT_TRUE(replay.publish_recorded);
-  EXPECT_NEAR(replay.linear_velocity, -0.02, 1.0e-12);
-  EXPECT_NEAR(replay.angular_velocity, 0.20, 1.0e-12);
+  EXPECT_LE(replay.linear_velocity, -0.035);
+  EXPECT_LE(std::abs(replay.angular_velocity), 0.30);
   applied_linear = replay.linear_velocity;
   applied_angular = replay.angular_velocity;
   replay = controller.replay_step(0.40, 0.00, 0.0, applied_linear,
                                   applied_angular, At(1.6));
   ASSERT_TRUE(replay.command_valid);
-  EXPECT_TRUE(replay.publish_recorded);
-  EXPECT_NEAR(replay.linear_velocity, -0.10, 1.0e-12);
-  EXPECT_NEAR(replay.angular_velocity, 0.0, 1.0e-12);
+  EXPECT_LE(replay.linear_velocity, -0.035);
+  EXPECT_LE(std::abs(replay.angular_velocity), 0.30);
   replay = controller.replay_step(0.20, 0.00, 0.0, replay.linear_velocity,
                                   replay.angular_velocity, At(1.7));
   EXPECT_EQ(replay.action, ObstacleRecoveryAction::REPLAN_REQUIRED);
+}
+
+TEST(ObstacleRecovery, ReplayRecomputesSteeringFromMeasuredPose) {
+  ObstacleRecoveryConfig config;
+  config.breadcrumb_spacing = 0.01;
+  config.target_tolerance = 0.02;
+  config.replay_tracking_max_angular_speed = 5.0;
+  ObstacleRecoveryController controller(config);
+  controller.record_sample(0.00, 0.00, 0.0, 0.10, 0.0);
+  controller.record_sample(0.20, 0.00, 0.0, 0.10, 0.0);
+
+  ASSERT_EQ(controller.begin_retreat(0.10, 0.20, 0.00, 0.0),
+            RetreatExtensionResult::ACCEPTED);
+  controller.confirm_stopped(0.20, 0.00, At(0.0));
+  const auto nominal =
+      controller.replay_step(0.20, 0.00, 0.00, 0.0, 0.0, At(0.1));
+  ASSERT_TRUE(nominal.command_valid);
+  const auto offset =
+      controller.replay_step(0.20, 0.03, 0.00, 0.0, 0.0, At(0.2));
+  ASSERT_TRUE(offset.command_valid);
+  EXPECT_LT(nominal.linear_velocity, -0.034);
+  EXPECT_LT(offset.linear_velocity, -0.034);
+  EXPECT_GT(std::abs(offset.angular_velocity - nominal.angular_velocity),
+            0.01);
 }
 
 TEST(ObstacleRecovery, ContinueRetreatRequiresReplanState) {

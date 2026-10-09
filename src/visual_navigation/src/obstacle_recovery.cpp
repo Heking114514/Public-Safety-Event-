@@ -457,7 +457,8 @@ void WaypointNavigator::RunObstacleRecovery() {
   if (obstacleRecoveryController_.replaying()) {
     const auto replay = obstacleRecoveryController_.replay_step(
         currentX_, currentY_, currentYaw_, lastMotionCommand_.linear.x,
-        lastMotionCommand_.angular.z, std::chrono::steady_clock::now());
+        lastMotionCommand_.angular.z, std::chrono::steady_clock::now(),
+        ImuYawRateIsFresh() ? imuYawRate_ : 0.0);
     if (replay.action ==
         visual_navigation::ObstacleRecoveryAction::REPLAN_REQUIRED) {
       navigationActive_ = false;
@@ -506,10 +507,7 @@ void WaypointNavigator::RunObstacleRecovery() {
     geometry_msgs::msg::Twist command;
     command.linear.x = replay.linear_velocity;
     command.angular.z = replay.angular_velocity;
-    if (replay.publish_recorded)
-      PublishRecordedCommand(command);
-    else
-      PublishMotionCommand(command);
+    PublishMotionCommand(command);
     SetState(recoveryState("OBSTACLE_REPLAYING", "ROUTE_TRANSITION_REPLAYING"));
     return;
   }

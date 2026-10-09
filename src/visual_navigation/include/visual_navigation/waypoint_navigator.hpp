@@ -319,8 +319,6 @@ private:
   void PublishMotionCommand(const geometry_msgs::msg::Twist &desired,
                             bool forceZeroLinear = false);
 
-  void PublishRecordedCommand(const geometry_msgs::msg::Twist &recorded);
-
   void PublishCurrentWaypoint();
 
   bool MotionHeld() const;

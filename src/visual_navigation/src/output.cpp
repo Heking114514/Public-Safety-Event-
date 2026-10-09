@@ -46,19 +46,6 @@ void WaypointNavigator::PublishMotionCommand(
   motionCommandInitialized_ = true;
 }
 
-void WaypointNavigator::PublishRecordedCommand(
-    const geometry_msgs::msg::Twist &recorded) {
-  geometry_msgs::msg::Twist command;
-  command.linear.x =
-      std::clamp(recorded.linear.x, -maxLinearSpeed_, maxLinearSpeed_);
-  command.angular.z =
-      std::clamp(recorded.angular.z, -maxAngularSpeed_, maxAngularSpeed_);
-  cmdVelPublisher_->publish(command);
-  lastMotionCommand_ = command;
-  lastMotionCommandTime_ = std::chrono::steady_clock::now();
-  motionCommandInitialized_ = true;
-}
-
 void WaypointNavigator::PublishCurrentWaypoint() {
   std_msgs::msg::Int32 message;
   message.data = static_cast<int32_t>(currentWaypointIndex_);
