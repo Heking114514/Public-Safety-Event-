@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- 增加离线真值测试工具，明确区分闭环验收和加速回放，并校验状态 JSON 与时间单调性。
+- 增加仿真时间契约：默认 `closed_loop` 模式强制 `playback_speed=1.0`；只有显式的 `offline` 模式允许加速，并在日志中标记为非验收结果。
+- 增加 `scripts/start_loopback_sim.sh`，启动规划器/控制器仿真前清理残留进程，并检查 GUI 端口是否被无关进程占用。
 - Migrated `vehicle_loopback_sim_node`, its motion/obstacle models, and the
   optional `loopback_route_controller` from Python to modular C++17 while
   preserving executable names, topics and parameters.

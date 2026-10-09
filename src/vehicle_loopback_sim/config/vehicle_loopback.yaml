@@ -23,6 +23,7 @@ vehicle_loopback_sim:
     update_rate_hz: 50.0
     status_rate_hz: 10.0
     command_timeout_s: 0.50
+    simulation_mode: closed_loop
     playback_speed: 1.0
 
     # <= 0 disables the corresponding limiter. Speed limits remain enabled

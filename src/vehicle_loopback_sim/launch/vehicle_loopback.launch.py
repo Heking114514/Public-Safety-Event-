@@ -30,6 +30,7 @@ def generate_launch_description():
     simulate_obstacle_recognition = LaunchConfiguration(
         "simulate_obstacle_recognition"
     )
+    simulation_mode = LaunchConfiguration("simulation_mode")
     playback_speed = LaunchConfiguration("playback_speed")
     physical = parameters_for("pure_line_following")
 
@@ -53,6 +54,9 @@ def generate_launch_description():
                 "base_offset_y_m": physical["base_offset_y_m"],
                 "publish_obstacle_detection": ParameterValue(
                     simulate_obstacle_recognition, value_type=bool
+                ),
+                "simulation_mode": ParameterValue(
+                    simulation_mode, value_type=str
                 ),
                 "playback_speed": ParameterValue(playback_speed, value_type=float),
             },
@@ -103,9 +107,19 @@ def generate_launch_description():
                 ),
             ),
             DeclareLaunchArgument(
+                "simulation_mode",
+                default_value="closed_loop",
+                description=(
+                    "closed_loop requires playback_speed=1.0; offline is "
+                    "explicitly non-acceptance"
+                ),
+            ),
+            DeclareLaunchArgument(
                 "playback_speed",
                 default_value="1.0",
-                description="Loopback playback speed multiplier (0.1 to 10.0)",
+                description=(
+                    "Playback multiplier; only offline mode may differ from 1.0"
+                ),
             ),
             DeclareLaunchArgument(
                 "gui",

@@ -56,6 +56,7 @@ private:
   std::string obstacle_frame_;
   std::string cmd_vel_topic_;
   std::string odom_topic_;
+  std::string simulation_mode_;
   double wheel_track_m_{0.1466};
   double base_offset_x_m_{0.03};
   double base_offset_y_m_{0.0};

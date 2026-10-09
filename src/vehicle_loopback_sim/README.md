@@ -62,16 +62,32 @@ Run planner, the formal waypoint controller and loopback together:
 ros2 launch vehicle_loopback_sim planner_control_loopback.launch.py
 ```
 
-Run the same formal controller and truth vehicle with accelerated playback:
+重复运行时可使用工作区包装脚本。它会先停止残留的仿真、规划器、导航器和任务管理器进程，避免混用旧 ROS 图或占用旧 GUI 端口：
+
+```bash
+scripts/start_loopback_sim.sh \\
+  simulate_obstacle_recognition:=true
+```
+
+正式规划器、导航器和真值车辆的闭环验收必须保持默认时间倍率：
 
 ```bash
 ros2 launch vehicle_loopback_sim planner_control_loopback.launch.py \
-  playback_speed:=3.0
+  playback_speed:=1.0
 ```
 
-`playback_speed` accelerates the controller timer and truth integration
-together, so calibrated turn geometry is preserved. The accepted range is
-`0.1` to `10.0`; the default remains `1.0`.
+`simulation_mode` 默认为 `closed_loop`。该模式强制
+`playback_speed=1.0`，用于可以验收的正式闭环结果。`playback_speed` 大于或小于
+`1.0` 会被拒绝，避免把时间尺度不一致的结果误报为通过。
+
+需要加速做运动学或接口冒烟测试时，必须显式选择 `offline`，并将结果标记为非验收：
+
+```bash
+ros2 launch vehicle_loopback_sim vehicle_loopback.launch.py \
+  simulation_mode:=offline playback_speed:=3.0 gui:=false
+```
+
+离线加速只适合检查仿真器自身的积分、话题和障碍注入。它不能证明正式控制器在真实时间下的闭环行为；启动日志会明确打印 `NON-ACCEPTANCE`。
 
 This full launch starts `new_map_planner`, the formal
 `visual_navigation/waypoint_navigator`, the production

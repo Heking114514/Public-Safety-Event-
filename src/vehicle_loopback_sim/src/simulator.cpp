@@ -61,8 +61,18 @@ VehicleLoopbackSim::VehicleLoopbackSim()
   base_offset_y_m_ = finite(get_parameter("base_offset_y_m").as_double(), "base_offset_y_m");
   command_timeout_s_ = std::max(
     0.0, finite(get_parameter("command_timeout_s").as_double(), "command_timeout_s"));
+  simulation_mode_ = get_parameter("simulation_mode").as_string();
+  if (simulation_mode_ != "closed_loop" && simulation_mode_ != "offline") {
+    throw std::invalid_argument(
+            "simulation_mode must be closed_loop or offline");
+  }
   playback_speed_ = std::clamp(
     finite(get_parameter("playback_speed").as_double(), "playback_speed"), 0.1, 10.0);
+  if (simulation_mode_ == "closed_loop" && std::abs(playback_speed_ - 1.0) > 1.0e-9) {
+    throw std::invalid_argument(
+            "closed_loop requires playback_speed=1.0; use simulation_mode=offline "
+            "for non-acceptance accelerated playback");
+  }
   max_linear_speed_mps_ = finite(
     get_parameter("max_linear_speed_mps").as_double(), "max_linear_speed_mps");
   max_angular_speed_rps_ = finite(
@@ -94,9 +104,17 @@ VehicleLoopbackSim::VehicleLoopbackSim()
   started_time_ = stamp;
   create_interfaces();
   RCLCPP_INFO(
-    get_logger(), "vehicle loopback C++ ready: cmd=%s odom=%s frame=%s->%s playback=%.1fx",
+    get_logger(),
+    "vehicle loopback C++ ready: cmd=%s odom=%s frame=%s->%s mode=%s playback=%.1fx",
     cmd_vel_topic_.c_str(), odom_topic_.c_str(), map_frame_.c_str(), base_frame_.c_str(),
-    playback_speed_);
+    simulation_mode_.c_str(), playback_speed_);
+  if (simulation_mode_ == "offline" && std::abs(playback_speed_ - 1.0) > 1.0e-9) {
+    RCLCPP_WARN(
+      get_logger(),
+      "accelerated offline playback (%.1fx) is NON-ACCEPTANCE and must not be used "
+      "to validate the production closed loop",
+      playback_speed_);
+  }
 }
 
 void VehicleLoopbackSim::declare_parameters()
@@ -126,6 +144,7 @@ void VehicleLoopbackSim::declare_parameters()
   declare_parameter("update_rate_hz", 50.0);
   declare_parameter("status_rate_hz", 10.0);
   declare_parameter("command_timeout_s", 0.5);
+  declare_parameter("simulation_mode", "closed_loop");
   declare_parameter("playback_speed", 1.0);
   declare_parameter("max_linear_speed_mps", 0.2);
   declare_parameter("max_angular_speed_rps", 0.9);
