@@ -35,7 +35,7 @@
 #include "std_msgs/msg/u_int64.hpp"
 #include "std_srvs/srv/trigger.hpp"
 #include "visual_navigation/control_state.hpp"
-#include "visual_navigation/corner_shunt.hpp"
+#include "visual_navigation/turn_maneuver.hpp"
 #include "visual_navigation/fusion_health_policy.hpp"
 #include "visual_navigation/navigation_input_cache.hpp"
 #include "visual_navigation/navigation_supervisor.hpp"
@@ -409,7 +409,6 @@ private:
   double waypointRecoverySpeed_{0.10};
   double waypointRecoveryHeadingTolerance_{0.12};
   double waypointRecoveryMaxAngularSpeed_{0.40};
-  visual_navigation::CornerShuntConfig cornerShuntConfig_;
   visual_navigation::TurnManeuverConfig turnManeuverConfig_;
   double turnProgressExpectedYawRate_{0.12};
   double preTurnStopHeadingThreshold_{0.18};
@@ -451,8 +450,6 @@ private:
   visual_navigation::TurnProgressSupervisor turnProgressSupervisor_;
   visual_navigation::ObstacleRecoveryController obstacleRecoveryController_;
   visual_navigation::TurnManeuverController turnManeuverController_;
-  bool lastTurnSafetyReportValid_{false};
-  visual_navigation::CornerShuntSafetyReport lastTurnSafetyReport_;
 
   std::vector<Waypoint> waypoints_;
   std::size_t currentWaypointIndex_{0};

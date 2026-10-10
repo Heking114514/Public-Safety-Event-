@@ -20,30 +20,16 @@ PlannerConfig TurnConfig(const PlannerConfig &config) {
 }
 
 std::vector<Pose> GenerateLocalTurnProfile(const PlannerConfig &config) {
-  const auto narrowest = std::min_element(
-      config.lanes.begin(), config.lanes.end(),
-      [](const Lane &left, const Lane &right) {
-        return left.width < right.width;
-      });
-  if (narrowest == config.lanes.end())
-    return {};
+  (void)config;
   std::vector<Pose> profile;
-  // This is a route-level geometry sweep. It deliberately models only the
-  // road connection; velocity control and short-horizon safety remain in
-  // navigation controller. Keep the sweep inside the junction so every lane
-  // transition is checked against the same static footprint.
-  const double approach = std::max(0.075, 0.40 * narrowest->width);
-  const int samples = 36;
-  // A tangent quarter-circle keeps the body heading aligned with its path;
-  // unlike an in-place rotation, it does not sweep the inner chassis corner
-  // outside the road envelope.
-  for (int index = 0; index <= samples; ++index) {
-    const double ratio = static_cast<double>(index) / samples;
-    const double angle = ratio * 0.5 * kPi;
-    profile.push_back({{-approach + approach * std::sin(angle),
-                        approach * (1.0 - std::cos(angle))},
-                       angle});
-  }
+  const double entry_x = -0.070, entry_y = -0.015;
+  for (int i = 0; i <= 5; ++i) profile.push_back({{-0.20 + (entry_x + 0.20) * i / 5.0, entry_y}, 0.0});
+  for (int i = 1; i <= 6; ++i) { const double t = i / 6.0; profile.push_back({{entry_x + 0.025 * t, entry_y + 0.025 * t}, (kPi / 3.0) * t}); }
+  const double diag_start_x = profile.back().position.x, diag_start_y = profile.back().position.y;
+  for (int i = 1; i <= 4; ++i) { const double t = i / 4.0, dist = 0.025 * t; profile.push_back({{diag_start_x + dist * std::cos(kPi / 3.0), diag_start_y + dist * std::sin(kPi / 3.0)}, kPi / 3.0}); }
+  const double end_x = profile.back().position.x, end_y = profile.back().position.y;
+  for (int i = 1; i <= 6; ++i) { const double t = i / 6.0; profile.push_back({{end_x * (1.0 - t), end_y + 0.045 * t}, kPi / 3.0 + (kPi / 6.0) * t}); }
+  for (int i = 1; i <= 5; ++i) profile.push_back({{0.0, profile.back().position.y + 0.03}, kPi / 2.0});
   return profile;
 }
 

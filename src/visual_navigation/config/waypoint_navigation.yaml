@@ -96,64 +96,14 @@ waypoint_navigator:
     waypoint_recovery_speed: 0.10
     waypoint_recovery_heading_tolerance: 0.12
     waypoint_recovery_max_angular_speed: 0.40
-    # Normal junction turns use live odometry feedback: enter past the RFID,
-    # chase an exit-lane target, then hand back to ordinary path tracking.
-    # Vehicle dimensions and base_link-to-axle offset come from vehicle_physical.yaml.
-    corner_shunt_enabled: true
-    corner_shunt_road_width_m: 0.20
-    corner_shunt_road_margin_m: 0.001
-    corner_shunt_road_back_m: 0.60
-    corner_shunt_road_forward_m: 0.56
-    corner_shunt_stop_s: 0.18
-    corner_shunt_check_s: 0.05
-    corner_shunt_step_s: 0.20
-    corner_shunt_exit_yaw_tolerance_rad: 0.08
-    corner_shunt_exit_x_m: -0.0075
-    corner_shunt_exit_y_m: 0.1225
-    corner_shunt_exit_x_tolerance_m: 0.050
-    corner_shunt_exit_y_tolerance_m: 0.015
-    corner_shunt_max_turn_angle_rad: 2.20
-    corner_shunt_max_s: 60.00
-    corner_shunt_prediction_horizon_s: 0.20
-    corner_shunt_plan_linear_speed_mps: 0.035
-    # Used only by an explicitly planned reverse-arrival recovery maneuver.
-    corner_shunt_plan_reverse_speed_mps: -0.035
-    corner_shunt_plan_angular_speed_rps: 0.40
-    corner_shunt_plan_clearance_m: 0.001
-    corner_shunt_entry_base_x_m: -0.050
-    corner_shunt_closed_loop_min_speed_mps: 0.035
-    corner_shunt_closed_loop_max_angular_speed_rps: 0.65
-    corner_shunt_closed_loop_bearing_gain: 2.20
-    corner_shunt_closed_loop_final_yaw_gain: 1.00
-    corner_shunt_closed_loop_entry_heading_gain: 1.40
-    corner_shunt_closed_loop_entry_lateral_gain: 2.00
-    corner_shunt_closed_loop_yaw_rate_damping: 0.35
-    corner_shunt_closed_loop_yaw_rate_filter_s: 0.08
-    corner_shunt_closed_loop_exit_max_angular_speed_rps: 0.12
-    # Forward turns use a rolling local reference of up to 0.8 m. It is
-    # refreshed from measured pose and does not replace the safety gate.
-    corner_shunt_local_trajectory_length_m: 0.80
-    corner_shunt_local_trajectory_lookahead_m: 0.08
-    corner_shunt_local_trajectory_replan_distance_m: 0.12
-    corner_shunt_no_progress_timeout_s: 3.0
-    corner_shunt_no_progress_distance_m: 0.003
-    corner_shunt_no_progress_yaw_rad: 0.03
-    corner_shunt_max_plan_count: 4
-    # Reverse trim must clear the drivetrain response floor while keeping the
-    # slower wheel engaged during heading correction.
-    turn_maneuver_trim_speed_mps: 0.050
-    turn_maneuver_trim_search_step_m: 0.020
-    turn_maneuver_trim_max_distance_m: 0.20
-    turn_maneuver_trim_max_angular_speed_rps: 0.18
-    turn_maneuver_trim_min_wheel_speed_ratio: 0.70
-    turn_maneuver_preferred_entry_x_m: -0.050
-    turn_maneuver_entry_yaw_tolerance_rad: 0.20
-    turn_maneuver_trim_reverse_hysteresis_m: 0.015
-    turn_maneuver_trim_min_direction_hold_s: 0.30
-    turn_maneuver_trim_min_direction_distance_m: 0.010
-    turn_maneuver_trim_completion_samples: 3
-    turn_maneuver_max_direction_switches: 2
-    turn_maneuver_max_safety_recovery_attempts: 1
+    turn_maneuver_enabled: true
+    turn_maneuver_entry_target_x: -0.070
+    turn_maneuver_entry_target_y: -0.015
+    turn_maneuver_entry_speed: 0.035
+    turn_maneuver_angular_speed: 0.35
+    turn_maneuver_min_angular_speed: 0.15
+    turn_maneuver_creep_speed: 0.030
+    turn_maneuver_entry_tolerance: 0.010
     # Braking, mission holds and localization waits pause
     # position progress. In-place turns remain safe through the displacement gate.
     path_progress_timeout: 10.0

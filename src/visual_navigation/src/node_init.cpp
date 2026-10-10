@@ -162,10 +162,17 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
       std::min(maxAngularSpeed_,
                std::max(0.0, declare_parameter<double>(
                                  "waypoint_recovery_max_angular_speed", 0.40)));
-  cornerShuntConfig_.enabled =
-      declare_parameter<bool>("corner_shunt_enabled", true);
-  cornerShuntConfig_.road_width = std::max(
-      0.01, declare_parameter<double>("corner_shunt_road_width_m", 0.20));
+  turnManeuverConfig_.enabled = declare_parameter<bool>("turn_maneuver_enabled", true);
+  turnManeuverConfig_.entry_target_x = declare_parameter<double>("turn_maneuver_entry_target_x", -0.070);
+  turnManeuverConfig_.entry_target_y = declare_parameter<double>("turn_maneuver_entry_target_y", -0.015);
+  turnManeuverConfig_.entry_speed = declare_parameter<double>("turn_maneuver_entry_speed", 0.035);
+  turnManeuverConfig_.turn_angular_speed = declare_parameter<double>("turn_maneuver_angular_speed", 0.35);
+  turnManeuverConfig_.turn_min_angular_speed = declare_parameter<double>("turn_maneuver_min_angular_speed", 0.15);
+  turnManeuverConfig_.creep_linear_speed = declare_parameter<double>("turn_maneuver_creep_speed", 0.030);
+  turnManeuverConfig_.entry_position_tolerance = declare_parameter<double>("turn_maneuver_entry_tolerance", 0.010);
+  turnManeuverController_.configure(turnManeuverConfig_);
+  /* Legacy corner-shunt and trim parameters were removed with the search controller. */
+  /*
   cornerShuntConfig_.road_margin = std::max(
       0.0, declare_parameter<double>("corner_shunt_road_margin_m", 0.001));
   cornerShuntConfig_.road_back = std::max(
@@ -330,7 +337,7 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
   turnManeuverConfig_.max_safety_recovery_attempts = std::max(
       0, static_cast<int>(declare_parameter<int64_t>(
              "turn_maneuver_max_safety_recovery_attempts", 1)));
-  turnManeuverController_.configure(turnManeuverConfig_);
+  */
   const double pathProgressTimeout =
       std::max(0.0, declare_parameter<double>("path_progress_timeout", 10.0));
   const double pathProgressMinimumAdvance = std::max(

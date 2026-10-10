@@ -352,7 +352,7 @@ void MissionManager::service_rfid(double now_seconds)
     rfid_phase_ = "announcing";
   }
   if (rfid_phase_ == "announcing") {
-    if (rfid_speech_required_ && rfid_announced_.count(*rfid_active_) == 0U) {
+    if (rfid_speech_required_ && rfid_announced_.count(rfid_active_card_) == 0U) {
       send_rfid_speech(now_seconds);
     } else if (!rfid_release_at_.has_value()) {
       begin_rfid_post_speech(now_seconds, rfid_speech_required_);
@@ -384,12 +384,12 @@ void MissionManager::service_rfid(double now_seconds)
 
 void MissionManager::send_rfid_speech(double now_seconds)
 {
-  if (!rfid_active_.has_value() || rfid_speech_pending_ ||
+  if (!rfid_active_.has_value() || rfid_active_card_ <= 0 || rfid_speech_pending_ ||
     !speaker_client_->service_is_ready() || now_seconds < rfid_next_speech_at_)
   {
     return;
   }
-  const int number = *rfid_active_;
+  const int number = rfid_active_card_;
   auto request = std::make_shared<mission_control_interfaces::srv::SpeakText::Request>();
   request->text = render_announcement(rfid_announcement_template_, kNumberNames.at(number));
   ++rfid_speech_attempts_;
@@ -407,7 +407,7 @@ void MissionManager::on_rfid_speech(
   int number,
   rclcpp::Client<mission_control_interfaces::srv::SpeakText>::SharedFuture future)
 {
-  if (!rfid_active_.has_value() || number != *rfid_active_) {
+  if (!rfid_active_.has_value() || number != rfid_active_card_) {
     return;
   }
   rfid_speech_pending_ = false;

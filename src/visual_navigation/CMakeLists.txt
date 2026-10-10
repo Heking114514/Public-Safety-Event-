@@ -23,20 +23,11 @@ find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(mission_control_interfaces REQUIRED)
 
-add_library(corner_shunt_core src/corner_plan.cpp)
-set_target_properties(corner_shunt_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_include_directories(corner_shunt_core PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<INSTALL_INTERFACE:include>)
-ament_target_dependencies(corner_shunt_core navigation_safety)
-
 add_library(turn_maneuver_core src/turn_maneuver.cpp)
 set_target_properties(turn_maneuver_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(turn_maneuver_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
-target_link_libraries(turn_maneuver_core corner_shunt_core)
-ament_target_dependencies(turn_maneuver_core navigation_safety)
 
 # waypoint_navigator.cpp composes focused navigation members from src/;
 # the ROS-facing node name and interfaces are unchanged.
@@ -94,8 +85,8 @@ ament_target_dependencies(
   mission_control_interfaces
 )
 
-install(TARGETS corner_shunt_core turn_maneuver_core
-  EXPORT corner_shunt_coreTargets
+install(TARGETS turn_maneuver_core
+  EXPORT turn_maneuver_coreTargets
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib)
 
@@ -143,12 +134,6 @@ if(BUILD_TESTING)
   target_include_directories(rate_limiter_test PRIVATE include)
   ament_add_gtest(path_control_test test/path_control_test.cpp)
   target_include_directories(path_control_test PRIVATE include)
-  ament_add_gtest(corner_shunt_test test/corner_shunt_test.cpp)
-  target_include_directories(corner_shunt_test PRIVATE include)
-  target_link_libraries(corner_shunt_test corner_shunt_core)
-  ament_add_gtest(turn_maneuver_test test/turn_maneuver_test.cpp)
-  target_include_directories(turn_maneuver_test PRIVATE include)
-  target_link_libraries(turn_maneuver_test turn_maneuver_core)
   ament_add_gtest(path_progress_supervisor_test test/path_progress_supervisor_test.cpp)
   target_include_directories(path_progress_supervisor_test PRIVATE include)
   ament_add_gtest(turn_progress_supervisor_test test/turn_progress_supervisor_test.cpp)
@@ -178,7 +163,7 @@ if(BUILD_TESTING)
 endif()
 
 ament_export_include_directories(include)
-ament_export_targets(corner_shunt_coreTargets HAS_LIBRARY_TARGET)
+ament_export_targets(turn_maneuver_coreTargets HAS_LIBRARY_TARGET)
 ament_export_dependencies(navigation_safety)
 
 ament_package()
