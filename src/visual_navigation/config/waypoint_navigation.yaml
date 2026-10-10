@@ -27,6 +27,7 @@ waypoint_navigator:
     current_waypoint_topic: "/waypoint_navigation/current_waypoint"
     motion_hold_state_topic: "/waypoint_navigation/motion_hold_state"
     route_ack_topic: "/waypoint_navigation/route_ack"
+    navigation_recovery_state_topic: "/waypoint_navigation/navigation_recovery_state"
 
     control_frequency: 30.0
     default_speed: 0.05
@@ -100,7 +101,7 @@ waypoint_navigator:
     # Vehicle dimensions and base_link-to-axle offset come from vehicle_physical.yaml.
     corner_shunt_enabled: true
     corner_shunt_road_width_m: 0.20
-    corner_shunt_road_margin_m: 0.002
+    corner_shunt_road_margin_m: 0.001
     corner_shunt_road_back_m: 0.60
     corner_shunt_road_forward_m: 0.56
     corner_shunt_stop_s: 0.18
@@ -129,13 +130,22 @@ waypoint_navigator:
     corner_shunt_closed_loop_yaw_rate_damping: 0.35
     corner_shunt_closed_loop_yaw_rate_filter_s: 0.08
     corner_shunt_closed_loop_exit_max_angular_speed_rps: 0.12
+    # Forward turns use a rolling local reference of up to 0.8 m. It is
+    # refreshed from measured pose and does not replace the safety gate.
+    corner_shunt_local_trajectory_length_m: 0.80
+    corner_shunt_local_trajectory_lookahead_m: 0.08
+    corner_shunt_local_trajectory_replan_distance_m: 0.12
     corner_shunt_no_progress_timeout_s: 3.0
     corner_shunt_no_progress_distance_m: 0.003
     corner_shunt_no_progress_yaw_rad: 0.03
     corner_shunt_max_plan_count: 4
-    turn_maneuver_trim_speed_mps: 0.035
+    # Reverse trim must clear the drivetrain response floor while keeping the
+    # slower wheel engaged during heading correction.
+    turn_maneuver_trim_speed_mps: 0.050
     turn_maneuver_trim_search_step_m: 0.020
     turn_maneuver_trim_max_distance_m: 0.20
+    turn_maneuver_trim_max_angular_speed_rps: 0.18
+    turn_maneuver_trim_min_wheel_speed_ratio: 0.70
     turn_maneuver_preferred_entry_x_m: -0.050
     turn_maneuver_entry_yaw_tolerance_rad: 0.20
     turn_maneuver_trim_reverse_hysteresis_m: 0.015
@@ -143,6 +153,7 @@ waypoint_navigator:
     turn_maneuver_trim_min_direction_distance_m: 0.010
     turn_maneuver_trim_completion_samples: 3
     turn_maneuver_max_direction_switches: 2
+    turn_maneuver_max_safety_recovery_attempts: 1
     # Braking, mission holds and localization waits pause
     # position progress. In-place turns remain safe through the displacement gate.
     path_progress_timeout: 10.0

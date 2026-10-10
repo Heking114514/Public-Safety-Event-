@@ -25,6 +25,7 @@ def generate_launch_description():
     cmd_vel_topic = LaunchConfiguration("cmd_vel_topic")
     route_input_topic = LaunchConfiguration("route_input_topic")
     autostart = LaunchConfiguration("autostart")
+    use_sim_time = LaunchConfiguration("use_sim_time")
     enable_waypoint_navigation = LaunchConfiguration("enable_waypoint_navigation")
 
     waypoint_navigation = IncludeLaunchDescription(
@@ -49,6 +50,7 @@ def generate_launch_description():
             "cmd_vel_topic": cmd_vel_topic,
             "route_input_topic": route_input_topic,
             "autostart": autostart,
+            "use_sim_time": use_sim_time,
         }.items(),
         condition=IfCondition(enable_waypoint_navigation),
     )
@@ -93,6 +95,7 @@ def generate_launch_description():
                 default_value="/waypoint_navigation/route_input",
             ),
             DeclareLaunchArgument("autostart", default_value="false"),
+            DeclareLaunchArgument("use_sim_time", default_value="false"),
             DeclareLaunchArgument("enable_waypoint_navigation", default_value="true"),
             waypoint_navigation,
         ]

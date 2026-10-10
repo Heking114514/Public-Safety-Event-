@@ -140,6 +140,8 @@ void WaypointNavigator::ResetManeuver() {
   ResetPathFeedback();
   controlState_.interrupt_maneuver();
   turnManeuverController_.reset();
+  lastTurnSafetyReportValid_ = false;
+  lastTurnSafetyReport_ = {};
   turnSettleController_.reset();
   waypointBrakeController_.reset();
   waypointBrakeRecovering_ = false;

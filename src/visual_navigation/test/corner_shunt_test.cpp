@@ -135,6 +135,28 @@ TEST(CornerShunt, StartsWithStopThenMovesForwardAcrossJunction) {
   EXPECT_GE(decision.command.linear_x, 0.0);
 }
 
+TEST(CornerShunt, BuildsRollingLocalTrajectoryForForwardTurn) {
+  visual_navigation::CornerShuntConfig config;
+  config.local_trajectory_length = 0.80;
+  visual_navigation::CornerShuntController controller(config);
+  controller.begin(0.0);
+  controller.update(LeftCornerContext(-0.05, 0.0, 0.0), 0.30);
+  double now = 0.36;
+  auto decision = AwaitPlannedMotion(
+      controller, LeftCornerContext(-0.05, 0.0, 0.0), &now);
+  for (int attempt = 0; attempt < 300 &&
+       controller.local_trajectory_size() < 2U; ++attempt) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    now += 0.01;
+    decision = controller.update(LeftCornerContext(-0.05, 0.0, 0.0), now);
+  }
+
+  EXPECT_FALSE(decision.blocked);
+  EXPECT_GE(controller.local_trajectory_size(), 2U);
+  EXPECT_GT(controller.local_trajectory_length(), 0.10);
+  EXPECT_LE(controller.local_trajectory_length(), 0.80 + 1.0e-6);
+}
+
 TEST(CornerShunt, MirrorsRightTurns) {
   visual_navigation::CornerShuntController controller;
   controller.begin(0.0);

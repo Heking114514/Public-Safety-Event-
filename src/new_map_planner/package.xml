@@ -17,7 +17,6 @@
   <depend>navigation_safety</depend>
   <depend>rclcpp</depend>
   <depend>std_msgs</depend>
-  <depend>visual_navigation</depend>
   <depend>rosidl_default_runtime</depend>
   <depend>yaml_cpp_vendor</depend>
   <exec_depend>ament_index_python</exec_depend>

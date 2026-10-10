@@ -187,6 +187,8 @@ public:
     replay_started_ = false;
     replay_start_valid_ = false;
     replay_goal_valid_ = false;
+    replay_to_heading_anchor_ = false;
+    replay_anchor_yaw_ = std::numeric_limits<double>::quiet_NaN();
     replay_progress_initialized_ = false;
     recovery_attempts_ = 0;
     attempt_timer_initialized_ = false;
@@ -208,6 +210,8 @@ public:
     replay_started_ = false;
     replay_start_valid_ = false;
     replay_goal_valid_ = false;
+    replay_to_heading_anchor_ = false;
+    replay_anchor_yaw_ = std::numeric_limits<double>::quiet_NaN();
     replay_progress_initialized_ = false;
   }
 
@@ -228,6 +232,8 @@ public:
     replay_started_ = false;
     replay_start_valid_ = false;
     replay_goal_valid_ = false;
+    replay_to_heading_anchor_ = false;
+    replay_anchor_yaw_ = std::numeric_limits<double>::quiet_NaN();
     replay_progress_initialized_ = false;
     recovery_attempts_ = 0;
     attempt_timer_initialized_ = false;
@@ -283,7 +289,8 @@ public:
 
   bool trigger(double current_x, double current_y, double current_yaw,
                double current_linear_velocity, double current_angular_velocity,
-               double anchor_x, double anchor_y) {
+               double anchor_x, double anchor_y,
+               double anchor_yaw = std::numeric_limits<double>::quiet_NaN()) {
     if (phase_ != ObstacleRecoveryPhase::IDLE ||
         !CoordinatesAreFinite(current_x, current_y) ||
         !CoordinatesAreFinite(anchor_x, anchor_y) ||
@@ -313,6 +320,8 @@ public:
     }
 
     phase_ = ObstacleRecoveryPhase::BRAKING;
+    replay_to_heading_anchor_ = std::isfinite(anchor_yaw);
+    replay_anchor_yaw_ = anchor_yaw;
     recovery_attempts_ = 0;
     target_valid_ = false;
     attempt_timer_initialized_ = false;
@@ -320,7 +329,9 @@ public:
     return true;
   }
 
-  void confirm_stopped(double current_x, double current_y, TimePoint now) {
+  void confirm_stopped(
+      double current_x, double current_y, TimePoint now,
+      double current_yaw = std::numeric_limits<double>::quiet_NaN()) {
     if (phase_ != ObstacleRecoveryPhase::BRAKING &&
         phase_ != ObstacleRecoveryPhase::RETRY_BRAKING) {
       return;
@@ -334,8 +345,12 @@ public:
         breadcrumbs_.back() = {current_x, current_y};
     }
     phase_ = ObstacleRecoveryPhase::REVERSING;
-    if (!replay_active_)
-      SelectTargetForPosition({current_x, current_y});
+    if (!replay_active_) {
+      if (!replay_to_heading_anchor_ ||
+          !PrepareReplayToHeadingAnchor(current_x, current_y, current_yaw)) {
+        SelectTargetForPosition({current_x, current_y});
+      }
+    }
     BeginAttempt(current_x, current_y, now);
   }
 
@@ -643,6 +658,49 @@ public:
   }
 
 private:
+  bool PrepareReplayToHeadingAnchor(double current_x, double current_y,
+                                    double current_yaw) {
+    if (!std::isfinite(replay_anchor_yaw_) || trace_.size() < 2 ||
+        !CoordinatesAreFinite(current_x, current_y) ||
+        !std::isfinite(current_yaw)) {
+      return false;
+    }
+
+    const std::size_t start =
+        ClosestTracePoseIndex(current_x, current_y, current_yaw);
+    std::size_t goal = start;
+    double best_distance = std::numeric_limits<double>::infinity();
+    for (std::size_t index = 0; index < start; ++index) {
+      const double yaw_error = std::abs(std::remainder(
+          trace_[index].yaw - replay_anchor_yaw_,
+          2.0 * 3.14159265358979323846));
+      if (yaw_error > config_.replay_yaw_tolerance)
+        continue;
+      const double distance = RecoveryPointDistance(
+          trace_[index].point, breadcrumbs_[anchor_index_]);
+      if (distance <= config_.anchor_tolerance && distance < best_distance) {
+        goal = index;
+        best_distance = distance;
+      }
+    }
+    if (goal == start)
+      return false;
+
+    trace_anchor_index_ = goal;
+    replay_index_ = start;
+    replay_stop_index_ = goal;
+    replay_start_ = trace_[start];
+    replay_goal_ = trace_[goal];
+    replay_start_valid_ = true;
+    replay_goal_valid_ = true;
+    replay_active_ = true;
+    replay_pose_aligned_ = false;
+    replay_started_ = false;
+    replay_progress_initialized_ = false;
+    target_valid_ = false;
+    return true;
+  }
+
   static double NonnegativeOrDefault(double value, double fallback) {
     return std::isfinite(value) ? std::max(0.0, value) : fallback;
   }
@@ -849,6 +907,8 @@ private:
   bool replay_start_valid_{false};
   RecoveryTraceSample replay_goal_;
   bool replay_goal_valid_{false};
+  bool replay_to_heading_anchor_{false};
+  double replay_anchor_yaw_{std::numeric_limits<double>::quiet_NaN()};
   bool replay_progress_initialized_{false};
   double replay_best_distance_{std::numeric_limits<double>::infinity()};
   TimePoint replay_progress_started_{};

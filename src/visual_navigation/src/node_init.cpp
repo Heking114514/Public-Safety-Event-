@@ -46,6 +46,9 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
       "motion_hold_state_topic", "/waypoint_navigation/motion_hold_state");
   routeAckTopic_ = declare_parameter<std::string>(
       "route_ack_topic", "/waypoint_navigation/route_ack");
+  navigationRecoveryStateTopic_ = declare_parameter<std::string>(
+      "navigation_recovery_state_topic",
+      "/waypoint_navigation/navigation_recovery_state");
 
   controlFrequency_ =
       std::max(1.0, declare_parameter<double>("control_frequency", 30.0));
@@ -164,7 +167,7 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
   cornerShuntConfig_.road_width = std::max(
       0.01, declare_parameter<double>("corner_shunt_road_width_m", 0.20));
   cornerShuntConfig_.road_margin = std::max(
-      0.0, declare_parameter<double>("corner_shunt_road_margin_m", 0.002));
+      0.0, declare_parameter<double>("corner_shunt_road_margin_m", 0.001));
   cornerShuntConfig_.road_back = std::max(
       0.0, declare_parameter<double>("corner_shunt_road_back_m", 0.60));
   cornerShuntConfig_.road_forward = std::max(
@@ -186,6 +189,12 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
     throw std::invalid_argument(
         "corner shunt requires finite vehicle base offset and positive length, "
         "and width");
+  turnManeuverConfig_.wheel_track = declare_parameter<double>(
+      "wheel_track_m", std::numeric_limits<double>::quiet_NaN());
+  if (!std::isfinite(turnManeuverConfig_.wheel_track) ||
+      turnManeuverConfig_.wheel_track <= 0.0)
+    throw std::invalid_argument(
+        "turn maneuver requires a positive finite wheel_track_m");
   cornerShuntConfig_.stop_duration =
       std::max(0.0, declare_parameter<double>("corner_shunt_stop_s", 0.18));
   cornerShuntConfig_.check_duration =
@@ -258,6 +267,15 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
       std::max(0.0, declare_parameter<double>(
                          "corner_shunt_closed_loop_exit_max_angular_speed_rps",
                          0.12)));
+  cornerShuntConfig_.local_trajectory_length = std::max(
+      0.20, declare_parameter<double>(
+                "corner_shunt_local_trajectory_length_m", 0.80));
+  cornerShuntConfig_.local_trajectory_lookahead = std::max(
+      0.02, declare_parameter<double>(
+                "corner_shunt_local_trajectory_lookahead_m", 0.08));
+  cornerShuntConfig_.local_trajectory_replan_distance = std::max(
+      0.02, declare_parameter<double>(
+                "corner_shunt_local_trajectory_replan_distance_m", 0.12));
   cornerShuntConfig_.no_progress_timeout = std::max(
       0.1, declare_parameter<double>("corner_shunt_no_progress_timeout_s", 3.0));
   cornerShuntConfig_.no_progress_distance = std::max(
@@ -281,6 +299,14 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
   turnManeuverConfig_.trim_max_distance = std::max(
       turnManeuverConfig_.trim_search_step,
       declare_parameter<double>("turn_maneuver_trim_max_distance_m", 0.20));
+  turnManeuverConfig_.trim_max_angular_speed = std::min(
+      maxAngularSpeed_,
+      std::max(0.0, declare_parameter<double>(
+                       "turn_maneuver_trim_max_angular_speed_rps", 0.25)));
+  turnManeuverConfig_.trim_min_wheel_speed_ratio = std::clamp(
+      declare_parameter<double>("turn_maneuver_trim_min_wheel_speed_ratio",
+                                0.70),
+      0.0, 0.99);
   turnManeuverConfig_.preferred_entry_x = declare_parameter<double>(
       "turn_maneuver_preferred_entry_x_m", -0.050);
   turnManeuverConfig_.direct_entry_yaw_tolerance = std::max(
@@ -301,6 +327,9 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
   turnManeuverConfig_.max_trim_direction_switches = std::max(
       0, static_cast<int>(declare_parameter<int64_t>(
              "turn_maneuver_max_direction_switches", 2)));
+  turnManeuverConfig_.max_safety_recovery_attempts = std::max(
+      0, static_cast<int>(declare_parameter<int64_t>(
+             "turn_maneuver_max_safety_recovery_attempts", 1)));
   turnManeuverController_.configure(turnManeuverConfig_);
   const double pathProgressTimeout =
       std::max(0.0, declare_parameter<double>("path_progress_timeout", 10.0));
@@ -522,6 +551,10 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
           motionHoldStateTopic_, rclcpp::QoS(1).transient_local().reliable());
   routeAckPublisher_ = create_publisher<std_msgs::msg::UInt64>(
       routeAckTopic_, rclcpp::QoS(1).transient_local().reliable());
+  navigationRecoveryStatePublisher_ =
+      create_publisher<mission_control_interfaces::msg::NavigationRecoveryState>(
+          navigationRecoveryStateTopic_,
+          rclcpp::QoS(1).transient_local().reliable());
 
   odomSubscription_ = create_subscription<nav_msgs::msg::Odometry>(
       odomTopic_, 10,

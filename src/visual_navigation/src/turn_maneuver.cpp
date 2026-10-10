@@ -111,6 +111,7 @@ void TurnManeuverController::reset() {
   trim_candidates_checked_ = 0;
   trim_footprint_rejections_ = 0;
   trim_turn_rejections_ = 0;
+  safety_recovery_attempts_ = 0;
   has_safety_report_ = false;
   safety_report_ = {};
   progress_started_at_ = 0.0;
@@ -236,7 +237,9 @@ bool TurnManeuverController::find_trim_target(
   const double step = std::max(0.005, config_.trim_search_step);
   double distance = std::max(step, trim_search_distance_ + step);
   distance = std::max(distance, local.x - config_.preferred_entry_x);
-  const double maximum = std::max(step, config_.trim_max_distance);
+  const double maximum = std::max(0.0, config_.trim_max_distance);
+  if (maximum + 1.0e-9 < distance)
+    return false;
   for (; distance <= maximum + 1.0e-9; distance += step) {
     ++trim_candidates_checked_;
     CornerShuntContext candidate = captured_;
@@ -293,7 +296,18 @@ CornerShuntTwist TurnManeuverController::trim_command(
                    config_.trim_yaw_rate_damping *
                        context.measured_twist.angular_z;
   angular += reverse ? lateral_term : -lateral_term;
-  const double limit = std::max(0.0, config_.trim_max_angular_speed);
+  double limit = std::max(0.0, config_.trim_max_angular_speed);
+  if (reverse && std::isfinite(config_.wheel_track) &&
+      config_.wheel_track > 0.0) {
+    const double ratio = std::max(
+        0.0, std::min(0.99, config_.trim_min_wheel_speed_ratio));
+    // Keep the slower wheel at a configurable fraction of the body speed.
+    // This is command shaping, not a safety gate: the measured footprint is
+    // still checked independently on every control cycle.
+    const double wheel_speed_limit =
+        2.0 * speed * (1.0 - ratio) / config_.wheel_track;
+    limit = std::min(limit, std::max(0.0, wheel_speed_limit));
+  }
   return {reverse ? -speed : speed,
           ClampShunt(angular, -limit, limit)};
 }
@@ -374,6 +388,9 @@ void TurnManeuverController::attach_trim_diagnostics(
   decision->trim_candidates_checked = trim_candidates_checked_;
   decision->trim_footprint_rejections = trim_footprint_rejections_;
   decision->trim_turn_rejections = trim_turn_rejections_;
+  decision->safety_recovery_attempts = safety_recovery_attempts_;
+  decision->safety_recovery_limit = static_cast<std::size_t>(
+      std::max(0, config_.max_safety_recovery_attempts));
   decision->trim_direction = trim_direction_;
   decision->trim_direction_switches = trim_direction_switches_;
   decision->trim_target_local_x = trim_target_x_;
@@ -418,6 +435,12 @@ bool TurnManeuverController::trim_stalled(const CornerShuntContext &context,
   }
   return now_s - progress_started_at_ >=
          std::max(0.1, config_.trim_no_progress_timeout);
+}
+
+bool TurnManeuverController::record_safety_rejection() {
+  ++safety_recovery_attempts_;
+  return safety_recovery_attempts_ <= static_cast<std::size_t>(
+      std::max(0, config_.max_safety_recovery_attempts));
 }
 
 void TurnManeuverController::start_arc(const CornerShuntContext &context,
@@ -525,6 +548,7 @@ TurnManeuverController::update(const TurnManeuverInput &input, double now_s) {
         auto decision = terminal(TurnManeuverPhase::NEED_REPLAN,
                                  TurnManeuverResult::NEED_REPLAN);
         decision.trim_limit_reached = true;
+        decision.safety_recovery_limit_reached = true;
         attach_trim_diagnostics(&decision);
         return decision;
       }
@@ -547,11 +571,22 @@ TurnManeuverController::update(const TurnManeuverInput &input, double now_s) {
       phase_started_at_ = now_s;
       report.source = "trim_command";
       report.attempted_command = command;
+      safety_report_ = report;
+      has_safety_report_ = true;
+      if (!record_safety_rejection()) {
+        auto decision = terminal(TurnManeuverPhase::NEED_REPLAN,
+                                 TurnManeuverResult::NEED_REPLAN);
+        decision.trim_limit_reached = true;
+        decision.safety_recovery_limit_reached = true;
+        decision.has_safety_report = true;
+        decision.safety_report = report;
+        attach_trim_diagnostics(&decision);
+        return decision;
+      }
       auto decision = transition(TurnManeuverPhase::TRIM_SEARCH);
       decision.has_safety_report = true;
       decision.safety_report = report;
-      safety_report_ = report;
-      has_safety_report_ = true;
+      attach_trim_diagnostics(&decision);
       return decision;
     }
     phase_ = trim_direction_ < 0 ? TurnManeuverPhase::REVERSE_TRIM
@@ -577,6 +612,17 @@ TurnManeuverController::update(const TurnManeuverInput &input, double now_s) {
       return transition(TurnManeuverPhase::EXIT_ALIGN);
     }
     if (arc.blocked) {
+      const bool safety_failure =
+          arc.safety_report.failure != CornerShuntSafetyFailure::NONE;
+      if (safety_failure && !record_safety_rejection()) {
+        auto decision = terminal(TurnManeuverPhase::NEED_REPLAN,
+                                 TurnManeuverResult::NEED_REPLAN);
+        decision.safety_recovery_limit_reached = true;
+        decision.has_safety_report = true;
+        decision.safety_report = arc.safety_report;
+        attach_trim_diagnostics(&decision);
+        return decision;
+      }
       arc_controller_.reset();
       arc_started_ = false;
       phase_started_at_ = now_s;
@@ -586,6 +632,7 @@ TurnManeuverController::update(const TurnManeuverInput &input, double now_s) {
       decision.safety_report = arc.safety_report;
       safety_report_ = arc.safety_report;
       has_safety_report_ = decision.has_safety_report;
+      attach_trim_diagnostics(&decision);
       return decision;
     }
     return {TurnManeuverPhase::ARC, arc.command,

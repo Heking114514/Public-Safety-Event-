@@ -278,6 +278,31 @@ TEST(TurnManeuver, LargeArrivalErrorRequestsClosedLoopReverseTrim) {
   EXPECT_GT(controller.trim_attempts(), 0U);
 }
 
+TEST(TurnManeuver, ReverseTrimShapesCurvatureForBothDriveWheels) {
+  auto config = Config();
+  config.wheel_track = 0.1466;
+  config.trim_min_wheel_speed_ratio = 0.70;
+  config.trim_max_angular_speed = 0.25;
+  config.direct_entry_yaw_tolerance = 0.10;
+  visual_navigation::TurnManeuverController controller(config);
+  auto input = LeftTurn(-0.02, 0.0, 0.22);
+  controller.begin(0.0);
+
+  visual_navigation::TurnManeuverDecision decision;
+  for (int index = 0; index < 30; ++index) {
+    decision = controller.update(input, index / 30.0);
+    if (decision.command.linear_x < 0.0)
+      break;
+    ApplyDecision(&input, decision, config, 1.0 / 30.0);
+  }
+
+  ASSERT_LT(decision.command.linear_x, 0.0);
+  const double expected_limit =
+      2.0 * std::abs(decision.command.linear_x) *
+      (1.0 - config.trim_min_wheel_speed_ratio) / config.wheel_track;
+  EXPECT_LE(std::abs(decision.command.angular_z), expected_limit + 1.0e-12);
+}
+
 TEST(TurnManeuver, TrimDirectionUsesHysteresisAfterTargetOvershoot) {
   auto config = Config();
   config.trim_min_direction_hold = 0.30;
@@ -354,7 +379,7 @@ TEST(TurnManeuver, NoTrimCandidateRequestsReplanInsteadOfFault) {
   controller.begin(0.0);
 
   visual_navigation::TurnManeuverDecision decision;
-  for (int index = 0; index < 10; ++index) {
+  for (int index = 0; index < 60; ++index) {
     decision = controller.update(input, index / 30.0);
     if (decision.result != visual_navigation::TurnManeuverResult::RUNNING)
       break;

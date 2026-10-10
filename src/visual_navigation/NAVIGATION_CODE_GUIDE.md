@@ -962,7 +962,7 @@ config/waypoint_navigation.yaml
 | `path_progress_no_motion_timeout` | `3.0` | 持续命令但无位移时的恢复超时，s |
 | `path_progress_no_motion_displacement` | `0.05` | 无运动检查窗口内允许的最大位移，m |
 | `rotate_in_place_threshold` | `0.18` | 超过该航向误差时禁止前进，rad |
-| `corner_shunt_road_margin_m` | `0.002` | 转弯车身扫掠边界余量，m；直行仍使用规划器的 15 mm 余量 |
+| `corner_shunt_road_margin_m` | `0.001` | 路口规划与实时控制共用的车身扫掠边界余量，m |
 | `corner_shunt_entry_base_x_m` | `-0.050` | 开始追踪出口前，车体中心相对路口参考截面的位置，m |
 | `corner_shunt_plan_linear_speed_mps` | `0.035` | 路口状态格前进线速度，m/s |
 | `corner_shunt_plan_reverse_speed_mps` | `-0.035` | 仅限已确认路口的倒车线速度，m/s |
@@ -980,9 +980,11 @@ config/waypoint_navigation.yaml
 | `corner_shunt_no_progress_distance_m` | `0.003` | 转弯进展检测的最小位移，m |
 | `corner_shunt_no_progress_yaw_rad` | `0.03` | 转弯进展检测的最小航向变化，rad |
 | `corner_shunt_max_plan_count` | `4` | 转弯无进展后允许的总规划次数，耗尽后发布故障 |
-| `turn_maneuver_trim_speed_mps` | `0.035` | 独立转弯动作微调线速度，m/s |
+| `turn_maneuver_trim_speed_mps` | `0.050` | 独立转弯动作微调线速度，m/s |
 | `turn_maneuver_trim_search_step_m` | `0.020` | 沿来向道路搜索微调目标的空间步长，m |
 | `turn_maneuver_trim_max_distance_m` | `0.20` | 单次路口微调允许的最大距离，m |
+| `turn_maneuver_trim_max_angular_speed_rps` | `0.18` | 倒车微调的角速度上限，rad/s |
+| `turn_maneuver_trim_min_wheel_speed_ratio` | `0.70` | 倒车修正时较慢轮相对车体速度的最低比例 |
 | `turn_maneuver_preferred_entry_x_m` | `-0.050` | 优先搜索的安全入口纵向坐标，m |
 | `turn_maneuver_entry_yaw_tolerance_rad` | `0.20` | 允许直接开始转弯的入口航向误差，rad |
 | `precision_turn_threshold` | `0.45` | 原地转向进入精调最低角速度区间的航向误差，rad |

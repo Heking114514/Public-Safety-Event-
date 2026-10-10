@@ -39,8 +39,10 @@ waypoint_navigator -> /cmd_vel_nav
 任务节点始终不发布 `/cmd_vel`，后退跟踪与安全监督仍完全属于控制器。
 
 路口独立动作报告 `TURN_NEED_REPLAN` 时，表示当前入口和已确认的路口动作集合没有安全
-解，并不表示检测到障碍。任务节点清除旧路线，保留动态障碍记忆，直接从最新融合位姿重新
-请求当前阶段路线；该分支不调用倒退服务，也不进入 `RECOVERING_OBSTACLE`。
+解，并不表示检测到障碍。任务节点校验控制器为当前路线发布的有效安全锚点后，清除旧路线，
+调用 `/waypoint_navigator/continue_route_retreat`，由控制器按照实际执行过的安全轨迹闭环反向
+回放；收到 `ROUTE_TRANSITION_REPLAN_REQUIRED` 后才恢复当前阶段的普通规划。该分支不把转弯
+中途姿态送入规划器，不伪装成障碍恢复，也不进入 `RECOVERING_OBSTACLE`。
 
 完成一段路线后若下一段仅因几何衔接无路，总控改用
 `/waypoint_navigator/continue_route_retreat`，并保持 `REPLANNING`；控制器发布

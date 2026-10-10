@@ -28,6 +28,7 @@ def generate_launch_description():
     cmd_vel_topic = LaunchConfiguration("cmd_vel_topic")
     route_input_topic = LaunchConfiguration("route_input_topic")
     autostart = LaunchConfiguration("autostart")
+    use_sim_time = LaunchConfiguration("use_sim_time")
     control_rate_multiplier = LaunchConfiguration("control_rate_multiplier")
     physical_parameters = parameters_for("waypoint_navigation")
 
@@ -75,6 +76,7 @@ def generate_launch_description():
                     route_input_topic, value_type=str
                 ),
                 "autostart": ParameterValue(autostart, value_type=bool),
+                "use_sim_time": ParameterValue(use_sim_time, value_type=bool),
                 "control_rate_multiplier": ParameterValue(
                     control_rate_multiplier, value_type=float
                 ),
@@ -132,6 +134,7 @@ def generate_launch_description():
                 default_value="false",
                 description="Start only after the localization interface becomes valid",
             ),
+            DeclareLaunchArgument("use_sim_time", default_value="false"),
             DeclareLaunchArgument(
                 "control_rate_multiplier",
                 default_value="1.0",

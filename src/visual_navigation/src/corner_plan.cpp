@@ -107,9 +107,11 @@ CornerShuntController::compute_plan(const CornerShuntContext &context) const {
         {{reverse_speed, -angular_speed * direction}});
   }
 
-  CornerShuntConfig clearance_config = config_;
-  clearance_config.road_margin += std::max(0.0, config_.plan_clearance);
-  CornerShuntController clearance_checker(clearance_config);
+  // Planning and execution share the same footprint envelope. The previous
+  // implementation added plan_clearance to road_margin here, so a trajectory
+  // accepted by the planner could still be rejected by the live controller
+  // solely because the planner used a second, hidden shrinkage.
+  CornerShuntController clearance_checker(config_);
 
   const double control_frequency = std::max(1.0, config_.control_frequency);
   const int integration_samples = std::max(

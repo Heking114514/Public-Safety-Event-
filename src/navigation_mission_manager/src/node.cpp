@@ -118,6 +118,9 @@ void MissionManager::declare_parameters()
   declare_parameter("planner_service", "/new_map_planner/plan");
   declare_parameter("odom_topic", "/odometry/fused");
   declare_parameter("navigator_status_topic", "/waypoint_navigation/status");
+  declare_parameter(
+    "navigation_recovery_state_topic",
+    "/waypoint_navigation/navigation_recovery_state");
   declare_parameter("current_waypoint_topic", "/waypoint_navigation/current_waypoint");
   declare_parameter("route_ack_topic", "/waypoint_navigation/route_ack");
   declare_parameter("route_input_topic", "/waypoint_navigation/route_input");
@@ -245,6 +248,10 @@ void MissionManager::create_interfaces()
   navigator_subscription_ = create_subscription<std_msgs::msg::String>(
     get_parameter("navigator_status_topic").as_string(), durable,
     std::bind(&MissionManager::on_navigator_status, this, std::placeholders::_1));
+  navigation_recovery_subscription_ = create_subscription<
+    mission_control_interfaces::msg::NavigationRecoveryState>(
+    get_parameter("navigation_recovery_state_topic").as_string(), durable,
+    std::bind(&MissionManager::on_navigation_recovery_state, this, std::placeholders::_1));
   ack_subscription_ = create_subscription<std_msgs::msg::UInt64>(
     get_parameter("route_ack_topic").as_string(), durable,
     std::bind(&MissionManager::on_route_ack, this, std::placeholders::_1));

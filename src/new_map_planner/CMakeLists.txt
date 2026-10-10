@@ -22,7 +22,6 @@ find_package(navigation_safety REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(std_msgs REQUIRED)
-find_package(visual_navigation REQUIRED)
 find_package(yaml_cpp_vendor REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
@@ -47,9 +46,8 @@ add_library(new_map_planner_core
 target_include_directories(new_map_planner_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
-target_include_directories(new_map_planner_core PRIVATE ${visual_navigation_INCLUDE_DIRS})
 target_link_libraries(new_map_planner_core yaml-cpp)
-ament_target_dependencies(new_map_planner_core navigation_safety visual_navigation)
+ament_target_dependencies(new_map_planner_core navigation_safety)
 
 add_executable(new_map_planner_node src/node.cpp)
 target_link_libraries(new_map_planner_node new_map_planner_core)
@@ -91,6 +89,11 @@ if(BUILD_TESTING)
     ENV
       "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}"
       "PYTHONDONTWRITEBYTECODE=1")
+  ament_add_pytest_test(new_map_planner_decoupling_contract_test
+    test/test_decoupling_contract.py
+    ENV
+      "NEW_MAP_PLANNER_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+      "PYTHONDONTWRITEBYTECODE=1")
 endif()
 
 ament_export_include_directories(include)
@@ -102,6 +105,5 @@ ament_export_dependencies(
   navigation_safety
   rosidl_default_runtime
   std_msgs
-  visual_navigation
   yaml_cpp_vendor)
 ament_package()

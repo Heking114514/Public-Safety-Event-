@@ -2,6 +2,7 @@
 #define VISUAL_NAVIGATION__TURN_MANEUVER_HPP_
 
 #include <cstddef>
+#include <limits>
 
 #include "visual_navigation/corner_shunt.hpp"
 
@@ -34,7 +35,7 @@ enum class TurnManeuverResult {
 struct TurnManeuverConfig {
   CornerShuntConfig corner;
   double trim_speed{0.035};
-  double trim_search_step{0.020};
+  double trim_search_step{0.050};
   double trim_max_distance{0.20};
   double preferred_entry_x{-0.050};
   double direct_entry_yaw_tolerance{0.20};
@@ -45,12 +46,17 @@ struct TurnManeuverConfig {
   double trim_lateral_gain{2.00};
   double trim_yaw_rate_damping{0.35};
   double trim_max_angular_speed{0.25};
+  // Physical wheel track is injected from vehicle_config at runtime. Tests
+  // that do not model wheel telemetry leave it unset and skip wheel shaping.
+  double wheel_track{std::numeric_limits<double>::quiet_NaN()};
+  double trim_min_wheel_speed_ratio{0.70};
   double trim_settle_duration{0.20};
   double trim_reverse_hysteresis{0.015};
   double trim_min_direction_hold{0.30};
   double trim_min_direction_distance{0.010};
   int trim_completion_samples{3};
   int max_trim_direction_switches{2};
+  int max_safety_recovery_attempts{1};
   double trim_no_progress_timeout{3.0};
   double trim_progress_distance{0.005};
   double trim_progress_yaw{0.03};
@@ -73,10 +79,13 @@ struct TurnManeuverDecision {
   CornerShuntSafetyReport safety_report;
   bool trim_target_selected{false};
   bool trim_limit_reached{false};
+  bool safety_recovery_limit_reached{false};
   std::size_t trim_attempts{0};
   std::size_t trim_candidates_checked{0};
   std::size_t trim_footprint_rejections{0};
   std::size_t trim_turn_rejections{0};
+  std::size_t safety_recovery_attempts{0};
+  std::size_t safety_recovery_limit{1};
   int trim_direction{0};
   std::size_t trim_direction_switches{0};
   double trim_target_local_x{0.0};
@@ -101,6 +110,29 @@ public:
   bool enabled_for(double turn_error) const;
   std::size_t trim_attempts() const;
   double trim_target_x() const;
+  std::size_t planned_command_count() const {
+    return arc_controller_.planned_command_count();
+  }
+  std::size_t local_trajectory_size() const {
+    return arc_controller_.local_trajectory_size();
+  }
+  double local_trajectory_length() const {
+    return arc_controller_.local_trajectory_length();
+  }
+  std::size_t local_trajectory_index() const {
+    return arc_controller_.local_trajectory_index();
+  }
+  CornerShuntCommandSource last_command_source() const {
+    return arc_controller_.last_command_source();
+  }
+  bool local_trajectory_rejected() const {
+    return arc_controller_.local_trajectory_rejected();
+  }
+  CornerShuntSafetyReport local_trajectory_report() const {
+    return arc_controller_.local_trajectory_report();
+  }
+  bool last_safe_pose_valid() const { return arc_controller_.last_safe_pose_valid(); }
+  CornerShuntPose last_safe_pose() const { return arc_controller_.last_safe_pose(); }
 
   TurnManeuverDecision update(const TurnManeuverInput &input, double now_s);
 
@@ -128,6 +160,7 @@ private:
                            double now_s);
   bool trim_stalled(const CornerShuntContext &context, double now_s);
   void start_arc(const CornerShuntContext &context, double now_s);
+  bool record_safety_rejection();
 
   TurnManeuverConfig config_;
   CornerShuntController arc_controller_;
@@ -151,6 +184,7 @@ private:
   std::size_t trim_candidates_checked_{0};
   std::size_t trim_footprint_rejections_{0};
   std::size_t trim_turn_rejections_{0};
+  std::size_t safety_recovery_attempts_{0};
   bool has_safety_report_{false};
   CornerShuntSafetyReport safety_report_;
   double progress_started_at_{0.0};

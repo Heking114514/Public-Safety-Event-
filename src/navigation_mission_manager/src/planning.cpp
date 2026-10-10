@@ -1,6 +1,7 @@
 #include "navigation_mission_manager/manager.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 
 namespace navigation_mission_manager
@@ -121,8 +122,8 @@ void MissionManager::request_plan()
     return;
   }
   auto request = std::make_shared<new_map_planner::srv::PlanRoute::Request>();
-  request->start = pose_message();
   const PlanningContext context = next_planning_context_;
+  request->start = context.has_safe_pose ? context.safe_pose : pose_message();
   request->start_mode = context.start_mode;
   request->recovery_anchor_node_id = context.recovery_anchor_node_id;
   request->incoming_lane_id = context.recovery_incoming_lane_id;
@@ -139,6 +140,22 @@ void MissionManager::request_plan()
   request->allow_partial = spec.allow_partial;
   request->activate = false;
   request->ordinary_nodes_since_task = ordinary_nodes_since_task_;
+  RCLCPP_INFO(
+    get_logger(),
+    "发送规划请求: mode=%s start=(%.3f, %.3f, %.1fdeg) targets=%zu "
+    "required_lanes=%zu completed_lanes=%zu obstacles=%zu replanning=%s "
+    "route_active=%s retreat=%s start_mode=%u recovery_anchor=%s "
+    "incoming_lane=%s reverse_departure=%s",
+    spec.mode.c_str(), pose_->x, pose_->y,
+    pose_->yaw * 180.0 / 3.141592653589793,
+    spec.target_ids.size(), spec.required_lane_ids.size(),
+    spec.completed_lane_ids.size(), dynamic_obstacles_.size(),
+    replanning_ ? "true" : "false", active_route_.has_value() ? "true" : "false",
+    obstacle_recovery_active_ || route_transition_recovery_active_ ? "true" : "false",
+    static_cast<unsigned int>(context.start_mode),
+    context.recovery_anchor_node_id.empty() ? "-" : context.recovery_anchor_node_id.c_str(),
+    context.recovery_incoming_lane_id.empty() ? "-" : context.recovery_incoming_lane_id.c_str(),
+    context.allow_reverse_departure ? "true" : "false");
   const uint64_t generation = ++plan_generation_;
   planning_pending_ = true;
   pending_plan_generation_ = generation;
@@ -188,6 +205,10 @@ void MissionManager::on_plan_response(
       fault("转弯恢复规划失败：" + response->message);
       return;
     }
+    RCLCPP_WARN(get_logger(),
+      "规划服务返回失败: status=%s message=%s planning_time=%.1fms retries=%d",
+      response->plan.status.c_str(), response->message.c_str(),
+      response->planning_time_ms, plan_retries_);
     handle_plan_rejection("规划失败：" + response->message);
     return;
   }
@@ -234,7 +255,7 @@ void MissionManager::on_plan_response(
       return;
     }
   }
-  if (!plan.recovery_only && !spec.has_progress(plan.visit_order, plan.covered_lane_ids)) {
+  if (!recovery_request && !spec.has_progress(plan.visit_order, plan.covered_lane_ids)) {
     handle_plan_rejection("规划结果没有新增当前阶段进度");
     return;
   }

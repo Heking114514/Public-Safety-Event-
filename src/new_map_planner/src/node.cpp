@@ -52,6 +52,19 @@ Pose FromRosPose(const geometry_msgs::msg::Pose &pose) {
   return {{pose.position.x, pose.position.y}, QuaternionYaw(pose.orientation)};
 }
 
+StartMode StartModeFromMessage(uint8_t mode) {
+  switch (mode) {
+    case srv::PlanRoute::Request::START_MODE_NORMAL:
+      return StartMode::NORMAL;
+    case srv::PlanRoute::Request::START_MODE_TURN_RECOVERY:
+      return StartMode::TURN_RECOVERY;
+    case srv::PlanRoute::Request::START_MODE_OBSTACLE_RECOVERY:
+      return StartMode::OBSTACLE_RECOVERY;
+    default:
+      throw std::invalid_argument("unknown planning start mode");
+  }
+}
+
 geometry_msgs::msg::Pose ToRosPose(const Pose &pose) {
   geometry_msgs::msg::Pose message;
   message.position.x = pose.position.x;
@@ -153,7 +166,8 @@ private:
     message.header.stamp = stamp;
     message.plan_id = static_cast<uint64_t>(stamp.nanoseconds());
     message.map_id = planner_->config().map_id;
-    message.status = result.complete ? "COMPLETE" : "PARTIAL";
+    message.status = result.recovery_only ? "TURN_RECOVERY" :
+      (result.complete ? "COMPLETE" : "PARTIAL");
     message.arena_path = MakePath(result.arena_path, "arena", stamp, result);
     message.navigation_path =
         MakePath(result.navigation_path, "map", stamp, result);
@@ -169,6 +183,7 @@ private:
     message.length_m = result.length;
     message.complete = result.complete;
     message.collision_checked = result.collision_checked;
+    message.recovery_only = result.recovery_only;
     message.ordinary_nodes_since_task =
         static_cast<uint8_t>(result.ordinary_nodes_since_task);
     return message;
@@ -177,9 +192,30 @@ private:
   void HandlePlan(const std::shared_ptr<srv::PlanRoute::Request> request,
                   std::shared_ptr<srv::PlanRoute::Response> response) {
     const auto begin = std::chrono::steady_clock::now();
+    RCLCPP_INFO(
+        get_logger(),
+        "plan request: mode=%s targets=%zu lanes=%zu completed_lanes=%zu "
+        "start_map=(%.3f, %.3f, %.1fdeg) dynamic_obstacles=%zu "
+        "return_home=%s allow_partial=%s ordinary_since_task=%u",
+        request->mode.empty() ? "targets" : request->mode.c_str(),
+        request->target_ids.size(), request->required_lane_ids.size(),
+        request->completed_lane_ids.size(), request->start.position.x,
+        request->start.position.y,
+        std::atan2(2.0 * request->start.orientation.w *
+                       request->start.orientation.z,
+                   1.0 - 2.0 * request->start.orientation.z *
+                               request->start.orientation.z) *
+            180.0 / 3.141592653589793,
+        request->dynamic_obstacles.size(), request->return_home ? "true" : "false",
+        request->allow_partial ? "true" : "false",
+        static_cast<unsigned int>(request->ordinary_nodes_since_task));
     try {
       PlanRequest planner_request;
       planner_request.start_map = FromRosPose(request->start);
+      planner_request.start_mode = StartModeFromMessage(request->start_mode);
+      planner_request.recovery_anchor_node_id = request->recovery_anchor_node_id;
+      planner_request.recovery_incoming_lane_id = request->incoming_lane_id;
+      planner_request.allow_reverse_departure = request->allow_reverse_departure;
       planner_request.mode = request->mode.empty() ? "targets" : request->mode;
       planner_request.target_ids = request->target_ids;
       planner_request.required_lane_ids = request->required_lane_ids;
@@ -228,7 +264,17 @@ private:
                                      std::chrono::steady_clock::now() - begin)
                                      .count();
     if (!response->success) {
-      RCLCPP_WARN(get_logger(), "%s", response->message.c_str());
+      RCLCPP_WARN(get_logger(),
+                  "plan rejected: status=%s reason=%s start_map=(%.3f, %.3f, %.1fdeg) "
+                  "elapsed=%.1f ms",
+                  response->plan.status.c_str(), response->message.c_str(),
+                  request->start.position.x, request->start.position.y,
+                  std::atan2(2.0 * request->start.orientation.w *
+                                 request->start.orientation.z,
+                             1.0 - 2.0 * request->start.orientation.z *
+                                         request->start.orientation.z) *
+                      180.0 / 3.141592653589793,
+                  response->planning_time_ms);
     } else {
       RCLCPP_INFO(get_logger(), "plan %lu: %s, %.2f m, %.1f ms, activated=%s",
                   response->plan.plan_id, response->plan.status.c_str(),

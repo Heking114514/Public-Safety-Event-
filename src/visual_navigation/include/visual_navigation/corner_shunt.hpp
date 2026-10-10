@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstddef>
 #include <future>
+#include <limits>
 #include <thread>
 #include <vector>
 
@@ -29,7 +30,9 @@ enum class CornerShuntPhase {
 struct CornerShuntConfig {
   bool enabled{true};
   double road_width{0.20};
-  double road_margin{0.002};
+  // Keep a small measurement buffer. A 2 mm shrink rejects the 13.2 cm
+  // chassis at the 20 cm lane turn apex by roughly 1 mm.
+  double road_margin{0.001};
   double road_back{0.60};
   double road_forward{0.56};
   double vehicle_length{0.1320};
@@ -61,6 +64,11 @@ struct CornerShuntConfig {
   double closed_loop_yaw_rate_damping{0.35};
   double closed_loop_yaw_rate_filter_s{0.08};
   double closed_loop_exit_max_angular_speed{0.12};
+  // Rolling forward-turn reference. It is advisory; safety is still checked
+  // against the measured pose and the selected command every cycle.
+  double local_trajectory_length{0.80};
+  double local_trajectory_lookahead{0.08};
+  double local_trajectory_replan_distance{0.12};
   double no_progress_timeout{3.0};
   double no_progress_distance{0.003};
   double no_progress_yaw{0.03};
@@ -81,6 +89,13 @@ struct CornerShuntPose {
 struct CornerShuntTwist {
   double linear_x{0.0};
   double angular_z{0.0};
+};
+
+struct CornerShuntTrajectoryPoint {
+  CornerShuntPose pose;
+  double distance{0.0};
+  // The rate-limited command that generated this sample.
+  CornerShuntTwist command;
 };
 
 enum class CornerShuntSafetyFailure {
@@ -113,6 +128,25 @@ inline const char *CornerShuntSafetyFailureName(
   return "unknown";
 }
 
+enum class CornerShuntCommandSource {
+  NONE,
+  LOCAL_TRAJECTORY,
+  LEGACY_CLOSED_LOOP,
+};
+
+inline const char *CornerShuntCommandSourceName(
+    CornerShuntCommandSource source) {
+  switch (source) {
+  case CornerShuntCommandSource::LOCAL_TRAJECTORY:
+    return "local_trajectory";
+  case CornerShuntCommandSource::LEGACY_CLOSED_LOOP:
+    return "legacy_closed_loop";
+  case CornerShuntCommandSource::NONE:
+    return "none";
+  }
+  return "unknown";
+}
+
 struct CornerShuntContext {
   CornerShuntPose pose;
   CornerShuntTwist applied_twist;
@@ -134,6 +168,7 @@ struct CornerShuntDecision {
   bool complete{false};
   bool blocked{false};
   CornerShuntSafetyReport safety_report;
+  CornerShuntCommandSource command_source{CornerShuntCommandSource::NONE};
 
   CornerShuntDecision() = default;
   CornerShuntDecision(CornerShuntPhase phase_value,
@@ -190,6 +225,7 @@ public:
     phase_started_at_ = 0.0;
     planned_commands_.clear();
     planned_command_index_ = 0;
+    clear_local_trajectory();
     plan_count_ = 0;
     plan_future_ = {};
     command_cycles_remaining_ = 0;
@@ -201,6 +237,11 @@ public:
     filtered_yaw_rate_ = 0.0;
     last_yaw_rate_feedback_at_ = 0.0;
     corner_entry_committed_ = false;
+    last_safe_pose_ = {};
+    last_safe_pose_valid_ = false;
+    last_command_source_ = CornerShuntCommandSource::NONE;
+    local_trajectory_rejected_ = false;
+    local_trajectory_report_ = {};
   }
 
   void begin(double now_s) {
@@ -210,6 +251,7 @@ public:
     phase_started_at_ = now_s;
     planned_commands_.clear();
     planned_command_index_ = 0;
+    clear_local_trajectory();
     plan_count_ = 0;
     plan_future_ = {};
     command_cycles_remaining_ = 0;
@@ -221,13 +263,39 @@ public:
     filtered_yaw_rate_ = 0.0;
     last_yaw_rate_feedback_at_ = now_s;
     corner_entry_committed_ = false;
+    last_command_source_ = CornerShuntCommandSource::NONE;
+    local_trajectory_rejected_ = false;
+    local_trajectory_report_ = {};
   }
 
   bool active() const { return active_; }
 
   std::size_t planned_command_count() const { return planned_commands_.size(); }
 
+  std::size_t local_trajectory_size() const { return local_trajectory_.size(); }
+
+  double local_trajectory_length() const {
+    return local_trajectory_.empty() ? 0.0 : local_trajectory_.back().distance;
+  }
+
+  std::size_t local_trajectory_index() const { return local_trajectory_index_; }
+
+  CornerShuntCommandSource last_command_source() const {
+    return last_command_source_;
+  }
+
+  bool local_trajectory_rejected() const {
+    return local_trajectory_rejected_;
+  }
+
+  CornerShuntSafetyReport local_trajectory_report() const {
+    return local_trajectory_report_;
+  }
+
   int plan_count() const { return plan_count_; }
+
+  bool last_safe_pose_valid() const { return last_safe_pose_valid_; }
+  CornerShuntPose last_safe_pose() const { return last_safe_pose_; }
 
   bool enabled_for(double turn_error) const {
     return config_.enabled && std::isfinite(turn_error) &&
@@ -237,12 +305,23 @@ public:
   CornerShuntDecision update(const CornerShuntContext &context, double now_s) {
     if (!active_)
       begin(now_s);
+    last_command_source_ = CornerShuntCommandSource::NONE;
+    local_trajectory_rejected_ = false;
+    local_trajectory_report_ = {};
+    // Record only a measured pose that passed the same footprint gate used by
+    // commands. Predicted samples must never become a recovery anchor.
+    if (pose_is_safe(context, context.pose)) {
+      last_safe_pose_ = context.pose;
+      last_safe_pose_valid_ = true;
+    }
     update_yaw_rate_feedback(context, now_s);
     if (now_s - started_at_ > std::max(0.0, config_.max_turn_duration))
       return block();
     if (motion_stalled(context, now_s)) {
       planned_commands_.clear();
       planned_command_index_ = 0;
+      clear_local_trajectory();
+      plan_future_ = {};
       command_cycles_remaining_ = 0;
       last_command_ = {};
       progress_started_at_ = now_s;
@@ -384,40 +463,38 @@ private:
     return set_phase(command_phase(command), now_s, command);
   }
 
-  CornerShuntDecision closed_loop_action(const CornerShuntContext &context,
-                                         double now_s) {
-    const auto local = local_turn_pose(context, context.pose);
+  CornerShuntTwist nominal_forward_command(const CornerShuntContext &context,
+                                           const CornerShuntPose &pose,
+                                           bool *entry_committed) const {
+    const auto local = local_turn_pose(context, pose);
     const double direction = turn_sign(context);
     const double base_x =
         local.x + config_.base_offset_x * std::cos(local.yaw) -
         direction * config_.base_offset_y * std::sin(local.yaw);
+    if (base_x >= config_.entry_base_x)
+      *entry_committed = true;
     const double forward_speed = std::max(0.005, config_.plan_linear_speed);
     const double minimum_speed =
         ClampShunt(config_.closed_loop_min_speed, 0.005, forward_speed);
     const double yaw_rate_local = filtered_yaw_rate_ * direction;
-    if (base_x >= config_.entry_base_x)
-      corner_entry_committed_ = true;
-
     double omega_local = 0.0;
     double steering_error = local.yaw;
     bool aligning_exit = false;
-    if (!corner_entry_committed_) {
+    if (!*entry_committed) {
       omega_local = -config_.closed_loop_entry_heading_gain * local.yaw -
                     config_.closed_loop_entry_lateral_gain * local.y -
                     config_.closed_loop_yaw_rate_damping * yaw_rate_local;
     } else {
       const double target_scale =
-          ClampShunt(std::abs(turn_error(context)) / (0.5 * 3.14159265358979323846),
+          ClampShunt(std::abs(turn_error(context)) /
+                         (0.5 * 3.14159265358979323846),
                      0.45, 1.40);
       const double target_x = config_.target_x * target_scale;
       const double target_y = config_.target_y * target_scale;
-      // Preserve the measured arrival residual while evaluating progress from
-      // the actual current pose: target-arrival minus arrival-to-current.
       const double arrival_turn_error = std::abs(NormalizeShuntAngle(
           context.target_heading - context.arrival_heading));
       const double arrival_progress =
-          NormalizeShuntAngle(context.pose.yaw - context.arrival_heading) *
-          turn_sign(context);
+          NormalizeShuntAngle(pose.yaw - context.arrival_heading) * direction;
       const double final_yaw_error = NormalizeShuntAngle(
           arrival_turn_error - arrival_progress);
       aligning_exit =
@@ -431,25 +508,21 @@ private:
       } else {
         const double bearing =
             std::atan2(target_y - local.y, target_x - local.x);
-        const double bearing_error =
-            NormalizeShuntAngle(bearing - local.yaw);
+        const double bearing_error = NormalizeShuntAngle(bearing - local.yaw);
         steering_error = bearing_error;
         omega_local = config_.closed_loop_bearing_gain * bearing_error +
                       config_.closed_loop_final_yaw_gain * final_yaw_error -
                       config_.closed_loop_yaw_rate_damping * yaw_rate_local;
       }
     }
-
     const double maximum_omega =
         std::max(0.05, config_.closed_loop_max_angular_speed);
-    if (corner_entry_committed_ && !aligning_exit) {
-      // Once the axle has entered the junction, never return to the entry
-      // controller or counter-steer toward the incoming road.
+    if (*entry_committed && !aligning_exit) {
       omega_local = ClampShunt(omega_local, 0.0, maximum_omega);
     } else if (aligning_exit) {
       const double exit_limit = std::min(
-        maximum_omega,
-        std::max(0.0, config_.closed_loop_exit_max_angular_speed));
+          maximum_omega,
+          std::max(0.0, config_.closed_loop_exit_max_angular_speed));
       omega_local = ClampShunt(omega_local, -exit_limit, exit_limit);
     } else {
       omega_local = ClampShunt(omega_local, -maximum_omega, maximum_omega);
@@ -460,15 +533,221 @@ private:
         minimum_speed / forward_speed, 1.0);
     if (aligning_exit && std::abs(steering_error) > 0.20)
       heading_scale = minimum_speed / forward_speed;
-    const CornerShuntTwist command{forward_speed * heading_scale,
-                                   direction * omega_local};
+    return {forward_speed * heading_scale, direction * omega_local};
+  }
+
+  CornerShuntDecision closed_loop_action(const CornerShuntContext &context,
+                                         double now_s) {
+    if (!context.reverse_arrival) {
+      CornerShuntDecision trajectory_decision;
+      if (local_trajectory_action(context, now_s, &trajectory_decision))
+        return trajectory_decision;
+    }
+    const CornerShuntTwist command =
+        nominal_forward_command(context, context.pose, &corner_entry_committed_);
     CornerShuntSafetyReport report;
-    if (!command_is_safe(context, command, -1.0, &report)) {
+    CornerShuntTwist safe_command;
+    if (!find_safe_closed_loop_command(context, command, &safe_command,
+                                       &report)) {
       report.source = "corner_arc_command";
       report.attempted_command = command;
+      last_command_source_ = CornerShuntCommandSource::LEGACY_CLOSED_LOOP;
       return block(report);
     }
-    return set_phase(command_phase(command), now_s, command);
+    auto decision =
+        set_phase(command_phase(safe_command), now_s, safe_command);
+    last_command_source_ = CornerShuntCommandSource::LEGACY_CLOSED_LOOP;
+    decision.command_source = last_command_source_;
+    return decision;
+  }
+
+  bool local_trajectory_action(const CornerShuntContext &context, double now_s,
+                               CornerShuntDecision *decision) {
+    bool rebuilt = false;
+    if (!local_trajectory_valid_ || local_trajectory_stale(context)) {
+      if (local_trajectory_valid_)
+        clear_local_trajectory();
+      // The forward local planner is deliberately bounded and synchronous:
+      // it rolls the measured-pose controller over a short horizon instead
+      // of waiting on the larger reverse-arrival state search.
+      rebuild_local_trajectory(context);
+      rebuilt = true;
+    }
+    if (local_trajectory_.size() < 2U)
+      return false;
+    if (rebuilt)
+      return false;
+
+    const auto nearest = nearest_trajectory_point(context.pose);
+    local_trajectory_index_ = nearest;
+    const double target_distance =
+        local_trajectory_[nearest].distance +
+        std::max(0.02, config_.local_trajectory_lookahead);
+    std::size_t target = nearest;
+    while (target + 1U < local_trajectory_.size() &&
+           local_trajectory_[target].distance < target_distance) {
+      ++target;
+    }
+    const auto &reference = local_trajectory_[target].pose;
+    const double dx = reference.x - context.pose.x;
+    const double dy = reference.y - context.pose.y;
+    const double distance = std::hypot(dx, dy);
+    if (distance <= 1.0e-6)
+      return false;
+    const double bearing = std::atan2(dy, dx);
+    const double bearing_error = NormalizeShuntAngle(bearing - context.pose.yaw);
+    const double yaw_error =
+        NormalizeShuntAngle(reference.yaw - context.pose.yaw);
+    const double speed = std::max(0.005, config_.plan_linear_speed) *
+        ClampShunt(std::cos(std::min(std::abs(bearing_error),
+                                     0.5 * 3.14159265358979323846)),
+                   config_.closed_loop_min_speed /
+                       std::max(0.005, config_.plan_linear_speed),
+                   1.0);
+    const double omega = ClampShunt(
+        config_.closed_loop_bearing_gain * bearing_error +
+            0.35 * config_.closed_loop_final_yaw_gain * yaw_error -
+            config_.closed_loop_yaw_rate_damping * filtered_yaw_rate_,
+        -std::max(0.05, config_.closed_loop_max_angular_speed),
+        std::max(0.05, config_.closed_loop_max_angular_speed));
+    CornerShuntSafetyReport report;
+    CornerShuntTwist safe_command;
+    const CornerShuntTwist preferred{speed, omega};
+    if (!find_safe_closed_loop_command(context, preferred, &safe_command,
+                                       &report)) {
+      // If measured-pose pursuit is too aggressive for this cycle, reuse the
+      // rate-limited command that generated the same checked trajectory point.
+      // It is still checked against the current measured pose before use.
+      const auto &trajectory_command = local_trajectory_[target].command;
+      const double local_horizon =
+          1.0 / std::max(1.0, config_.control_frequency);
+      CornerShuntSafetyReport trajectory_report;
+      if (trajectory_command.linear_x > 1.0e-9 &&
+          find_safe_closed_loop_command(context, trajectory_command,
+                                        &safe_command, &trajectory_report,
+                                        local_horizon)) {
+        *decision =
+            set_phase(command_phase(safe_command), now_s, safe_command);
+        last_command_source_ = CornerShuntCommandSource::LOCAL_TRAJECTORY;
+        decision->command_source = last_command_source_;
+        return true;
+      }
+      // A local reference is advisory. Let the legacy measured-pose command
+      // search make the final safety decision for this cycle.
+      report.source = "local_trajectory_command";
+      report.attempted_command = preferred;
+      local_trajectory_rejected_ = true;
+      local_trajectory_report_ = report;
+      clear_local_trajectory();
+      return false;
+    }
+    *decision = set_phase(command_phase(safe_command), now_s, safe_command);
+    last_command_source_ = CornerShuntCommandSource::LOCAL_TRAJECTORY;
+    decision->command_source = last_command_source_;
+    return true;
+  }
+
+  bool local_trajectory_stale(const CornerShuntContext &context) const {
+    if (local_trajectory_.empty())
+      return true;
+    const std::size_t start = std::min(
+        local_trajectory_index_, local_trajectory_.size() - 1U);
+    double nearest_distance = std::numeric_limits<double>::infinity();
+    for (std::size_t index = start; index < local_trajectory_.size(); ++index) {
+      nearest_distance = std::min(
+          nearest_distance,
+          std::hypot(context.pose.x - local_trajectory_[index].pose.x,
+                     context.pose.y - local_trajectory_[index].pose.y));
+    }
+    return nearest_distance >
+           std::max(0.02, config_.local_trajectory_replan_distance);
+  }
+
+  std::size_t nearest_trajectory_point(const CornerShuntPose &pose) const {
+    std::size_t nearest = std::min(
+        local_trajectory_index_, local_trajectory_.size() - 1U);
+    double nearest_distance = std::numeric_limits<double>::infinity();
+    for (std::size_t index = nearest; index < local_trajectory_.size(); ++index) {
+      const double distance = std::hypot(
+          pose.x - local_trajectory_[index].pose.x,
+          pose.y - local_trajectory_[index].pose.y);
+      if (distance < nearest_distance) {
+        nearest = index;
+        nearest_distance = distance;
+      }
+    }
+    return nearest;
+  }
+
+  void rebuild_local_trajectory(const CornerShuntContext &context) {
+    local_trajectory_.clear();
+    local_trajectory_index_ = 0;
+    local_trajectory_.push_back({context.pose, 0.0, {}});
+    auto pose = context.pose;
+    auto applied = context.applied_twist;
+    double distance = 0.0;
+    const double frequency = std::max(1.0, config_.control_frequency);
+    const double dt = 1.0 / frequency;
+    bool entry_committed = corner_entry_committed_;
+    const int maximum_steps = std::max(
+        1, static_cast<int>(std::ceil(
+               std::max(0.20, config_.local_trajectory_length) /
+               std::max(0.005, config_.plan_linear_speed) * frequency)));
+    for (int step = 0; step < maximum_steps &&
+                        distance < config_.local_trajectory_length; ++step) {
+      const CornerShuntTwist command =
+          nominal_forward_command(context, pose, &entry_committed);
+      applied = limited_command(applied, command, dt);
+      const auto previous = pose;
+      pose = integrate(pose, applied, dt);
+      if (!pose_is_safe(context, pose))
+        break;
+      distance += std::hypot(pose.x - previous.x, pose.y - previous.y);
+      local_trajectory_.push_back({pose, distance, applied});
+    }
+    local_trajectory_valid_ = local_trajectory_.size() >= 2U;
+  }
+
+  void clear_local_trajectory() {
+    local_trajectory_.clear();
+    local_trajectory_index_ = 0;
+    local_trajectory_valid_ = false;
+  }
+
+  bool find_safe_closed_loop_command(const CornerShuntContext &context,
+                                     const CornerShuntTwist &preferred,
+                                     CornerShuntTwist *selected,
+                                     CornerShuntSafetyReport *report,
+                                     double horizon_s = -1.0) const {
+    if (command_is_safe(context, preferred, horizon_s, report)) {
+      *selected = preferred;
+      return true;
+    }
+
+    // Keep the preferred curvature while reducing motion for one control
+    // horizon. This lets the measured pose settle before a new command.
+    constexpr double kScales[] = {0.80, 0.60, 0.40, 0.25};
+    for (const double scale : kScales) {
+      const CornerShuntTwist candidate{preferred.linear_x * scale,
+                                       preferred.angular_z * scale};
+      if (command_is_safe(context, candidate, horizon_s, nullptr)) {
+        *selected = candidate;
+        return true;
+      }
+    }
+
+    // If the original curvature is unsafe, widen the turn radius before
+    // declaring the maneuver blocked.
+    constexpr double kAngularScales[] = {0.75, 0.50, 0.30};
+    for (const double scale : kAngularScales) {
+      const CornerShuntTwist candidate{preferred.linear_x,
+                                       preferred.angular_z * scale};
+      if (command_is_safe(context, candidate, horizon_s, nullptr)) {
+        *selected = candidate;
+        return true;
+      }
+    }
+    return false;
   }
 
   PlanAvailability ensure_plan(const CornerShuntContext &context) {
@@ -712,6 +991,9 @@ private:
   int plan_count_{0};
   int command_cycles_remaining_{0};
   std::future<std::vector<CornerShuntTwist>> plan_future_;
+  std::vector<CornerShuntTrajectoryPoint> local_trajectory_;
+  std::size_t local_trajectory_index_{0};
+  bool local_trajectory_valid_{false};
   CornerShuntTwist last_command_;
   bool yaw_rate_feedback_initialized_{false};
   double filtered_yaw_rate_{0.0};
@@ -720,6 +1002,11 @@ private:
   bool progress_initialized_{false};
   double progress_started_at_{0.0};
   CornerShuntPose progress_pose_;
+  CornerShuntPose last_safe_pose_;
+  bool last_safe_pose_valid_{false};
+  CornerShuntCommandSource last_command_source_{CornerShuntCommandSource::NONE};
+  bool local_trajectory_rejected_{false};
+  CornerShuntSafetyReport local_trajectory_report_;
 };
 
 } // namespace visual_navigation

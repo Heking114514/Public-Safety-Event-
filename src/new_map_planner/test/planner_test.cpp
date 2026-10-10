@@ -124,7 +124,50 @@ TEST(Planner, RouteStartingAtJunctionCarriesExplicitTurnAuthorization) {
   ASSERT_FALSE(result.maneuvers.empty());
   EXPECT_EQ(result.maneuvers.front().type,
             new_map_planner::ManeuverType::START_ALIGN);
+  EXPECT_FALSE(result.maneuvers.front().incoming_lane_id.empty());
   EXPECT_TRUE(result.maneuvers.front().collision_checked);
+}
+
+TEST(PlannerRecovery, RequiresExplicitContext) {
+  const auto config = OfficialConfig();
+  new_map_planner::MapPlanner planner(config);
+  new_map_planner::PlanRequest request;
+  request.start_mode = new_map_planner::StartMode::TURN_RECOVERY;
+  request.start_map = new_map_planner::ArenaToMap(
+      {{1.1, 3.1}, 0.5 * new_map_planner::kPi}, config.transform);
+
+  const auto result = planner.plan(request);
+
+  EXPECT_FALSE(result.success);
+  EXPECT_EQ(result.failure_reason,
+            new_map_planner::PlanFailureReason::RECOVERY_CONTEXT_INVALID);
+  EXPECT_TRUE(result.recovery_only);
+}
+
+TEST(PlannerRecovery, RetreatsAlongExplicitIncomingLane) {
+  const auto config = OfficialConfig();
+  new_map_planner::MapPlanner planner(config);
+  new_map_planner::PlanRequest request;
+  request.start_mode = new_map_planner::StartMode::TURN_RECOVERY;
+  request.start_map = new_map_planner::ArenaToMap(
+      {{1.1, 3.1}, 0.5 * new_map_planner::kPi}, config.transform);
+  request.recovery_anchor_node_id = "x1_y3";
+  request.recovery_incoming_lane_id = "ROAD_X1_Y2";
+  request.allow_reverse_departure = true;
+
+  const auto result = planner.plan(request);
+
+  ASSERT_TRUE(result.success) << result.message;
+  EXPECT_TRUE(result.recovery_only);
+  ASSERT_EQ(result.traversals.size(), 1U);
+  EXPECT_TRUE(result.traversals.front().reverse);
+  EXPECT_NEAR(result.traversals.front().end.x, 1.1, 1.0e-9);
+  EXPECT_NEAR(result.traversals.front().end.y, 2.1, 1.0e-9);
+  ASSERT_FALSE(result.maneuvers.empty());
+  EXPECT_EQ(result.maneuvers.front().type,
+            new_map_planner::ManeuverType::REVERSE);
+  EXPECT_TRUE(result.visit_order.empty());
+  EXPECT_TRUE(result.covered_lane_ids.empty());
 }
 
 TEST(Planner, LayerOneTargetsNextPendingTaskInOrder) {

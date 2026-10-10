@@ -288,6 +288,28 @@ TEST(ObstacleRecovery, ReplayAlignsModerateRouteHandoffHeadingMismatch) {
   EXPECT_LT(replay.angular_velocity, 0.0);
 }
 
+TEST(ObstacleRecovery, JunctionRetreatReplaysToIncomingHeadingAnchor) {
+  ObstacleRecoveryConfig config;
+  config.breadcrumb_spacing = 0.01;
+  config.anchor_tolerance = 0.05;
+  config.replay_yaw_tolerance = 0.20;
+  ObstacleRecoveryController controller(config);
+  controller.record_sample(0.00, 0.00, 0.00, 0.10, 0.00);
+  controller.record_sample(0.10, 0.00, 0.00, 0.10, 0.00);
+  controller.record_sample(0.18, -0.01, -0.10, 0.05, -0.10);
+  controller.record_sample(0.20, -0.04, -0.60, 0.02, -0.20);
+
+  ASSERT_TRUE(controller.trigger(0.20, -0.04, -0.60, 0.02, -0.20,
+                                 0.20, 0.00, 0.00));
+  controller.confirm_stopped(0.20, -0.04, At(0.0), -0.60);
+  ASSERT_TRUE(controller.replaying());
+
+  const auto replay = controller.replay_step(
+      0.20, -0.04, -0.60, 0.0, 0.0, At(0.1));
+  EXPECT_TRUE(replay.command_valid);
+  EXPECT_LT(replay.linear_velocity, 0.0);
+}
+
 TEST(ObstacleRecovery, IgnoresOneLargeFusionJumpInBreadcrumbTrace) {
   ObstacleRecoveryConfig config;
   config.breadcrumb_spacing = 0.05;

@@ -251,6 +251,7 @@ def parameters_for(
             "vehicle_width_m": physical.width_m,
             "base_offset_x_m": physical.base_link_offset_x_m,
             "base_offset_y_m": physical.base_link_offset_y_m,
+            "wheel_track_m": physical.wheel_track_m,
         },
         "rectangle_primitive_controller": {
             "wheel_track_m": physical.wheel_track_m,

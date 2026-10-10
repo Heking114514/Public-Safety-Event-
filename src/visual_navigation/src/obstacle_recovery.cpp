@@ -325,7 +325,9 @@ bool WaypointNavigator::BeginJunctionRetreat() {
   }
   if (!obstacleRecoveryController_.trigger(
           currentX_, currentY_, currentYaw_, lastMotionCommand_.linear.x,
-          lastMotionCommand_.angular.z, anchor.x, anchor.y)) {
+          lastMotionCommand_.angular.z, anchor.x, anchor.y,
+          confirmedJunction ? stoppedTurnArrivalHeading_
+                            : std::numeric_limits<double>::quiet_NaN())) {
     navigationActive_ = false;
     obstacleRecoveryController_.require_route_takeover();
     PublishStop();
@@ -466,7 +468,7 @@ void WaypointNavigator::RunObstacleRecovery() {
     }
     obstacleBrakeController_.reset();
     obstacleRecoveryController_.confirm_stopped(
-        currentX_, currentY_, std::chrono::steady_clock::now());
+        currentX_, currentY_, std::chrono::steady_clock::now(), currentYaw_);
     ResetPathFeedback();
     SetState(recoveryState("OBSTACLE_REVERSING", "ROUTE_TRANSITION_REVERSING"));
     return;

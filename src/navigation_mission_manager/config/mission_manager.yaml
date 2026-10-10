@@ -4,6 +4,7 @@ navigation_mission_manager:
     planner_service: /new_map_planner/plan
     odom_topic: /odometry/fused
     navigator_status_topic: /waypoint_navigation/status
+    navigation_recovery_state_topic: /waypoint_navigation/navigation_recovery_state
     current_waypoint_topic: /waypoint_navigation/current_waypoint
     route_ack_topic: /waypoint_navigation/route_ack
     route_input_topic: /waypoint_navigation/route_input

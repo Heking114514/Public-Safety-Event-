@@ -19,6 +19,7 @@
 #include <mission_control_interfaces/msg/event_candidate.hpp>
 #include <mission_control_interfaces/msg/mission_state.hpp>
 #include <mission_control_interfaces/msg/motion_hold_state.hpp>
+#include <mission_control_interfaces/msg/navigation_recovery_state.hpp>
 #include <mission_control_interfaces/srv/continue_retreat.hpp>
 #include <mission_control_interfaces/srv/control_mission.hpp>
 #include <mission_control_interfaces/srv/confirm_rfid_checkpoint.hpp>
@@ -74,7 +75,10 @@ struct PlanningContext
   std::string recovery_anchor_node_id;
   std::string recovery_incoming_lane_id;
   bool allow_reverse_departure{false};
+  bool has_safe_pose{false};
+  geometry_msgs::msg::Pose safe_pose;
 };
+
 
 class MissionManager : public rclcpp::Node
 {
@@ -130,6 +134,8 @@ private:
   void fault(const std::string & message);
 
   void on_navigator_status(const std_msgs::msg::String::SharedPtr message);
+  void on_navigation_recovery_state(
+    const mission_control_interfaces::msg::NavigationRecoveryState::SharedPtr message);
   void handle_turn_replan();
   std::optional<std::pair<std::string, std::string>> turn_recovery_context() const;
   void handle_obstacle_replan();
@@ -211,6 +217,9 @@ private:
   int no_progress_routes_{0};
   bool replanning_{false};
   PlanningContext next_planning_context_{};
+  std::optional<mission_control_interfaces::msg::NavigationRecoveryState>
+    latest_navigation_recovery_;
+  bool turn_replan_waiting_for_recovery_{false};
   int completed_stages_{0};
 
   bool retreat_pending_{false};
@@ -330,6 +339,8 @@ private:
 
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_subscription_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr navigator_subscription_;
+  rclcpp::Subscription<mission_control_interfaces::msg::NavigationRecoveryState>::SharedPtr
+    navigation_recovery_subscription_;
   rclcpp::Subscription<std_msgs::msg::UInt64>::SharedPtr ack_subscription_;
   rclcpp::Subscription<mission_control_interfaces::msg::MotionHoldState>::SharedPtr
     hold_state_subscription_;

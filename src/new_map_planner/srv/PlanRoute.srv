@@ -1,5 +1,13 @@
 # start is expressed in the navigation map frame.
 geometry_msgs/Pose start
+uint8 START_MODE_NORMAL=0
+uint8 START_MODE_TURN_RECOVERY=1
+uint8 START_MODE_OBSTACLE_RECOVERY=2
+uint8 start_mode
+# Recovery fields are required only for START_MODE_TURN_RECOVERY.
+string recovery_anchor_node_id
+string incoming_lane_id
+bool allow_reverse_departure
 string mode
 string[] target_ids
 string[] required_lane_ids

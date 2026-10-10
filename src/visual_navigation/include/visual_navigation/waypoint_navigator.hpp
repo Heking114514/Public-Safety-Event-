@@ -19,6 +19,7 @@
 #include "geometry_msgs/msg/twist.hpp"
 #include "mission_control_interfaces/msg/control_telemetry.hpp"
 #include "mission_control_interfaces/msg/motion_hold_state.hpp"
+#include "mission_control_interfaces/msg/navigation_recovery_state.hpp"
 #include "mission_control_interfaces/srv/continue_retreat.hpp"
 #include "mission_control_interfaces/srv/confirm_rfid_checkpoint.hpp"
 #include "mission_control_interfaces/srv/set_motion_hold.hpp"
@@ -327,6 +328,10 @@ private:
 
   void PublishMotionHoldState();
 
+  void PublishNavigationRecoveryState(
+      const std::string &reason,
+      const visual_navigation::CornerShuntPose &pose, bool valid);
+
   void PublishState();
 
   void SetState(const std::string &state);
@@ -352,6 +357,7 @@ private:
   std::string currentWaypointTopic_;
   std::string motionHoldStateTopic_;
   std::string routeAckTopic_;
+  std::string navigationRecoveryStateTopic_;
   double controlFrequency_{30.0};
   double trackingPointOffsetX_{std::numeric_limits<double>::quiet_NaN()};
   double trackingPointOffsetY_{std::numeric_limits<double>::quiet_NaN()};
@@ -445,6 +451,8 @@ private:
   visual_navigation::TurnProgressSupervisor turnProgressSupervisor_;
   visual_navigation::ObstacleRecoveryController obstacleRecoveryController_;
   visual_navigation::TurnManeuverController turnManeuverController_;
+  bool lastTurnSafetyReportValid_{false};
+  visual_navigation::CornerShuntSafetyReport lastTurnSafetyReport_;
 
   std::vector<Waypoint> waypoints_;
   std::size_t currentWaypointIndex_{0};
@@ -529,6 +537,8 @@ private:
   rclcpp::Publisher<mission_control_interfaces::msg::MotionHoldState>::SharedPtr
       motionHoldStatePublisher_;
   rclcpp::Publisher<std_msgs::msg::UInt64>::SharedPtr routeAckPublisher_;
+  rclcpp::Publisher<mission_control_interfaces::msg::NavigationRecoveryState>::SharedPtr
+      navigationRecoveryStatePublisher_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odomSubscription_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imuSubscription_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr

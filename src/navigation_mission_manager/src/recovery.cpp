@@ -6,6 +6,21 @@
 namespace navigation_mission_manager
 {
 
+void MissionManager::on_navigation_recovery_state(
+  const mission_control_interfaces::msg::NavigationRecoveryState::SharedPtr message)
+{
+  latest_navigation_recovery_ = *message;
+  RCLCPP_INFO(
+    get_logger(),
+    "收到控制器恢复锚点: valid=%s reason=%s route=%lu pose=(%.3f, %.3f)",
+    message->valid ? "true" : "false", message->reason.c_str(),
+    static_cast<unsigned long>(message->route_id),
+    message->safe_pose.pose.position.x, message->safe_pose.pose.position.y);
+  if (turn_replan_waiting_for_recovery_ && message->valid) {
+    handle_turn_replan();
+  }
+}
+
 void MissionManager::on_navigator_status(const std_msgs::msg::String::SharedPtr message)
 {
   const std::string status = message->data;
@@ -44,7 +59,7 @@ void MissionManager::on_navigator_status(const std_msgs::msg::String::SharedPtr 
     return;
   }
   if (status == "ROUTE_TRANSITION_REPLAN_REQUIRED") {
-    if (route_transition_recovery_active_ && awaiting_retreat_) {
+    if (route_transition_recovery_active_) {
       awaiting_retreat_ = false;
       schedule_plan(true);
     }
@@ -77,6 +92,13 @@ void MissionManager::on_navigator_status(const std_msgs::msg::String::SharedPtr 
     return;
   }
   if (status == "TURN_NEED_REPLAN") {
+    // A turn failure is recovered by the controller's executed-trace replay.
+    // Do not feed the in-turn pose into the planner or start a second recovery
+    // request while the replay is already active.
+    if (route_transition_recovery_active_ || awaiting_retreat_ || retreat_pending_) {
+      return;
+    }
+    turn_replan_waiting_for_recovery_ = true;
     handle_turn_replan();
     return;
   }
@@ -108,22 +130,29 @@ void MissionManager::handle_turn_replan()
   {
     return;
   }
-  const auto context = turn_recovery_context();
-  if (!context.has_value()) {
-    fault("路口恢复缺少有效的锚点或来向车道");
+  const uint64_t route_id = active_route_->route_id;
+  if (!latest_navigation_recovery_.has_value() ||
+    !latest_navigation_recovery_->valid ||
+    latest_navigation_recovery_->route_id != route_id)
+  {
+    RCLCPP_WARN(
+      get_logger(),
+      "路口恢复使用控制器执行轨迹回放；当前路线尚无有效安全锚点，继续等待");
     return;
   }
+
+  // The safe pose is evidence that the controller stopped after a validated
+  // turn command. It is deliberately not used as a planner start pose: the
+  // controller owns the reverse replay and closes the loop against its trace.
   clear_active_route();
-  next_planning_context_.start_mode =
-    new_map_planner::srv::PlanRoute::Request::START_MODE_TURN_RECOVERY;
-  next_planning_context_.recovery_anchor_node_id = context->first;
-  next_planning_context_.recovery_incoming_lane_id = context->second;
-  next_planning_context_.allow_reverse_departure = true;
-  schedule_plan(true);
-  set_state(
-    mission_control_interfaces::msg::MissionState::REPLANNING,
-    "路口动作无安全解，请求受限倒车恢复：锚点=" + context->first +
-    " 来向车道=" + context->second);
+  turn_replan_waiting_for_recovery_ = false;
+  route_transition_recovery_active_ = true;
+  retreat_extensions_ = 0;
+  // The controller starts replay before publishing TURN_NEED_REPLAN. Do not
+  // issue a second retreat request; wait for ROUTE_TRANSITION_REPLAN_REQUIRED.
+  RCLCPP_INFO(get_logger(),
+    "路口恢复已由控制器接管历史轨迹回放: route=%lu",
+    static_cast<unsigned long>(route_id));
 }
 
 std::optional<std::pair<std::string, std::string>>

@@ -25,6 +25,7 @@ def generate_launch_description():
     cmd_vel_topic = LaunchConfiguration("cmd_vel_topic")
     route_input_topic = LaunchConfiguration("route_input_topic")
     autostart = LaunchConfiguration("autostart")
+    use_sim_time = LaunchConfiguration("use_sim_time")
     enable_waypoint_navigation = LaunchConfiguration("enable_waypoint_navigation")
     serial_device = LaunchConfiguration("serial_device")
     serial_baud_rate = LaunchConfiguration("serial_baud_rate")
@@ -56,6 +57,7 @@ def generate_launch_description():
             "cmd_vel_topic": cmd_vel_topic,
             "route_input_topic": route_input_topic,
             "autostart": autostart,
+            "use_sim_time": use_sim_time,
             "enable_waypoint_navigation": enable_waypoint_navigation,
         }.items(),
     )
@@ -128,6 +130,7 @@ def generate_launch_description():
                 default_value="/waypoint_navigation/route_input",
             ),
             DeclareLaunchArgument("autostart", default_value="false"),
+            DeclareLaunchArgument("use_sim_time", default_value="false"),
             DeclareLaunchArgument("enable_waypoint_navigation", default_value="true"),
             DeclareLaunchArgument("serial_device", default_value="auto"),
             DeclareLaunchArgument("serial_baud_rate", default_value="115200"),

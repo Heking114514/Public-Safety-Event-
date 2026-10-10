@@ -74,6 +74,28 @@ void WaypointNavigator::PublishMotionHoldState() {
   motionHoldStatePublisher_->publish(message);
 }
 
+void WaypointNavigator::PublishNavigationRecoveryState(
+    const std::string &reason, const visual_navigation::CornerShuntPose &pose,
+    bool valid) {
+  mission_control_interfaces::msg::NavigationRecoveryState message;
+  message.header.stamp = now();
+  message.header.frame_id = routeFrame_;
+  message.valid = valid;
+  message.reason = reason;
+  message.route_id = activeRouteId_;
+  message.safe_pose.header = message.header;
+  message.safe_pose.pose.position.x = pose.x;
+  message.safe_pose.pose.position.y = pose.y;
+  message.safe_pose.pose.orientation = QuaternionFromYaw(pose.yaw);
+  navigationRecoveryStatePublisher_->publish(message);
+  RCLCPP_WARN(get_logger(),
+              "Navigation recovery anchor: valid=%s reason=%s route=%lu "
+              "pose=(%.3f, %.3f, %.1fdeg)",
+              valid ? "true" : "false", reason.c_str(),
+              static_cast<unsigned long>(activeRouteId_), pose.x, pose.y,
+              pose.yaw * 180.0 / kPi);
+}
+
 void WaypointNavigator::PublishState() {
   std_msgs::msg::String message;
   message.data = state_;

@@ -104,6 +104,12 @@ struct PlannerTopics {
   std::string occupancy_grid{"/new_map_planner/map"};
 };
 
+enum class StartMode : uint8_t {
+  NORMAL = 0,
+  TURN_RECOVERY = 1,
+  OBSTACLE_RECOVERY = 2,
+};
+
 struct PlannerConfig {
   std::string map_id{"official_arena_v1"};
   double width{0.0};
@@ -139,6 +145,10 @@ struct PlannerConfig {
 
 struct PlanRequest {
   Pose start_map;
+  StartMode start_mode{StartMode::NORMAL};
+  std::string recovery_anchor_node_id;
+  std::string recovery_incoming_lane_id;
+  bool allow_reverse_departure{false};
   std::string mode{"targets"};
   std::vector<std::string> target_ids;
   std::vector<std::string> required_lane_ids;
@@ -161,6 +171,9 @@ enum class PlanFailureReason : uint8_t {
   NO_FEASIBLE_ROUTE,
   COVERAGE_INCOMPLETE,
   ROUTE_INVALID,
+  RECOVERY_CONTEXT_INVALID,
+  RECOVERY_REVERSE_BLOCKED,
+  RECOVERY_CONTROLLER_OWNED,
 };
 
 const char *PlanFailureName(PlanFailureReason reason);
@@ -172,6 +185,7 @@ struct PlanResult {
   PlanFailureReason failure_reason{PlanFailureReason::NONE};
   std::string message;
   std::vector<Traversal> traversals;
+  bool recovery_only{false};
   std::vector<Maneuver> maneuvers;
   std::vector<Pose> arena_path;
   std::vector<Pose> navigation_path;

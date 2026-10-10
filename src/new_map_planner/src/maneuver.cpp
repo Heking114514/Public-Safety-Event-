@@ -1,13 +1,10 @@
 #include "new_map_planner/maneuver.hpp"
 
 #include "new_map_planner/geometry.hpp"
-#include "visual_navigation/corner_shunt.hpp"
 
-#include <chrono>
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
-#include <thread>
 
 namespace new_map_planner {
 namespace {
@@ -22,41 +19,6 @@ PlannerConfig TurnConfig(const PlannerConfig &config) {
   return turn_config;
 }
 
-visual_navigation::CornerShuntConfig
-ShuntConfig(const PlannerConfig &config, double road_width) {
-  visual_navigation::CornerShuntConfig shunt;
-  shunt.road_width = road_width;
-  shunt.road_margin = config.turn_safety_margin;
-  shunt.vehicle_length = config.vehicle_length;
-  shunt.vehicle_width = config.vehicle_width;
-  shunt.base_offset_x = config.base_link_offset_x;
-  shunt.max_plan_count = 20;
-  return shunt;
-}
-
-visual_navigation::CornerShuntPose
-Integrate(visual_navigation::CornerShuntPose pose,
-          const visual_navigation::CornerShuntTwist &command, double elapsed) {
-  if (std::abs(command.angular_z) <= 1.0e-6) {
-    pose.x += command.linear_x * elapsed * std::cos(pose.yaw);
-    pose.y += command.linear_x * elapsed * std::sin(pose.yaw);
-    return pose;
-  }
-  const double next_yaw = pose.yaw + command.angular_z * elapsed;
-  const double radius = command.linear_x / command.angular_z;
-  pose.x += radius * (std::sin(next_yaw) - std::sin(pose.yaw));
-  pose.y -= radius * (std::cos(next_yaw) - std::cos(pose.yaw));
-  pose.yaw = next_yaw;
-  return pose;
-}
-
-Pose BasePose(const visual_navigation::CornerShuntPose &axle,
-              double base_offset) {
-  return {{axle.x + base_offset * std::cos(axle.yaw),
-           axle.y + base_offset * std::sin(axle.yaw)},
-          NormalizeAngle(axle.yaw)};
-}
-
 std::vector<Pose> GenerateLocalTurnProfile(const PlannerConfig &config) {
   const auto narrowest = std::min_element(
       config.lanes.begin(), config.lanes.end(),
@@ -65,47 +27,24 @@ std::vector<Pose> GenerateLocalTurnProfile(const PlannerConfig &config) {
       });
   if (narrowest == config.lanes.end())
     return {};
-  const auto shunt = ShuntConfig(config, narrowest->width);
-  visual_navigation::CornerShuntController controller(shunt);
-  visual_navigation::CornerShuntContext context;
-  context.pose = {-0.050, 0.0, 0.0};
-  context.junction_x = 0.0;
-  context.junction_y = 0.0;
-  context.geometry_heading = 0.0;
-  context.arrival_heading = 0.0;
-  context.target_heading = 0.5 * 3.14159265358979323846;
-
   std::vector<Pose> profile;
-  profile.push_back({{context.pose.x, context.pose.y}, context.pose.yaw});
-  controller.begin(0.0);
-  double now = 0.0;
-  const double step = 1.0 / shunt.control_frequency;
-  for (int iteration = 0; iteration < 1800; ++iteration) {
-    const auto decision = controller.update(context, now);
-    if (decision.complete)
-      return profile;
-    if (decision.blocked)
-      return {};
-    if (decision.phase == visual_navigation::CornerShuntPhase::CHECK)
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    if (decision.phase == visual_navigation::CornerShuntPhase::STOP ||
-        decision.phase == visual_navigation::CornerShuntPhase::CHECK) {
-      context.applied_twist = {};
-    } else {
-      context.applied_twist.linear_x = visual_navigation::LimitRate(
-          decision.command.linear_x, context.applied_twist.linear_x,
-          shunt.linear_acceleration, shunt.linear_deceleration, step);
-      context.applied_twist.angular_z = visual_navigation::LimitRate(
-          decision.command.angular_z, context.applied_twist.angular_z,
-          shunt.angular_acceleration, shunt.angular_deceleration, step);
-      context.pose = Integrate(context.pose, context.applied_twist, step);
-    }
-    if (!controller.pose_is_safe(context, context.pose))
-      return {};
-    profile.push_back({{context.pose.x, context.pose.y}, context.pose.yaw});
-    now += step;
+  // This is a route-level geometry sweep. It deliberately models only the
+  // road connection; velocity control and short-horizon safety remain in
+  // navigation controller. Keep the sweep inside the junction so every lane
+  // transition is checked against the same static footprint.
+  const double approach = std::max(0.075, 0.40 * narrowest->width);
+  const int samples = 36;
+  // A tangent quarter-circle keeps the body heading aligned with its path;
+  // unlike an in-place rotation, it does not sweep the inner chassis corner
+  // outside the road envelope.
+  for (int index = 0; index <= samples; ++index) {
+    const double ratio = static_cast<double>(index) / samples;
+    const double angle = ratio * 0.5 * kPi;
+    profile.push_back({{-approach + approach * std::sin(angle),
+                        approach * (1.0 - std::cos(angle))},
+                       angle});
   }
-  return {};
+  return profile;
 }
 
 } // namespace
@@ -210,6 +149,22 @@ Maneuver ManeuverLibrary::make_start_turn(
   Maneuver maneuver;
   maneuver.type = ManeuverType::START_ALIGN;
   maneuver.node_id = config_.nodes[node].id;
+  // Initial turns are compiled before a directed incoming lane exists in the
+  // traversal list. Preserve the lane metadata so route-level recovery can
+  // identify the road to retrace.
+  for (const auto &lane : config_.lanes) {
+    if (lane.to != node || lane.from < 0 || lane.from >=
+        static_cast<int>(config_.nodes.size())) {
+      continue;
+    }
+    const auto &from = config_.nodes[static_cast<std::size_t>(lane.from)].position;
+    const auto &to = config_.nodes[static_cast<std::size_t>(lane.to)].position;
+    if (CardinalHeading(std::atan2(to.y - from.y, to.x - from.x)) ==
+        incoming_heading) {
+      maneuver.incoming_lane_id = lane.id;
+      break;
+    }
+  }
   maneuver.outgoing_lane_id = config_.lanes[outgoing.lane].id;
   const std::vector<Pose> profile =
       turn_sweep(node, incoming_heading, outgoing.heading);
@@ -231,68 +186,31 @@ Maneuver ManeuverLibrary::make_reverse_arrival_turn(
     throw std::runtime_error("invalid reverse-arrival turn request");
   }
 
-  const auto shunt =
-      ShuntConfig(config_, config_.lanes[outgoing.lane].width);
-  visual_navigation::CornerShuntController controller(shunt);
-
-  const Point &junction =
-      config_.nodes[static_cast<std::size_t>(node)].position;
-  const double incoming_yaw = HeadingYaw(incoming_motion_heading);
-  visual_navigation::CornerShuntContext context;
-  context.pose = {junction.x + 0.005 * std::cos(incoming_yaw),
-                  junction.y + 0.005 * std::sin(incoming_yaw),
-                  HeadingYaw(vehicle_heading)};
-  context.junction_x = junction.x;
-  context.junction_y = junction.y;
-  context.geometry_heading = incoming_yaw;
-  context.arrival_heading = HeadingYaw(vehicle_heading);
-  context.target_heading = HeadingYaw(outgoing.heading);
-  context.reverse_arrival = true;
-
-  std::vector<Pose> sweep;
-  sweep.push_back(BasePose(context.pose, config_.base_link_offset_x));
-  controller.begin(0.0);
-  double now = 0.0;
-  const double step = 1.0 / shunt.control_frequency;
-  for (int iteration = 0; iteration < 1800; ++iteration) {
-    const auto decision = controller.update(context, now);
-    if (decision.complete)
-      break;
-    if (decision.blocked)
-      sweep.clear();
-    if (decision.complete || decision.blocked)
-      break;
-    if (decision.phase == visual_navigation::CornerShuntPhase::CHECK)
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    if (decision.phase == visual_navigation::CornerShuntPhase::STOP ||
-        decision.phase == visual_navigation::CornerShuntPhase::CHECK) {
-      context.applied_twist = {};
-    } else {
-      context.applied_twist.linear_x = visual_navigation::LimitRate(
-          decision.command.linear_x, context.applied_twist.linear_x,
-          shunt.linear_acceleration, shunt.linear_deceleration, step);
-      context.applied_twist.angular_z = visual_navigation::LimitRate(
-          decision.command.angular_z, context.applied_twist.angular_z,
-          shunt.angular_acceleration, shunt.angular_deceleration, step);
-      context.pose = Integrate(context.pose, context.applied_twist, step);
-    }
-    const Pose base = BasePose(context.pose, config_.base_link_offset_x);
-    if (!controller.pose_is_safe(context, context.pose) ||
-        !collision_.pose_is_free(base, dynamic_obstacles)) {
-      sweep.clear();
-      break;
-    }
-    sweep.push_back(base);
-    now += step;
+  const int turn = TurnQuarterSteps(incoming_motion_heading, outgoing.heading);
+  if (turn != 1 && turn != -1) {
+    throw std::runtime_error(
+        "requested reverse-arrival turn has no collision-free maneuver");
   }
-  if (sweep.empty() || std::abs(NormalizeAngle(sweep.back().yaw -
-                                               HeadingYaw(outgoing.heading))) >
-                           shunt.target_yaw_tolerance) {
+  std::vector<Pose> sweep = turn_sweep(node, incoming_motion_heading,
+                                       outgoing.heading);
+  if (!sweep.empty()) {
+    const double start_yaw = HeadingYaw(vehicle_heading);
+    const double yaw_delta = NormalizeAngle(HeadingYaw(outgoing.heading) -
+                                            start_yaw);
+    for (std::size_t index = 0; index < sweep.size(); ++index) {
+      const double ratio = sweep.size() <= 1
+                               ? 1.0
+                               : static_cast<double>(index) /
+                                     static_cast<double>(sweep.size() - 1);
+      sweep[index].yaw = NormalizeAngle(start_yaw + yaw_delta * ratio);
+    }
+  }
+  if (sweep.empty() ||
+      !collision_.sweep_is_free(sweep, dynamic_obstacles)) {
     throw std::runtime_error(
         "requested reverse-arrival turn has no collision-free maneuver");
   }
 
-  const int turn = TurnQuarterSteps(incoming_motion_heading, outgoing.heading);
   Maneuver maneuver;
   maneuver.type = turn > 0 ? ManeuverType::TURN_LEFT : ManeuverType::TURN_RIGHT;
   maneuver.node_id = config_.nodes[static_cast<std::size_t>(node)].id;
