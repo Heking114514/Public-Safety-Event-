@@ -29,6 +29,7 @@ void MissionManager::start_mission(const std::vector<std::string> & targets)
   clear_active_route();
   clear_obstacle_recovery();
   completed_route_retreat_available_ = false;
+  next_planning_context_ = PlanningContext{};
   completed_stages_ = 0;
   ordinary_nodes_since_task_ = 1;
   plan_retries_ = 0;
@@ -54,6 +55,7 @@ void MissionManager::abort_mission()
   clear_active_route();
   clear_obstacle_recovery();
   completed_route_retreat_available_ = false;
+  next_planning_context_ = PlanningContext{};
   request_hold("operator", true, "mission aborted");
   set_state(mission_control_interfaces::msg::MissionState::IDLE, "任务已终止，车辆保持驻停");
 }
@@ -75,6 +77,7 @@ void MissionManager::reset_mission()
   clear_active_route();
   clear_obstacle_recovery();
   completed_route_retreat_available_ = false;
+  next_planning_context_ = PlanningContext{};
   request_hold("operator", true, "mission reset");
   set_state(mission_control_interfaces::msg::MissionState::IDLE, "任务状态已复位，车辆保持驻停");
 }
@@ -119,6 +122,12 @@ void MissionManager::request_plan()
   }
   auto request = std::make_shared<new_map_planner::srv::PlanRoute::Request>();
   request->start = pose_message();
+  const PlanningContext context = next_planning_context_;
+  request->start_mode = context.start_mode;
+  request->recovery_anchor_node_id = context.recovery_anchor_node_id;
+  request->incoming_lane_id = context.recovery_incoming_lane_id;
+  request->allow_reverse_departure = context.allow_reverse_departure;
+  next_planning_context_ = PlanningContext{};
   request->mode = spec.mode;
   request->target_ids = spec.target_ids;
   request->required_lane_ids = spec.required_lane_ids;
@@ -135,9 +144,9 @@ void MissionManager::request_plan()
   pending_plan_generation_ = generation;
   planner_client_->async_send_request(
     request,
-    [this, generation, spec](
+    [this, generation, spec, context](
       rclcpp::Client<new_map_planner::srv::PlanRoute>::SharedFuture future) {
-      on_plan_response(generation, spec, future);
+      on_plan_response(generation, spec, context, future);
     });
   set_state(
     replanning_ ? mission_control_interfaces::msg::MissionState::REPLANNING :
@@ -147,6 +156,7 @@ void MissionManager::request_plan()
 
 void MissionManager::on_plan_response(
   uint64_t generation, const PlanSpec & spec,
+  const PlanningContext & context,
   rclcpp::Client<new_map_planner::srv::PlanRoute>::SharedFuture future)
 {
   if (generation != plan_generation_) {
@@ -162,15 +172,38 @@ void MissionManager::on_plan_response(
   try {
     response = future.get();
   } catch (const std::exception & error) {
+    if (context.start_mode ==
+      new_map_planner::srv::PlanRoute::Request::START_MODE_TURN_RECOVERY)
+    {
+      fault(std::string("转弯恢复规划服务调用失败：") + error.what());
+      return;
+    }
     plan_failed(std::string("规划服务调用失败：") + error.what());
     return;
   }
   if (!response->success) {
+    if (context.start_mode ==
+      new_map_planner::srv::PlanRoute::Request::START_MODE_TURN_RECOVERY)
+    {
+      fault("转弯恢复规划失败：" + response->message);
+      return;
+    }
     handle_plan_rejection("规划失败：" + response->message);
     return;
   }
   const auto & plan = response->plan;
+  const bool recovery_request = context.start_mode ==
+    new_map_planner::srv::PlanRoute::Request::START_MODE_TURN_RECOVERY;
+  if (recovery_request != plan.recovery_only) {
+    handle_plan_rejection(recovery_request ?
+      "恢复请求返回了普通路线" : "普通请求返回了恢复路线");
+    return;
+  }
   if (plan.navigation_path.poses.empty()) {
+    if (recovery_request) {
+      fault("转弯恢复规划没有可执行倒车路线");
+      return;
+    }
     if (plan.complete && spec.mode == "layer3") {
       try {
         mission_->commit_empty(spec, true);
@@ -201,7 +234,7 @@ void MissionManager::on_plan_response(
       return;
     }
   }
-  if (!spec.has_progress(plan.visit_order, plan.covered_lane_ids)) {
+  if (!plan.recovery_only && !spec.has_progress(plan.visit_order, plan.covered_lane_ids)) {
     handle_plan_rejection("规划结果没有新增当前阶段进度");
     return;
   }
@@ -264,6 +297,12 @@ void MissionManager::handle_goal_reached()
     return;
   }
   const ActiveRoute route = *active_route_;
+  if (route.plan.recovery_only) {
+    clear_active_route();
+    next_planning_context_ = PlanningContext{};
+    schedule_plan(true);
+    return;
+  }
   const std::string previous_stage = route.spec.mode;
   const std::vector<std::string> confirmed = task_confirmation_mode_ == "route" ?
     route.plan.visit_order :
@@ -330,6 +369,7 @@ void MissionManager::fault(const std::string & message)
   clear_active_route();
   clear_obstacle_recovery();
   completed_route_retreat_available_ = false;
+  next_planning_context_ = PlanningContext{};
   cancel_report();
   request_hold("fault", true, message);
   set_state(mission_control_interfaces::msg::MissionState::FAULT, message);

@@ -104,6 +104,12 @@ struct PlannerTopics {
   std::string occupancy_grid{"/new_map_planner/map"};
 };
 
+enum class StartMode : uint8_t {
+  NORMAL = 0,
+  TURN_RECOVERY = 1,
+  OBSTACLE_RECOVERY = 2,
+};
+
 struct PlannerConfig {
   std::string map_id{"official_arena_v1"};
   double width{0.0};
@@ -112,6 +118,7 @@ struct PlannerConfig {
   double vehicle_length{0.0};
   double vehicle_width{0.0};
   double base_link_offset_x{0.0};
+  double base_link_offset_y{0.0};
   double footprint_center_offset_x{0.0};
   double safety_margin{0.0};
   double turn_safety_margin{0.0};
@@ -119,8 +126,6 @@ struct PlannerConfig {
   double node_capture_distance{0.005};
   double start_heading_tolerance{0.45};
   double turn_cost{0.35};
-  double reverse_cost{0.20};
-  double u_turn_threshold{2.6};
   double collision_sample_step{0.01};
   bool publish_shunt_markers{false};
   bool require_return_home{true};
@@ -139,6 +144,10 @@ struct PlannerConfig {
 
 struct PlanRequest {
   Pose start_map;
+  StartMode start_mode{StartMode::NORMAL};
+  std::string recovery_anchor_node_id;
+  std::string recovery_incoming_lane_id;
+  bool allow_reverse_departure{false};
   std::string mode{"targets"};
   std::vector<std::string> target_ids;
   std::vector<std::string> required_lane_ids;
@@ -161,6 +170,9 @@ enum class PlanFailureReason : uint8_t {
   NO_FEASIBLE_ROUTE,
   COVERAGE_INCOMPLETE,
   ROUTE_INVALID,
+  RECOVERY_CONTEXT_INVALID,
+  RECOVERY_REVERSE_BLOCKED,
+  RECOVERY_CONTROLLER_OWNED,
 };
 
 const char *PlanFailureName(PlanFailureReason reason);
@@ -172,11 +184,14 @@ struct PlanResult {
   PlanFailureReason failure_reason{PlanFailureReason::NONE};
   std::string message;
   std::vector<Traversal> traversals;
+  bool recovery_only{false};
   std::vector<Maneuver> maneuvers;
   std::vector<Pose> arena_path;
   std::vector<Pose> navigation_path;
   std::vector<bool> turn_waypoints;
   std::vector<bool> reverse_arrival_turn_waypoints;
+  // True means the segment starting at this waypoint must be driven in reverse.
+  std::vector<bool> reverse_waypoints;
   std::vector<std::string> waypoint_supernode_ids;
   std::vector<std::string> visit_order;
   std::vector<std::string> covered_lane_ids;

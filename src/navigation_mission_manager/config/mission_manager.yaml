@@ -26,6 +26,8 @@ navigation_mission_manager:
     correct_map_position_service: /fused_odometry/correct_map_position
     confirm_rfid_checkpoint_service: /waypoint_navigator/confirm_rfid_checkpoint
     speech_text_topic: /navigation_mission/speech_text
+    insight_topic: /insight
+    safe_topic: /safe
     public_motion_hold_service: /navigation_mission/set_motion_hold
     public_continue_retreat_service: /navigation_mission/continue_obstacle_retreat
     public_service_timeout_s: 2.0

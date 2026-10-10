@@ -572,6 +572,7 @@ build_ros_packages() {
   local packages=(
     vehicle_config
     mission_control_interfaces
+    navigation_safety
     imu_rpy_filter
     wheel_odometry
     visual_navigation

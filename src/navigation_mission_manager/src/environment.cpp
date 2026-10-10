@@ -2,9 +2,163 @@
 
 #include <algorithm>
 #include <cmath>
+#include <regex>
 
 namespace navigation_mission_manager
 {
+namespace
+{
+
+bool json_bool(const std::string & json, const std::string & key, bool fallback)
+{
+  std::smatch match;
+  if (std::regex_search(
+      json, match, std::regex("\\\"" + key + "\\\"\\s*:\\s*(true|false)")))
+  {
+    return match[1].str() == "true";
+  }
+  return fallback;
+}
+
+double json_number(const std::string & json, const std::string & key, double fallback)
+{
+  std::smatch match;
+  if (std::regex_search(
+      json, match, std::regex(
+        "\\\"" + key + "\\\"\\s*:\\s*(-?[0-9]+(?:\\.[0-9]+)?)")))
+  {
+    return std::stod(match[1].str());
+  }
+  return fallback;
+}
+
+std::string json_string(const std::string & json, const std::string & key)
+{
+  std::smatch match;
+  if (std::regex_search(
+      json, match, std::regex("\\\"" + key + "\\\"\\s*:\\s*\\\"([^\\\"]*)\\\"")))
+  {
+    return match[1].str();
+  }
+  return {};
+}
+
+std::vector<std::string> json_targets(const std::string & json)
+{
+  const auto start = json.find("\"targets\"");
+  if (start == std::string::npos) {
+    return {};
+  }
+  const auto open = json.find('[', start);
+  const auto close = json.find(']', open);
+  if (open == std::string::npos || close == std::string::npos) {
+    return {};
+  }
+  const std::string values = json.substr(open + 1U, close - open - 1U);
+  std::vector<std::string> targets;
+  const std::regex item("\\\"([^\\\"]+)\\\"");
+  for (std::sregex_iterator iterator(values.begin(), values.end(), item), end;
+    iterator != end; ++iterator)
+  {
+    const auto value = (*iterator)[1].str();
+    if (std::find(targets.begin(), targets.end(), value) == targets.end()) {
+      targets.push_back(value);
+    }
+  }
+  return targets;
+}
+
+std::string target_announcement(const std::string & target)
+{
+  if (target.size() < 2U || (target.front() != 'f' && target.front() != 'k')) {
+    return {};
+  }
+  const auto number = target.substr(1U);
+  if (number.empty() || number.find_first_not_of("0123456789") != std::string::npos) {
+    return {};
+  }
+  return target.front() == 'k' ? "发现" + number + "号刀具" : "发现" + number + "号嫌疑人";
+}
+
+}  // namespace
+
+void MissionManager::on_insight(const std_msgs::msg::String::SharedPtr message)
+{
+  const auto targets = json_targets(message->data);
+  const bool detected = json_bool(message->data, "target_detected", !targets.empty());
+  if (!detected || targets.empty()) {
+    visual_announced_targets_.clear();
+    return;
+  }
+  for (const auto & target : targets) {
+    const auto text = target_announcement(target);
+    if (text.empty() || !visual_announced_targets_.insert(target).second) {
+      continue;
+    }
+    enqueue_speech_text(text, false);
+    RCLCPP_INFO(get_logger(), "Insight target queued: %s", text.c_str());
+  }
+}
+
+void MissionManager::on_safe(const std_msgs::msg::String::SharedPtr message)
+{
+  const auto status = json_string(message->data, "status");
+  const bool obstacle = json_bool(
+    message->data, "obstacle",
+    json_bool(message->data, "obstacle_detected", status == "obstacle"));
+  double distance = json_number(message->data, "distance_m", -1.0);
+  if (distance < 0.0) {
+    const double centimeters = json_number(message->data, "distance_cm", -1.0);
+    const double legacy_centimeters = json_number(
+      message->data, "obstacle_distance_cm", -1.0);
+    const double selected_centimeters = centimeters > 0.0 ? centimeters : legacy_centimeters;
+    distance = selected_centimeters > 0.0 ? selected_centimeters * 0.01 : -1.0;
+  }
+
+  std_msgs::msg::Bool blocked;
+  blocked.data = obstacle;
+  // Update the manager before publishing the controller-facing message. The
+  // manager also listens to the legacy obstacle topic for physical sensors;
+  // setting this state first makes its own adapter output idempotent and
+  // prevents a self-published rising edge from starting a second recovery.
+  front_blocked_ = obstacle;
+  if (!obstacle || distance <= 0.0 || !std::isfinite(distance)) {
+    latest_range_.reset();
+    visual_blocked_publisher_->publish(blocked);
+    return;
+  }
+  latest_range_ = std::make_pair(distance, steady_seconds());
+  record_visual_obstacle(distance);
+
+  visual_blocked_publisher_->publish(blocked);
+  sensor_msgs::msg::Range range;
+  range.header.stamp = now();
+  range.header.frame_id = "base_link";
+  range.radiation_type = sensor_msgs::msg::Range::ULTRASOUND;
+  range.min_range = 0.05F;
+  range.max_range = 10.0F;
+  range.range = static_cast<float>(distance);
+  visual_range_publisher_->publish(range);
+}
+
+void MissionManager::record_visual_obstacle(double distance)
+{
+  if (!pose_.has_value() || !pose_->fresh(odom_timeout_s_)) {
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 2000,
+      "Visual obstacle received without a fresh map/base_link pose");
+    return;
+  }
+  try {
+    const auto polygon = front_obstacle_polygon(
+      Pose2d{pose_->x, pose_->y, pose_->yaw}, distance,
+      obstacle_sensor_forward_offset_m_, obstacle_width_m_, obstacle_depth_m_);
+    pending_obstacle_ = std::make_pair(polygon, steady_seconds());
+  } catch (const std::invalid_argument &) {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+      "Ignoring invalid visual obstacle distance %.3f m", distance);
+  }
+}
 
 void MissionManager::on_odometry(const nav_msgs::msg::Odometry::SharedPtr message)
 {

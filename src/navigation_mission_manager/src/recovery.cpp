@@ -1,5 +1,6 @@
 #include "navigation_mission_manager/manager.hpp"
 
+#include <cmath>
 #include <set>
 
 namespace navigation_mission_manager
@@ -102,18 +103,61 @@ void MissionManager::on_navigator_status(const std_msgs::msg::String::SharedPtr 
 
 void MissionManager::handle_turn_replan()
 {
-  // A junction maneuver can be geometrically infeasible without any obstacle.
-  // Replace the route from the measured pose; do not enter obstacle recovery.
   if (!mission_->running() || !active_route_.has_value() ||
     !active_route_->acknowledged || planning_pending_ || plan_due_at_.has_value())
   {
     return;
   }
+  const auto context = turn_recovery_context();
+  if (!context.has_value()) {
+    fault("路口恢复缺少有效的锚点或来向车道");
+    return;
+  }
   clear_active_route();
+  next_planning_context_.start_mode =
+    new_map_planner::srv::PlanRoute::Request::START_MODE_TURN_RECOVERY;
+  next_planning_context_.recovery_anchor_node_id = context->first;
+  next_planning_context_.recovery_incoming_lane_id = context->second;
+  next_planning_context_.allow_reverse_departure = true;
   schedule_plan(true);
   set_state(
     mission_control_interfaces::msg::MissionState::REPLANNING,
-    "路口动作无安全解，按当前位姿重新规划");
+    "路口动作无安全解，请求受限倒车恢复：锚点=" + context->first +
+    " 来向车道=" + context->second);
+}
+
+std::optional<std::pair<std::string, std::string>>
+MissionManager::turn_recovery_context() const
+{
+  if (!pose_.has_value() || !pose_->fresh(odom_timeout_s_) ||
+    !active_route_.has_value())
+  {
+    return std::nullopt;
+  }
+  constexpr double kMaximumRecoveryContextDistance = 0.35;
+  double best_distance = kMaximumRecoveryContextDistance;
+  std::optional<std::pair<std::string, std::string>> result;
+  for (const auto & maneuver : active_route_->plan.maneuvers) {
+    if (maneuver.type != new_map_planner::msg::Maneuver::TURN_LEFT &&
+      maneuver.type != new_map_planner::msg::Maneuver::TURN_RIGHT &&
+      maneuver.type != new_map_planner::msg::Maneuver::START_ALIGN)
+    {
+      continue;
+    }
+    if (maneuver.node_id.empty() || maneuver.incoming_lane_id.empty()) {
+      continue;
+    }
+    const auto distance_to = [this](const geometry_msgs::msg::Pose & pose) {
+        return std::hypot(pose_->x - pose.position.x, pose_->y - pose.position.y);
+      };
+    const double distance = std::min(
+      distance_to(maneuver.start_pose), distance_to(maneuver.end_pose));
+    if (distance < best_distance) {
+      best_distance = distance;
+      result = std::make_pair(maneuver.node_id, maneuver.incoming_lane_id);
+    }
+  }
+  return result;
 }
 
 void MissionManager::handle_obstacle_replan()

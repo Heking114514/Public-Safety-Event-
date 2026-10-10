@@ -19,11 +19,13 @@ RouteCompiler::RouteCompiler(const PlannerConfig &config,
 bool RouteCompiler::compile(const Pose &start_arena,
                             const std::vector<Traversal> &traversals,
                             const std::vector<Polygon> &dynamic_obstacles,
-                            PlanResult &result) const {
+                            PlanResult &result,
+                            bool allow_initial_recovery_reverse) const {
   result.arena_path.clear();
   result.navigation_path.clear();
   result.turn_waypoints.clear();
   result.reverse_arrival_turn_waypoints.clear();
+  result.reverse_waypoints.clear();
   result.waypoint_supernode_ids.clear();
   result.maneuvers.clear();
   result.length = 0.0;
@@ -40,20 +42,28 @@ bool RouteCompiler::compile(const Pose &start_arena,
   result.arena_path.push_back(start_arena);
   result.turn_waypoints.push_back(false);
   result.reverse_arrival_turn_waypoints.push_back(false);
+  result.reverse_waypoints.push_back(false);
   result.waypoint_supernode_ids.emplace_back();
   int vehicle_heading = CardinalHeading(start_arena.yaw);
   int current_lane = -1;
   for (std::size_t index = 0; index < traversals.size(); ++index) {
     const Traversal &traversal = traversals[index];
+    // The marker belongs to the start waypoint: the navigator reads it when
+    // opening the segment, before issuing the first motion command.
+    result.reverse_waypoints.back() = traversal.reverse;
     const bool initial_partial =
         index == 0 && traversal.partial && traversal.directed_lane < 0;
     const double segment_heading =
         initial_partial ? start_arena.yaw
                         : std::atan2(traversal.end.y - traversal.start.y,
                                      traversal.end.x - traversal.start.x);
+    const bool initial_recovery_reverse =
+        allow_initial_recovery_reverse && index == 0 && traversal.reverse;
+    const double collision_heading =
+        initial_recovery_reverse ? start_arena.yaw : segment_heading;
     if (Distance(traversal.start, traversal.end) <= 1.0e-6 ||
         !collision_.segment_is_free(traversal.start, traversal.end,
-                                    segment_heading, dynamic_obstacles)) {
+                                    collision_heading, dynamic_obstacles)) {
       result.message = "route contains a blocked drive segment";
       return false;
     }
@@ -87,10 +97,18 @@ bool RouteCompiler::compile(const Pose &start_arena,
       const bool same_lane_reverse =
           current_lane >= 0 && traversal.directed_lane >= 0 &&
           graph_.directed_lane(traversal.directed_lane).lane == current_lane;
+      const bool recovery_initial_reverse =
+          allow_initial_recovery_reverse && initial_reverse &&
+          traversal.directed_lane >= 0 &&
+          Distance(traversal.start,
+                   config_.nodes[graph_.directed_lane(
+                       traversal.directed_lane).from].position) <=
+              config_.lane_snap_distance;
       if (traversal.directed_lane < 0 ||
           (!initial_reverse && !same_lane_reverse) ||
           next_vehicle_heading != vehicle_heading ||
           (initial_reverse &&
+           !recovery_initial_reverse &&
            Distance(traversal.start,
                     config_.nodes[graph_.directed_lane(
                         traversal.directed_lane).from].position) > 1.0e-6)) {
@@ -145,10 +163,30 @@ bool RouteCompiler::compile(const Pose &start_arena,
               "route requests an initial turn away from a junction";
           return false;
         }
+        const DirectedLane *incoming = nullptr;
+        for (const DirectedLane &candidate : graph_.graph().directed_lanes) {
+          if (candidate.to == outgoing.from &&
+              candidate.heading == vehicle_heading) {
+            incoming = &candidate;
+            break;
+          }
+        }
+        if (incoming == nullptr) {
+          result.message =
+              "initial turn has no recoverable incoming road";
+          return false;
+        }
         try {
-          result.maneuvers.push_back(maneuvers_.make_start_turn(
-              outgoing.from, vehicle_heading, outgoing, dynamic_obstacles));
+          Maneuver maneuver = maneuvers_.make_start_turn(
+              outgoing.from, vehicle_heading, outgoing, dynamic_obstacles);
+          maneuver.incoming_lane_id = config_.lanes[incoming->lane].id;
+          result.maneuvers.push_back(std::move(maneuver));
           result.turn_waypoints.back() = true;
+          // The turn marker carries the incoming road geometry.  The
+          // requested start pose may have a small real-world yaw residual;
+          // that residual belongs to the navigator's arrival heading, not to
+          // the map frame used for footprint checks.
+          result.arena_path.back().yaw = HeadingYaw(vehicle_heading);
         } catch (const std::runtime_error &exception) {
           result.message = exception.what();
           return false;
@@ -179,6 +217,7 @@ bool RouteCompiler::compile(const Pose &start_arena,
       result.arena_path.push_back({traversal.start, yaw});
       result.turn_waypoints.push_back(false);
       result.reverse_arrival_turn_waypoints.push_back(false);
+      result.reverse_waypoints.push_back(false);
       result.waypoint_supernode_ids.emplace_back();
     }
     if (!result.turn_waypoints.back()) {
@@ -187,6 +226,7 @@ bool RouteCompiler::compile(const Pose &start_arena,
     result.arena_path.push_back({traversal.end, yaw});
     result.turn_waypoints.push_back(false);
     result.reverse_arrival_turn_waypoints.push_back(false);
+    result.reverse_waypoints.push_back(false);
     const auto supernode = traversal.directed_lane >= 0 ?
       config_.rfid_supernodes.find(graph_.directed_lane(traversal.directed_lane).to) :
       config_.rfid_supernodes.end();
@@ -216,6 +256,10 @@ bool RouteCompiler::compile(const Pose &start_arena,
       result.arena_path.size()) {
     result.message =
         "compiled reverse-arrival metadata does not match the path";
+    return false;
+  }
+  if (result.reverse_waypoints.size() != result.arena_path.size()) {
+    result.message = "compiled reverse metadata does not match the path";
     return false;
   }
   if (result.waypoint_supernode_ids.size() != result.arena_path.size()) {

@@ -82,6 +82,13 @@ loopback 显式使用 `task_confirmation_mode: route`，在路线已 ACK、实�
 申请 `navigation_mission_manager/speech` 驻停，调用 `/cup_car_serial/speak_text` 下发给
 下位机，播报完成后驻停 3 秒再释放；RFID 播报使用同一个下发链路。
 
+总控直接订阅视觉识别模块的 `/insight` 和 `/safe` 两个 `std_msgs/String` 话题。`/insight`
+中的 `targets` 按原顺序转换为“发现N号刀具”或“发现N号嫌疑人”，进入同一条播报队列；
+连续帧中的同一目标只入队一次，目标列表清空后允许再次播报。识别结果播报只调用串口语音 service，
+不由总控新增驻停；识别模块原有的 `inspection` 驻停申请保持不变。`/safe` 中的障碍状态和距离由总控直接记录，并向控制器转发现有
+`/obstacle/front_blocked`、`/obstacle/front_range` 消息；距离沿当前融合位姿投影为总控内部的地图障碍，复用原有避障重规划链路。
+视觉话题没有发布者时，总控保持原有行为。
+
 其他节点需要控制车辆驻停或请求障碍倒退时，应调用总控入口：
 `/navigation_mission/set_motion_hold` 和
 `/navigation_mission/continue_obstacle_retreat`。总控会校验外部来源并转发给导航器，

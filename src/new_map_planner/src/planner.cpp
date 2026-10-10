@@ -40,6 +40,12 @@ const char *PlanFailureName(PlanFailureReason reason) {
     return "COVERAGE_INCOMPLETE";
   case PlanFailureReason::ROUTE_INVALID:
     return "ROUTE_INVALID";
+  case PlanFailureReason::RECOVERY_CONTEXT_INVALID:
+    return "RECOVERY_CONTEXT_INVALID";
+  case PlanFailureReason::RECOVERY_REVERSE_BLOCKED:
+    return "RECOVERY_REVERSE_BLOCKED";
+  case PlanFailureReason::RECOVERY_CONTROLLER_OWNED:
+    return "RECOVERY_CONTROLLER_OWNED";
   }
   return "UNKNOWN";
 }
@@ -104,6 +110,12 @@ const char *StartFailureMessage(PlanFailureReason reason) {
     return "start forward connection is blocked";
   case PlanFailureReason::START_REQUIRES_REVERSE:
     return "start connection requires recovery reverse";
+  case PlanFailureReason::RECOVERY_CONTEXT_INVALID:
+    return "recovery context is incomplete or inconsistent";
+  case PlanFailureReason::RECOVERY_REVERSE_BLOCKED:
+    return "recovery reverse segment is blocked";
+  case PlanFailureReason::RECOVERY_CONTROLLER_OWNED:
+    return "recovery remains owned by the motion controller";
   default:
     return "start pose has no valid forward road anchor";
   }
@@ -242,17 +254,9 @@ MapPlanner::start_seeds(const Pose &start,
 }
 
 PlanResult MapPlanner::plan(const PlanRequest &request) const {
-  ResolvedPlanRequest resolved;
-  try {
-    resolved = ResolvePlanRequest(request, config_);
-  } catch (const std::invalid_argument &exception) {
-    PlanResult invalid;
-    SetFailure(invalid, PlanFailureReason::INVALID_REQUEST, exception.what());
-    return invalid;
-  }
-  const Pose start = MapToArena(resolved.request.start_map, config_.transform);
+  const Pose start = MapToArena(request.start_map, config_.transform);
   std::vector<Polygon> obstacles;
-  obstacles.reserve(resolved.request.dynamic_obstacles_map.size());
+  obstacles.reserve(request.dynamic_obstacles_map.size());
   for (const Polygon &polygon : request.dynamic_obstacles_map) {
     if (polygon.points.size() < 3) {
       PlanResult invalid;
@@ -261,6 +265,25 @@ PlanResult MapPlanner::plan(const PlanRequest &request) const {
       return invalid;
     }
     obstacles.push_back(MapToArena(polygon, config_.transform));
+  }
+  if (request.start_mode == StartMode::OBSTACLE_RECOVERY) {
+    PlanResult delegated;
+    delegated.recovery_only = true;
+    SetFailure(delegated, PlanFailureReason::RECOVERY_CONTROLLER_OWNED,
+               "obstacle recovery remains controller-owned; replay the "
+               "verified history before requesting a normal plan");
+    return delegated;
+  }
+  if (request.start_mode == StartMode::TURN_RECOVERY) {
+    return plan_turn_recovery(request, start, obstacles);
+  }
+  ResolvedPlanRequest resolved;
+  try {
+    resolved = ResolvePlanRequest(request, config_);
+  } catch (const std::invalid_argument &exception) {
+    PlanResult invalid;
+    SetFailure(invalid, PlanFailureReason::INVALID_REQUEST, exception.what());
+    return invalid;
   }
   if (resolved.request.mode == "targets") {
     if (resolved.sequential_targets && resolved.request.allow_partial &&
@@ -288,6 +311,96 @@ PlanResult MapPlanner::plan(const PlanRequest &request) const {
   }
   return plan_coverage(resolved.request, start, obstacles,
                        resolved.allow_tunnel_connectors);
+}
+
+PlanResult MapPlanner::plan_turn_recovery(
+    const PlanRequest &request, const Pose &start,
+    const std::vector<Polygon> &obstacles) const {
+  PlanResult result;
+  result.recovery_only = true;
+  if (request.recovery_anchor_node_id.empty() ||
+      request.recovery_incoming_lane_id.empty() ||
+      !request.allow_reverse_departure) {
+    SetFailure(result, PlanFailureReason::RECOVERY_CONTEXT_INVALID,
+               StartFailureMessage(PlanFailureReason::RECOVERY_CONTEXT_INVALID));
+    return result;
+  }
+  if (!collision_.pose_is_free(start, obstacles)) {
+    SetFailure(result, PlanFailureReason::START_POSE_COLLISION,
+               StartFailureMessage(PlanFailureReason::START_POSE_COLLISION));
+    return result;
+  }
+
+  int anchor_node = -1;
+  int incoming_lane = -1;
+  try {
+    anchor_node = graph_.node_index(request.recovery_anchor_node_id);
+    incoming_lane = graph_.lane_index(request.recovery_incoming_lane_id);
+  } catch (const std::invalid_argument &) {
+    SetFailure(result, PlanFailureReason::RECOVERY_CONTEXT_INVALID,
+               StartFailureMessage(PlanFailureReason::RECOVERY_CONTEXT_INVALID));
+    return result;
+  }
+
+  const Point &anchor = config_.nodes[anchor_node].position;
+  if (Distance(start.position, anchor) > config_.lane_snap_distance) {
+    SetFailure(result, PlanFailureReason::RECOVERY_CONTEXT_INVALID,
+               StartFailureMessage(PlanFailureReason::RECOVERY_CONTEXT_INVALID));
+    return result;
+  }
+  const int vehicle_heading = CardinalHeading(start.yaw);
+  const DirectedLane *retreat = nullptr;
+  int retreat_index = -1;
+  for (std::size_t index = 0;
+       index < graph_.graph().directed_lanes.size(); ++index) {
+    const DirectedLane &candidate = graph_.directed_lane(static_cast<int>(index));
+    if (candidate.lane == incoming_lane && candidate.from == anchor_node) {
+      retreat = &candidate;
+      retreat_index = static_cast<int>(index);
+      break;
+    }
+  }
+  if (retreat == nullptr ||
+      DistanceToSegment(start.position, anchor,
+                        config_.nodes[retreat->to].position) >
+          config_.lane_snap_distance) {
+    SetFailure(result, PlanFailureReason::RECOVERY_CONTEXT_INVALID,
+               StartFailureMessage(PlanFailureReason::RECOVERY_CONTEXT_INVALID));
+    return result;
+  }
+  if (vehicle_heading != (retreat->heading + 2) % kHeadingCount ||
+      std::abs(NormalizeAngle(start.yaw - HeadingYaw(vehicle_heading))) >
+          config_.start_heading_tolerance) {
+    SetFailure(result, PlanFailureReason::START_HEADING_MISMATCH,
+               StartFailureMessage(PlanFailureReason::START_HEADING_MISMATCH));
+    return result;
+  }
+
+  const Point retreat_end = config_.nodes[retreat->to].position;
+  if (!collision_.segment_is_free(start.position, retreat_end, start.yaw,
+                                  obstacles)) {
+    SetFailure(result, PlanFailureReason::RECOVERY_REVERSE_BLOCKED,
+               StartFailureMessage(PlanFailureReason::RECOVERY_REVERSE_BLOCKED));
+    return result;
+  }
+
+  result.traversals.push_back(
+      {retreat_index, start.position, retreat_end, false, true});
+  if (!route_compiler_.compile(start, result.traversals, obstacles, result,
+                               true)) {
+    result.traversals.clear();
+    SetFailure(result, PlanFailureReason::RECOVERY_REVERSE_BLOCKED,
+               result.message.empty()
+                   ? StartFailureMessage(
+                         PlanFailureReason::RECOVERY_REVERSE_BLOCKED)
+                   : result.message);
+    return result;
+  }
+  result.success = true;
+  result.complete = false;
+  result.failure_reason = PlanFailureReason::NONE;
+  result.message = "turn recovery retreat route validated";
+  return result;
 }
 
 PlanResult

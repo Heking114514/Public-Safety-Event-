@@ -142,6 +142,8 @@ void MissionManager::declare_parameters()
   declare_parameter(
     "confirm_rfid_checkpoint_service", "/waypoint_navigator/confirm_rfid_checkpoint");
   declare_parameter("speech_text_topic", "/navigation_mission/speech_text");
+  declare_parameter("insight_topic", "/insight");
+  declare_parameter("safe_topic", "/safe");
   declare_parameter("public_motion_hold_service", "/navigation_mission/set_motion_hold");
   declare_parameter(
     "public_continue_retreat_service", "/navigation_mission/continue_obstacle_retreat");
@@ -232,6 +234,10 @@ void MissionManager::create_interfaces()
     get_parameter("reported_event_topic").as_string(), durable);
   route_publisher_ = create_publisher<nav_msgs::msg::Path>(
     get_parameter("route_input_topic").as_string(), rclcpp::QoS(1).reliable());
+  visual_blocked_publisher_ = create_publisher<std_msgs::msg::Bool>(
+    get_parameter("front_obstacle_topic").as_string(), rclcpp::SensorDataQoS());
+  visual_range_publisher_ = create_publisher<sensor_msgs::msg::Range>(
+    get_parameter("front_range_topic").as_string(), rclcpp::SensorDataQoS());
 
   odom_subscription_ = create_subscription<nav_msgs::msg::Odometry>(
     get_parameter("odom_topic").as_string(), rclcpp::SensorDataQoS(),
@@ -268,6 +274,12 @@ void MissionManager::create_interfaces()
   speech_subscription_ = create_subscription<std_msgs::msg::String>(
     get_parameter("speech_text_topic").as_string(), 10,
     std::bind(&MissionManager::on_speech_text, this, std::placeholders::_1));
+  insight_subscription_ = create_subscription<std_msgs::msg::String>(
+    get_parameter("insight_topic").as_string(), 10,
+    std::bind(&MissionManager::on_insight, this, std::placeholders::_1));
+  safe_subscription_ = create_subscription<std_msgs::msg::String>(
+    get_parameter("safe_topic").as_string(), rclcpp::SensorDataQoS(),
+    std::bind(&MissionManager::on_safe, this, std::placeholders::_1));
 
   control_service_ = create_service<mission_control_interfaces::srv::ControlMission>(
     get_parameter("control_service").as_string(),

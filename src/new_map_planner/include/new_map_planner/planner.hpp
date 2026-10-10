@@ -40,6 +40,8 @@ private:
   PlanResult plan_coverage(const PlanRequest &request, const Pose &start,
                            const std::vector<Polygon> &obstacles,
                            bool allow_tunnel_connectors = true) const;
+  PlanResult plan_turn_recovery(const PlanRequest &request, const Pose &start,
+                                const std::vector<Polygon> &obstacles) const;
 
   PlannerConfig config_;
   RoadGraph graph_;

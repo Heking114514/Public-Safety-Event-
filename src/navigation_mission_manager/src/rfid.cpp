@@ -29,7 +29,7 @@ std::string render_announcement(std::string value, const std::string & number)
 void MissionManager::reset_rfid()
 {
   bool release_rfid = rfid_active_.has_value();
-  bool release_speech = speech_active_text_.has_value();
+  bool release_speech = speech_active_.has_value() && speech_active_->request_hold;
   {
     std::lock_guard<std::mutex> lock(hold_state_mutex_);
     release_rfid = release_rfid || active_hold_sources_.count(kRfidHoldSource) != 0U;
@@ -63,14 +63,19 @@ void MissionManager::reset_rfid()
   rfid_speech_attempts_ = 0;
   rfid_next_speech_at_ = 0.0;
   speech_queue_.clear();
-  speech_active_text_.reset();
+  speech_active_.reset();
   speech_release_at_.reset();
   speech_pending_ = false;
 }
 
 void MissionManager::on_speech_text(const std_msgs::msg::String::SharedPtr message)
 {
-  std::string text = message->data;
+  enqueue_speech_text(message->data, true);
+}
+
+void MissionManager::enqueue_speech_text(const std::string & input, bool request_hold)
+{
+  std::string text = input;
   const auto first = text.find_first_not_of(" \t");
   const auto last = text.find_last_not_of(" \t");
   text = first == std::string::npos ? std::string{} : text.substr(first, last - first + 1U);
@@ -79,53 +84,74 @@ void MissionManager::on_speech_text(const std_msgs::msg::String::SharedPtr messa
   {
     return;
   }
-  if (speech_queue_.size() < 8U) {
-    speech_queue_.push_back(text);
+  // A single insight event may contain several people and knives. Keep the
+  // queue large enough to preserve that order while retaining a bounded
+  // safety limit for malformed or overly chatty publishers.
+  if (speech_queue_.size() < 64U) {
+    speech_queue_.push_back(SpeechItem{text, request_hold});
   }
 }
 
 void MissionManager::service_speech_text(double now_seconds)
 {
-  if (!speech_active_text_.has_value() && !speech_queue_.empty()) {
-    speech_active_text_ = speech_queue_.front();
+  if (!speech_active_.has_value() && !speech_queue_.empty()) {
+    speech_active_ = speech_queue_.front();
     speech_queue_.pop_front();
     speech_release_at_.reset();
-    request_hold("speech", true, "mission speech request");
+    if (speech_active_->request_hold) {
+      request_hold("speech", true, "mission speech request");
+    }
   }
-  if (!speech_active_text_.has_value()) {
+  if (!speech_active_.has_value()) {
     return;
   }
-  bool held = false;
-  {
-    std::lock_guard<std::mutex> lock(hold_state_mutex_);
-    held = active_hold_sources_.count(kSpeechHoldSource) != 0U;
-  }
-  if (!held) {
-    return;
+  if (speech_active_->request_hold) {
+    bool held = false;
+    {
+      std::lock_guard<std::mutex> lock(hold_state_mutex_);
+      held = active_hold_sources_.count(kSpeechHoldSource) != 0U;
+    }
+    if (!held) {
+      return;
+    }
   }
   if (!speech_pending_ && !speech_release_at_.has_value() &&
     speaker_client_->service_is_ready())
   {
     auto request = std::make_shared<mission_control_interfaces::srv::SpeakText::Request>();
-    request->text = *speech_active_text_;
+    request->text = speech_active_->text;
     speech_pending_ = true;
-    speech_release_at_ = now_seconds + speech_hold_duration_s_;
+    if (speech_active_->request_hold) {
+      speech_release_at_ = now_seconds + speech_hold_duration_s_;
+    }
+    const bool request_hold = speech_active_->request_hold;
     speaker_client_->async_send_request(
       request,
-      [this](rclcpp::Client<mission_control_interfaces::srv::SpeakText>::SharedFuture future) {
+      [this, request_hold](
+        rclcpp::Client<mission_control_interfaces::srv::SpeakText>::SharedFuture future) {
         try {
           const auto response = future.get();
           if (!response->success) {
             RCLCPP_ERROR(
               get_logger(), "mission speech failed: %s", response->message.c_str());
           }
+          if (!request_hold) {
+            speech_active_.reset();
+            speech_release_at_.reset();
+            speech_pending_ = false;
+          }
         } catch (const std::exception & error) {
           RCLCPP_ERROR(get_logger(), "mission speech service failed: %s", error.what());
+          if (!request_hold) {
+            speech_active_.reset();
+            speech_release_at_.reset();
+            speech_pending_ = false;
+          }
         }
       });
   } else if (speech_release_at_.has_value() && now_seconds >= *speech_release_at_) {
     request_hold("speech", false, "mission speech completed");
-    speech_active_text_.reset();
+    speech_active_.reset();
     speech_release_at_.reset();
     speech_pending_ = false;
   }

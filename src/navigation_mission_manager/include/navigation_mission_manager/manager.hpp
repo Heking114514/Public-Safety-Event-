@@ -68,6 +68,14 @@ struct ActiveRoute
   bool motion_seen{false};
 };
 
+struct PlanningContext
+{
+  uint8_t start_mode{new_map_planner::srv::PlanRoute::Request::START_MODE_NORMAL};
+  std::string recovery_anchor_node_id;
+  std::string recovery_incoming_lane_id;
+  bool allow_reverse_departure{false};
+};
+
 class MissionManager : public rclcpp::Node
 {
 public:
@@ -111,6 +119,7 @@ private:
   void request_plan();
   void on_plan_response(
     uint64_t generation, const PlanSpec & spec,
+    const PlanningContext & context,
     rclcpp::Client<new_map_planner::srv::PlanRoute>::SharedFuture future);
   void plan_failed(const std::string & message);
   void on_route_ack(const std_msgs::msg::UInt64::SharedPtr message);
@@ -122,6 +131,7 @@ private:
 
   void on_navigator_status(const std_msgs::msg::String::SharedPtr message);
   void handle_turn_replan();
+  std::optional<std::pair<std::string, std::string>> turn_recovery_context() const;
   void handle_obstacle_replan();
   void handle_plan_rejection(const std::string & message);
   void request_additional_retreat(const std::string & planner_message);
@@ -131,6 +141,9 @@ private:
   void clear_obstacle_recovery();
 
   void on_odometry(const nav_msgs::msg::Odometry::SharedPtr message);
+  void on_insight(const std_msgs::msg::String::SharedPtr message);
+  void on_safe(const std_msgs::msg::String::SharedPtr message);
+  void record_visual_obstacle(double distance);
   void on_front_range(const sensor_msgs::msg::Range::SharedPtr message);
   void on_front_blocked(const std_msgs::msg::Bool::SharedPtr message);
   void on_obstacle_polygon(const geometry_msgs::msg::PolygonStamped::SharedPtr message);
@@ -146,6 +159,7 @@ private:
 
   void reset_rfid();
   void on_rfid_number(const std_msgs::msg::Int32::SharedPtr message);
+  void enqueue_speech_text(const std::string & text, bool request_hold);
   void on_speech_text(const std_msgs::msg::String::SharedPtr message);
   void service_speech_text(double now);
   void service_rfid(double now);
@@ -196,6 +210,7 @@ private:
   int plan_retries_{0};
   int no_progress_routes_{0};
   bool replanning_{false};
+  PlanningContext next_planning_context_{};
   int completed_stages_{0};
 
   bool retreat_pending_{false};
@@ -209,6 +224,7 @@ private:
   uint8_t ordinary_nodes_since_task_{1};
 
   bool front_blocked_{false};
+  std::set<std::string> visual_announced_targets_;
   std::optional<std::pair<double, double>> latest_range_;
   std::optional<std::pair<Polygon2d, double>> pending_obstacle_;
   std::vector<Polygon2d> dynamic_obstacles_;
@@ -246,8 +262,13 @@ private:
   bool rfid_authorization_pending_{false};
   int rfid_speech_attempts_{0};
   double rfid_next_speech_at_{0.0};
-  std::deque<std::string> speech_queue_;
-  std::optional<std::string> speech_active_text_;
+  struct SpeechItem
+  {
+    std::string text;
+    bool request_hold{true};
+  };
+  std::deque<SpeechItem> speech_queue_;
+  std::optional<SpeechItem> speech_active_;
   std::optional<double> speech_release_at_;
   bool speech_pending_{false};
 
@@ -304,6 +325,8 @@ private:
   rclcpp::Publisher<mission_control_interfaces::msg::EventCandidate>::SharedPtr
     reported_publisher_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr route_publisher_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr visual_blocked_publisher_;
+  rclcpp::Publisher<sensor_msgs::msg::Range>::SharedPtr visual_range_publisher_;
 
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_subscription_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr navigator_subscription_;
@@ -319,6 +342,8 @@ private:
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr rfid_subscription_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr current_waypoint_subscription_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr speech_subscription_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr insight_subscription_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr safe_subscription_;
 
   rclcpp::Service<mission_control_interfaces::srv::ControlMission>::SharedPtr control_service_;
   rclcpp::Service<mission_control_interfaces::srv::SetMotionHold>::SharedPtr

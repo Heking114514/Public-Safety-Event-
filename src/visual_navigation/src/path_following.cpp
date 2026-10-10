@@ -47,9 +47,10 @@ void WaypointNavigator::RunPath(const ControlFrame &frame) {
                             std::max(0.02, nextLength);
     }
   }
-  // A discontinuous corner is handled by braking and ALIGN_PATH at the
-  // waypoint. Applying its curvature over the whole incoming segment makes a
-  // straight approach turn toward the following segment from the start.
+  // A discontinuous corner is handled by braking and TurnManeuverController
+  // at the waypoint. Applying its curvature over the whole incoming segment
+  // makes a straight approach turn toward the following segment from the
+  // start.
   signedPathCurvature = visual_navigation::ContinuousTrackingCurvature(
       signedPathCurvature, frame.waypoint_requires_stop);
   const double pathCurvature = std::abs(signedPathCurvature);
@@ -96,8 +97,7 @@ void WaypointNavigator::RunPath(const ControlFrame &frame) {
       stoppedAtPlannedTurn_, controlState_.path_aligned(), distanceFromTurn,
       headingError, std::max(0.70, rotateInPlaceThreshold_));
   const bool turningManeuverActive =
-      controlState_.in(visual_navigation::ControlPhase::SHUNT_TURN) ||
-      controlState_.in(visual_navigation::ControlPhase::ALIGN_PATH);
+      controlState_.in(visual_navigation::ControlPhase::SHUNT_TURN);
 
   if (!turningManeuverActive && shouldRotateInPlace) {
     ResetManeuver();
@@ -110,7 +110,13 @@ void WaypointNavigator::RunPath(const ControlFrame &frame) {
               std::chrono::steady_clock::now().time_since_epoch())
               .count());
     } else {
-      controlState_.begin_path_alignment(currentX_, currentY_);
+      // A turn that is outside the action model is not delegated to the old
+      // in-place ALIGN_PATH controller. Stop and return one structured
+      // route-level decision instead of creating a second turn owner.
+      navigationActive_ = false;
+      PublishStop();
+      SetState("TURN_NEED_REPLAN");
+      return;
     }
     turnSettleController_.reset();
   } else if (!turningManeuverActive && !controlState_.path_aligned()) {
@@ -121,13 +127,7 @@ void WaypointNavigator::RunPath(const ControlFrame &frame) {
 
   const bool shunting =
       controlState_.in(visual_navigation::ControlPhase::SHUNT_TURN);
-  const bool aligningPath =
-      controlState_.in(visual_navigation::ControlPhase::ALIGN_PATH);
-  const double alignmentError = NormalizeAngle(
-      (firstHalfTurnPending_ ? firstHalfTurnYaw_ : frame.path_heading) -
-      currentYaw_);
-  const bool allowPathIntegral = !aligningPath &&
-                                 std::abs(headingError) < 0.30 &&
+  const bool allowPathIntegral = std::abs(headingError) < 0.30 &&
                                  std::abs(crossTrackError) < 0.08;
   const double pathFeedbackAngularSpeed =
       UpdatePathPid(pathError, crossTrackError, allowPathIntegral,
@@ -146,119 +146,43 @@ void WaypointNavigator::RunPath(const ControlFrame &frame) {
     return;
   }
 
-  if (!aligningPath && std::abs(pathError) > 0.70) {
+  if (std::abs(pathError) > 0.70) {
     BeginJunctionRetreat();
     return;
   }
-
-  if (aligningPath) {
-    if (SupervisePathProgress(segmentProgress,
-                              frame.progress_supervision_allowed,
-                              0.0, 0.0, false, false)) {
-      return;
-    }
-    if (SuperviseTurnProgress(0, std::abs(alignmentError),
-                              turnProgressExpectedYawRate_,
-                              frame.progress_supervision_allowed)) {
-      return;
-    }
-    controlState_.ensure_anchor(currentX_, currentY_);
-    if (std::abs(alignmentError) <= rotateInPlaceExitThreshold_)
-      turnSettleController_.begin_settling();
-    if (turnSettleController_.settling()) {
-      PublishStop();
-      const double turnActivity =
-          std::max(std::abs(frame.control_yaw_rate),
-                   std::abs(lastMotionCommand_.angular.z));
-      const double telemetryAge = controlTelemetryReceived_
-          ? std::chrono::duration<double>(std::chrono::steady_clock::now() -
-                                          lastControlTelemetryArrival_).count()
-          : std::numeric_limits<double>::infinity();
-      const bool translationStopped = visual_navigation::TurnTranslationHasStopped(
-          controlTelemetryReceived_, telemetryAge, controlTelemetryTimeout_,
-          measuredLeftWheelSpeed_, measuredRightWheelSpeed_,
-          pathTrackingController_.observed_speed(),
-          pathTrackingController_.observed_speed_valid(), preTurnStopSpeed_);
-      if (turnActivity > turnSettleYawRate_ || !translationStopped) {
-        turnSettleController_.reset_timer();
-        SetState(visual_navigation::phase_status(controlState_.phase()));
-        return;
-      }
-      if (!turnSettleController_.update(std::chrono::steady_clock::now(),
-                                        turnActivity, turnSettleYawRate_,
-                                        turnSettleDwell_)) {
-        SetState(visual_navigation::phase_status(controlState_.phase()));
-        return;
-      }
-      if (std::abs(alignmentError) <= rotateInPlaceExitThreshold_) {
-        if (firstHalfTurnPending_) {
-          firstHalfTurnPending_ = false;
-          turnSettleController_.reset();
-          turnProgressSupervisor_.Reset();
-          SetState("TURN_HALF_SETTLED");
-          return;
-        }
-        ResetManeuver();
-        turnProgressSupervisor_.Reset();
-        controlState_.finish_path_alignment();
-        stoppedAtPlannedTurn_ = false;
-        SetState("PATH_ALIGNED");
-        return;
-      }
-      turnSettleController_.reset();
-      SetState(visual_navigation::phase_status(controlState_.phase()));
-      return;
-    }
-
-    turnSettleController_.reset_timer();
-    const double requestedAngularSpeed =
-        Clamp(angularGain_ * alignmentError -
-                  turnYawRateDamping_ * frame.control_yaw_rate,
-              -turnCruiseSpeed_, turnCruiseSpeed_);
-    const double minimumTurnSpeed = visual_navigation::SelectMinimumTurnSpeed(
-        std::abs(alignmentError), precisionTurnThreshold_,
-        minPrecisionTurnSpeed_, turnCruiseSpeed_);
-    command.angular.z = visual_navigation::EnforceMinimumTurnSpeed(
-        requestedAngularSpeed, alignmentError,
-        minimumTurnSpeed, turnCruiseSpeed_);
-  } else {
-    turnProgressSupervisor_.Reset();
-    const double headingScale = std::max(0.0, std::cos(pathError));
-    command.linear.x = limitedLinearSpeed * headingScale;
-    const double feedforwardAngularSpeed =
-        visual_navigation::CurvatureFeedforwardAngularSpeed(
-            command.linear.x, signedPathCurvature,
-            pathCurvatureFeedforwardGain_);
-    const double lateralAngularLimit =
-        visual_navigation::LateralAccelerationAngularLimit(
-            maxPathAngularSpeed_, command.linear.x,
-            maxLateralAcceleration_);
-    command.angular.z = visual_navigation::CompensatePathTurnDeadband(
-        feedforwardAngularSpeed + pathFeedbackAngularSpeed, pathError,
-        frame.control_yaw_rate, pathAngularActivationError_,
-        pathYawResponseThreshold_,
-        minPathAngularSpeed_,
-        lateralAngularLimit);
-    if (frame.waypoint_requires_stop) {
-      // On a straight approach, a near-zero braking speed must not leave an
-      // angular-only command that pivots the car before the junction.
-      command.angular.z = visual_navigation::StopRequiredPathAngularSpeed(
-          command.angular.z, command.linear.x, preTurnPathAngularRatio_);
-    }
-
-    const double measuredSpeed = inputCache_.odometry_velocity_valid()
-                                     ? std::abs(inputCache_.odometry_velocity())
-                                     : std::abs(lastMotionCommand_.linear.x);
-    const double stoppingDistance = visual_navigation::BrakingDistance(
-        measuredSpeed, effectiveBrakingDeceleration_, brakingControlDelay_,
-        brakingSafetyMargin_);
-    brakingApproach = frame.waypoint_requires_stop &&
-                      approachDistance <= stoppingDistance &&
-                      command.linear.x > 0.0;
+  turnProgressSupervisor_.Reset();
+  const double headingScale = std::max(0.0, std::cos(pathError));
+  command.linear.x = limitedLinearSpeed * headingScale;
+  const double feedforwardAngularSpeed =
+      visual_navigation::CurvatureFeedforwardAngularSpeed(
+          command.linear.x, signedPathCurvature,
+          pathCurvatureFeedforwardGain_);
+  const double lateralAngularLimit =
+      visual_navigation::LateralAccelerationAngularLimit(
+          maxPathAngularSpeed_, command.linear.x,
+          maxLateralAcceleration_);
+  command.angular.z = visual_navigation::CompensatePathTurnDeadband(
+      feedforwardAngularSpeed + pathFeedbackAngularSpeed, pathError,
+      frame.control_yaw_rate, pathAngularActivationError_,
+      pathYawResponseThreshold_, minPathAngularSpeed_, lateralAngularLimit);
+  if (frame.waypoint_requires_stop) {
+    // On a straight approach, a near-zero braking speed must not leave an
+    // angular-only command that pivots the car before the junction.
+    command.angular.z = visual_navigation::StopRequiredPathAngularSpeed(
+        command.angular.z, command.linear.x, preTurnPathAngularRatio_);
   }
 
-  if (!aligningPath &&
-      SupervisePathProgress(
+  const double measuredSpeed = inputCache_.odometry_velocity_valid()
+                                   ? std::abs(inputCache_.odometry_velocity())
+                                   : std::abs(lastMotionCommand_.linear.x);
+  const double stoppingDistance = visual_navigation::BrakingDistance(
+      measuredSpeed, effectiveBrakingDeceleration_, brakingControlDelay_,
+      brakingSafetyMargin_);
+  brakingApproach = frame.waypoint_requires_stop &&
+                    approachDistance <= stoppingDistance &&
+                    command.linear.x > 0.0;
+
+  if (SupervisePathProgress(
           segmentProgress,
           !brakingApproach && frame.progress_supervision_allowed,
           lastMotionCommand_.linear.x,
@@ -267,9 +191,6 @@ void WaypointNavigator::RunPath(const ControlFrame &frame) {
           !brakingApproach)) {
     return;
   }
-  PublishMotionCommand(command, aligningPath);
-  if (aligningPath)
-    SetState(visual_navigation::phase_status(controlState_.phase()));
-  else
-    SetState(brakingApproach ? "BRAKING_APPROACH" : "FOLLOWING");
+  PublishMotionCommand(command);
+  SetState(brakingApproach ? "BRAKING_APPROACH" : "FOLLOWING");
 }

@@ -66,6 +66,8 @@ PlannerConfig LoadConfig(const std::string &map_path,
   config.vehicle_width = vehicle["chassis"]["width_m"].as<double>();
   config.base_link_offset_x =
       vehicle["differential_drive"]["base_link_offset_x_m"].as<double>();
+  config.base_link_offset_y =
+      vehicle["differential_drive"]["base_link_offset_y_m"].as<double>();
   config.safety_margin = root["planning"]["safety_margin_m"].as<double>();
   config.turn_safety_margin =
       root["planning"]["turn_safety_margin_m"].as<double>();
@@ -77,9 +79,6 @@ PlannerConfig LoadConfig(const std::string &map_path,
       root["planning"]["start_heading_tolerance_deg"].as<double>() * kPi /
       180.0;
   config.turn_cost = root["planning"]["turn_cost_m"].as<double>();
-  config.reverse_cost = root["planning"]["reverse_cost_m"].as<double>();
-  config.u_turn_threshold =
-      root["planning"]["u_turn_threshold_deg"].as<double>() * kPi / 180.0;
   config.collision_sample_step =
       root["planning"]["collision_sample_step_m"].as<double>();
   config.publish_shunt_markers =
@@ -186,6 +185,10 @@ void ValidateConfig(const PlannerConfig &config) {
   }
   if (config.nodes.empty() || config.lanes.empty()) {
     throw std::runtime_error("road graph must contain nodes and lanes");
+  }
+  if (!config.publish_shunt_markers) {
+    throw std::runtime_error(
+        "publish_shunt_markers must be true for executable navigation paths");
   }
   if (config.home_node < 0 ||
       config.home_node >= static_cast<int>(config.nodes.size())) {

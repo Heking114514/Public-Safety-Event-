@@ -20,6 +20,16 @@ void WaypointNavigator::BeginPathSegment() {
   }
   resumePathFromCurrentPose_ = false;
   pathSegmentInitialized_ = true;
+  // Dynamic planner metadata marks the waypoint where a reverse segment
+  // starts.  The segment currently being followed ends at currentWaypointIndex_
+  // (its start is the previous waypoint), so reading the current target here
+  // applies the marker one segment too early and can reverse the approach.
+  const std::size_t segmentStartIndex = currentWaypointIndex_ == 0
+                                            ? 0
+                                            : currentWaypointIndex_ - 1;
+  reverseSegmentActive_ =
+      segmentStartIndex < waypoints_.size() &&
+      waypoints_[segmentStartIndex].reverse_segment;
   if (continuePathControlOnNextSegment_) {
     continuePathControlOnNextSegment_ = false;
   } else {

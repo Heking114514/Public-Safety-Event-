@@ -11,6 +11,10 @@ bool FinitePose(const CornerShuntPose &pose) {
          std::isfinite(pose.yaw);
 }
 
+bool FiniteTwist(const CornerShuntTwist &twist) {
+  return std::isfinite(twist.linear_x) && std::isfinite(twist.angular_z);
+}
+
 CornerShuntPose Integrate(CornerShuntPose pose, CornerShuntTwist command,
                           double elapsed_s) {
   if (std::abs(command.angular_z) <= 1.0e-6) {
@@ -118,10 +122,23 @@ void TurnManeuverController::reset() {
   progress_longitudinal_error_ = 0.0;
   progress_lateral_error_ = 0.0;
   progress_yaw_error_ = 0.0;
+  last_safe_pose_valid_ = false;
+  last_safe_pose_ = {};
+  captured_junction_index_ = std::numeric_limits<std::size_t>::max();
+  captured_junction_id_.clear();
+  failure_reason_ = TurnManeuverFailureReason::NONE;
+  recovery_direction_ = TurnManeuverRecoveryDirection::NONE;
+  rejection_signature_ = {};
+  identical_rejection_count_ = 0;
 }
 
 void TurnManeuverController::begin(double now_s) {
   reset();
+  if (!std::isfinite(now_s)) {
+    phase_ = TurnManeuverPhase::FAULT;
+    failure_reason_ = TurnManeuverFailureReason::INVALID_CONTEXT;
+    return;
+  }
   active_ = true;
   phase_ = TurnManeuverPhase::CAPTURE;
   started_at_ = now_s;
@@ -144,7 +161,9 @@ double TurnManeuverController::trim_target_x() const { return trim_target_x_; }
 TurnManeuverDecision
 TurnManeuverController::transition(TurnManeuverPhase phase) {
   phase_ = phase;
-  return {phase_, {}, TurnManeuverResult::RUNNING};
+  TurnManeuverDecision decision{phase_, {}, TurnManeuverResult::RUNNING};
+  attach_metadata(&decision);
+  return decision;
 }
 
 TurnManeuverDecision
@@ -152,7 +171,26 @@ TurnManeuverController::terminal(TurnManeuverPhase phase,
                                  TurnManeuverResult result) {
   phase_ = phase;
   active_ = false;
-  return {phase_, {}, result};
+  TurnManeuverDecision decision{phase_, {}, result};
+  attach_metadata(&decision);
+  return decision;
+}
+
+void TurnManeuverController::attach_metadata(
+    TurnManeuverDecision *decision) const {
+  if (decision == nullptr)
+    return;
+  decision->has_last_safe_pose = last_safe_pose_valid_;
+  decision->last_safe_pose = last_safe_pose_;
+  decision->junction_index = captured_junction_index_;
+  decision->junction_id = captured_junction_id_;
+  decision->junction_pose = {captured_.junction_x, captured_.junction_y, 0.0};
+  decision->geometry_heading = captured_.geometry_heading;
+  decision->arrival_heading = captured_.arrival_heading;
+  decision->target_heading = captured_.target_heading;
+  decision->failure_reason = failure_reason_;
+  decision->suggested_recovery_direction = recovery_direction_;
+  decision->rejection_signature = rejection_signature_;
 }
 
 CornerShuntContext TurnManeuverController::live_context(
@@ -186,7 +224,16 @@ CornerShuntPose TurnManeuverController::world_pose(double local_x,
 
 bool TurnManeuverController::context_valid(
     const CornerShuntContext &context) const {
-  return FinitePose(context.pose) && std::isfinite(context.junction_x) &&
+  const auto &corner = config_.corner;
+  const bool physical_model_valid =
+      std::isfinite(corner.vehicle_length) && corner.vehicle_length > 0.0 &&
+      std::isfinite(corner.vehicle_width) && corner.vehicle_width > 0.0 &&
+      std::isfinite(corner.base_offset_x) &&
+      std::isfinite(corner.base_offset_y) && corner.road_width > 0.0;
+  return physical_model_valid && FinitePose(context.pose) &&
+         FiniteTwist(context.applied_twist) &&
+         FiniteTwist(context.measured_twist) &&
+         std::isfinite(context.junction_x) &&
          std::isfinite(context.junction_y) &&
          std::isfinite(context.geometry_heading) &&
          std::isfinite(context.arrival_heading) &&
@@ -234,37 +281,55 @@ bool TurnManeuverController::find_trim_target(
     const CornerShuntContext &context) {
   const auto local = local_pose(context.pose);
   const double step = std::max(0.005, config_.trim_search_step);
-  double distance = std::max(step, trim_search_distance_ + step);
-  distance = std::max(distance, local.x - config_.preferred_entry_x);
   const double maximum = std::max(step, config_.trim_max_distance);
-  for (; distance <= maximum + 1.0e-9; distance += step) {
-    ++trim_candidates_checked_;
-    CornerShuntContext candidate = captured_;
-    candidate.pose = world_pose(local.x - distance, 0.0,
-                                captured_.geometry_heading);
-    candidate.arrival_heading = captured_.geometry_heading;
-    candidate.reverse_arrival = false;
-    CornerShuntSafetyReport report;
-    if (!arc_controller_.pose_is_safe(candidate, candidate.pose, &report)) {
-      ++trim_footprint_rejections_;
-      report.source = "trim_candidate_pose";
-      safety_report_ = report;
-      has_safety_report_ = true;
-      continue;
+  const double entry_error = local.x - config_.preferred_entry_x;
+  const double entry_tolerance =
+      std::max(config_.trim_position_tolerance,
+               std::max(0.0, config_.trim_reverse_hysteresis));
+  int preferred_direction = -1;
+  if (entry_error < -entry_tolerance)
+    preferred_direction = 1;
+  else if (captured_.reverse_arrival)
+    preferred_direction = 1;
+
+  const int directions[2] = {preferred_direction, -preferred_direction};
+  const double start_distance =
+      std::max(step, trim_search_distance_ + step);
+  for (const int direction : directions) {
+    const double direction_start = direction == preferred_direction
+                                       ? start_distance
+                                       : step;
+    for (double distance = direction_start;
+         distance <= maximum + 1.0e-9; distance += step) {
+      ++trim_candidates_checked_;
+      CornerShuntContext candidate = captured_;
+      candidate.pose = world_pose(local.x + direction * distance, 0.0,
+                                  captured_.geometry_heading);
+      candidate.arrival_heading = captured_.geometry_heading;
+      candidate.reverse_arrival = false;
+      CornerShuntSafetyReport report;
+      if (!arc_controller_.pose_is_safe(candidate, candidate.pose, &report)) {
+        ++trim_footprint_rejections_;
+        report.source = "trim_candidate_pose";
+        safety_report_ = report;
+        has_safety_report_ = true;
+        continue;
+      }
+      if (!direct_turn_feasible(candidate)) {
+        ++trim_turn_rejections_;
+        continue;
+      }
+      trim_search_distance_ = distance;
+      trim_target_x_ = local.x + direction * distance;
+      trim_direction_ = direction;
+      recovery_direction_ = recovery_direction();
+      trim_direction_started_at_ = phase_started_at_;
+      trim_direction_start_x_ = local.x;
+      trim_completion_samples_ = 0;
+      ++trim_attempts_;
+      reset_trim_progress(context, phase_started_at_);
+      return true;
     }
-    if (!direct_turn_feasible(candidate)) {
-      ++trim_turn_rejections_;
-      continue;
-    }
-    trim_search_distance_ = distance;
-    trim_target_x_ = local.x - distance;
-    trim_direction_ = trim_target_x_ < local.x ? -1 : 1;
-    trim_direction_started_at_ = phase_started_at_;
-    trim_direction_start_x_ = local.x;
-    trim_completion_samples_ = 0;
-    ++trim_attempts_;
-    reset_trim_progress(context, phase_started_at_);
-    return true;
   }
   return false;
 }
@@ -430,12 +495,122 @@ void TurnManeuverController::start_arc(const CornerShuntContext &context,
   phase_started_at_ = now_s;
 }
 
+bool TurnManeuverController::update_last_safe_pose(
+    const CornerShuntContext &context, CornerShuntSafetyReport *report) {
+  CornerShuntSafetyReport current_report;
+  if (!arc_controller_.pose_is_safe(context, context.pose, &current_report)) {
+    if (report != nullptr)
+      *report = current_report;
+    return false;
+  }
+  last_safe_pose_valid_ = true;
+  last_safe_pose_ = context.pose;
+  return true;
+}
+
+bool TurnManeuverController::record_rejection(
+    const CornerShuntContext &context, const CornerShuntSafetyReport &report) {
+  const double local_x = local_pose(context.pose).x;
+  const double signature_tolerance =
+      std::max(1.0e-4, config_.trim_progress_distance);
+  const bool same_signature =
+      rejection_signature_.valid &&
+      rejection_signature_.failure == report.failure &&
+      rejection_signature_.prediction_sample == report.prediction_sample &&
+      std::abs(rejection_signature_.local_x - local_x) <= signature_tolerance;
+  const bool no_improvement =
+      same_signature &&
+      std::abs(rejection_signature_.local_x - local_x) <
+          std::max(0.0, config_.trim_progress_distance);
+  if (same_signature && no_improvement)
+    ++identical_rejection_count_;
+  else
+    identical_rejection_count_ = 0;
+  rejection_signature_.valid = true;
+  rejection_signature_.failure = report.failure;
+  rejection_signature_.prediction_sample = report.prediction_sample;
+  rejection_signature_.local_x = local_x;
+  const std::size_t limit = static_cast<std::size_t>(std::max(
+      1, config_.max_identical_rejections));
+  return identical_rejection_count_ >= limit;
+}
+
+TurnManeuverRecoveryDirection
+TurnManeuverController::recovery_direction() const {
+  if (trim_direction_ < 0)
+    return TurnManeuverRecoveryDirection::REVERSE_ALONG_ENTRY;
+  if (trim_direction_ > 0)
+    return TurnManeuverRecoveryDirection::FORWARD_TO_EXIT;
+  return captured_.reverse_arrival
+             ? TurnManeuverRecoveryDirection::FORWARD_TO_EXIT
+             : TurnManeuverRecoveryDirection::REVERSE_ALONG_ENTRY;
+}
+
+bool TurnManeuverController::exit_aligned(
+    const CornerShuntContext &context) const {
+  if (!arc_controller_.pose_is_safe(context, context.pose))
+    return false;
+  const double yaw_error = std::abs(
+      NormalizeShuntAngle(context.target_heading - context.pose.yaw));
+  if (yaw_error > std::max(0.0, config_.corner.target_yaw_tolerance))
+    return false;
+  const auto local = local_pose(context.pose);
+  const double target_scale = ClampShunt(
+      std::abs(NormalizeShuntAngle(context.target_heading -
+                                   context.geometry_heading)) /
+          (0.5 * 3.14159265358979323846),
+      0.45, 1.40);
+  const double target_x = config_.corner.target_x * target_scale;
+  const double target_y = config_.corner.target_y * target_scale;
+  const double direction = NormalizeShuntAngle(
+                               context.target_heading -
+                               context.geometry_heading) >= 0.0
+                               ? 1.0
+                               : -1.0;
+  return direction * local.y + std::max(0.0, config_.corner.target_y_tolerance) >=
+             target_y &&
+         std::abs(local.x - target_x) <=
+             std::max(0.0, config_.corner.target_x_tolerance) * target_scale;
+}
+
+CornerShuntTwist TurnManeuverController::exit_align_command(
+    const CornerShuntContext &context) const {
+  const double yaw_error = NormalizeShuntAngle(context.target_heading -
+                                               context.pose.yaw);
+  const double angular = ClampShunt(
+      config_.corner.closed_loop_final_yaw_gain * yaw_error -
+          config_.corner.closed_loop_yaw_rate_damping *
+              context.measured_twist.angular_z,
+      -std::max(0.0, config_.corner.closed_loop_exit_max_angular_speed),
+      std::max(0.0, config_.corner.closed_loop_exit_max_angular_speed));
+  const double speed = std::max(
+      0.005, std::max(config_.corner.closed_loop_min_speed,
+                      std::abs(config_.corner.plan_linear_speed)));
+  return {speed, angular};
+}
+
 TurnManeuverDecision
 TurnManeuverController::update(const TurnManeuverInput &input, double now_s) {
-  if (!active_)
+  if (!std::isfinite(now_s)) {
+    failure_reason_ = TurnManeuverFailureReason::INVALID_CONTEXT;
     return terminal(TurnManeuverPhase::FAULT, TurnManeuverResult::FAULT);
-  if (input.cancel)
+  }
+  if (!active_) {
+    if (phase_ == TurnManeuverPhase::COMPLETE)
+      return terminal(phase_, TurnManeuverResult::COMPLETED);
+    if (phase_ == TurnManeuverPhase::NEED_REPLAN)
+      return terminal(phase_, TurnManeuverResult::NEED_REPLAN);
+    if (phase_ == TurnManeuverPhase::IDLE &&
+        failure_reason_ == TurnManeuverFailureReason::CANCELED)
+      return terminal(phase_, TurnManeuverResult::CANCELED);
+    failure_reason_ = TurnManeuverFailureReason::INVALID_CONTEXT;
+    return terminal(TurnManeuverPhase::FAULT, TurnManeuverResult::FAULT);
+  }
+  if (input.cancel) {
+    failure_reason_ = TurnManeuverFailureReason::CANCELED;
+    recovery_direction_ = TurnManeuverRecoveryDirection::NONE;
     return terminal(TurnManeuverPhase::IDLE, TurnManeuverResult::CANCELED);
+  }
   if (!input.motion_allowed || !input.localization_valid ||
       input.obstacle_blocked) {
     if (!paused_)
@@ -444,7 +619,9 @@ TurnManeuverController::update(const TurnManeuverInput &input, double now_s) {
     arc_controller_.reset();
     arc_started_ = false;
     phase_ = TurnManeuverPhase::PAUSED;
-    return {phase_, {}, TurnManeuverResult::RUNNING};
+    TurnManeuverDecision decision{phase_, {}, TurnManeuverResult::RUNNING};
+    attach_metadata(&decision);
+    return decision;
   }
   if (paused_) {
     started_at_ += std::max(0.0, now_s - paused_at_);
@@ -452,25 +629,75 @@ TurnManeuverController::update(const TurnManeuverInput &input, double now_s) {
     phase_ = TurnManeuverPhase::ENTRY_CHECK;
     phase_started_at_ = now_s;
   }
-  if (now_s - started_at_ > config_.corner.max_turn_duration)
+  if (now_s - started_at_ > config_.corner.max_turn_duration) {
+    failure_reason_ = TurnManeuverFailureReason::TRIM_LIMIT;
     return terminal(TurnManeuverPhase::FAULT, TurnManeuverResult::FAULT);
+  }
 
   if (phase_ == TurnManeuverPhase::CAPTURE) {
-    if (!context_valid(input.context))
+    if (!context_valid(input.context)) {
+      failure_reason_ = TurnManeuverFailureReason::INVALID_CONTEXT;
       return terminal(TurnManeuverPhase::FAULT, TurnManeuverResult::FAULT);
+    }
     captured_ = input.context;
+    if (!input.junction_id.empty())
+      captured_.junction_id = input.junction_id;
+    captured_junction_id_ = captured_.junction_id;
+    captured_junction_index_ = input.junction_index;
     capture_valid_ = true;
+    CornerShuntSafetyReport report;
+    if (!update_last_safe_pose(input.context, &report)) {
+      report.source = "capture_pose";
+      safety_report_ = report;
+      has_safety_report_ = true;
+      if (report.failure !=
+          CornerShuntSafetyFailure::FOOTPRINT_OUTSIDE_ENVELOPE) {
+        failure_reason_ = TurnManeuverFailureReason::CURRENT_POSE_UNSAFE;
+        auto decision = terminal(TurnManeuverPhase::FAULT,
+                                 TurnManeuverResult::FAULT);
+        decision.has_safety_report = true;
+        decision.safety_report = report;
+        return decision;
+      }
+    }
     phase_started_at_ = now_s;
     return transition(TurnManeuverPhase::ENTRY_CHECK);
   }
-  if (!capture_valid_)
+  if (!capture_valid_) {
+    failure_reason_ = TurnManeuverFailureReason::INVALID_CONTEXT;
     return terminal(TurnManeuverPhase::FAULT, TurnManeuverResult::FAULT);
+  }
 
   const auto context = live_context(input);
+  if (!context_valid(context)) {
+    failure_reason_ = TurnManeuverFailureReason::INVALID_CONTEXT;
+    return terminal(TurnManeuverPhase::FAULT, TurnManeuverResult::FAULT);
+  }
+  CornerShuntSafetyReport current_report;
+  if (!update_last_safe_pose(context, &current_report)) {
+    if (!last_safe_pose_valid_ &&
+        current_report.failure !=
+            CornerShuntSafetyFailure::FOOTPRINT_OUTSIDE_ENVELOPE) {
+      failure_reason_ = TurnManeuverFailureReason::CURRENT_POSE_UNSAFE;
+      current_report.source = "current_pose";
+      safety_report_ = current_report;
+      has_safety_report_ = true;
+      auto decision = terminal(TurnManeuverPhase::FAULT,
+                               TurnManeuverResult::FAULT);
+      decision.has_safety_report = true;
+      decision.safety_report = current_report;
+      return decision;
+    }
+    current_report.source = "current_pose_after_safe_capture";
+    safety_report_ = current_report;
+    has_safety_report_ = true;
+  }
   if (phase_ == TurnManeuverPhase::ENTRY_CHECK) {
     if (direct_entry_allowed(context)) {
       start_arc(context, now_s);
-      return {phase_, {}, TurnManeuverResult::RUNNING};
+      TurnManeuverDecision decision{phase_, {}, TurnManeuverResult::RUNNING};
+      attach_metadata(&decision);
+      return decision;
     }
     phase_started_at_ = now_s;
     return transition(TurnManeuverPhase::TRIM_SEARCH);
@@ -480,6 +707,10 @@ TurnManeuverController::update(const TurnManeuverInput &input, double now_s) {
         trim_attempts_ >= static_cast<std::size_t>(
                              std::max(1, config_.max_trim_attempts));
     if (limit_reached || !find_trim_target(context)) {
+      failure_reason_ = limit_reached
+                            ? TurnManeuverFailureReason::TRIM_LIMIT
+                            : TurnManeuverFailureReason::NO_TRIM_CANDIDATE;
+      recovery_direction_ = recovery_direction();
       auto decision = terminal(TurnManeuverPhase::NEED_REPLAN,
                                TurnManeuverResult::NEED_REPLAN);
       decision.trim_limit_reached = limit_reached;
@@ -496,6 +727,7 @@ TurnManeuverController::update(const TurnManeuverInput &input, double now_s) {
     decision.trim_target_selected = true;
     decision.trim_target_local_x = trim_target_x_;
     attach_trim_diagnostics(&decision);
+    attach_metadata(&decision);
     return decision;
   }
   if (phase_ == TurnManeuverPhase::REVERSE_TRIM ||
@@ -510,6 +742,7 @@ TurnManeuverController::update(const TurnManeuverInput &input, double now_s) {
       TurnManeuverDecision decision{phase_, {},
                                     TurnManeuverResult::RUNNING};
       attach_trim_diagnostics(&decision);
+      attach_metadata(&decision);
       return decision;
     }
     trim_completion_samples_ = 0;
@@ -522,8 +755,24 @@ TurnManeuverController::update(const TurnManeuverInput &input, double now_s) {
     if (trim_direction_change_allowed(context, now_s)) {
       if (trim_direction_switches_ >= static_cast<std::size_t>(
                                       std::max(0, config_.max_trim_direction_switches))) {
+        // A bounded trim search must not turn a now-valid exit pose into a
+        // deadlock.  If the live pose is safe and the public arc core can
+        // complete from it, hand control back to that core instead of
+        // injecting another direction change.
+        if (arc_controller_.pose_is_safe(context, context.pose) &&
+            direct_turn_feasible(context)) {
+          start_arc(context, now_s);
+          TurnManeuverDecision decision{phase_, {},
+                                        TurnManeuverResult::RUNNING};
+          attach_trim_diagnostics(&decision);
+          attach_metadata(&decision);
+          return decision;
+        }
         auto decision = terminal(TurnManeuverPhase::NEED_REPLAN,
                                  TurnManeuverResult::NEED_REPLAN);
+        failure_reason_ = TurnManeuverFailureReason::TRIM_LIMIT;
+        recovery_direction_ = recovery_direction();
+        attach_metadata(&decision);
         decision.trim_limit_reached = true;
         attach_trim_diagnostics(&decision);
         return decision;
@@ -539,6 +788,7 @@ TurnManeuverController::update(const TurnManeuverInput &input, double now_s) {
       TurnManeuverDecision decision{phase_, {},
                                     TurnManeuverResult::RUNNING};
       attach_trim_diagnostics(&decision);
+      attach_metadata(&decision);
       return decision;
     }
     const auto command = trim_command(context);
@@ -547,11 +797,24 @@ TurnManeuverController::update(const TurnManeuverInput &input, double now_s) {
       phase_started_at_ = now_s;
       report.source = "trim_command";
       report.attempted_command = command;
+      safety_report_ = report;
+      has_safety_report_ = true;
+      if (record_rejection(context, report)) {
+        failure_reason_ =
+            TurnManeuverFailureReason::TRIM_REJECTED_NO_IMPROVEMENT;
+        recovery_direction_ = recovery_direction();
+        auto decision = terminal(TurnManeuverPhase::NEED_REPLAN,
+                                 TurnManeuverResult::NEED_REPLAN);
+        decision.has_safety_report = true;
+        decision.safety_report = report;
+        attach_trim_diagnostics(&decision);
+        return decision;
+      }
       auto decision = transition(TurnManeuverPhase::TRIM_SEARCH);
       decision.has_safety_report = true;
       decision.safety_report = report;
-      safety_report_ = report;
-      has_safety_report_ = true;
+      attach_trim_diagnostics(&decision);
+      attach_metadata(&decision);
       return decision;
     }
     phase_ = trim_direction_ < 0 ? TurnManeuverPhase::REVERSE_TRIM
@@ -559,11 +822,12 @@ TurnManeuverController::update(const TurnManeuverInput &input, double now_s) {
     TurnManeuverDecision decision{phase_, command,
                                   TurnManeuverResult::RUNNING};
     attach_trim_diagnostics(&decision);
+    attach_metadata(&decision);
     return decision;
   }
   if (phase_ == TurnManeuverPhase::TRIM_SETTLE) {
     if (now_s - phase_started_at_ < std::max(0.0, config_.trim_settle_duration))
-      return {phase_, {}, TurnManeuverResult::RUNNING};
+      return transition(phase_);
     captured_.arrival_heading = context.pose.yaw;
     phase_started_at_ = now_s;
     return transition(TurnManeuverPhase::ENTRY_CHECK);
@@ -586,14 +850,54 @@ TurnManeuverController::update(const TurnManeuverInput &input, double now_s) {
       decision.safety_report = arc.safety_report;
       safety_report_ = arc.safety_report;
       has_safety_report_ = decision.has_safety_report;
+      const bool repeated = record_rejection(context, arc.safety_report);
+      if (repeated) {
+        failure_reason_ =
+            TurnManeuverFailureReason::ARC_REJECTED_NO_IMPROVEMENT;
+        recovery_direction_ = recovery_direction();
+        decision = terminal(TurnManeuverPhase::NEED_REPLAN,
+                            TurnManeuverResult::NEED_REPLAN);
+        decision.has_safety_report = true;
+        decision.safety_report = arc.safety_report;
+        attach_trim_diagnostics(&decision);
+        attach_metadata(&decision);
+      } else {
+        attach_metadata(&decision);
+      }
       return decision;
     }
-    return {TurnManeuverPhase::ARC, arc.command,
-            TurnManeuverResult::RUNNING};
+    TurnManeuverDecision decision{TurnManeuverPhase::ARC, arc.command,
+                                  TurnManeuverResult::RUNNING};
+    attach_metadata(&decision);
+    return decision;
   }
-  if (phase_ == TurnManeuverPhase::EXIT_ALIGN)
-    return terminal(TurnManeuverPhase::COMPLETE,
-                    TurnManeuverResult::COMPLETED);
+  if (phase_ == TurnManeuverPhase::EXIT_ALIGN) {
+    if (exit_aligned(context)) {
+      failure_reason_ = TurnManeuverFailureReason::NONE;
+      recovery_direction_ = TurnManeuverRecoveryDirection::NONE;
+      return terminal(TurnManeuverPhase::COMPLETE,
+                      TurnManeuverResult::COMPLETED);
+    }
+    const auto command = exit_align_command(context);
+    CornerShuntSafetyReport report;
+    if (!command_is_safe(context, command, &report)) {
+      failure_reason_ = TurnManeuverFailureReason::EXIT_ALIGN_REJECTED;
+      recovery_direction_ = recovery_direction();
+      report.source = "exit_align";
+      report.attempted_command = command;
+      safety_report_ = report;
+      has_safety_report_ = true;
+      auto decision = terminal(TurnManeuverPhase::NEED_REPLAN,
+                               TurnManeuverResult::NEED_REPLAN);
+      decision.has_safety_report = true;
+      decision.safety_report = report;
+      return decision;
+    }
+    TurnManeuverDecision decision{phase_, command,
+                                  TurnManeuverResult::RUNNING};
+    attach_metadata(&decision);
+    return decision;
+  }
   if (phase_ == TurnManeuverPhase::NEED_REPLAN)
     return terminal(phase_, TurnManeuverResult::NEED_REPLAN);
   if (phase_ == TurnManeuverPhase::FAULT)

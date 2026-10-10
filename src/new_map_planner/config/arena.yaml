@@ -156,8 +156,6 @@ planning:
   node_capture_distance_m: 0.005
   start_heading_tolerance_deg: 18.0
   turn_cost_m: 0.35
-  reverse_cost_m: 0.20
-  u_turn_threshold_deg: 150.0
   collision_sample_step_m: 0.01
   # The compatibility Path uses z=0.001 only for turns whose shared shunt
   # action passed the full chassis sweep above.
