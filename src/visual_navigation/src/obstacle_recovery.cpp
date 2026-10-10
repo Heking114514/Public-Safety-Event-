@@ -359,14 +359,37 @@ void WaypointNavigator::RecordExecutedPose() {
 void WaypointNavigator::BeginObstacleRecovery() {
   if (!pendingFrontObstacle_ || !navigationActive_)
     return;
-  pendingFrontObstacle_ = false;
   routeTransitionRetreat_ = false;
+  if (!obstacleRecoveryController_.idle()) {
+    // A range callback can race with the control tick that already accepted
+    // the same event. The active recovery owns it; do not replace that trace
+    // or raise a second recovery request.
+    pendingFrontObstacle_ = false;
+    PublishStop();
+    RCLCPP_WARN(get_logger(),
+                "Obstacle recovery request arrived while recovery was already "
+                "active; retaining the existing recovery trace");
+    return;
+  }
   const auto anchor = SelectObstacleRecoveryAnchor();
   if (!obstacleRecoveryController_.trigger(
           currentX_, currentY_, currentYaw_, lastMotionCommand_.linear.x,
           lastMotionCommand_.angular.z, anchor.x, anchor.y)) {
+    // The event may only be consumed after the recovery controller accepts it.
+    // A rejected trigger is a navigation fault, not a reason to continue with
+    // the obstacle latch silently cleared.
+    pendingFrontObstacle_ = false;
+    navigationActive_ = false;
+    PublishStop();
+    SetState("FAULT_OBSTACLE_RECOVERY_REJECTED");
+    RCLCPP_ERROR(
+        get_logger(),
+        "Obstacle recovery rejected while an obstacle was pending; "
+        "holding the vehicle at (%.3f, %.3f, %.1fdeg)",
+        currentX_, currentY_, currentYaw_ * 180.0 / kPi);
     return;
   }
+  pendingFrontObstacle_ = false;
   pathProgressSupervisor_.Reset();
   turnProgressSupervisor_.Reset();
   ResetManeuver();

@@ -72,6 +72,21 @@ void WaypointNavigator::RunCornerShunt(const ControlFrame &frame,
                 decision.trim_footprint_rejections,
                 decision.trim_turn_rejections);
   }
+  if (decision.phase == visual_navigation::TurnManeuverPhase::REVERSE_TRIM ||
+      decision.phase == visual_navigation::TurnManeuverPhase::FORWARD_TRIM) {
+    const double cosine = std::cos(context.geometry_heading);
+    const double sine = std::sin(context.geometry_heading);
+    const double local_x = cosine * (context.pose.x - context.junction_x) +
+                           sine * (context.pose.y - context.junction_y);
+    RCLCPP_INFO_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "Turn trim control: phase=%s direction=%d switches=%zu vx=%.3f "
+        "target_local_x=%.3f local_x=%.3f longitudinal_error=%.3f",
+        visual_navigation::TurnManeuverStatus(decision.phase),
+        decision.trim_direction, decision.trim_direction_switches,
+        decision.command.linear_x, decision.trim_target_local_x, local_x,
+        decision.trim_target_local_x - local_x);
+  }
   if (decision.has_safety_report) {
     const auto &report = decision.safety_report;
     RCLCPP_WARN(

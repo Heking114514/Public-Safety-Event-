@@ -46,6 +46,11 @@ struct TurnManeuverConfig {
   double trim_yaw_rate_damping{0.35};
   double trim_max_angular_speed{0.25};
   double trim_settle_duration{0.20};
+  double trim_reverse_hysteresis{0.015};
+  double trim_min_direction_hold{0.30};
+  double trim_min_direction_distance{0.010};
+  int trim_completion_samples{3};
+  int max_trim_direction_switches{2};
   double trim_no_progress_timeout{3.0};
   double trim_progress_distance{0.005};
   double trim_progress_yaw{0.03};
@@ -72,6 +77,8 @@ struct TurnManeuverDecision {
   std::size_t trim_candidates_checked{0};
   std::size_t trim_footprint_rejections{0};
   std::size_t trim_turn_rejections{0};
+  int trim_direction{0};
+  std::size_t trim_direction_switches{0};
   double trim_target_local_x{0.0};
 
   TurnManeuverDecision() = default;
@@ -111,10 +118,14 @@ private:
   bool find_trim_target(const CornerShuntContext &context);
   bool trim_target_reached(const CornerShuntContext &context) const;
   CornerShuntTwist trim_command(const CornerShuntContext &context) const;
+  bool trim_direction_change_allowed(const CornerShuntContext &context,
+                                     double now_s) const;
   bool command_is_safe(const CornerShuntContext &context,
                        const CornerShuntTwist &command,
                        CornerShuntSafetyReport *report = nullptr) const;
   void attach_trim_diagnostics(TurnManeuverDecision *decision) const;
+  void reset_trim_progress(const CornerShuntContext &context,
+                           double now_s);
   bool trim_stalled(const CornerShuntContext &context, double now_s);
   void start_arc(const CornerShuntContext &context, double now_s);
 
@@ -131,6 +142,11 @@ private:
   double phase_started_at_{0.0};
   double trim_search_distance_{0.0};
   double trim_target_x_{0.0};
+  int trim_direction_{0};
+  double trim_direction_started_at_{0.0};
+  double trim_direction_start_x_{0.0};
+  int trim_completion_samples_{0};
+  std::size_t trim_direction_switches_{0};
   std::size_t trim_attempts_{0};
   std::size_t trim_candidates_checked_{0};
   std::size_t trim_footprint_rejections_{0};
@@ -139,6 +155,9 @@ private:
   CornerShuntSafetyReport safety_report_;
   double progress_started_at_{0.0};
   CornerShuntPose progress_pose_;
+  double progress_longitudinal_error_{0.0};
+  double progress_lateral_error_{0.0};
+  double progress_yaw_error_{0.0};
 };
 
 } // namespace visual_navigation

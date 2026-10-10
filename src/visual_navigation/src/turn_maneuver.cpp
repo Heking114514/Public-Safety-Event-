@@ -102,6 +102,11 @@ void TurnManeuverController::reset() {
   phase_started_at_ = 0.0;
   trim_search_distance_ = 0.0;
   trim_target_x_ = 0.0;
+  trim_direction_ = 0;
+  trim_direction_started_at_ = 0.0;
+  trim_direction_start_x_ = 0.0;
+  trim_completion_samples_ = 0;
+  trim_direction_switches_ = 0;
   trim_attempts_ = 0;
   trim_candidates_checked_ = 0;
   trim_footprint_rejections_ = 0;
@@ -110,6 +115,9 @@ void TurnManeuverController::reset() {
   safety_report_ = {};
   progress_started_at_ = 0.0;
   progress_pose_ = {};
+  progress_longitudinal_error_ = 0.0;
+  progress_lateral_error_ = 0.0;
+  progress_yaw_error_ = 0.0;
 }
 
 void TurnManeuverController::begin(double now_s) {
@@ -250,9 +258,12 @@ bool TurnManeuverController::find_trim_target(
     }
     trim_search_distance_ = distance;
     trim_target_x_ = local.x - distance;
+    trim_direction_ = trim_target_x_ < local.x ? -1 : 1;
+    trim_direction_started_at_ = phase_started_at_;
+    trim_direction_start_x_ = local.x;
+    trim_completion_samples_ = 0;
     ++trim_attempts_;
-    progress_started_at_ = phase_started_at_;
-    progress_pose_ = context.pose;
+    reset_trim_progress(context, phase_started_at_);
     return true;
   }
   return false;
@@ -272,7 +283,8 @@ CornerShuntTwist TurnManeuverController::trim_command(
     const CornerShuntContext &context) const {
   const auto local = local_pose(context.pose);
   const double longitudinal_error = trim_target_x_ - local.x;
-  const bool reverse = longitudinal_error < 0.0;
+  const bool reverse = trim_direction_ < 0 ||
+                       (trim_direction_ == 0 && longitudinal_error < 0.0);
   const double speed = std::max(0.005, config_.trim_speed);
   const double yaw_error = NormalizeShuntAngle(captured_.geometry_heading -
                                                context.pose.yaw);
@@ -286,12 +298,51 @@ CornerShuntTwist TurnManeuverController::trim_command(
           ClampShunt(angular, -limit, limit)};
 }
 
+bool TurnManeuverController::trim_direction_change_allowed(
+    const CornerShuntContext &context, double now_s) const {
+  if (trim_direction_ == 0)
+    return true;
+  const auto local = local_pose(context.pose);
+  const double error = trim_target_x_ - local.x;
+  const int desired_direction = error < 0.0 ? -1 : 1;
+  if (desired_direction == trim_direction_)
+    return false;
+  const double hysteresis = std::max(0.0, config_.trim_reverse_hysteresis);
+  const double position_tolerance =
+      std::max(0.0, config_.trim_position_tolerance);
+  if (std::abs(error) <= position_tolerance + hysteresis)
+    return false;
+  if (now_s - trim_direction_started_at_ <
+      std::max(0.0, config_.trim_min_direction_hold))
+    return false;
+  return std::abs(local.x - trim_direction_start_x_) >=
+         std::max(0.0, config_.trim_min_direction_distance);
+}
+
 bool TurnManeuverController::command_is_safe(
     const CornerShuntContext &context,
     const CornerShuntTwist &command,
     CornerShuntSafetyReport *report) const {
-  if (!arc_controller_.pose_is_safe(context, context.pose, report))
-    return false;
+  CornerShuntSafetyReport current_report;
+  const bool current_safe =
+      arc_controller_.pose_is_safe(context, context.pose, &current_report);
+  bool envelope_recovery = false;
+  if (!current_safe) {
+    const auto local = local_pose(context.pose);
+    // A measured overshoot can leave the footprint outside the lane before
+    // the controller gets a chance to react. Only the validated reverse trim
+    // may escape that envelope; all other commands remain fail-closed.
+    envelope_recovery =
+        command.linear_x < -1.0e-9 &&
+        current_report.failure ==
+            CornerShuntSafetyFailure::FOOTPRINT_OUTSIDE_ENVELOPE &&
+        trim_target_x_ < local.x;
+    if (!envelope_recovery) {
+      if (report != nullptr)
+        *report = current_report;
+      return false;
+    }
+  }
   auto pose = context.pose;
   auto applied = context.applied_twist;
   const double horizon = std::max(0.05, config_.corner.prediction_horizon);
@@ -301,7 +352,14 @@ bool TurnManeuverController::command_is_safe(
   for (int index = 0; index < samples; ++index) {
     applied = LimitedCommand(config_.corner, applied, command, step);
     pose = Integrate(pose, applied, step);
-    if (!arc_controller_.pose_is_safe(context, pose, report)) {
+    CornerShuntSafetyReport sample_report;
+    if (!arc_controller_.pose_is_safe(context, pose, &sample_report)) {
+      if (envelope_recovery &&
+          sample_report.failure ==
+              CornerShuntSafetyFailure::FOOTPRINT_OUTSIDE_ENVELOPE)
+        continue;
+      if (report != nullptr)
+        *report = sample_report;
       if (report != nullptr)
         report->prediction_sample = index;
       return false;
@@ -316,18 +374,44 @@ void TurnManeuverController::attach_trim_diagnostics(
   decision->trim_candidates_checked = trim_candidates_checked_;
   decision->trim_footprint_rejections = trim_footprint_rejections_;
   decision->trim_turn_rejections = trim_turn_rejections_;
+  decision->trim_direction = trim_direction_;
+  decision->trim_direction_switches = trim_direction_switches_;
+  decision->trim_target_local_x = trim_target_x_;
   decision->has_safety_report = has_safety_report_;
   decision->safety_report = safety_report_;
 }
 
+void TurnManeuverController::reset_trim_progress(
+    const CornerShuntContext &context, double now_s) {
+  const auto local = local_pose(context.pose);
+  progress_started_at_ = now_s;
+  progress_pose_ = context.pose;
+  progress_longitudinal_error_ =
+      std::abs(trim_target_x_ - local.x);
+  progress_lateral_error_ = std::abs(local.y);
+  progress_yaw_error_ = std::abs(local.yaw);
+}
+
 bool TurnManeuverController::trim_stalled(const CornerShuntContext &context,
                                           double now_s) {
-  const double distance = std::hypot(context.pose.x - progress_pose_.x,
-                                     context.pose.y - progress_pose_.y);
-  const double yaw = std::abs(NormalizeShuntAngle(
-      context.pose.yaw - progress_pose_.yaw));
-  if (distance >= std::max(0.0, config_.trim_progress_distance) ||
-      yaw >= std::max(0.0, config_.trim_progress_yaw)) {
+  const auto local = local_pose(context.pose);
+  const double longitudinal_error =
+      std::abs(trim_target_x_ - local.x);
+  const double lateral_error = std::abs(local.y);
+  const double yaw_error = std::abs(local.yaw);
+  const bool longitudinal_progress =
+      progress_longitudinal_error_ - longitudinal_error >=
+      std::max(0.0, config_.trim_progress_distance);
+  const bool lateral_progress =
+      progress_lateral_error_ - lateral_error >=
+      std::max(0.0, config_.trim_progress_distance);
+  const bool yaw_progress =
+      progress_yaw_error_ - yaw_error >=
+      std::max(0.0, config_.trim_progress_yaw);
+  if (longitudinal_progress || lateral_progress || yaw_progress) {
+    progress_longitudinal_error_ = longitudinal_error;
+    progress_lateral_error_ = lateral_error;
+    progress_yaw_error_ = yaw_error;
     progress_started_at_ = now_s;
     progress_pose_ = context.pose;
     return false;
@@ -417,12 +501,45 @@ TurnManeuverController::update(const TurnManeuverInput &input, double now_s) {
   if (phase_ == TurnManeuverPhase::REVERSE_TRIM ||
       phase_ == TurnManeuverPhase::FORWARD_TRIM) {
     if (trim_target_reached(context)) {
-      phase_started_at_ = now_s;
-      return transition(TurnManeuverPhase::TRIM_SETTLE);
+      ++trim_completion_samples_;
+      if (trim_completion_samples_ >=
+          std::max(1, config_.trim_completion_samples)) {
+        phase_started_at_ = now_s;
+        return transition(TurnManeuverPhase::TRIM_SETTLE);
+      }
+      TurnManeuverDecision decision{phase_, {},
+                                    TurnManeuverResult::RUNNING};
+      attach_trim_diagnostics(&decision);
+      return decision;
     }
+    trim_completion_samples_ = 0;
     if (trim_stalled(context, now_s)) {
       phase_started_at_ = now_s;
-      return transition(TurnManeuverPhase::TRIM_SEARCH);
+      auto decision = transition(TurnManeuverPhase::TRIM_SEARCH);
+      attach_trim_diagnostics(&decision);
+      return decision;
+    }
+    if (trim_direction_change_allowed(context, now_s)) {
+      if (trim_direction_switches_ >= static_cast<std::size_t>(
+                                      std::max(0, config_.max_trim_direction_switches))) {
+        auto decision = terminal(TurnManeuverPhase::NEED_REPLAN,
+                                 TurnManeuverResult::NEED_REPLAN);
+        decision.trim_limit_reached = true;
+        attach_trim_diagnostics(&decision);
+        return decision;
+      }
+      const auto local = local_pose(context.pose);
+      trim_direction_ = trim_target_x_ - local.x < 0.0 ? -1 : 1;
+      ++trim_direction_switches_;
+      trim_direction_started_at_ = now_s;
+      trim_direction_start_x_ = local.x;
+      reset_trim_progress(context, now_s);
+      phase_ = trim_direction_ < 0 ? TurnManeuverPhase::REVERSE_TRIM
+                                   : TurnManeuverPhase::FORWARD_TRIM;
+      TurnManeuverDecision decision{phase_, {},
+                                    TurnManeuverResult::RUNNING};
+      attach_trim_diagnostics(&decision);
+      return decision;
     }
     const auto command = trim_command(context);
     CornerShuntSafetyReport report;
@@ -437,9 +554,12 @@ TurnManeuverController::update(const TurnManeuverInput &input, double now_s) {
       has_safety_report_ = true;
       return decision;
     }
-    phase_ = command.linear_x < 0.0 ? TurnManeuverPhase::REVERSE_TRIM
-                                    : TurnManeuverPhase::FORWARD_TRIM;
-    return {phase_, command, TurnManeuverResult::RUNNING};
+    phase_ = trim_direction_ < 0 ? TurnManeuverPhase::REVERSE_TRIM
+                                 : TurnManeuverPhase::FORWARD_TRIM;
+    TurnManeuverDecision decision{phase_, command,
+                                  TurnManeuverResult::RUNNING};
+    attach_trim_diagnostics(&decision);
+    return decision;
   }
   if (phase_ == TurnManeuverPhase::TRIM_SETTLE) {
     if (now_s - phase_started_at_ < std::max(0.0, config_.trim_settle_duration))

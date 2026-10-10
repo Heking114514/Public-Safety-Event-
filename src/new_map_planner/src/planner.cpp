@@ -678,6 +678,49 @@ PlanResult MapPlanner::plan_coverage(const PlanRequest &request,
     return path;
   };
 
+  struct CoverageState {
+    int node{-1};
+    int heading{-1};
+    int count{0};
+    int arrival_lane{-1};
+  };
+  const auto apply_path = [this](const std::vector<RouteStep> &path,
+                                 CoverageState &state,
+                                 std::unordered_set<int> &remaining) {
+    for (const RouteStep &step : path) {
+      const DirectedLane &directed = graph_.directed_lane(step.directed_lane);
+      remaining.erase(directed.lane);
+      state.node = directed.to;
+      if (step.ordinary_count >= 0)
+        state.count = step.ordinary_count;
+      if (step.reverse) {
+        state.arrival_lane = -1;
+      } else {
+        state.heading = directed.heading;
+        state.arrival_lane = directed.lane;
+      }
+    }
+  };
+
+  // The nearest remaining lane is not always a safe next choice: it can leave
+  // the vehicle at count=2 with no task node or legal continuation. Before
+  // committing that greedy choice, check that at least one remaining lane is
+  // reachable from the resulting state. If not, try each remaining lane as a
+  // bounded escape alternative and keep the original choice only when no
+  // alternative has a continuation.
+  const auto has_escape_after = [&](const std::vector<RouteStep> &path,
+                                    const CoverageState &initial,
+                                    const std::unordered_set<int> &before) {
+    CoverageState next = initial;
+    std::unordered_set<int> after = before;
+    apply_path(path, next, after);
+    if (after.empty())
+      return true;
+    return !shortest(next.node, next.heading, next.count, next.arrival_lane,
+                     after, -1)
+                .empty();
+  };
+
   for (const StartSeed &seed : seeds) {
     PlanResult candidate;
     candidate.traversals = seed.prefix;
@@ -694,10 +737,23 @@ PlanResult MapPlanner::plan_coverage(const PlanRequest &request,
     }
     int arrival_lane = -1;
     while (!remaining.empty()) {
-      const std::vector<RouteStep> path =
+      const CoverageState current{node, heading, count, arrival_lane};
+      std::vector<RouteStep> path =
           shortest(node, heading, count, arrival_lane, remaining, -1);
       if (path.empty()) {
         break;
+      }
+      if (remaining.size() > 1 && !has_escape_after(path, current, remaining)) {
+        for (int lane : remaining) {
+          const std::unordered_set<int> only_lane{lane};
+          const std::vector<RouteStep> alternative =
+              shortest(node, heading, count, arrival_lane, only_lane, -1);
+          if (!alternative.empty() &&
+              has_escape_after(alternative, current, remaining)) {
+            path = alternative;
+            break;
+          }
+        }
       }
       for (const RouteStep &step : path) {
         const DirectedLane &directed = graph_.directed_lane(step.directed_lane);

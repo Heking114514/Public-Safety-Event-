@@ -286,6 +286,21 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
   turnManeuverConfig_.direct_entry_yaw_tolerance = std::max(
       0.0, declare_parameter<double>(
                "turn_maneuver_entry_yaw_tolerance_rad", 0.20));
+  turnManeuverConfig_.trim_reverse_hysteresis = std::max(
+      0.0, declare_parameter<double>(
+               "turn_maneuver_trim_reverse_hysteresis_m", 0.015));
+  turnManeuverConfig_.trim_min_direction_hold = std::max(
+      0.0, declare_parameter<double>(
+               "turn_maneuver_trim_min_direction_hold_s", 0.30));
+  turnManeuverConfig_.trim_min_direction_distance = std::max(
+      0.0, declare_parameter<double>(
+               "turn_maneuver_trim_min_direction_distance_m", 0.010));
+  turnManeuverConfig_.trim_completion_samples = std::max(
+      1, static_cast<int>(declare_parameter<int64_t>(
+             "turn_maneuver_trim_completion_samples", 3)));
+  turnManeuverConfig_.max_trim_direction_switches = std::max(
+      0, static_cast<int>(declare_parameter<int64_t>(
+             "turn_maneuver_max_direction_switches", 2)));
   turnManeuverController_.configure(turnManeuverConfig_);
   const double pathProgressTimeout =
       std::max(0.0, declare_parameter<double>("path_progress_timeout", 10.0));

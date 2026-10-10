@@ -207,6 +207,54 @@ TEST(TurnManeuver, RecordedSecondCornerUsesIncomingRoadHeading) {
       << controller.trim_attempts();
 }
 
+TEST(TurnManeuver, RfidAnchorRightTurnUsesAxleOffsetEntry) {
+  auto config = Config();
+  config.corner.base_offset_x = 0.03;
+  visual_navigation::TurnManeuverController controller(config);
+  auto input = RightTurn();
+  input.context.junction_x = 0.2;
+  input.context.junction_y = -0.5;
+  input.context.geometry_heading = -87.3 * kPi / 180.0;
+  input.context.arrival_heading = -87.3 * kPi / 180.0;
+  input.context.target_heading = 0.0;
+  // RFID correction anchors base_link at the junction. The controller
+  // converts it to the axle midpoint using the measured 30 mm offset.
+  input.context.pose = {0.2, -0.47, input.context.arrival_heading};
+  controller.begin(0.0);
+
+  const auto decision = RunToTerminal(&controller, &input, config);
+
+  EXPECT_EQ(decision.result,
+            visual_navigation::TurnManeuverResult::COMPLETED)
+      << "phase=" << visual_navigation::TurnManeuverStatus(decision.phase)
+      << " pose=(" << input.context.pose.x << ", " << input.context.pose.y
+      << ", " << input.context.pose.yaw << ") trims="
+      << controller.trim_attempts();
+}
+
+TEST(TurnManeuver, UnsafeMidTurnCanRetreatIntoSafeEnvelope) {
+  auto config = Config();
+  config.corner.base_offset_x = 0.03;
+  visual_navigation::TurnManeuverController controller(config);
+  auto input = RightTurn();
+  input.context.junction_x = 0.2;
+  input.context.junction_y = -0.5;
+  input.context.geometry_heading = -87.2 * kPi / 180.0;
+  input.context.arrival_heading = -87.2 * kPi / 180.0;
+  input.context.target_heading = 0.0;
+  input.context.pose = {0.225, -0.485, -37.4 * kPi / 180.0};
+  controller.begin(0.0);
+
+  const auto decision = RunToTerminal(&controller, &input, config);
+
+  EXPECT_EQ(decision.result,
+            visual_navigation::TurnManeuverResult::COMPLETED)
+      << "phase=" << visual_navigation::TurnManeuverStatus(decision.phase)
+      << " pose=(" << input.context.pose.x << ", " << input.context.pose.y
+      << ", " << input.context.pose.yaw << ") trims="
+      << controller.trim_attempts();
+}
+
 TEST(TurnManeuver, LargeArrivalErrorRequestsClosedLoopReverseTrim) {
   auto config = Config();
   config.direct_entry_yaw_tolerance = 0.10;
@@ -228,6 +276,73 @@ TEST(TurnManeuver, LargeArrivalErrorRequestsClosedLoopReverseTrim) {
   }
   EXPECT_TRUE(saw_reverse);
   EXPECT_GT(controller.trim_attempts(), 0U);
+}
+
+TEST(TurnManeuver, TrimDirectionUsesHysteresisAfterTargetOvershoot) {
+  auto config = Config();
+  config.trim_min_direction_hold = 0.30;
+  config.trim_min_direction_distance = 0.010;
+  config.trim_reverse_hysteresis = 0.015;
+  visual_navigation::TurnManeuverController controller(config);
+  auto input = LeftTurn(-0.050, 0.0, 0.22);
+  controller.begin(0.0);
+
+  visual_navigation::TurnManeuverDecision decision;
+  for (int index = 0; index < 30; ++index) {
+    decision = controller.update(input, index / 30.0);
+    if (decision.phase == visual_navigation::TurnManeuverPhase::REVERSE_TRIM)
+      break;
+    ApplyDecision(&input, decision, config, 1.0 / 30.0);
+  }
+  ASSERT_EQ(decision.phase, visual_navigation::TurnManeuverPhase::REVERSE_TRIM);
+  const double target_x = controller.trim_target_x();
+
+  // Move beyond the target far enough to request the opposite direction, but
+  // before the minimum hold time has elapsed.
+  input.context.pose.x = target_x - 0.030;
+  input.context.pose.y = 0.0;
+  input.context.pose.yaw = 0.0;
+  decision = controller.update(input, 0.20);
+  EXPECT_EQ(decision.phase, visual_navigation::TurnManeuverPhase::REVERSE_TRIM);
+  EXPECT_LT(decision.command.linear_x, 0.0);
+
+  // Once the hold time is satisfied, the controller changes direction only
+  // after a zero-command cycle, rather than immediately injecting forward vx.
+  decision = controller.update(input, 0.60);
+  EXPECT_EQ(decision.phase, visual_navigation::TurnManeuverPhase::FORWARD_TRIM);
+  EXPECT_DOUBLE_EQ(decision.command.linear_x, 0.0);
+  EXPECT_DOUBLE_EQ(decision.command.angular_z, 0.0);
+}
+
+TEST(TurnManeuver, TrimDirectionSwitchesAreBounded) {
+  auto config = Config();
+  config.trim_min_direction_hold = 0.0;
+  config.trim_min_direction_distance = 0.0;
+  config.trim_reverse_hysteresis = 0.0;
+  config.max_trim_direction_switches = 1;
+  visual_navigation::TurnManeuverController controller(config);
+  auto input = LeftTurn(-0.050, 0.0, 0.22);
+  controller.begin(0.0);
+
+  visual_navigation::TurnManeuverDecision decision;
+  for (int index = 0; index < 30; ++index) {
+    decision = controller.update(input, index / 30.0);
+    if (decision.phase == visual_navigation::TurnManeuverPhase::REVERSE_TRIM)
+      break;
+    ApplyDecision(&input, decision, config, 1.0 / 30.0);
+  }
+  ASSERT_EQ(decision.phase, visual_navigation::TurnManeuverPhase::REVERSE_TRIM);
+  const double target_x = controller.trim_target_x();
+  input.context.pose.x = target_x - 0.030;
+  decision = controller.update(input, 1.0);
+  ASSERT_EQ(decision.phase, visual_navigation::TurnManeuverPhase::FORWARD_TRIM);
+  EXPECT_EQ(decision.trim_direction_switches, 1U);
+
+  input.context.pose.x = target_x + 0.030;
+  decision = controller.update(input, 2.0);
+  EXPECT_EQ(decision.result,
+            visual_navigation::TurnManeuverResult::NEED_REPLAN);
+  EXPECT_TRUE(decision.trim_limit_reached);
 }
 
 TEST(TurnManeuver, NoTrimCandidateRequestsReplanInsteadOfFault) {

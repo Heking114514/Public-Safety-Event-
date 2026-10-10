@@ -20,6 +20,26 @@ log() {
   printf '[new-map-planner] %s\n' "$*"
 }
 
+cleanup_previous_planner() {
+  local patterns=(
+    "new_map_planner_node"
+    "new_map_planner_ui"
+    "mission_manager_node"
+  )
+  local pattern pid
+  for pattern in "${patterns[@]}"; do
+    while read -r pid; do
+      [[ -n "${pid}" ]] || continue
+      if [[ "${pid}" == "$$" || "${pid}" == "${PPID}" ]]; then
+        continue
+      fi
+      log "关闭旧进程: ${pattern} (pid=${pid})"
+      kill "${pid}" 2>/dev/null || true
+    done < <(pgrep -f "${WORKSPACE_ROOT}/install/.*/${pattern}" || true)
+  done
+  sleep 0.3
+}
+
 fail() {
   printf '[new-map-planner] ERROR: %s\n' "$*" >&2
   exit 1
@@ -135,6 +155,8 @@ set +u
 # shellcheck disable=SC1090
 source "${WORKSPACE_ROOT}/install/setup.bash"
 set -u
+
+cleanup_previous_planner
 
 if "${ROS2_COMMAND}" service type /new_map_planner/plan >/dev/null 2>&1; then
   fail "已有 /new_map_planner/plan 服务；请先关闭旧的新规划器"
