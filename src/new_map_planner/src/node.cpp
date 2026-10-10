@@ -211,10 +211,16 @@ private:
         arena_path_publisher_->publish(response->plan.arena_path);
         navigation_path_publisher_->publish(response->plan.navigation_path);
         response->activated = false;
+      } else {
+        response->plan.map_id = planner_->config().map_id;
+        response->plan.status = PlanFailureName(result.failure_reason);
       }
     } catch (const std::exception &exception) {
       response->success = false;
       response->activated = false;
+      response->plan.map_id = planner_->config().map_id;
+      response->plan.status =
+          PlanFailureName(PlanFailureReason::INVALID_REQUEST);
       response->message =
           std::string("planning request rejected: ") + exception.what();
     }

@@ -28,7 +28,12 @@ private:
     std::vector<Traversal> prefix;
   };
 
-  std::vector<StartSeed>
+  struct StartSeedResult {
+    std::vector<StartSeed> seeds;
+    PlanFailureReason failure_reason{PlanFailureReason::NONE};
+  };
+
+  StartSeedResult
   start_seeds(const Pose &start, const std::vector<Polygon> &obstacles) const;
   PlanResult plan_targets(const PlanRequest &request, const Pose &start,
                           const std::vector<Polygon> &obstacles) const;

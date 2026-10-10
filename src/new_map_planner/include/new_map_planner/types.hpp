@@ -150,10 +150,26 @@ struct PlanRequest {
   bool sequential_targets{false};
 };
 
+enum class PlanFailureReason : uint8_t {
+  NONE = 0,
+  INVALID_REQUEST,
+  START_POSE_COLLISION,
+  START_NOT_ON_ROAD,
+  START_HEADING_MISMATCH,
+  START_FORWARD_BLOCKED,
+  START_REQUIRES_REVERSE,
+  NO_FEASIBLE_ROUTE,
+  COVERAGE_INCOMPLETE,
+  ROUTE_INVALID,
+};
+
+const char *PlanFailureName(PlanFailureReason reason);
+
 struct PlanResult {
   bool success{false};
   bool complete{false};
   bool collision_checked{false};
+  PlanFailureReason failure_reason{PlanFailureReason::NONE};
   std::string message;
   std::vector<Traversal> traversals;
   std::vector<Maneuver> maneuvers;
