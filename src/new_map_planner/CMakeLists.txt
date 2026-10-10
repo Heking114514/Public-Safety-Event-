@@ -36,6 +36,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 add_library(new_map_planner_core
   src/collision.cpp
   src/config.cpp
+  src/coverage.cpp
   src/geometry.cpp
   src/graph.cpp
   src/maneuver.cpp

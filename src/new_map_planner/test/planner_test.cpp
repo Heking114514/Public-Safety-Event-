@@ -252,6 +252,35 @@ TEST(Planner, CompleteRoadCoverageUsesExplicitManeuvers) {
         return maneuver.type == new_map_planner::ManeuverType::TURN_LEFT ||
                maneuver.type == new_map_planner::ManeuverType::TURN_RIGHT;
       }));
+  for (std::size_t index = 0; index < result.traversals.size(); ++index) {
+    EXPECT_FALSE(result.traversals[index].reverse)
+        << "index=" << index << " lane="
+        << result.traversals[index].directed_lane;
+  }
+  EXPECT_TRUE(std::none_of(
+      result.maneuvers.begin(), result.maneuvers.end(),
+      [](const new_map_planner::Maneuver &maneuver) {
+        return maneuver.type == new_map_planner::ManeuverType::REVERSE;
+      }));
+}
+
+TEST(Planner, CoverageSearchIsDeterministic) {
+  const auto config = OfficialConfig();
+  new_map_planner::MapPlanner planner(config);
+  const auto request = HomeRequest("coverage");
+
+  const auto first = planner.plan(request);
+  const auto second = planner.plan(request);
+
+  ASSERT_TRUE(first.success) << first.message;
+  ASSERT_TRUE(second.success) << second.message;
+  ASSERT_EQ(first.traversals.size(), second.traversals.size());
+  for (std::size_t index = 0; index < first.traversals.size(); ++index) {
+    EXPECT_EQ(first.traversals[index].directed_lane,
+              second.traversals[index].directed_lane);
+    EXPECT_EQ(first.traversals[index].reverse,
+              second.traversals[index].reverse);
+  }
 }
 
 TEST(Planner, RunsTaskTunnelAndRoadStagesFromMeasuredEndPoses) {
@@ -645,5 +674,20 @@ TEST(Planner, DynamicBlockageDefersOnlyUnreachableCoverage) {
   EXPECT_NE(std::find(result.deferred_lane_ids.begin(),
                       result.deferred_lane_ids.end(), "TUNNEL_1"),
             result.deferred_lane_ids.end());
+  EXPECT_TRUE(std::none_of(
+      result.traversals.begin(), result.traversals.end(),
+      [](const new_map_planner::Traversal &traversal) {
+        return traversal.reverse;
+      }));
+
+  new_map_planner::PlanRequest return_request;
+  return_request.start_map = result.navigation_path.back();
+  return_request.mode = "coverage";
+  return_request.completed_lane_ids = config.default_inspection_lanes;
+  return_request.dynamic_obstacles_map = request.dynamic_obstacles_map;
+  return_request.return_home = true;
+  const auto return_route = planner.plan(return_request);
+  ASSERT_TRUE(return_route.success) << return_route.message;
+  EXPECT_TRUE(return_route.complete);
   EXPECT_LT(elapsed_ms, 2000.0);
 }
