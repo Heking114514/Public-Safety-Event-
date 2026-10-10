@@ -22,7 +22,6 @@ VEHICLE = "#e04444"
 
 class Controller(Protocol):
     config: dict[str, Any]
-    physical: Any
     mode_var: tk.StringVar
     status_var: tk.StringVar
     odom_var: tk.StringVar
@@ -350,8 +349,8 @@ class PlannerView:
         if self.controller.current_pose_arena is not None:
             x, y, yaw = self.controller.current_pose_arena
             center_x, center_y = self._point(x, y)
-            length = float(self.controller.physical.length_m) * scale
-            width = float(self.controller.physical.width_m) * scale
+            length = 0.16 * scale
+            width = 0.12 * scale
             points = []
             for local_x, local_y in (
                 (0.55 * length, 0.0),

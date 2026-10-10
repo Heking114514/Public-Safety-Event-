@@ -6,8 +6,6 @@
 #include <cmath>
 #include <cstddef>
 #include <future>
-#include <limits>
-#include <string>
 #include <thread>
 #include <vector>
 
@@ -34,13 +32,10 @@ struct CornerShuntConfig {
   double road_margin{0.002};
   double road_back{0.60};
   double road_forward{0.56};
-  // Physical dimensions are injected from vehicle_physical.yaml.  An invalid
-  // sentinel prevents direct construction from silently using a stale chassis
-  // model when the central configuration was not loaded.
-  double vehicle_length{std::numeric_limits<double>::quiet_NaN()};
-  double vehicle_width{std::numeric_limits<double>::quiet_NaN()};
-  double base_offset_x{std::numeric_limits<double>::quiet_NaN()};
-  double base_offset_y{std::numeric_limits<double>::quiet_NaN()};
+  double vehicle_length{0.1320};
+  double vehicle_width{0.1320};
+  double base_offset_x{0.030};
+  double base_offset_y{0.0};
   double stop_duration{0.18};
   double check_duration{0.05};
   double step_duration{0.20};
@@ -119,7 +114,6 @@ inline const char *CornerShuntSafetyFailureName(
 }
 
 struct CornerShuntContext {
-  std::string junction_id;
   CornerShuntPose pose;
   CornerShuntTwist applied_twist;
   CornerShuntTwist measured_twist;
@@ -253,9 +247,13 @@ public:
       last_command_ = {};
       progress_started_at_ = now_s;
       progress_pose_ = context.pose;
-      ++plan_count_;
-      if (plan_count_ >= std::max(1, config_.max_plan_count))
+      if (!context.reverse_arrival) {
+        ++plan_count_;
+        if (plan_count_ >= std::max(1, config_.max_plan_count))
+          return block();
+      } else if (plan_count_ >= std::max(1, config_.max_plan_count)) {
         return block();
+      }
       return set_phase(CornerShuntPhase::CHECK, now_s, {});
     }
     if (target_reached(context)) {
@@ -273,17 +271,26 @@ public:
     if (phase_ == CornerShuntPhase::CHECK) {
       if (phase_elapsed < std::max(0.0, config_.check_duration))
         return {phase_, {}, false, false};
-      if (!pose_is_safe(context, context.pose))
-        return block();
-      return closed_loop_action(context, now_s);
+      if (!context.reverse_arrival) {
+        if (!pose_is_safe(context, context.pose))
+          return block();
+        return closed_loop_action(context, now_s);
+      }
+      return choose_action(context, now_s);
     }
     if (phase_ == CornerShuntPhase::BLOCKED)
       return block();
 
-    // Reverse arrival is input context, not a separate open-loop action mode.
-    // Every turn command is recomputed from the measured pose and safety
-    // envelope through the same closed-loop law.
-    return closed_loop_action(context, now_s);
+    if (!context.reverse_arrival)
+      return closed_loop_action(context, now_s);
+
+    if (command_cycles_remaining_ > 1 &&
+        command_is_safe(context, last_command_,
+                        1.0 / std::max(1.0, config_.control_frequency))) {
+      --command_cycles_remaining_;
+      return {phase_, last_command_, false, false};
+    }
+    return choose_action(context, now_s);
   }
 
   bool pose_is_safe(const CornerShuntContext &context,
@@ -388,15 +395,7 @@ private:
     const double minimum_speed =
         ClampShunt(config_.closed_loop_min_speed, 0.005, forward_speed);
     const double yaw_rate_local = filtered_yaw_rate_ * direction;
-    const bool reverse_arrival_heading_aligned =
-        !context.reverse_arrival ||
-        std::abs(NormalizeShuntAngle(context.pose.yaw -
-                                     context.geometry_heading)) <
-            0.5 * 3.14159265358979323846;
-    const bool reverse_arrival_escape_clear =
-        !context.reverse_arrival ||
-        local.x >= config_.entry_base_x + 0.15;
-    if (base_x >= config_.entry_base_x && reverse_arrival_heading_aligned)
+    if (base_x >= config_.entry_base_x)
       corner_entry_committed_ = true;
 
     double omega_local = 0.0;
@@ -443,14 +442,6 @@ private:
 
     const double maximum_omega =
         std::max(0.05, config_.closed_loop_max_angular_speed);
-    if (context.reverse_arrival && !corner_entry_committed_ &&
-        !reverse_arrival_heading_aligned && !reverse_arrival_escape_clear) {
-      // Keep the reverse-arrival escape straight inside the entry corridor.
-      // Heading correction resumes after the measured body has cleared the
-      // corner; rotating before that point sweeps the footprint into the
-      // inner boundary.
-      omega_local = 0.0;
-    }
     if (corner_entry_committed_ && !aligning_exit) {
       // Once the axle has entered the junction, never return to the entry
       // controller or counter-steer toward the incoming road.
@@ -469,121 +460,15 @@ private:
         minimum_speed / forward_speed, 1.0);
     if (aligning_exit && std::abs(steering_error) > 0.20)
       heading_scale = minimum_speed / forward_speed;
-    // A reverse arrival can face the incoming lane while its rear axle is
-    // already inside the junction.  Until the measured heading is brought
-    // within the entry envelope, drive the same closed-loop law backwards so
-    // the body clears the corner before committing to the forward arc.
-    const double motion_sign =
-        context.reverse_arrival && !corner_entry_committed_ &&
-                !reverse_arrival_heading_aligned
-            ? -1.0
-            : 1.0;
-    const CornerShuntTwist command{motion_sign * forward_speed * heading_scale,
+    const CornerShuntTwist command{forward_speed * heading_scale,
                                    direction * omega_local};
     CornerShuntSafetyReport report;
-    CornerShuntTwist safe_command = command;
-    const double safety_horizon =
-        context.reverse_arrival
-            ? std::max(2.0 / std::max(1.0, config_.control_frequency),
-                       0.08)
-            : -1.0;
-    bool command_safe = false;
-    if (context.reverse_arrival && !corner_entry_committed_) {
-      const double target_scale =
-          ClampShunt(std::abs(turn_error(context)) /
-                         (0.5 * 3.14159265358979323846),
-                     0.45, 1.40);
-      const double target_x = config_.target_x * target_scale;
-      const double target_y = config_.target_y * target_scale;
-      double best_score = std::numeric_limits<double>::infinity();
-      const double candidate_speed =
-          std::max(minimum_speed, 0.5 * forward_speed);
-      const double linear_candidates[2] = {-candidate_speed, candidate_speed};
-      const int linear_count = reverse_arrival_escape_clear ? 2 : 1;
-      for (int linear_index = 0; linear_index < linear_count; ++linear_index) {
-        const double linear = linear_candidates[linear_index];
-        const int angular_min = reverse_arrival_escape_clear ? -6 : 0;
-        const int angular_max = reverse_arrival_escape_clear ? 6 : 0;
-        for (int angular_index = angular_min; angular_index <= angular_max;
-             ++angular_index) {
-          const CornerShuntTwist candidate{
-              linear, direction * 0.05 * static_cast<double>(angular_index)};
-          CornerShuntSafetyReport candidate_report;
-          if (!command_is_safe(context, candidate, safety_horizon,
-                               &candidate_report))
-            continue;
-          auto predicted = context.pose;
-          auto applied = context.applied_twist;
-          const double elapsed = safety_horizon;
-          applied = limited_command(applied, candidate, elapsed);
-          predicted = integrate(predicted, applied, elapsed);
-          const auto predicted_local = local_turn_pose(context, predicted);
-          const double yaw_error = std::abs(NormalizeShuntAngle(
-              context.geometry_heading - predicted.yaw));
-          const double escape_error =
-              std::max(0.0, config_.entry_base_x + 0.05 - predicted_local.x);
-          const double score =
-              4.0 * escape_error + 2.0 * std::abs(predicted_local.y) +
-              0.8 * std::abs(predicted_local.x - target_x) +
-              0.6 * std::abs(target_y - predicted_local.y) + 0.3 * yaw_error;
-          if (score < best_score) {
-            best_score = score;
-            safe_command = candidate;
-            report = candidate_report;
-            command_safe = true;
-          }
-        }
-      }
-    }
-    if (!command_safe)
-      command_safe = command_is_safe(context, safe_command, safety_horizon,
-                                     &report);
-    if (!command_safe && context.reverse_arrival && !corner_entry_committed_) {
-      // A reverse-arrival escape may have only a narrow straight corridor at
-      // the current measured pose.  Keep the decision closed-loop by testing
-      // reduced-curvature alternatives from that same pose before reporting
-      // a genuine dead end.
-      safe_command.angular_z = 0.0;
-      command_safe =
-          command_is_safe(context, safe_command, safety_horizon, &report);
-      if (!command_safe) {
-        safe_command.linear_x = motion_sign * minimum_speed;
-        command_safe =
-            command_is_safe(context, safe_command, safety_horizon, &report);
-      }
-      if (!command_safe) {
-        for (double angular = -0.20; angular <= 0.20 + 1.0e-9;
-             angular += 0.02) {
-          safe_command.angular_z = angular;
-          if (command_is_safe(context, safe_command, safety_horizon, &report)) {
-            command_safe = true;
-            break;
-          }
-        }
-      }
-      if (!command_safe) {
-        for (const double linear_sign : {motion_sign, -motion_sign}) {
-          for (double angular = -0.20; angular <= 0.20 + 1.0e-9;
-               angular += 0.02) {
-            safe_command.linear_x = linear_sign * minimum_speed;
-            safe_command.angular_z = angular;
-            if (command_is_safe(context, safe_command, safety_horizon,
-                                &report)) {
-              command_safe = true;
-              break;
-            }
-          }
-          if (command_safe)
-            break;
-        }
-      }
-    }
-    if (!command_safe) {
+    if (!command_is_safe(context, command, -1.0, &report)) {
       report.source = "corner_arc_command";
-      report.attempted_command = safe_command;
+      report.attempted_command = command;
       return block(report);
     }
-    return set_phase(command_phase(safe_command), now_s, safe_command);
+    return set_phase(command_phase(command), now_s, command);
   }
 
   PlanAvailability ensure_plan(const CornerShuntContext &context) {
@@ -771,6 +656,8 @@ private:
     if (yaw_error > std::max(0.0, config_.target_yaw_tolerance))
       return false;
     const auto local = local_turn_pose(context, pose);
+    if (!context.reverse_arrival && local.yaw < 0.0)
+      return false;
     const double target_scale = ClampShunt(std::abs(turn_error(context)) /
                                                (0.5 * 3.14159265358979323846),
                                            0.45, 1.40);

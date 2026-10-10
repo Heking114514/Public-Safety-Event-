@@ -9,25 +9,6 @@ namespace {
 
 constexpr double kPi = 3.14159265358979323846;
 
-visual_navigation::CornerShuntConfig TestConfig() {
-  visual_navigation::CornerShuntConfig config;
-  // Test fixture values mirror vehicle_physical.yaml; production has no
-  // physical-parameter defaults.
-  config.vehicle_length = 0.132;
-  config.vehicle_width = 0.132;
-  config.base_offset_x = 0.030;
-  config.base_offset_y = 0.0;
-  return config;
-}
-
-TEST(CornerShuntConfig, PhysicalModelHasNoProductionFallback) {
-  const visual_navigation::CornerShuntConfig config;
-  EXPECT_FALSE(std::isfinite(config.vehicle_length));
-  EXPECT_FALSE(std::isfinite(config.vehicle_width));
-  EXPECT_FALSE(std::isfinite(config.base_offset_x));
-  EXPECT_FALSE(std::isfinite(config.base_offset_y));
-}
-
 visual_navigation::CornerShuntContext LeftCornerContext(double x, double y,
                                                         double yaw) {
   visual_navigation::CornerShuntContext context;
@@ -136,7 +117,7 @@ AwaitPlannedMotion(visual_navigation::CornerShuntController &controller,
 } // namespace
 
 TEST(CornerShunt, StartsWithStopThenMovesForwardAcrossJunction) {
-  visual_navigation::CornerShuntController controller(TestConfig());
+  visual_navigation::CornerShuntController controller;
   controller.begin(0.0);
 
   auto decision = controller.update(LeftCornerContext(-0.05, 0.0, 0.0), 0.05);
@@ -155,7 +136,7 @@ TEST(CornerShunt, StartsWithStopThenMovesForwardAcrossJunction) {
 }
 
 TEST(CornerShunt, MirrorsRightTurns) {
-  visual_navigation::CornerShuntController controller(TestConfig());
+  visual_navigation::CornerShuntController controller;
   controller.begin(0.0);
 
   controller.update(RightCornerContext(-0.05, 0.0, 0.0), 0.30);
@@ -167,7 +148,7 @@ TEST(CornerShunt, MirrorsRightTurns) {
 }
 
 TEST(CornerShunt, KeepsConfiguredRoadMarginWith132MillimeterChassis) {
-  visual_navigation::CornerShuntController controller(TestConfig());
+  visual_navigation::CornerShuntController controller;
   const auto safe = LeftCornerContext(-0.07, 0.031, 0.0);
   const auto unsafe = LeftCornerContext(-0.07, 0.034, 0.0);
 
@@ -176,7 +157,7 @@ TEST(CornerShunt, KeepsConfiguredRoadMarginWith132MillimeterChassis) {
 }
 
 TEST(CornerShunt, CompletesWhenYawMatchesExitLane) {
-  visual_navigation::CornerShuntController controller(TestConfig());
+  visual_navigation::CornerShuntController controller;
   controller.begin(0.0);
 
   const auto decision =
@@ -187,7 +168,7 @@ TEST(CornerShunt, CompletesWhenYawMatchesExitLane) {
 }
 
 TEST(CornerShunt, DoesNotHandOffWithLargeResidualYaw) {
-  visual_navigation::CornerShuntController controller(TestConfig());
+  visual_navigation::CornerShuntController controller;
   controller.begin(0.0);
 
   const auto decision =
@@ -198,7 +179,7 @@ TEST(CornerShunt, DoesNotHandOffWithLargeResidualYaw) {
 }
 
 TEST(CornerShunt, DoesNotHandOffBeyondExitYawTolerance) {
-  visual_navigation::CornerShuntController controller(TestConfig());
+  visual_navigation::CornerShuntController controller;
   controller.begin(0.0);
 
   const auto decision =
@@ -209,7 +190,7 @@ TEST(CornerShunt, DoesNotHandOffBeyondExitYawTolerance) {
 }
 
 TEST(CornerShunt, SeparatesRoadGeometryFromResidualArrivalYaw) {
-  visual_navigation::CornerShuntController controller(TestConfig());
+  visual_navigation::CornerShuntController controller;
   auto context = LeftCornerContext(-0.05, 0.0, 0.0);
   context.geometry_heading = 0.0;
   context.arrival_heading = -1.50;
@@ -225,7 +206,7 @@ TEST(CornerShunt, SeparatesRoadGeometryFromResidualArrivalYaw) {
 }
 
 TEST(CornerShunt, DoesNotHandOffBeforeHtmlExitWindow) {
-  visual_navigation::CornerShuntController controller(TestConfig());
+  visual_navigation::CornerShuntController controller;
   controller.begin(0.0);
 
   const auto decision =
@@ -236,15 +217,15 @@ TEST(CornerShunt, DoesNotHandOffBeforeHtmlExitWindow) {
 }
 
 TEST(CornerShunt, SimulatedWaypointStopPoseReachesSafeExit) {
-  visual_navigation::CornerShuntController controller(TestConfig());
+  visual_navigation::CornerShuntController controller;
   auto context = LeftCornerContext(-0.05, 0.0, 0.0);
   controller.begin(0.0);
 
   bool complete = false;
   bool blocked = false;
-  visual_navigation::CornerShuntDecision last_decision;
   bool all_poses_safe = true;
   visual_navigation::CornerShuntPose first_unsafe_pose;
+  visual_navigation::CornerShuntDecision last_decision;
   int arc_steps = 0;
   int check_steps = 0;
   int stop_steps = 0;
@@ -326,7 +307,7 @@ TEST(CornerShunt, SimulatedWaypointStopPoseReachesSafeExit) {
 }
 
 TEST(CornerShunt, SimulatedRightTurnMirrorsSafeExit) {
-  visual_navigation::CornerShuntController controller(TestConfig());
+  visual_navigation::CornerShuntController controller;
   auto context = RightCornerContext(-0.05, 0.0, 0.0);
   controller.begin(0.0);
 
@@ -368,7 +349,7 @@ TEST(CornerShunt, ClosedLoopSweepStaysSafeAcrossEntryErrors) {
     for (double lateral : {-0.015, 0.0, 0.015}) {
       for (double yaw : {-0.06, 0.0, 0.06}) {
         for (int direction : {-1, 1}) {
-          visual_navigation::CornerShuntController controller(TestConfig());
+          visual_navigation::CornerShuntController controller;
           auto context = direction > 0
                              ? LeftCornerContext(start_x, lateral, yaw)
                              : RightCornerContext(start_x, -lateral, -yaw);
@@ -407,8 +388,8 @@ TEST(CornerShunt, ClosedLoopSweepStaysSafeAcrossEntryErrors) {
 }
 
 TEST(CornerShunt, OrdinaryTurnReactsToMeasuredEntryOffset) {
-  visual_navigation::CornerShuntController left_controller(TestConfig());
-  visual_navigation::CornerShuntController right_controller(TestConfig());
+  visual_navigation::CornerShuntController left_controller;
+  visual_navigation::CornerShuntController right_controller;
   auto left_offset = LeftCornerContext(-0.05, 0.012, 0.0);
   auto right_offset = LeftCornerContext(-0.05, -0.012, 0.0);
   left_controller.begin(0.0);
@@ -428,8 +409,8 @@ TEST(CornerShunt, OrdinaryTurnReactsToMeasuredEntryOffset) {
 }
 
 TEST(CornerShunt, OrdinaryTurnUpdatesSteeringFromMeasuredYaw) {
-  visual_navigation::CornerShuntController early_controller(TestConfig());
-  visual_navigation::CornerShuntController late_controller(TestConfig());
+  visual_navigation::CornerShuntController early_controller;
+  visual_navigation::CornerShuntController late_controller;
   auto early = LeftCornerContext(-0.040, 0.0, 0.35);
   auto late = LeftCornerContext(-0.021584, 0.059336, 1.2453);
   early_controller.begin(0.0);
@@ -452,7 +433,7 @@ TEST(CornerShunt, OrdinaryTurnUpdatesSteeringFromMeasuredYaw) {
 }
 
 TEST(CornerShunt, OrdinaryTurnCannotReenterEntryAlignment) {
-  visual_navigation::CornerShuntController controller(TestConfig());
+  visual_navigation::CornerShuntController controller;
   const auto entry = LeftCornerContext(-0.05, 0.0, 0.0);
   auto committed = LeftCornerContext(-0.040, 0.0, 0.35);
   auto drifted_back = LeftCornerContext(-0.050, 0.0, 0.35);
@@ -470,7 +451,7 @@ TEST(CornerShunt, OrdinaryTurnCannotReenterEntryAlignment) {
 }
 
 TEST(CornerShunt, DelayedDrivetrainDoesNotOscillateAcrossEntryLine) {
-  visual_navigation::CornerShuntController controller(TestConfig());
+  visual_navigation::CornerShuntController controller;
   auto context = LeftCornerContext(-0.05, 0.0, 0.0);
   context.measured_yaw_rate_valid = true;
   controller.begin(0.0);
@@ -513,7 +494,7 @@ TEST(CornerShunt, DelayedDrivetrainDoesNotOscillateAcrossEntryLine) {
 }
 
 TEST(CornerShunt, StalledManeuverReplansThenReturnsBoundedFault) {
-  visual_navigation::CornerShuntConfig config = TestConfig();
+  visual_navigation::CornerShuntConfig config;
   config.max_plan_count = 2;
   config.no_progress_timeout = 0.5;
   visual_navigation::CornerShuntController controller(config);
@@ -541,7 +522,7 @@ TEST(CornerShunt, StalledManeuverReplansThenReturnsBoundedFault) {
 }
 
 TEST(CornerShunt, ReverseArrivalCanLeaveDeadEndJunctionSafely) {
-  visual_navigation::CornerShuntController controller(TestConfig());
+  visual_navigation::CornerShuntController controller;
   auto context = ReverseArrivalContext();
   controller.begin(0.0);
 
@@ -561,13 +542,15 @@ TEST(CornerShunt, ReverseArrivalCanLeaveDeadEndJunctionSafely) {
     now += kStep;
   }
 
-  EXPECT_TRUE(complete || blocked);
-  EXPECT_EQ(controller.planned_command_count(), 0U);
+  EXPECT_TRUE(complete) << "pose=(" << context.pose.x << ", " << context.pose.y
+                        << ", " << context.pose.yaw
+                        << ") plans=" << controller.plan_count();
+  EXPECT_FALSE(blocked);
   EXPECT_TRUE(controller.pose_is_safe(context, context.pose));
 }
 
 TEST(CornerShunt, LateTurnPoseCanReplanToSafeExit) {
-  visual_navigation::CornerShuntController controller(TestConfig());
+  visual_navigation::CornerShuntController controller;
   auto context = LeftCornerContext(-0.021584, 0.059336, 1.2453);
   controller.begin(0.0);
 
@@ -595,7 +578,7 @@ TEST(CornerShunt, LateTurnPoseCanReplanToSafeExit) {
 }
 
 TEST(CornerShunt, RecordedOffsetRightTurnReachesSafeExit) {
-  visual_navigation::CornerShuntController controller(TestConfig());
+  visual_navigation::CornerShuntController controller;
   auto context = RightCornerContext(-0.075, 0.005, -0.021);
   controller.begin(0.0);
 
@@ -623,7 +606,7 @@ TEST(CornerShunt, RecordedOffsetRightTurnReachesSafeExit) {
 }
 
 TEST(CornerShunt, RecordedTangentPoseFindsFineRecovery) {
-  visual_navigation::CornerShuntController controller(TestConfig());
+  visual_navigation::CornerShuntController controller;
   auto context = LeftCornerContext(-0.02521632034127061, 0.05001098729551654,
                                    1.239131515872503);
   controller.begin(0.0);
@@ -652,7 +635,7 @@ TEST(CornerShunt, RecordedTangentPoseFindsFineRecovery) {
 }
 
 TEST(CornerShunt, OutsideTangentPoseFailsClosed) {
-  visual_navigation::CornerShuntController controller(TestConfig());
+  visual_navigation::CornerShuntController controller;
   auto context = LeftCornerContext(-0.0500, 0.0506, 1.248);
   ASSERT_FALSE(controller.pose_is_safe(context, context.pose));
   const auto initial_pose = context.pose;
@@ -676,7 +659,7 @@ TEST(CornerShunt, OutsideTangentPoseFailsClosed) {
 }
 
 TEST(CornerShunt, ResetDoesNotWaitForBackgroundPlan) {
-  visual_navigation::CornerShuntController controller(TestConfig());
+  visual_navigation::CornerShuntController controller;
   const auto context = RightCornerContext(-0.075, 0.005, -0.021);
   controller.begin(0.0);
   controller.update(context, 0.30);

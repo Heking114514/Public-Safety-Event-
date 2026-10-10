@@ -91,9 +91,6 @@ if(BUILD_TESTING)
     ENV
       "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}"
       "PYTHONDONTWRITEBYTECODE=1")
-  ament_add_pytest_test(new_map_planner_interface_test test/test_interface.py
-    ENV
-      "PYTHONDONTWRITEBYTECODE=1")
 endif()
 
 ament_export_include_directories(include)

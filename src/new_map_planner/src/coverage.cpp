@@ -243,6 +243,9 @@ PlanResult CoveragePlanner::plan(
       next.ordinary_count =
           is_task_node(directed.to) ? 0 : state.ordinary_count + 1;
       next.arrival_lane = directed.lane;
+      const double turn =
+          state.heading == directed.heading ? 0.0 : config_.turn_cost;
+      (void)turn;
       current_path.push_back(directed_index);
       if (search(next, seed_index)) {
         return true;

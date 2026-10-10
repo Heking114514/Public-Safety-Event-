@@ -73,10 +73,6 @@ ROS 适配层
 `NO_FEASIBLE_ROUTE`；`message` 只用于人类排错。
 任务节点等待相同 route id 的 `/waypoint_navigation/route_ack`，不会把服务成功当成
 车辆已经接收；规划器本身不保存任务进度或控制车辆。
-`PlanRoute.Request.activate` 是路线发布门控。`activate=false` 时只发布结构化
-`route_plan` 和 `arena_path` 供界面预览，不发布普通 `navigation_path`，响应中的
-`activated` 为 `false`。只有 `activate=true` 且结果不是 `recovery_only` 时，才发布
-`navigation_path` 并返回 `activated=true`；恢复专用路线不能借用普通前进路径通道。
 地图中的 12 个固定 RFID 物理位置以 `rfid_supernodes` 配置为 `s1`–`s12`；每个路线计划
 同时返回与 `navigation_path.poses` 对齐的 `waypoint_supernode_ids`，供任务总控和控制器
 执行逐超节点读卡、重定位和确认握手。卡片序号不参与地图节点编号。

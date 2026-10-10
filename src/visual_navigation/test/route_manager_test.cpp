@@ -97,23 +97,3 @@ TEST(RouteManager, LoadsReverseArrivalTurnMarker) {
   EXPECT_TRUE(route[0].turn_junction);
   EXPECT_TRUE(route[0].reverse_arrival_turn);
 }
-
-TEST(RouteManager, LoadsReverseSegmentMarkerAtSegmentStart) {
-  nav_msgs::msg::Path path;
-  geometry_msgs::msg::PoseStamped start;
-  start.pose.position.z = 0.006;
-  start.pose.orientation.w = 1.0;
-  path.poses.push_back(start);
-  geometry_msgs::msg::PoseStamped end;
-  end.pose.orientation.w = 1.0;
-  path.poses.push_back(end);
-  std::vector<visual_navigation::RouteWaypoint> route;
-  std::size_t invalid_index = 99;
-  std::string error;
-
-  ASSERT_TRUE(visual_navigation::RouteManager::LoadPath(
-      path, 0.4, 0.05, route, invalid_index, error)) << error;
-  ASSERT_EQ(route.size(), 2u);
-  EXPECT_TRUE(route[0].reverse_segment);
-  EXPECT_FALSE(route[1].reverse_segment);
-}

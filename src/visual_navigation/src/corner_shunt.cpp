@@ -39,9 +39,6 @@ WaypointNavigator::BuildCornerShuntContext(const ControlFrame &frame) const {
   context.measured_yaw_rate_valid = ImuYawRateIsFresh();
   context.junction_x = junction.x;
   context.junction_y = junction.y;
-  context.junction_id = junction.junction_id.empty()
-                            ? "waypoint_" + std::to_string(junctionIndex)
-                            : junction.junction_id;
   context.geometry_heading = stoppedAtPlannedTurn_
                                  ? stoppedTurnGeometryHeading_
                                  : frame.path_heading;
@@ -63,23 +60,6 @@ void WaypointNavigator::RunCornerShunt(const ControlFrame &frame,
   const auto context = BuildCornerShuntContext(frame);
   visual_navigation::TurnManeuverInput input;
   input.context = context;
-  input.junction_id = context.junction_id;
-  input.junction_index = currentWaypointIndex_;
-  if (lastStoppedTurnIndex_ < waypoints_.size())
-    input.junction_index = lastStoppedTurnIndex_;
-  else if (currentWaypointIndex_ > 0)
-    input.junction_index = currentWaypointIndex_ - 1;
-  const auto navigation_inputs = CurrentNavigationInputs();
-  input.motion_allowed = navigationActive_ && !MotionHeld() &&
-                         obstacleRecoveryController_.idle();
-  const auto effective_fusion =
-      visual_navigation::EffectiveFusionHealth(navigation_inputs);
-  input.localization_valid =
-      visual_navigation::OdometryIsValid(navigation_inputs) &&
-      effective_fusion.allowed && !effective_fusion.fault;
-  input.obstacle_blocked = pendingFrontObstacle_ &&
-                           !pendingObstacleAtActiveTurn_;
-  input.cancel = !navigationActive_;
   const auto decision = turnManeuverController_.update(input, SteadySeconds());
   if (decision.trim_target_selected) {
     RCLCPP_INFO(get_logger(),
@@ -140,35 +120,15 @@ void WaypointNavigator::RunCornerShunt(const ControlFrame &frame,
     navigationActive_ = false;
     RCLCPP_WARN(
         get_logger(),
-        "Junction maneuver search ended: reason=%s recovery=%s junction=%zu id=%s "
-        "geometry=%.1fdeg arrival=%.1fdeg target=%.1fdeg "
-        "attempts=%zu/%d candidates=%zu footprint_rejected=%zu "
-        "turn_rejected=%zu last_safe=(%.3f, %.3f, %.1fdeg) "
-        "rejection=(%s,%d,local_x=%.3f) "
+        "Junction maneuver search ended: reason=%s attempts=%zu/%d "
+        "candidates=%zu footprint_rejected=%zu turn_rejected=%zu "
         "base=(%.3f, %.3f, %.1fdeg); requesting route-level recovery",
-        visual_navigation::TurnManeuverFailureReasonName(
-            decision.failure_reason),
-        visual_navigation::TurnManeuverRecoveryDirectionName(
-            decision.suggested_recovery_direction),
-        decision.junction_index,
-        decision.junction_id.c_str(),
-        decision.geometry_heading * 180.0 / kPi,
-        decision.arrival_heading * 180.0 / kPi,
-        decision.target_heading * 180.0 / kPi,
+        decision.trim_limit_reached ? "trim_limit" : "no_trim_candidate",
         decision.trim_attempts,
         turnManeuverConfig_.max_trim_attempts,
         decision.trim_candidates_checked,
         decision.trim_footprint_rejections,
         decision.trim_turn_rejections,
-        decision.has_last_safe_pose ? decision.last_safe_pose.x : currentX_,
-        decision.has_last_safe_pose ? decision.last_safe_pose.y : currentY_,
-        decision.has_last_safe_pose
-            ? decision.last_safe_pose.yaw * 180.0 / kPi
-            : currentYaw_ * 180.0 / kPi,
-        visual_navigation::CornerShuntSafetyFailureName(
-            decision.rejection_signature.failure),
-        decision.rejection_signature.prediction_sample,
-        decision.rejection_signature.local_x,
         currentX_, currentY_, currentYaw_ * 180.0 / kPi);
     PublishStop();
     SetState("TURN_NEED_REPLAN");

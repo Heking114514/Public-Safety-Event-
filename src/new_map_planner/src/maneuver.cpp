@@ -30,7 +30,6 @@ ShuntConfig(const PlannerConfig &config, double road_width) {
   shunt.vehicle_length = config.vehicle_length;
   shunt.vehicle_width = config.vehicle_width;
   shunt.base_offset_x = config.base_link_offset_x;
-  shunt.base_offset_y = config.base_link_offset_y;
   shunt.max_plan_count = 20;
   return shunt;
 }

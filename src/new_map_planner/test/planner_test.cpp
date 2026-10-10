@@ -1,5 +1,4 @@
 #include "new_map_planner/collision.hpp"
-#include "new_map_planner/activation.hpp"
 #include "new_map_planner/config.hpp"
 #include "new_map_planner/geometry.hpp"
 #include "new_map_planner/graph.hpp"
@@ -13,7 +12,6 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <stdexcept>
 #include <string>
 
 namespace {
@@ -53,13 +51,6 @@ ArenaRectangleInMap(const new_map_planner::PlannerConfig &config,
 
 } // namespace
 
-TEST(ActivationContract, PublishesNavigationPathOnlyWhenExplicitlyActivated) {
-  EXPECT_FALSE(new_map_planner::ShouldPublishNavigationPath(false, false));
-  EXPECT_TRUE(new_map_planner::ShouldPublishNavigationPath(true, false));
-  EXPECT_FALSE(new_map_planner::ShouldPublishNavigationPath(false, true));
-  EXPECT_FALSE(new_map_planner::ShouldPublishNavigationPath(true, true));
-}
-
 TEST(Config, OfficialMapHasExplicitTopology) {
   const auto config = OfficialConfig();
   EXPECT_EQ(config.map_id, "official_arena_v1");
@@ -68,13 +59,6 @@ TEST(Config, OfficialMapHasExplicitTopology) {
   EXPECT_EQ(config.tasks.size(), 12U);
   EXPECT_EQ(config.default_inspection_lanes.size(), 28U);
   EXPECT_EQ(config.rfid_supernodes.size(), 12U);
-  EXPECT_NEAR(config.base_link_offset_y, 0.0, 1.0e-12);
-}
-
-TEST(Config, ExecutablePathsRequireTurnMarkers) {
-  auto config = OfficialConfig();
-  config.publish_shunt_markers = false;
-  EXPECT_THROW(new_map_planner::ValidateConfig(config), std::runtime_error);
 }
 
 TEST(Transform, LaunchPoseIsMapOrigin) {
@@ -127,7 +111,7 @@ TEST(Planner, RouteStartingAtJunctionCarriesExplicitTurnAuthorization) {
   new_map_planner::MapPlanner planner(config);
   new_map_planner::PlanRequest request;
   request.start_map = new_map_planner::ArenaToMap(
-      {{1.6, 4.1}, -1.50}, config.transform);
+      {{1.6, 4.1}, -0.5 * new_map_planner::kPi}, config.transform);
   request.mode = "targets";
   request.target_ids = {"12"};
   request.return_home = false;
@@ -137,181 +121,10 @@ TEST(Planner, RouteStartingAtJunctionCarriesExplicitTurnAuthorization) {
   ASSERT_TRUE(result.success) << result.message;
   ASSERT_FALSE(result.turn_waypoints.empty());
   EXPECT_TRUE(result.turn_waypoints.front());
-  ASSERT_FALSE(result.arena_path.empty());
-  // The marker is consumed as road geometry by visual_navigation.  It must
-  // not preserve the measured arrival residual from the request pose.
-  EXPECT_NEAR(result.arena_path.front().yaw,
-              -0.5 * new_map_planner::kPi, 1.0e-6);
   ASSERT_FALSE(result.maneuvers.empty());
   EXPECT_EQ(result.maneuvers.front().type,
             new_map_planner::ManeuverType::START_ALIGN);
-  EXPECT_EQ(result.maneuvers.front().incoming_lane_id, "LAUNCH");
   EXPECT_TRUE(result.maneuvers.front().collision_checked);
-}
-
-TEST(PlannerRecovery, RequiresExplicitContext) {
-  const auto config = OfficialConfig();
-  new_map_planner::MapPlanner planner(config);
-  new_map_planner::PlanRequest request;
-  request.start_mode = new_map_planner::StartMode::TURN_RECOVERY;
-  request.start_map = new_map_planner::ArenaToMap(
-      {{1.1, 3.1}, 0.5 * new_map_planner::kPi}, config.transform);
-
-  const auto result = planner.plan(request);
-
-  EXPECT_FALSE(result.success);
-  EXPECT_EQ(result.failure_reason,
-            new_map_planner::PlanFailureReason::RECOVERY_CONTEXT_INVALID);
-  EXPECT_TRUE(result.recovery_only);
-}
-
-TEST(PlannerRecovery, RetreatsAlongExplicitIncomingLane) {
-  const auto config = OfficialConfig();
-  new_map_planner::MapPlanner planner(config);
-  new_map_planner::PlanRequest request;
-  request.start_mode = new_map_planner::StartMode::TURN_RECOVERY;
-  request.start_map = new_map_planner::ArenaToMap(
-      {{1.1, 3.1}, 0.5 * new_map_planner::kPi}, config.transform);
-  request.recovery_anchor_node_id = "x1_y3";
-  request.recovery_incoming_lane_id = "ROAD_X1_Y2";
-  request.allow_reverse_departure = true;
-
-  const auto result = planner.plan(request);
-
-  ASSERT_TRUE(result.success) << result.message;
-  EXPECT_TRUE(result.recovery_only);
-  ASSERT_EQ(result.traversals.size(), 1U);
-  EXPECT_TRUE(result.traversals.front().reverse);
-  EXPECT_NEAR(result.traversals.front().end.x, 1.1, 1.0e-9);
-  EXPECT_NEAR(result.traversals.front().end.y, 2.1, 1.0e-9);
-  ASSERT_FALSE(result.maneuvers.empty());
-  EXPECT_EQ(result.maneuvers.front().type,
-            new_map_planner::ManeuverType::REVERSE);
-  EXPECT_TRUE(result.visit_order.empty());
-  EXPECT_TRUE(result.covered_lane_ids.empty());
-}
-
-TEST(PlannerRecovery, AcceptsSafePoseNearExplicitAnchor) {
-  const auto config = OfficialConfig();
-  new_map_planner::MapPlanner planner(config);
-  new_map_planner::PlanRequest request;
-  request.start_mode = new_map_planner::StartMode::TURN_RECOVERY;
-  request.start_map = new_map_planner::ArenaToMap(
-      {{1.1, 3.06}, 0.5 * new_map_planner::kPi}, config.transform);
-  request.recovery_anchor_node_id = "x1_y3";
-  request.recovery_incoming_lane_id = "ROAD_X1_Y2";
-  request.allow_reverse_departure = true;
-
-  const auto result = planner.plan(request);
-
-  ASSERT_TRUE(result.success) << result.message;
-  ASSERT_EQ(result.traversals.size(), 1U);
-  EXPECT_TRUE(result.traversals.front().reverse);
-  EXPECT_NEAR(result.traversals.front().start.y, 3.06, 1.0e-9);
-}
-
-TEST(PlannerRecovery, RetreatsWhenOnlyForwardRoadIsBlocked) {
-  const auto config = OfficialConfig();
-  new_map_planner::MapPlanner planner(config);
-  new_map_planner::PlanRequest request;
-  request.start_mode = new_map_planner::StartMode::TURN_RECOVERY;
-  request.start_map = new_map_planner::ArenaToMap(
-      {{1.1, 3.1}, 0.5 * new_map_planner::kPi}, config.transform);
-  request.recovery_anchor_node_id = "x1_y3";
-  request.recovery_incoming_lane_id = "ROAD_X1_Y2";
-  request.allow_reverse_departure = true;
-  request.dynamic_obstacles_map.push_back(
-      ArenaRectangleInMap(config, 1.02, 3.35, 1.18, 3.45));
-
-  const auto result = planner.plan(request);
-
-  ASSERT_TRUE(result.success) << result.message;
-  ASSERT_EQ(result.traversals.size(), 1U);
-  EXPECT_TRUE(result.traversals.front().reverse);
-  EXPECT_NEAR(result.traversals.front().end.y, 2.1, 1.0e-9);
-}
-
-TEST(PlannerRecovery, RejectsPoseAwayFromExplicitAnchor) {
-  const auto config = OfficialConfig();
-  new_map_planner::MapPlanner planner(config);
-  new_map_planner::PlanRequest request;
-  request.start_mode = new_map_planner::StartMode::TURN_RECOVERY;
-  request.start_map = new_map_planner::ArenaToMap(
-      {{1.1, 2.8}, 0.5 * new_map_planner::kPi}, config.transform);
-  request.recovery_anchor_node_id = "x1_y3";
-  request.recovery_incoming_lane_id = "ROAD_X1_Y2";
-  request.allow_reverse_departure = true;
-
-  const auto result = planner.plan(request);
-
-  EXPECT_FALSE(result.success);
-  EXPECT_EQ(result.failure_reason,
-            new_map_planner::PlanFailureReason::RECOVERY_CONTEXT_INVALID);
-}
-
-TEST(PlannerRecovery, RejectsBlockedRetreatSegment) {
-  const auto config = OfficialConfig();
-  new_map_planner::MapPlanner planner(config);
-  new_map_planner::PlanRequest request;
-  request.start_mode = new_map_planner::StartMode::TURN_RECOVERY;
-  request.start_map = new_map_planner::ArenaToMap(
-      {{1.1, 3.1}, 0.5 * new_map_planner::kPi}, config.transform);
-  request.recovery_anchor_node_id = "x1_y3";
-  request.recovery_incoming_lane_id = "ROAD_X1_Y2";
-  request.allow_reverse_departure = true;
-  request.dynamic_obstacles_map.push_back(
-      ArenaRectangleInMap(config, 1.02, 2.55, 1.18, 2.65));
-
-  const auto result = planner.plan(request);
-
-  EXPECT_FALSE(result.success);
-  EXPECT_EQ(result.failure_reason,
-            new_map_planner::PlanFailureReason::RECOVERY_REVERSE_BLOCKED);
-}
-
-TEST(PlannerRecovery, ObstacleRecoveryRemainsControllerOwned) {
-  const auto config = OfficialConfig();
-  new_map_planner::MapPlanner planner(config);
-  new_map_planner::PlanRequest request;
-  request.start_mode = new_map_planner::StartMode::OBSTACLE_RECOVERY;
-
-  const auto result = planner.plan(request);
-
-  EXPECT_FALSE(result.success);
-  EXPECT_EQ(result.failure_reason,
-            new_map_planner::PlanFailureReason::RECOVERY_CONTROLLER_OWNED);
-  EXPECT_TRUE(result.recovery_only);
-}
-
-TEST(PlannerRecovery, NormalModeIgnoresRecoveryOnlyFields) {
-  const auto config = OfficialConfig();
-  new_map_planner::MapPlanner planner(config);
-  auto baseline_request = HomeRequest("layer1");
-  baseline_request.target_ids = {"1"};
-  baseline_request.allow_partial = true;
-  auto normal_request = baseline_request;
-  normal_request.recovery_anchor_node_id = "not_a_node";
-  normal_request.recovery_incoming_lane_id = "not_a_lane";
-  normal_request.allow_reverse_departure = true;
-
-  const auto baseline = planner.plan(baseline_request);
-  const auto normal = planner.plan(normal_request);
-
-  ASSERT_TRUE(baseline.success) << baseline.message;
-  ASSERT_TRUE(normal.success) << normal.message;
-  EXPECT_EQ(normal.failure_reason, baseline.failure_reason);
-  EXPECT_EQ(normal.complete, baseline.complete);
-  EXPECT_EQ(normal.visit_order, baseline.visit_order);
-  EXPECT_EQ(normal.covered_lane_ids, baseline.covered_lane_ids);
-  ASSERT_EQ(normal.navigation_path.size(), baseline.navigation_path.size());
-  for (std::size_t index = 0; index < normal.navigation_path.size(); ++index) {
-    EXPECT_NEAR(normal.navigation_path[index].position.x,
-                baseline.navigation_path[index].position.x, 1.0e-12);
-    EXPECT_NEAR(normal.navigation_path[index].position.y,
-                baseline.navigation_path[index].position.y, 1.0e-12);
-    EXPECT_NEAR(normal.navigation_path[index].yaw,
-                baseline.navigation_path[index].yaw, 1.0e-12);
-  }
 }
 
 TEST(Planner, LayerOneTargetsNextPendingTaskInOrder) {
@@ -838,15 +651,6 @@ TEST(Diagnostics, FailureNamesAreStable) {
   EXPECT_STREQ(new_map_planner::PlanFailureName(
                    new_map_planner::PlanFailureReason::NO_FEASIBLE_ROUTE),
                "NO_FEASIBLE_ROUTE");
-  EXPECT_STREQ(new_map_planner::PlanFailureName(
-                   new_map_planner::PlanFailureReason::RECOVERY_CONTEXT_INVALID),
-               "RECOVERY_CONTEXT_INVALID");
-  EXPECT_STREQ(new_map_planner::PlanFailureName(
-                   new_map_planner::PlanFailureReason::RECOVERY_REVERSE_BLOCKED),
-               "RECOVERY_REVERSE_BLOCKED");
-  EXPECT_STREQ(new_map_planner::PlanFailureName(
-                   new_map_planner::PlanFailureReason::RECOVERY_CONTROLLER_OWNED),
-               "RECOVERY_CONTROLLER_OWNED");
 }
 
 TEST(Planner, DynamicBlockageDefersOnlyUnreachableCoverage) {

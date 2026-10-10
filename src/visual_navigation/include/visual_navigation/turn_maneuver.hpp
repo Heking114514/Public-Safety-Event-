@@ -2,8 +2,6 @@
 #define VISUAL_NAVIGATION__TURN_MANEUVER_HPP_
 
 #include <cstddef>
-#include <limits>
-#include <string>
 
 #include "visual_navigation/corner_shunt.hpp"
 
@@ -33,69 +31,6 @@ enum class TurnManeuverResult {
   FAULT
 };
 
-enum class TurnManeuverFailureReason {
-  NONE,
-  INVALID_CONTEXT,
-  CURRENT_POSE_UNSAFE,
-  ARC_REJECTED_NO_IMPROVEMENT,
-  TRIM_REJECTED_NO_IMPROVEMENT,
-  NO_TRIM_CANDIDATE,
-  TRIM_LIMIT,
-  EXIT_ALIGN_REJECTED,
-  CANCELED,
-};
-
-inline const char *TurnManeuverFailureReasonName(
-    TurnManeuverFailureReason reason) {
-  switch (reason) {
-  case TurnManeuverFailureReason::NONE:
-    return "none";
-  case TurnManeuverFailureReason::INVALID_CONTEXT:
-    return "invalid_context";
-  case TurnManeuverFailureReason::CURRENT_POSE_UNSAFE:
-    return "current_pose_unsafe";
-  case TurnManeuverFailureReason::ARC_REJECTED_NO_IMPROVEMENT:
-    return "arc_rejected_no_improvement";
-  case TurnManeuverFailureReason::TRIM_REJECTED_NO_IMPROVEMENT:
-    return "trim_rejected_no_improvement";
-  case TurnManeuverFailureReason::NO_TRIM_CANDIDATE:
-    return "no_trim_candidate";
-  case TurnManeuverFailureReason::TRIM_LIMIT:
-    return "trim_limit";
-  case TurnManeuverFailureReason::EXIT_ALIGN_REJECTED:
-    return "exit_align_rejected";
-  case TurnManeuverFailureReason::CANCELED:
-    return "canceled";
-  }
-  return "unknown";
-}
-
-enum class TurnManeuverRecoveryDirection {
-  NONE,
-  REVERSE_ALONG_ENTRY,
-  FORWARD_TO_EXIT,
-};
-
-inline const char *TurnManeuverRecoveryDirectionName(
-    TurnManeuverRecoveryDirection direction) {
-  switch (direction) {
-  case TurnManeuverRecoveryDirection::NONE:
-    return "none";
-  case TurnManeuverRecoveryDirection::REVERSE_ALONG_ENTRY:
-    return "reverse_along_entry";
-  case TurnManeuverRecoveryDirection::FORWARD_TO_EXIT:
-    return "forward_to_exit";
-  }
-  return "unknown";
-}
-
-struct TurnManeuverRejectionSignature {
-  bool valid{false};
-  CornerShuntSafetyFailure failure{CornerShuntSafetyFailure::NONE};
-  int prediction_sample{-1};
-  double local_x{0.0};
-};
-
 struct TurnManeuverConfig {
   CornerShuntConfig corner;
   double trim_speed{0.035};
@@ -120,13 +55,10 @@ struct TurnManeuverConfig {
   double trim_progress_distance{0.005};
   double trim_progress_yaw{0.03};
   int max_trim_attempts{6};
-  int max_identical_rejections{1};
 };
 
 struct TurnManeuverInput {
   CornerShuntContext context;
-  std::string junction_id;
-  std::size_t junction_index{std::numeric_limits<std::size_t>::max()};
   bool motion_allowed{true};
   bool localization_valid{true};
   bool obstacle_blocked{false};
@@ -148,18 +80,6 @@ struct TurnManeuverDecision {
   int trim_direction{0};
   std::size_t trim_direction_switches{0};
   double trim_target_local_x{0.0};
-  bool has_last_safe_pose{false};
-  CornerShuntPose last_safe_pose;
-  std::size_t junction_index{std::numeric_limits<std::size_t>::max()};
-  std::string junction_id;
-  CornerShuntPose junction_pose;
-  double geometry_heading{0.0};
-  double arrival_heading{0.0};
-  double target_heading{0.0};
-  TurnManeuverFailureReason failure_reason{TurnManeuverFailureReason::NONE};
-  TurnManeuverRecoveryDirection suggested_recovery_direction{
-      TurnManeuverRecoveryDirection::NONE};
-  TurnManeuverRejectionSignature rejection_signature;
 
   TurnManeuverDecision() = default;
   TurnManeuverDecision(TurnManeuverPhase phase_value,
@@ -208,14 +128,6 @@ private:
                            double now_s);
   bool trim_stalled(const CornerShuntContext &context, double now_s);
   void start_arc(const CornerShuntContext &context, double now_s);
-  void attach_metadata(TurnManeuverDecision *decision) const;
-  bool update_last_safe_pose(const CornerShuntContext &context,
-                             CornerShuntSafetyReport *report = nullptr);
-  bool record_rejection(const CornerShuntContext &context,
-                        const CornerShuntSafetyReport &report);
-  TurnManeuverRecoveryDirection recovery_direction() const;
-  bool exit_aligned(const CornerShuntContext &context) const;
-  CornerShuntTwist exit_align_command(const CornerShuntContext &context) const;
 
   TurnManeuverConfig config_;
   CornerShuntController arc_controller_;
@@ -246,16 +158,6 @@ private:
   double progress_longitudinal_error_{0.0};
   double progress_lateral_error_{0.0};
   double progress_yaw_error_{0.0};
-  bool last_safe_pose_valid_{false};
-  CornerShuntPose last_safe_pose_;
-  std::size_t captured_junction_index_{
-      std::numeric_limits<std::size_t>::max()};
-  std::string captured_junction_id_;
-  TurnManeuverFailureReason failure_reason_{TurnManeuverFailureReason::NONE};
-  TurnManeuverRecoveryDirection recovery_direction_{
-      TurnManeuverRecoveryDirection::NONE};
-  TurnManeuverRejectionSignature rejection_signature_;
-  std::size_t identical_rejection_count_{0};
 };
 
 } // namespace visual_navigation

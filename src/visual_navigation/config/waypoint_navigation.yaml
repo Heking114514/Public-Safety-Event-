@@ -143,7 +143,6 @@ waypoint_navigator:
     turn_maneuver_trim_min_direction_distance_m: 0.010
     turn_maneuver_trim_completion_samples: 3
     turn_maneuver_max_direction_switches: 2
-    turn_maneuver_max_identical_rejections: 1
     # Braking, mission holds and localization waits pause
     # position progress. In-place turns remain safe through the displacement gate.
     path_progress_timeout: 10.0

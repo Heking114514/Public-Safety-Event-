@@ -19,8 +19,7 @@ public:
   bool compile(const Pose &start_arena,
                const std::vector<Traversal> &traversals,
                const std::vector<Polygon> &dynamic_obstacles,
-               PlanResult &result,
-               bool allow_initial_recovery_reverse = false) const;
+               PlanResult &result) const;
 
 private:
   const PlannerConfig &config_;

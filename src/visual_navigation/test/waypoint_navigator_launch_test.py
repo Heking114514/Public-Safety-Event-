@@ -153,9 +153,7 @@ class TestWaypointNavigatorContract(unittest.TestCase):
             pose.pose.position.x = x
             pose.pose.position.y = y
             pose.pose.position.z = point[2] if len(point) > 2 else 0.0
-            yaw = point[3] if len(point) > 3 else 0.0
-            pose.pose.orientation.z = math.sin(yaw * 0.5)
-            pose.pose.orientation.w = math.cos(yaw * 0.5)
+            pose.pose.orientation.w = 1.0
             route.poses.append(pose)
         self.publisher.publish(route)
 
@@ -711,9 +709,7 @@ class TestWaypointNavigatorContract(unittest.TestCase):
         stamp = self.node.get_clock().now()
         self.publish_route(
             stamp.to_msg(),
-            # The short marker is a route-start turn: its yaw is the incoming
-            # road geometry, while odometry below supplies the arrival pose.
-            [(0.300, 0.0), (0.301, 0.0, 0.001, -math.pi / 2.0), (1.300, 0.0)],
+            [(0.300, 0.0), (0.301, 0.0, 0.001), (1.300, 0.0)],
         )
         self.hold_odometry(0.30, yaw=-math.pi / 2.0, cycles=20)
 

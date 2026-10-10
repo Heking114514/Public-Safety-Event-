@@ -17,7 +17,6 @@
 namespace visual_navigation {
 
 struct RouteWaypoint {
-  std::string junction_id;
   double x{0.0};
   double y{0.0};
   double yaw{std::numeric_limits<double>::quiet_NaN()};
@@ -26,7 +25,6 @@ struct RouteWaypoint {
   double stop_time{0.0};
   bool turn_junction{false};
   bool reverse_arrival_turn{false};
-  bool reverse_segment{false};
   bool rfid_supernode{false};
 };
 
@@ -84,8 +82,6 @@ public:
         waypoint.stop_time = fields.size() > 5 && !fields[5].empty()
                                  ? std::stod(fields[5])
                                  : 0.0;
-        if (fields.size() > 6)
-          waypoint.junction_id = fields[6];
         if (!std::isfinite(waypoint.x) || !std::isfinite(waypoint.y) ||
             !std::isfinite(waypoint.speed) ||
             !std::isfinite(waypoint.tolerance) ||
@@ -124,9 +120,7 @@ public:
           left[index].turn_junction != right[index].turn_junction ||
           left[index].reverse_arrival_turn !=
               right[index].reverse_arrival_turn ||
-          left[index].reverse_segment != right[index].reverse_segment ||
           left[index].rfid_supernode != right[index].rfid_supernode ||
-          left[index].junction_id != right[index].junction_id ||
           left_yaw != right_yaw ||
           (left_yaw &&
            std::abs(normalize_angle(left[index].yaw - right[index].yaw)) >
@@ -165,12 +159,10 @@ public:
           std::abs(pose.position.z - 4.0e-3) <= 1.0e-6;
       const bool rfid_reverse_turn_height = std::isfinite(pose.position.z) &&
           std::abs(pose.position.z - 5.0e-3) <= 1.0e-6;
-      const bool reverse_segment_height = std::isfinite(pose.position.z) &&
-          std::abs(pose.position.z - 6.0e-3) <= 1.0e-6;
       if (!std::isfinite(pose.position.x) || !std::isfinite(pose.position.y) ||
           (!ordinary_height && !turn_junction_height &&
            !reverse_arrival_height && !rfid_height && !rfid_turn_height &&
-           !rfid_reverse_turn_height && !reverse_segment_height) ||
+           !rfid_reverse_turn_height) ||
           !valid_quaternion(pose.orientation)) {
         invalid_index = index;
         error = "waypoint pose is invalid";
@@ -178,7 +170,6 @@ public:
         return false;
       }
       RouteWaypoint waypoint;
-      waypoint.junction_id = "waypoint_" + std::to_string(index);
       waypoint.x = pose.position.x;
       waypoint.y = pose.position.y;
       waypoint.turn_junction = turn_junction_height || reverse_arrival_height;
@@ -186,7 +177,6 @@ public:
                                rfid_reverse_turn_height;
       waypoint.reverse_arrival_turn = reverse_arrival_height ||
                                       rfid_reverse_turn_height;
-      waypoint.reverse_segment = reverse_segment_height;
       waypoint.rfid_supernode = rfid_height || rfid_turn_height ||
                                 rfid_reverse_turn_height;
       waypoint.yaw = quaternion_yaw(pose.orientation);

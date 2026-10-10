@@ -1,4 +1,3 @@
-#include "new_map_planner/activation.hpp"
 #include "new_map_planner/config.hpp"
 #include "new_map_planner/geometry.hpp"
 #include "new_map_planner/planner.hpp"
@@ -51,19 +50,6 @@ Pose FromRosPose(const geometry_msgs::msg::Pose &pose) {
     throw std::invalid_argument("pose coordinates must be finite");
   }
   return {{pose.position.x, pose.position.y}, QuaternionYaw(pose.orientation)};
-}
-
-StartMode StartModeFromMessage(uint8_t mode) {
-  switch (mode) {
-  case srv::PlanRoute::Request::START_MODE_NORMAL:
-    return StartMode::NORMAL;
-  case srv::PlanRoute::Request::START_MODE_TURN_RECOVERY:
-    return StartMode::TURN_RECOVERY;
-  case srv::PlanRoute::Request::START_MODE_OBSTACLE_RECOVERY:
-    return StartMode::OBSTACLE_RECOVERY;
-  default:
-    throw std::invalid_argument("unknown planning start mode");
-  }
 }
 
 geometry_msgs::msg::Pose ToRosPose(const Pose &pose) {
@@ -124,14 +110,7 @@ private:
       geometry_msgs::msg::PoseStamped stamped;
       stamped.header = path.header;
       stamped.pose = ToRosPose(poses[index]);
-      const bool reverse_segment = frame == "map" &&
-          index < result.reverse_waypoints.size() &&
-          result.reverse_waypoints[index];
-      if (reverse_segment) {
-        // The marker is attached to the segment start.  The navigator reads
-        // it before issuing the first command for that segment.
-        stamped.pose.position.z = 6.0e-3;
-      } else if (planner_->config().publish_shunt_markers && frame == "map" &&
+      if (planner_->config().publish_shunt_markers && frame == "map" &&
           index < result.turn_waypoints.size() &&
           result.turn_waypoints[index]) {
         const bool reverse_arrival =
@@ -174,9 +153,7 @@ private:
     message.header.stamp = stamp;
     message.plan_id = static_cast<uint64_t>(stamp.nanoseconds());
     message.map_id = planner_->config().map_id;
-    message.status = result.recovery_only
-                         ? "TURN_RECOVERY"
-                         : (result.complete ? "COMPLETE" : "PARTIAL");
+    message.status = result.complete ? "COMPLETE" : "PARTIAL";
     message.arena_path = MakePath(result.arena_path, "arena", stamp, result);
     message.navigation_path =
         MakePath(result.navigation_path, "map", stamp, result);
@@ -192,7 +169,6 @@ private:
     message.length_m = result.length;
     message.complete = result.complete;
     message.collision_checked = result.collision_checked;
-    message.recovery_only = result.recovery_only;
     message.ordinary_nodes_since_task =
         static_cast<uint8_t>(result.ordinary_nodes_since_task);
     return message;
@@ -204,12 +180,6 @@ private:
     try {
       PlanRequest planner_request;
       planner_request.start_map = FromRosPose(request->start);
-      planner_request.start_mode = StartModeFromMessage(request->start_mode);
-      planner_request.recovery_anchor_node_id =
-          request->recovery_anchor_node_id;
-      planner_request.recovery_incoming_lane_id = request->incoming_lane_id;
-      planner_request.allow_reverse_departure =
-          request->allow_reverse_departure;
       planner_request.mode = request->mode.empty() ? "targets" : request->mode;
       planner_request.target_ids = request->target_ids;
       planner_request.required_lane_ids = request->required_lane_ids;
@@ -237,14 +207,10 @@ private:
       if (result.success) {
         const rclcpp::Time stamp = now();
         response->plan = MakePlanMessage(result, stamp);
-        const bool activated = ShouldPublishNavigationPath(
-            request->activate, result.recovery_only);
         plan_publisher_->publish(response->plan);
         arena_path_publisher_->publish(response->plan.arena_path);
-        if (activated) {
-          navigation_path_publisher_->publish(response->plan.navigation_path);
-        }
-        response->activated = activated;
+        navigation_path_publisher_->publish(response->plan.navigation_path);
+        response->activated = false;
       } else {
         response->plan.map_id = planner_->config().map_id;
         response->plan.status = PlanFailureName(result.failure_reason);
@@ -264,12 +230,10 @@ private:
     if (!response->success) {
       RCLCPP_WARN(get_logger(), "%s", response->message.c_str());
     } else {
-      RCLCPP_INFO(get_logger(),
-                  "plan %lu: %s, %.2f m, %.1f ms, activated=%s recovery=%s",
+      RCLCPP_INFO(get_logger(), "plan %lu: %s, %.2f m, %.1f ms, activated=%s",
                   response->plan.plan_id, response->plan.status.c_str(),
                   response->plan.length_m, response->planning_time_ms,
-                  response->activated ? "true" : "false",
-                  response->plan.recovery_only ? "true" : "false");
+                  response->activated ? "true" : "false");
     }
   }
 

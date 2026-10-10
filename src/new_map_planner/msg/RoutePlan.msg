@@ -13,5 +13,4 @@ string[] deferred_lane_ids
 float64 length_m
 bool complete
 bool collision_checked
-bool recovery_only
 uint8 ordinary_nodes_since_task

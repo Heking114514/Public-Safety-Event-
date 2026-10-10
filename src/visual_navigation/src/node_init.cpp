@@ -301,9 +301,6 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
   turnManeuverConfig_.max_trim_direction_switches = std::max(
       0, static_cast<int>(declare_parameter<int64_t>(
              "turn_maneuver_max_direction_switches", 2)));
-  turnManeuverConfig_.max_identical_rejections = std::max(
-      1, static_cast<int>(declare_parameter<int64_t>(
-             "turn_maneuver_max_identical_rejections", 1)));
   turnManeuverController_.configure(turnManeuverConfig_);
   const double pathProgressTimeout =
       std::max(0.0, declare_parameter<double>("path_progress_timeout", 10.0));
