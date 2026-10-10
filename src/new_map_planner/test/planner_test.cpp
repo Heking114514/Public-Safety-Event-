@@ -252,6 +252,35 @@ TEST(Planner, CompleteRoadCoverageUsesExplicitManeuvers) {
         return maneuver.type == new_map_planner::ManeuverType::TURN_LEFT ||
                maneuver.type == new_map_planner::ManeuverType::TURN_RIGHT;
       }));
+  for (std::size_t index = 0; index < result.traversals.size(); ++index) {
+    EXPECT_FALSE(result.traversals[index].reverse)
+        << "index=" << index << " lane="
+        << result.traversals[index].directed_lane;
+  }
+  EXPECT_TRUE(std::none_of(
+      result.maneuvers.begin(), result.maneuvers.end(),
+      [](const new_map_planner::Maneuver &maneuver) {
+        return maneuver.type == new_map_planner::ManeuverType::REVERSE;
+      }));
+}
+
+TEST(Planner, CoverageSearchIsDeterministic) {
+  const auto config = OfficialConfig();
+  new_map_planner::MapPlanner planner(config);
+  const auto request = HomeRequest("coverage");
+
+  const auto first = planner.plan(request);
+  const auto second = planner.plan(request);
+
+  ASSERT_TRUE(first.success) << first.message;
+  ASSERT_TRUE(second.success) << second.message;
+  ASSERT_EQ(first.traversals.size(), second.traversals.size());
+  for (std::size_t index = 0; index < first.traversals.size(); ++index) {
+    EXPECT_EQ(first.traversals[index].directed_lane,
+              second.traversals[index].directed_lane);
+    EXPECT_EQ(first.traversals[index].reverse,
+              second.traversals[index].reverse);
+  }
 }
 
 TEST(Planner, RunsTaskTunnelAndRoadStagesFromMeasuredEndPoses) {
@@ -376,14 +405,79 @@ TEST(Planner, RejectsLaneFromTheWrongStage) {
 }
 
 TEST(Planner, StartOutsideRoadIsRejectedWithoutProjection) {
-  const auto config = OfficialConfig();
+  auto config = OfficialConfig();
+  config.free_regions = {{0.0, 0.0, config.width, config.height}};
+  config.static_obstacles.clear();
   new_map_planner::MapPlanner planner(config);
   auto request = HomeRequest("targets");
-  request.start_map.position = {0.4, 0.4};
+  request.start_map = new_map_planner::ArenaToMap(
+      {{0.5, 0.5}, 0.0}, config.transform);
   const auto result = planner.plan(request);
 
   EXPECT_FALSE(result.success);
-  EXPECT_NE(result.message.find("start pose"), std::string::npos);
+  EXPECT_EQ(result.failure_reason,
+            new_map_planner::PlanFailureReason::START_NOT_ON_ROAD);
+}
+
+TEST(Planner, StartFootprintCollisionHasStableFailureReason) {
+  const auto config = OfficialConfig();
+  new_map_planner::MapPlanner planner(config);
+  auto request = HomeRequest("targets");
+  request.dynamic_obstacles_map.push_back(
+      ArenaRectangleInMap(config, 1.50, 4.20, 1.70, 4.40));
+
+  const auto result = planner.plan(request);
+
+  EXPECT_FALSE(result.success);
+  EXPECT_EQ(result.failure_reason,
+            new_map_planner::PlanFailureReason::START_POSE_COLLISION);
+}
+
+TEST(Planner, StartHeadingMismatchHasStableFailureReason) {
+  auto config = OfficialConfig();
+  config.free_regions = {{0.0, 0.0, config.width, config.height}};
+  config.static_obstacles.clear();
+  new_map_planner::MapPlanner planner(config);
+  auto request = HomeRequest("targets");
+  request.start_map = new_map_planner::ArenaToMap(
+      {{1.1, 1.1}, -0.25 * new_map_planner::kPi}, config.transform);
+
+  const auto result = planner.plan(request);
+
+  EXPECT_FALSE(result.success);
+  EXPECT_EQ(result.failure_reason,
+            new_map_planner::PlanFailureReason::START_HEADING_MISMATCH);
+}
+
+TEST(Planner, BlockedForwardAnchorHasStableFailureReason) {
+  const auto config = OfficialConfig();
+  new_map_planner::MapPlanner planner(config);
+  auto request = HomeRequest("targets");
+  request.start_map = new_map_planner::ArenaToMap(
+      {{1.6, 4.22}, -0.5 * new_map_planner::kPi}, config.transform);
+  request.dynamic_obstacles_map.push_back(
+      ArenaRectangleInMap(config, 1.55, 4.105, 1.65, 4.125));
+
+  const auto result = planner.plan(request);
+
+  EXPECT_FALSE(result.success);
+  EXPECT_EQ(result.failure_reason,
+            new_map_planner::PlanFailureReason::START_FORWARD_BLOCKED);
+}
+
+TEST(Planner, ReverseOnlyAnchorRequestsRecoveryInsteadOfPlanningReverse) {
+  const auto config = OfficialConfig();
+  new_map_planner::MapPlanner planner(config);
+  auto request = HomeRequest("targets");
+  request.start_map = new_map_planner::ArenaToMap(
+      {{1.6, 4.31}, 0.5 * new_map_planner::kPi}, config.transform);
+
+  const auto result = planner.plan(request);
+
+  EXPECT_FALSE(result.success);
+  EXPECT_EQ(result.failure_reason,
+            new_map_planner::PlanFailureReason::START_REQUIRES_REVERSE);
+  EXPECT_TRUE(result.traversals.empty());
 }
 
 TEST(Planner, NearTopTaskStartKeepsVehicleHeadingDuringSnap) {
@@ -465,7 +559,7 @@ TEST(Planner, RejectsPartialCoverageRouteWithoutRequiredLaneProgress) {
   EXPECT_EQ(result.deferred_lane_ids.size(), 4U);
 }
 
-TEST(Planner, ReverseTargetSegmentKeepsVehicleYaw) {
+TEST(Planner, TargetRouteDoesNotUseRecoveryReverse) {
   const auto config = OfficialConfig();
   new_map_planner::MapPlanner planner(config);
   new_map_planner::PlanRequest request;
@@ -480,25 +574,17 @@ TEST(Planner, ReverseTargetSegmentKeepsVehicleYaw) {
 
   const auto result = planner.plan(request);
 
-  ASSERT_TRUE(result.success) << result.message;
-  ASSERT_FALSE(result.traversals.empty());
-  EXPECT_TRUE(std::any_of(
+  EXPECT_FALSE(result.success);
+  EXPECT_EQ(result.failure_reason,
+            new_map_planner::PlanFailureReason::NO_FEASIBLE_ROUTE);
+  EXPECT_FALSE(std::any_of(
       result.traversals.begin(), result.traversals.end(),
       [](const new_map_planner::Traversal &traversal) {
         return traversal.reverse;
       }));
-  const auto reverse_maneuver = std::find_if(
-      result.maneuvers.begin(), result.maneuvers.end(),
-      [](const new_map_planner::Maneuver &maneuver) {
-        return maneuver.type == new_map_planner::ManeuverType::REVERSE;
-      });
-  ASSERT_NE(reverse_maneuver, result.maneuvers.end());
-  EXPECT_NEAR(new_map_planner::NormalizeAngle(
-                  reverse_maneuver->start.yaw - reverse_maneuver->end.yaw),
-              0.0, 1.0e-6);
 }
 
-TEST(Planner, PlansTunnelStageAfterRetreatToEarlierJunction) {
+TEST(Planner, PlansTunnelStageFromForwardAlignedRoad) {
   const auto config = OfficialConfig();
   new_map_planner::MapPlanner planner(config);
   new_map_planner::PlanRequest request;
@@ -511,12 +597,17 @@ TEST(Planner, PlansTunnelStageAfterRetreatToEarlierJunction) {
   const auto result = planner.plan(request);
 
   ASSERT_TRUE(result.success) << result.message;
+  EXPECT_FALSE(std::any_of(
+      result.traversals.begin(), result.traversals.end(),
+      [](const new_map_planner::Traversal &traversal) {
+        return traversal.reverse;
+      }));
   EXPECT_TRUE(std::any_of(
       result.covered_lane_ids.begin(), result.covered_lane_ids.end(),
       [](const std::string &id) { return id.find("TUNNEL_") == 0; }));
 }
 
-TEST(Planner, MarksReverseArrivalTurnInObstacleCoverageRoute) {
+TEST(Planner, CoverageRouteDoesNotUseRecoveryReverse) {
   const auto config = OfficialConfig();
   new_map_planner::MapPlanner planner(config);
   new_map_planner::PlanRequest request;
@@ -540,9 +631,26 @@ TEST(Planner, MarksReverseArrivalTurnInObstacleCoverageRoute) {
   const auto result = planner.plan(request);
 
   ASSERT_TRUE(result.success) << result.message;
-  EXPECT_NE(std::find(result.reverse_arrival_turn_waypoints.begin(),
+  EXPECT_FALSE(std::any_of(
+      result.traversals.begin(), result.traversals.end(),
+      [](const new_map_planner::Traversal &traversal) {
+        return traversal.reverse;
+      }));
+  EXPECT_EQ(std::find(result.reverse_arrival_turn_waypoints.begin(),
                       result.reverse_arrival_turn_waypoints.end(), true),
             result.reverse_arrival_turn_waypoints.end());
+}
+
+TEST(Diagnostics, FailureNamesAreStable) {
+  EXPECT_STREQ(new_map_planner::PlanFailureName(
+                   new_map_planner::PlanFailureReason::START_POSE_COLLISION),
+               "START_POSE_COLLISION");
+  EXPECT_STREQ(new_map_planner::PlanFailureName(
+                   new_map_planner::PlanFailureReason::START_REQUIRES_REVERSE),
+               "START_REQUIRES_REVERSE");
+  EXPECT_STREQ(new_map_planner::PlanFailureName(
+                   new_map_planner::PlanFailureReason::NO_FEASIBLE_ROUTE),
+               "NO_FEASIBLE_ROUTE");
 }
 
 TEST(Planner, DynamicBlockageDefersOnlyUnreachableCoverage) {
@@ -566,5 +674,20 @@ TEST(Planner, DynamicBlockageDefersOnlyUnreachableCoverage) {
   EXPECT_NE(std::find(result.deferred_lane_ids.begin(),
                       result.deferred_lane_ids.end(), "TUNNEL_1"),
             result.deferred_lane_ids.end());
+  EXPECT_TRUE(std::none_of(
+      result.traversals.begin(), result.traversals.end(),
+      [](const new_map_planner::Traversal &traversal) {
+        return traversal.reverse;
+      }));
+
+  new_map_planner::PlanRequest return_request;
+  return_request.start_map = result.navigation_path.back();
+  return_request.mode = "coverage";
+  return_request.completed_lane_ids = config.default_inspection_lanes;
+  return_request.dynamic_obstacles_map = request.dynamic_obstacles_map;
+  return_request.return_home = true;
+  const auto return_route = planner.plan(return_request);
+  ASSERT_TRUE(return_route.success) << return_route.message;
+  EXPECT_TRUE(return_route.complete);
   EXPECT_LT(elapsed_ms, 2000.0);
 }

@@ -1,5 +1,6 @@
 #include "new_map_planner/planner.hpp"
 
+#include "new_map_planner/coverage.hpp"
 #include "new_map_planner/geometry.hpp"
 #include "new_map_planner/stage.hpp"
 #include "new_map_planner/transform.hpp"
@@ -16,6 +17,33 @@
 #include <utility>
 
 namespace new_map_planner {
+
+const char *PlanFailureName(PlanFailureReason reason) {
+  switch (reason) {
+  case PlanFailureReason::NONE:
+    return "NONE";
+  case PlanFailureReason::INVALID_REQUEST:
+    return "INVALID_REQUEST";
+  case PlanFailureReason::START_POSE_COLLISION:
+    return "START_POSE_COLLISION";
+  case PlanFailureReason::START_NOT_ON_ROAD:
+    return "START_NOT_ON_ROAD";
+  case PlanFailureReason::START_HEADING_MISMATCH:
+    return "START_HEADING_MISMATCH";
+  case PlanFailureReason::START_FORWARD_BLOCKED:
+    return "START_FORWARD_BLOCKED";
+  case PlanFailureReason::START_REQUIRES_REVERSE:
+    return "START_REQUIRES_REVERSE";
+  case PlanFailureReason::NO_FEASIBLE_ROUTE:
+    return "NO_FEASIBLE_ROUTE";
+  case PlanFailureReason::COVERAGE_INCOMPLETE:
+    return "COVERAGE_INCOMPLETE";
+  case PlanFailureReason::ROUTE_INVALID:
+    return "ROUTE_INVALID";
+  }
+  return "UNKNOWN";
+}
+
 namespace {
 
 constexpr uint64_t kNoKey = std::numeric_limits<uint64_t>::max();
@@ -25,20 +53,16 @@ struct TargetRecord {
   uint64_t previous{kNoKey};
   int via{-1};
   int seed{-1};
-  int arrival_lane{-1};
-  bool reverse{false};
 };
 
 struct StateRecord {
   double cost{std::numeric_limits<double>::infinity()};
   int previous{-1};
   int via{-1};
-  bool reverse{false};
 };
 
 struct RouteStep {
   int directed_lane{-1};
-  bool reverse{false};
   int ordinary_count{-1};
 };
 
@@ -62,6 +86,29 @@ void AddUnique(std::vector<std::string> &values, const std::string &value) {
   }
 }
 
+void SetFailure(PlanResult &result, PlanFailureReason reason,
+                std::string message) {
+  result.failure_reason = reason;
+  result.message = std::move(message);
+}
+
+const char *StartFailureMessage(PlanFailureReason reason) {
+  switch (reason) {
+  case PlanFailureReason::START_POSE_COLLISION:
+    return "start footprint collides with the map or an obstacle";
+  case PlanFailureReason::START_NOT_ON_ROAD:
+    return "start pose is outside the road anchor tolerance";
+  case PlanFailureReason::START_HEADING_MISMATCH:
+    return "start heading is not aligned with a forward road anchor";
+  case PlanFailureReason::START_FORWARD_BLOCKED:
+    return "start forward connection is blocked";
+  case PlanFailureReason::START_REQUIRES_REVERSE:
+    return "start connection requires recovery reverse";
+  default:
+    return "start pose has no valid forward road anchor";
+  }
+}
+
 } // namespace
 
 MapPlanner::MapPlanner(PlannerConfig config)
@@ -69,18 +116,24 @@ MapPlanner::MapPlanner(PlannerConfig config)
       maneuvers_(config_, collision_),
       route_compiler_(config_, graph_, collision_, maneuvers_) {}
 
-std::vector<MapPlanner::StartSeed>
+MapPlanner::StartSeedResult
 MapPlanner::start_seeds(const Pose &start,
                         const std::vector<Polygon> &obstacles) const {
-  std::vector<StartSeed> seeds;
+  StartSeedResult result;
   if (!collision_.pose_is_free(start, obstacles)) {
-    return seeds;
+    result.failure_reason = PlanFailureReason::START_POSE_COLLISION;
+    return result;
   }
+
   const int start_heading = CardinalHeading(start.yaw);
-  if (std::abs(NormalizeAngle(start.yaw - HeadingYaw(start_heading))) >
-      config_.start_heading_tolerance) {
-    return seeds;
-  }
+  const bool cardinal_aligned =
+      std::abs(NormalizeAngle(start.yaw - HeadingYaw(start_heading))) <=
+      config_.start_heading_tolerance;
+  bool near_road = false;
+  bool heading_aligned = false;
+  bool forward_candidate = false;
+  bool reverse_candidate = false;
+  bool forward_blocked = false;
 
   for (std::size_t node = 0; node < config_.nodes.size(); ++node) {
     const double distance =
@@ -88,6 +141,11 @@ MapPlanner::start_seeds(const Pose &start,
     if (distance > config_.lane_snap_distance) {
       continue;
     }
+    near_road = true;
+    if (!cardinal_aligned) {
+      continue;
+    }
+    heading_aligned = true;
     StartSeed seed;
     seed.node = static_cast<int>(node);
     seed.heading = start_heading;
@@ -101,46 +159,61 @@ MapPlanner::start_seeds(const Pose &start,
       const double snap_heading =
           std::atan2(config_.nodes[node].position.y - start.position.y,
                      config_.nodes[node].position.x - start.position.x);
-      if (std::abs(NormalizeAngle(snap_heading - start.yaw)) >
-          config_.start_heading_tolerance) {
+      const double motion_error =
+          std::abs(NormalizeAngle(snap_heading - start.yaw));
+      if (std::abs(motion_error - kPi) <= config_.start_heading_tolerance) {
+        reverse_candidate = true;
         continue;
       }
+      if (motion_error > config_.start_heading_tolerance) {
+        continue;
+      }
+      forward_candidate = true;
       if (!collision_.segment_is_free(start.position,
                                       config_.nodes[node].position, start.yaw,
                                       obstacles)) {
+        forward_blocked = true;
         continue;
       }
       seed.prefix.push_back(
           {-1, start.position, config_.nodes[node].position, true});
     }
-    seeds.push_back(std::move(seed));
+    result.seeds.push_back(std::move(seed));
   }
-  if (!seeds.empty()) {
-    return seeds;
+  if (!result.seeds.empty()) {
+    return result;
   }
 
   for (std::size_t index = 0; index < graph_.graph().directed_lanes.size();
        ++index) {
     const DirectedLane &directed = graph_.graph().directed_lanes[index];
-    if (std::abs(NormalizeAngle(start.yaw - HeadingYaw(directed.heading))) >
-        config_.start_heading_tolerance) {
-      continue;
-    }
     const Point &lane_begin = config_.nodes[directed.from].position;
     const Point &lane_end = config_.nodes[directed.to].position;
     if (DistanceToSegment(start.position, lane_begin, lane_end) >
         config_.lane_snap_distance) {
       continue;
     }
-    const double snap_heading = std::atan2(lane_end.y - start.position.y,
-                                           lane_end.x - start.position.x);
-    if (std::abs(NormalizeAngle(snap_heading - HeadingYaw(directed.heading))) >
+    near_road = true;
+    if (std::abs(NormalizeAngle(start.yaw - HeadingYaw(directed.heading))) >
         config_.start_heading_tolerance) {
-      // The compatibility Path cannot express an initial reverse segment.
-      // Reject a projection that would need to move away from lane_end.
       continue;
     }
-    if (!collision_.segment_is_free(start.position, lane_end, obstacles)) {
+    heading_aligned = true;
+    const double snap_heading = std::atan2(lane_end.y - start.position.y,
+                                           lane_end.x - start.position.x);
+    const double motion_error =
+        std::abs(NormalizeAngle(snap_heading - start.yaw));
+    if (std::abs(motion_error - kPi) <= config_.start_heading_tolerance) {
+      reverse_candidate = true;
+      continue;
+    }
+    if (motion_error > config_.start_heading_tolerance) {
+      continue;
+    }
+    forward_candidate = true;
+    if (!collision_.segment_is_free(start.position, lane_end,
+                                    HeadingYaw(directed.heading), obstacles)) {
+      forward_blocked = true;
       continue;
     }
     StartSeed seed;
@@ -149,9 +222,23 @@ MapPlanner::start_seeds(const Pose &start,
     seed.cost = Distance(start.position, lane_end);
     seed.prefix.push_back(
         {static_cast<int>(index), start.position, lane_end, true});
-    seeds.push_back(std::move(seed));
+    result.seeds.push_back(std::move(seed));
   }
-  return seeds;
+  if (!result.seeds.empty()) {
+    return result;
+  }
+  if (!near_road) {
+    result.failure_reason = PlanFailureReason::START_NOT_ON_ROAD;
+  } else if (!heading_aligned) {
+    result.failure_reason = PlanFailureReason::START_HEADING_MISMATCH;
+  } else if (forward_candidate && forward_blocked) {
+    result.failure_reason = PlanFailureReason::START_FORWARD_BLOCKED;
+  } else if (reverse_candidate) {
+    result.failure_reason = PlanFailureReason::START_REQUIRES_REVERSE;
+  } else {
+    result.failure_reason = PlanFailureReason::START_HEADING_MISMATCH;
+  }
+  return result;
 }
 
 PlanResult MapPlanner::plan(const PlanRequest &request) const {
@@ -160,7 +247,7 @@ PlanResult MapPlanner::plan(const PlanRequest &request) const {
     resolved = ResolvePlanRequest(request, config_);
   } catch (const std::invalid_argument &exception) {
     PlanResult invalid;
-    invalid.message = exception.what();
+    SetFailure(invalid, PlanFailureReason::INVALID_REQUEST, exception.what());
     return invalid;
   }
   const Pose start = MapToArena(resolved.request.start_map, config_.transform);
@@ -169,7 +256,8 @@ PlanResult MapPlanner::plan(const PlanRequest &request) const {
   for (const Polygon &polygon : request.dynamic_obstacles_map) {
     if (polygon.points.size() < 3) {
       PlanResult invalid;
-      invalid.message = "dynamic obstacles must contain at least three points";
+      SetFailure(invalid, PlanFailureReason::INVALID_REQUEST,
+                 "dynamic obstacles must contain at least three points");
       return invalid;
     }
     obstacles.push_back(MapToArena(polygon, config_.transform));
@@ -209,11 +297,13 @@ MapPlanner::plan_targets(const PlanRequest &request, const Pose &start,
   const std::vector<std::string> targets =
       request.target_ids.empty() ? config_.default_targets : request.target_ids;
   if (targets.empty()) {
-    result.message = "target mission is empty";
+    SetFailure(result, PlanFailureReason::INVALID_REQUEST,
+               "target mission is empty");
     return result;
   }
   if (targets.size() > 16) {
-    result.message = "target mission exceeds the exact planner limit of 16";
+    SetFailure(result, PlanFailureReason::INVALID_REQUEST,
+               "target mission exceeds the exact planner limit of 16");
     return result;
   }
   std::vector<int> target_nodes;
@@ -223,19 +313,20 @@ MapPlanner::plan_targets(const PlanRequest &request, const Pose &start,
       target_nodes.push_back(graph_.task_node(target));
     }
   } catch (const std::invalid_argument &exception) {
-    result.message = exception.what();
+    SetFailure(result, PlanFailureReason::INVALID_REQUEST, exception.what());
     return result;
   }
 
-  const std::vector<StartSeed> seeds = start_seeds(start, obstacles);
-  if (seeds.empty()) {
-    result.message = "start pose is not aligned with a collision-free road";
+  const StartSeedResult start_result = start_seeds(start, obstacles);
+  if (start_result.seeds.empty()) {
+    SetFailure(result, start_result.failure_reason,
+               StartFailureMessage(start_result.failure_reason));
     return result;
   }
+  const std::vector<StartSeed> &seeds = start_result.seeds;
   const int count_states = 3;
-  const int lane_states = static_cast<int>(config_.lanes.size()) + 1;
   const int state_count = static_cast<int>(config_.nodes.size()) *
-                          kHeadingCount * count_states * lane_states;
+                          kHeadingCount * count_states;
   const auto is_task_node = [this](int node) {
     return std::any_of(config_.tasks.begin(), config_.tasks.end(),
                        [node](const Task &task) { return task.node == node; });
@@ -250,22 +341,18 @@ MapPlanner::plan_targets(const PlanRequest &request, const Pose &start,
     }
     return mask;
   };
-  const auto key_for = [state_count, count_states, lane_states](
-                           uint64_t mask, int node, int heading, int count,
-                           int arrival_lane) {
+  const auto key_for = [state_count, count_states](uint64_t mask, int node,
+                                                   int heading, int count) {
     return mask * static_cast<uint64_t>(state_count) +
-           static_cast<uint64_t>(
-               (((node * kHeadingCount + heading) * count_states + count) *
-                    lane_states) +
-               static_cast<std::size_t>(arrival_lane + 1));
+           static_cast<uint64_t>((node * kHeadingCount + heading) *
+                                     count_states +
+                                 count);
   };
-  const auto decode = [state_count, count_states, lane_states](
-                          uint64_t key, uint64_t &mask, int &node,
-                          int &heading, int &count, int &arrival_lane) {
+  const auto decode = [state_count, count_states](uint64_t key, uint64_t &mask,
+                                                  int &node, int &heading,
+                                                  int &count) {
     mask = key / static_cast<uint64_t>(state_count);
     int state = static_cast<int>(key % static_cast<uint64_t>(state_count));
-    arrival_lane = state % lane_states - 1;
-    state /= lane_states;
     count = state % count_states;
     state /= count_states;
     node = state / kHeadingCount;
@@ -301,7 +388,7 @@ MapPlanner::plan_targets(const PlanRequest &request, const Pose &start,
       continue;
     }
     const uint64_t key =
-        key_for(node_mask(seed.node), seed.node, seed.heading, count, -1);
+        key_for(node_mask(seed.node), seed.node, seed.heading, count);
     TargetRecord &record = records[key];
     if (seed.cost < record.cost) {
       record.cost = seed.cost;
@@ -326,8 +413,7 @@ MapPlanner::plan_targets(const PlanRequest &request, const Pose &start,
     int node = -1;
     int heading = -1;
     int count = 0;
-    int arrival_lane = -1;
-    decode(current.key, mask, node, heading, count, arrival_lane);
+    decode(current.key, mask, node, heading, count);
     const int completed = static_cast<int>(std::bitset<64>(mask).count());
     if (completed > best_partial_count ||
         (completed == best_partial_count && current.cost < best_partial_cost)) {
@@ -353,8 +439,7 @@ MapPlanner::plan_targets(const PlanRequest &request, const Pose &start,
       }
       const uint64_t next_mask = mask | node_mask(directed.to);
       const uint64_t next_key =
-          key_for(next_mask, directed.to, directed.heading, next_count,
-                  directed.lane);
+          key_for(next_mask, directed.to, directed.heading, next_count);
       const double turn = heading == directed.heading ? 0.0 : config_.turn_cost;
       const double candidate = current.cost + directed.length + turn;
       TargetRecord &next = records[next_key];
@@ -365,37 +450,7 @@ MapPlanner::plan_targets(const PlanRequest &request, const Pose &start,
       next.previous = current.key;
       next.via = directed_index;
       next.seed = current_record->second.seed;
-      next.arrival_lane = directed.lane;
-      next.reverse = false;
       queue.push({candidate, next_key});
-    }
-
-    if (arrival_lane >= 0 || current_record->second.previous == kNoKey) {
-      for (int directed_index : graph_.outgoing(node)) {
-        const DirectedLane &retreat = graph_.directed_lane(directed_index);
-        if ((arrival_lane >= 0 && retreat.lane != arrival_lane) ||
-            (retreat.heading + 2) % kHeadingCount != heading ||
-            !lane_free[static_cast<std::size_t>(directed_index)]) {
-          continue;
-        }
-        const int reverse_count = is_task_node(retreat.to) ? 0 : count;
-        const uint64_t next_mask = mask | node_mask(retreat.to);
-        const uint64_t next_key = key_for(
-            next_mask, retreat.to, heading, reverse_count, retreat.lane);
-        const double candidate =
-            current.cost + retreat.length + config_.reverse_cost;
-        TargetRecord &next = records[next_key];
-        if (candidate + 1.0e-9 >= next.cost) {
-          continue;
-        }
-        next.cost = candidate;
-        next.previous = current.key;
-        next.via = directed_index;
-        next.seed = current_record->second.seed;
-        next.arrival_lane = retreat.lane;
-        next.reverse = true;
-        queue.push({candidate, next_key});
-      }
     }
   }
 
@@ -405,14 +460,16 @@ MapPlanner::plan_targets(const PlanRequest &request, const Pose &start,
     selected_key = best_partial_key;
   }
   if (selected_key == kNoKey) {
-    result.message = "no heading-feasible route reaches the requested targets";
+    SetFailure(result, PlanFailureReason::NO_FEASIBLE_ROUTE,
+               "no forward heading-feasible route reaches the requested "
+               "targets");
     result.deferred_target_ids = targets;
     return result;
   }
   std::vector<RouteStep> reversed;
   uint64_t cursor = selected_key;
   while (records.at(cursor).previous != kNoKey) {
-    reversed.push_back({records.at(cursor).via, records.at(cursor).reverse});
+    reversed.push_back({records.at(cursor).via});
     cursor = records.at(cursor).previous;
   }
   std::reverse(reversed.begin(), reversed.end());
@@ -422,7 +479,7 @@ MapPlanner::plan_targets(const PlanRequest &request, const Pose &start,
     const DirectedLane &directed = graph_.directed_lane(step.directed_lane);
     result.traversals.push_back(
         {step.directed_lane, config_.nodes[directed.from].position,
-         config_.nodes[directed.to].position, false, step.reverse});
+         config_.nodes[directed.to].position, false, false});
   }
   for (const Traversal &traversal : result.traversals) {
     if (traversal.directed_lane < 0) {
@@ -438,9 +495,8 @@ MapPlanner::plan_targets(const PlanRequest &request, const Pose &start,
   uint64_t reached_mask = 0;
   int selected_node = -1;
   int selected_heading = -1;
-  int selected_arrival_lane = -1;
   decode(selected_key, reached_mask, selected_node, selected_heading,
-         result.ordinary_nodes_since_task, selected_arrival_lane);
+         result.ordinary_nodes_since_task);
   (void)selected_node;
   (void)selected_heading;
   std::unordered_set<std::string> ordered_targets;
@@ -468,8 +524,11 @@ MapPlanner::plan_targets(const PlanRequest &request, const Pose &start,
   result.success =
       route_compiler_.compile(start, result.traversals, obstacles, result);
   if (result.success) {
+    result.failure_reason = PlanFailureReason::NONE;
     result.message = result.complete ? "complete target route validated"
                                      : "partial target route validated";
+  } else {
+    result.failure_reason = PlanFailureReason::ROUTE_INVALID;
   }
   return result;
 }
@@ -478,410 +537,23 @@ PlanResult MapPlanner::plan_coverage(const PlanRequest &request,
                                      const Pose &start,
                                      const std::vector<Polygon> &obstacles,
                                      bool allow_tunnel_connectors) const {
-  PlanResult best;
-  std::vector<std::string> required = request.required_lane_ids.empty()
-                                          ? config_.default_inspection_lanes
-                                          : request.required_lane_ids;
-  std::unordered_set<std::string> completed(request.completed_lane_ids.begin(),
-                                            request.completed_lane_ids.end());
-  required.erase(std::remove_if(required.begin(), required.end(),
-                                [&completed](const std::string &lane) {
-                                  return completed.count(lane) != 0;
-                                }),
-                 required.end());
-  try {
-    for (const std::string &lane : required) {
-      (void)graph_.lane_index(lane);
-    }
-  } catch (const std::invalid_argument &exception) {
-    best.message = exception.what();
-    return best;
+  const StartSeedResult coverage_start_result = start_seeds(start, obstacles);
+  if (coverage_start_result.seeds.empty()) {
+    PlanResult rejected;
+    SetFailure(rejected, coverage_start_result.failure_reason,
+               StartFailureMessage(coverage_start_result.failure_reason));
+    return rejected;
   }
-  const std::vector<StartSeed> seeds = start_seeds(start, obstacles);
-  if (seeds.empty()) {
-    best.message = "start pose is not aligned with a collision-free road";
-    return best;
+  std::vector<CoverageStart> starts;
+  starts.reserve(coverage_start_result.seeds.size());
+  for (const StartSeed &seed : coverage_start_result.seeds) {
+    starts.push_back({seed.node, seed.heading, seed.cost, seed.prefix});
   }
+  const CoveragePlanner coverage(config_, graph_, collision_, maneuvers_,
+                                 route_compiler_);
+  return coverage.plan(request, start, obstacles, starts,
+                       allow_tunnel_connectors);
 
-  const std::size_t directed_count = graph_.graph().directed_lanes.size();
-  std::vector<bool> lane_free(directed_count, false);
-  std::vector<bool> transition_free(directed_count * kHeadingCount, false);
-  for (std::size_t index = 0; index < directed_count; ++index) {
-    const DirectedLane &directed =
-        graph_.directed_lane(static_cast<int>(index));
-    lane_free[index] =
-        (allow_tunnel_connectors || !config_.lanes[directed.lane].tunnel) &&
-        collision_.segment_is_free(config_.nodes[directed.from].position,
-                                   config_.nodes[directed.to].position,
-                                   obstacles);
-    for (int heading = 0; heading < kHeadingCount; ++heading) {
-      transition_free[index * kHeadingCount + heading] =
-          lane_free[index] && maneuvers_.transition_is_valid(
-                                  directed.from, heading, directed, obstacles);
-    }
-  }
-
-  const int arrival_count = static_cast<int>(config_.lanes.size()) + 1;
-  constexpr int count_states = 3;
-  constexpr int previous_count_states = 3;
-  const int state_count = static_cast<int>(config_.nodes.size()) *
-                          kHeadingCount * arrival_count * count_states *
-                          previous_count_states;
-  const auto is_task_node = [this](int node) {
-    return std::any_of(config_.tasks.begin(), config_.tasks.end(),
-                       [node](const Task &task) { return task.node == node; });
-  };
-  const auto state_for = [arrival_count](int node, int heading,
-                                         int arrival_lane, int count,
-                                         int previous_count) {
-    return ((node * kHeadingCount + heading) * arrival_count + arrival_lane +
-            1) *
-               count_states * previous_count_states +
-           count * previous_count_states + previous_count;
-  };
-  const auto decode_state = [arrival_count](int state, int &node, int &heading,
-                                            int &arrival_lane, int &count,
-                                            int &previous_count) {
-    previous_count = state % previous_count_states;
-    state /= previous_count_states;
-    count = state % count_states;
-    state /= count_states;
-    arrival_lane = state % arrival_count - 1;
-    const int pose_state = state / arrival_count;
-    node = pose_state / kHeadingCount;
-    heading = pose_state % kHeadingCount;
-  };
-  const auto shortest = [this, state_count, &state_for, &decode_state,
-                         &lane_free, &transition_free, &is_task_node](
-                            int start_node, int start_heading, int start_count,
-                            int start_arrival_lane,
-                            const std::unordered_set<int> &goal_lanes,
-                            int goal_node) {
-    std::vector<StateRecord> records(static_cast<std::size_t>(state_count));
-    std::priority_queue<SmallQueueEntry, std::vector<SmallQueueEntry>,
-                        std::greater<SmallQueueEntry>>
-        queue;
-    const int start_state =
-        state_for(start_node, start_heading, start_arrival_lane, start_count,
-                  start_count);
-    records[start_state].cost = 0.0;
-    queue.push({0.0, start_state});
-    int goal_state = -1;
-    int goal_previous = -1;
-    int goal_via = -1;
-    int goal_count = -1;
-    double goal_cost = std::numeric_limits<double>::infinity();
-    while (!queue.empty()) {
-      const SmallQueueEntry current = queue.top();
-      queue.pop();
-      if (current.cost > records[current.state].cost + 1.0e-9) {
-        continue;
-      }
-      if (!goal_lanes.empty() && current.cost >= goal_cost - 1.0e-9) {
-        break;
-      }
-      int node = -1;
-      int heading = -1;
-      int arrival_lane = -1;
-      int count = 0;
-      int previous_count = 0;
-      decode_state(current.state, node, heading, arrival_lane, count,
-                   previous_count);
-      if (goal_lanes.empty() && node == goal_node) {
-        goal_state = current.state;
-        break;
-      }
-      for (int directed_index : graph_.outgoing(node)) {
-        const DirectedLane &directed = graph_.directed_lane(directed_index);
-        if (!transition_free[static_cast<std::size_t>(directed_index) *
-                                 kHeadingCount +
-                             heading]) {
-          continue;
-        }
-        const int next_count = is_task_node(directed.to) ? 0 : count + 1;
-        if (next_count >= count_states) {
-          continue;
-        }
-        const int next_state = state_for(directed.to, directed.heading,
-                                         directed.lane, next_count, count);
-        const double turn =
-            heading == directed.heading ? 0.0 : config_.turn_cost;
-        const double candidate = current.cost + directed.length + turn;
-        if (!goal_lanes.empty() && goal_lanes.count(directed.lane) != 0 &&
-            candidate < goal_cost) {
-          goal_cost = candidate;
-          goal_previous = current.state;
-          goal_via = directed_index;
-          goal_count = next_count;
-        }
-        if (candidate + 1.0e-9 >= records[next_state].cost) {
-          continue;
-        }
-        records[next_state].cost = candidate;
-        records[next_state].previous = current.state;
-        records[next_state].via = directed_index;
-        records[next_state].reverse = false;
-        queue.push({candidate, next_state});
-      }
-      if (arrival_lane >= 0) {
-        for (int directed_index : graph_.outgoing(node)) {
-          const DirectedLane &retreat = graph_.directed_lane(directed_index);
-          if (retreat.lane != arrival_lane ||
-              (retreat.heading + 2) % kHeadingCount != heading) {
-            continue;
-          }
-          if (!lane_free[static_cast<std::size_t>(directed_index)]) {
-            continue;
-          }
-          const int next_state = state_for(retreat.to, heading, -1,
-                                           previous_count, previous_count);
-          const double candidate =
-              current.cost + retreat.length + config_.reverse_cost;
-          if (candidate + 1.0e-9 >= records[next_state].cost) {
-            continue;
-          }
-          records[next_state].cost = candidate;
-          records[next_state].previous = current.state;
-          records[next_state].via = directed_index;
-          records[next_state].reverse = true;
-          queue.push({candidate, next_state});
-        }
-      }
-    }
-    const int path_end = goal_lanes.empty() ? goal_state : goal_previous;
-    std::vector<RouteStep> path;
-    if (path_end < 0) {
-      return path;
-    }
-    for (int state = path_end; state != start_state;
-         state = records[state].previous) {
-      if (state < 0 || records[state].via < 0) {
-        path.clear();
-        return path;
-      }
-      int node = -1;
-      int heading = -1;
-      int arrival_lane = -1;
-      int count = 0;
-      int previous_count = 0;
-      decode_state(state, node, heading, arrival_lane, count, previous_count);
-      (void)node;
-      (void)heading;
-      (void)arrival_lane;
-      (void)previous_count;
-      path.push_back({records[state].via, records[state].reverse, count});
-    }
-    std::reverse(path.begin(), path.end());
-    if (!goal_lanes.empty()) {
-      path.push_back({goal_via, false, goal_count});
-    }
-    return path;
-  };
-
-  struct CoverageState {
-    int node{-1};
-    int heading{-1};
-    int count{0};
-    int arrival_lane{-1};
-  };
-  const auto apply_path = [this](const std::vector<RouteStep> &path,
-                                 CoverageState &state,
-                                 std::unordered_set<int> &remaining) {
-    for (const RouteStep &step : path) {
-      const DirectedLane &directed = graph_.directed_lane(step.directed_lane);
-      remaining.erase(directed.lane);
-      state.node = directed.to;
-      if (step.ordinary_count >= 0)
-        state.count = step.ordinary_count;
-      if (step.reverse) {
-        state.arrival_lane = -1;
-      } else {
-        state.heading = directed.heading;
-        state.arrival_lane = directed.lane;
-      }
-    }
-  };
-
-  // The nearest remaining lane is not always a safe next choice: it can leave
-  // the vehicle at count=2 with no task node or legal continuation. Before
-  // committing that greedy choice, check that at least one remaining lane is
-  // reachable from the resulting state. If not, try each remaining lane as a
-  // bounded escape alternative and keep the original choice only when no
-  // alternative has a continuation.
-  const auto has_escape_after = [&](const std::vector<RouteStep> &path,
-                                    const CoverageState &initial,
-                                    const std::unordered_set<int> &before) {
-    CoverageState next = initial;
-    std::unordered_set<int> after = before;
-    apply_path(path, next, after);
-    if (after.empty())
-      return true;
-    return !shortest(next.node, next.heading, next.count, next.arrival_lane,
-                     after, -1)
-                .empty();
-  };
-
-  for (const StartSeed &seed : seeds) {
-    PlanResult candidate;
-    candidate.traversals = seed.prefix;
-    std::unordered_set<int> remaining;
-    for (const std::string &id : required) {
-      remaining.insert(graph_.lane_index(id));
-    }
-    int node = seed.node;
-    int heading = seed.heading;
-    int count =
-        is_task_node(node) ? 0 : std::max(1, request.ordinary_nodes_since_task);
-    if (count < 0 || count >= count_states) {
-      continue;
-    }
-    int arrival_lane = -1;
-    while (!remaining.empty()) {
-      const CoverageState current{node, heading, count, arrival_lane};
-      std::vector<RouteStep> path =
-          shortest(node, heading, count, arrival_lane, remaining, -1);
-      if (path.empty()) {
-        break;
-      }
-      if (remaining.size() > 1 && !has_escape_after(path, current, remaining)) {
-        for (int lane : remaining) {
-          const std::unordered_set<int> only_lane{lane};
-          const std::vector<RouteStep> alternative =
-              shortest(node, heading, count, arrival_lane, only_lane, -1);
-          if (!alternative.empty() &&
-              has_escape_after(alternative, current, remaining)) {
-            path = alternative;
-            break;
-          }
-        }
-      }
-      for (const RouteStep &step : path) {
-        const DirectedLane &directed = graph_.directed_lane(step.directed_lane);
-        candidate.traversals.push_back(
-            {step.directed_lane, config_.nodes[directed.from].position,
-             config_.nodes[directed.to].position, false, step.reverse});
-        remaining.erase(directed.lane);
-        node = directed.to;
-        if (step.ordinary_count >= 0) {
-          count = step.ordinary_count;
-        }
-        if (step.reverse) {
-          arrival_lane = -1;
-        } else {
-          heading = directed.heading;
-          arrival_lane = directed.lane;
-        }
-      }
-    }
-    for (int lane : remaining) {
-      candidate.deferred_lane_ids.push_back(config_.lanes[lane].id);
-    }
-    if (request.return_home && remaining.empty() && node != config_.home_node) {
-      const std::vector<RouteStep> return_path =
-          shortest(node, heading, count, arrival_lane, {}, config_.home_node);
-      if (return_path.empty()) {
-        candidate.deferred_lane_ids.push_back("RETURN_HOME");
-      } else {
-        for (const RouteStep &step : return_path) {
-          const DirectedLane &directed =
-              graph_.directed_lane(step.directed_lane);
-          candidate.traversals.push_back(
-              {step.directed_lane, config_.nodes[directed.from].position,
-               config_.nodes[directed.to].position, false, step.reverse});
-          node = directed.to;
-          if (step.ordinary_count >= 0) {
-            count = step.ordinary_count;
-          }
-          if (step.reverse) {
-            arrival_lane = -1;
-          } else {
-            heading = directed.heading;
-            arrival_lane = directed.lane;
-          }
-        }
-      }
-    }
-    for (const Traversal &traversal : candidate.traversals) {
-      if (traversal.directed_lane < 0) {
-        continue;
-      }
-      const DirectedLane &directed =
-          graph_.directed_lane(traversal.directed_lane);
-      if (config_.lanes[directed.lane].inspection) {
-        AddUnique(candidate.covered_lane_ids, config_.lanes[directed.lane].id);
-      }
-    }
-    const std::unordered_set<std::string> required_set(required.begin(),
-                                                       required.end());
-    const bool stage_progress =
-        required.empty() || std::any_of(candidate.covered_lane_ids.begin(),
-                                        candidate.covered_lane_ids.end(),
-                                        [&required_set](const std::string &id) {
-                                          return required_set.count(id) != 0;
-                                        });
-    candidate.complete = candidate.deferred_lane_ids.empty();
-    candidate.ordinary_nodes_since_task = count;
-    if (!candidate.complete && !request.allow_partial) {
-      continue;
-    }
-    if (!candidate.complete && !stage_progress) {
-      continue;
-    }
-    if (candidate.traversals.empty() && required.empty() &&
-        (!request.return_home ||
-         Distance(start.position, config_.nodes[config_.home_node].position) <=
-             1.0e-6)) {
-      candidate.success = true;
-      candidate.collision_checked = true;
-      candidate.message = "coverage already complete; no movement required";
-    } else if (!route_compiler_.compile(start, candidate.traversals, obstacles,
-                                        candidate)) {
-      continue;
-    } else {
-      candidate.success = true;
-    }
-    std::unordered_set<std::string> visited_tasks;
-    const auto record_tasks_at = [&candidate, &visited_tasks,
-                                  this](int visited_node) {
-      for (const Task &task : config_.tasks) {
-        if (task.node == visited_node && visited_tasks.insert(task.id).second) {
-          candidate.visit_order.push_back(task.id);
-        }
-      }
-    };
-    record_tasks_at(seed.node);
-    for (const Traversal &traversal : candidate.traversals) {
-      if (traversal.directed_lane >= 0) {
-        record_tasks_at(graph_.directed_lane(traversal.directed_lane).to);
-      }
-    }
-    if (request.mode == "mission") {
-      for (const Task &task : config_.tasks) {
-        if (visited_tasks.count(task.id) == 0) {
-          candidate.deferred_target_ids.push_back(task.id);
-        }
-      }
-      if (!candidate.deferred_target_ids.empty()) {
-        candidate.complete = false;
-        if (!request.allow_partial) {
-          continue;
-        }
-      }
-    }
-    candidate.message = candidate.complete
-                            ? "complete road coverage route validated"
-                            : "partial road coverage route validated";
-    if (!best.success || candidate.complete > best.complete ||
-        (candidate.complete == best.complete &&
-         candidate.length < best.length)) {
-      best = std::move(candidate);
-    }
-  }
-  if (!best.success) {
-    best.message = "no heading-feasible coverage route is executable";
-    best.deferred_lane_ids = required;
-  }
-  return best;
 }
 
 } // namespace new_map_planner
