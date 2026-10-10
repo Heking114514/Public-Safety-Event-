@@ -6,7 +6,6 @@
 #include <bitset>
 #include <cstdint>
 #include <functional>
-#include <limits>
 #include <queue>
 #include <stdexcept>
 #include <unordered_map>
@@ -15,33 +14,8 @@
 namespace new_map_planner {
 namespace {
 
-constexpr uint64_t kNoKey = std::numeric_limits<uint64_t>::max();
-constexpr std::size_t kMaximumCoverageStates = 500000;
+constexpr std::size_t kMaximumCoverageStates = 2000000;
 constexpr int kCountStates = 3;
-
-struct SearchRecord {
-  double cost{std::numeric_limits<double>::infinity()};
-  uint64_t previous{kNoKey};
-  int via{-1};
-  int seed{-1};
-  bool active{true};
-};
-
-struct QueueEntry {
-  double priority{0.0};
-  double cost{0.0};
-  uint64_t key{0};
-
-  bool operator>(const QueueEntry &other) const {
-    if (priority != other.priority) {
-      return priority > other.priority;
-    }
-    if (cost != other.cost) {
-      return cost > other.cost;
-    }
-    return key > other.key;
-  }
-};
 
 struct SearchState {
   uint64_t mask{0};
@@ -134,18 +108,6 @@ PlanResult CoveragePlanner::plan(
     return mask * static_cast<uint64_t>(base_state_count) +
            static_cast<uint64_t>(base);
   };
-  const auto decode = [base_state_count, arrival_states](uint64_t key) {
-    SearchState state;
-    state.mask = key / static_cast<uint64_t>(base_state_count);
-    int base = static_cast<int>(key % static_cast<uint64_t>(base_state_count));
-    state.arrival_lane = base % arrival_states - 1;
-    base /= arrival_states;
-    state.ordinary_count = base % kCountStates;
-    base /= kCountStates;
-    state.heading = base % kHeadingCount;
-    state.node = base / kHeadingCount;
-    return state;
-  };
   const auto is_task_node = [this](int node) {
     return std::any_of(config_.tasks.begin(), config_.tasks.end(),
                        [node](const Task &task) { return task.node == node; });
@@ -154,22 +116,6 @@ PlanResult CoveragePlanner::plan(
     const auto found = required_bits.find(lane);
     return found == required_bits.end() ? uint64_t{0}
                                         : uint64_t{1} << found->second;
-  };
-  std::vector<double> required_lengths(required.size(), 0.0);
-  for (const auto &[lane, bit] : required_bits) {
-    const Lane &required_lane = config_.lanes[static_cast<std::size_t>(lane)];
-    required_lengths[static_cast<std::size_t>(bit)] = Distance(
-        config_.nodes[required_lane.from].position,
-        config_.nodes[required_lane.to].position);
-  }
-  const auto remaining_length = [&required_lengths](uint64_t mask) {
-    double length = 0.0;
-    for (std::size_t bit = 0; bit < required_lengths.size(); ++bit) {
-      if ((mask & (uint64_t{1} << bit)) == 0U) {
-        length += required_lengths[bit];
-      }
-    }
-    return length;
   };
   const auto forward_successors =
       [this, &transition_free, &is_task_node](const SearchState &state) {
@@ -413,7 +359,7 @@ PlanResult CoveragePlanner::plan(
     }
   }
 
-  result.complete = goal_key != kNoKey && result.deferred_target_ids.empty();
+  result.complete = complete_found && result.deferred_target_ids.empty();
   result.ordinary_nodes_since_task = selected.ordinary_count;
   if (result.traversals.empty() && result.complete) {
     result.success = true;
@@ -423,10 +369,6 @@ PlanResult CoveragePlanner::plan(
   }
   result.success =
       route_compiler_.compile(start, result.traversals, obstacles, result);
-  std::cerr << "coverage result reverse="
-            << std::count_if(result.traversals.begin(), result.traversals.end(),
-                             [](const Traversal &value) { return value.reverse; })
-            << " size=" << result.traversals.size() << std::endl;
   if (result.success) {
     result.message = result.complete
                          ? "complete forward-only coverage route validated"
