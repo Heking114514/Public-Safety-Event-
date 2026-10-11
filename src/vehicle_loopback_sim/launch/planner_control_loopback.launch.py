@@ -50,6 +50,7 @@ def generate_launch_description():
     )
     simulation_mode = LaunchConfiguration("simulation_mode")
     playback_speed = LaunchConfiguration("playback_speed")
+    enforce_static_collision = LaunchConfiguration("enforce_static_collision")
     physical = parameters_for("pure_line_following")
 
     planner = Node(
@@ -117,6 +118,9 @@ def generate_launch_description():
                     simulation_mode, value_type=str
                 ),
                 "playback_speed": ParameterValue(playback_speed, value_type=float),
+                "enforce_static_collision": ParameterValue(
+                    enforce_static_collision, value_type=bool
+                ),
             },
         ],
     )
@@ -186,9 +190,10 @@ def generate_launch_description():
                 description="Optional CSV route; empty waits for planner route input",
             ),
             DeclareLaunchArgument("autostart", default_value="false"),
-            DeclareLaunchArgument("initial_x", default_value="0.0"),
+            DeclareLaunchArgument("initial_x", default_value="-0.02"),
             DeclareLaunchArgument("initial_y", default_value="0.0"),
             DeclareLaunchArgument("initial_yaw", default_value="0.0"),
+            DeclareLaunchArgument("enforce_static_collision", default_value="true"),
             DeclareLaunchArgument(
                 "gui",
                 default_value="true",

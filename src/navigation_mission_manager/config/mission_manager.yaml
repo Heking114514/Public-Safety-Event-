@@ -59,7 +59,7 @@ navigation_mission_manager:
     report_server_timeout_s: 5.0
     max_report_retries: 2
     rfid_event_cooldown_s: 3.0
-    rfid_hold_duration_s: 3.0
+    rfid_hold_duration_s: 1.0
     rfid_stop_duration_s: 1.0
     rfid_detection_radius_m: 0.30
     rfid_correction_tolerance_m: 0.025

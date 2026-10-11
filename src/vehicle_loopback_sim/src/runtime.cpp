@@ -64,8 +64,20 @@ void VehicleLoopbackSim::update()
     desired, applied_twist_, elapsed_s,
     max_linear_speed_mps_, max_angular_speed_rps_,
     max_linear_accel_mps2_, max_angular_accel_rps2_);
-  pose_ = integrate_base_link(
+  const Pose2d candidate = integrate_base_link(
     pose_, applied_twist_, elapsed_s, base_offset_x_m_, base_offset_y_m_);
+  navigation_safety::Report collision_report;
+  if (!pose_is_safe(candidate, &collision_report)) {
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 2000,
+      "static collision guard blocked simulated motion at candidate=(%.6f, %.6f, %.3fdeg) failure=%d corner=%d overlap=%.6fm",
+      candidate.x, candidate.y, candidate.yaw * 180.0 / 3.14159265358979323846,
+      static_cast<int>(collision_report.failure), collision_report.footprint_corner,
+      collision_report.overlap);
+    applied_twist_ = {};
+  } else {
+    pose_ = candidate;
+  }
   publish_odometry(stamp);
   publish_imu(stamp);
   if (publish_tf_) {

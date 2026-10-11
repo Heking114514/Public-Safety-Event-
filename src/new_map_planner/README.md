@@ -111,6 +111,33 @@ UI 中“规划预览”绝不发布行驶路线；任务阶段显示器会随�
 
 ## 构建与测试
 
+### 规划和避障离线可视化
+
+可以在不启动 ROS 的情况下查看道路图、静态/动态障碍以及规划结果：
+
+```bash
+python3 scripts/visualize_planner.py --save /tmp/planner.png
+python3 scripts/visualize_planner.py \
+  --start launch --goal x0_y0 \
+  --obstacle 1.00,1.00,1.20,2.00
+```
+
+纯 HTML 页面按正式三阶段任务生成全局路线：layer1 的 12 个任务点、layer2 的隧道覆盖、
+layer3 的普通道路补漏和回到 `launch`。页面不绘制 `arena.yaml` 中的固定障碍物；在画布上
+拖拽的矩形才作为动态障碍参与路线重规划。`Play` 让青色质点沿本次任务路线运动。
+
+也可以直接打开纯 HTML 版本：
+
+```bash
+xdg-open scripts/planner_visualizer.html
+```
+
+在画布空白处拖拽即可添加障碍物，点击已有障碍物删除；页面不提供障碍物参数输入框。
+
+灰色边表示车身扫掠后可行，红色边表示中心线也被阻挡，橙色边表示质点中心线能通过但按
+车身尺寸和安全裕量不能通过。这类橙色边通常就是避障边界、地图 free region 或车身尺寸
+配置不一致的线索。脚本会在终端列出这些边和最终路线；`--obstacle` 可重复使用。
+
 ```bash
 colcon build --symlink-install --packages-select new_map_planner
 colcon test --packages-select new_map_planner \

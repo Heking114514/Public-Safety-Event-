@@ -14,6 +14,7 @@ find_package(ament_cmake_python REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(mission_control_interfaces REQUIRED)
+find_package(navigation_safety REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -42,6 +43,7 @@ ament_target_dependencies(vehicle_loopback_sim_node
   ament_index_cpp
   geometry_msgs
   mission_control_interfaces
+  navigation_safety
   nav_msgs
   rclcpp
   sensor_msgs

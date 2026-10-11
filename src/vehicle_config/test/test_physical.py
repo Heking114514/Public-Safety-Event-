@@ -87,11 +87,11 @@ def test_measured_camera_mount_uses_ros_body_axes():
     assert physical.camera_z_m == 0.121
 
 
-def test_chassis_dimensions_are_132_mm_square():
+def test_chassis_dimensions_are_125_mm_square():
     physical = load_vehicle_physical_config(CENTRAL_CONFIG)
 
-    assert physical.length_m == 0.132
-    assert physical.width_m == 0.132
+    assert physical.length_m == 0.125
+    assert physical.width_m == 0.125
 
 
 def test_component_mappings_follow_one_changed_physical_model():

@@ -13,6 +13,7 @@
   <depend>ament_index_cpp</depend>
   <depend>geometry_msgs</depend>
   <depend>mission_control_interfaces</depend>
+  <depend>navigation_safety</depend>
   <depend>nav_msgs</depend>
   <depend>rclcpp</depend>
   <depend>sensor_msgs</depend>

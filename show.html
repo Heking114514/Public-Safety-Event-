@@ -1,0 +1,920 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>new_map_planner 严格拓扑约束演练台</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#0d1117;color:#c9d1d9;font:13px -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:flex;height:100vh;overflow:hidden}
+  #side{width:340px;min-width:340px;padding:16px;background:#161b22;overflow-y:auto;border-right:1px solid #30363d;display:flex;flex-direction:column;gap:12px}
+  h2{margin:0;font-size:15px;color:#58a6ff;display:flex;align-items:center;justify-content:space-between}
+
+  .stage-tabs{display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;background:#0d1117;padding:3px;border-radius:6px;border:1px solid #30363d}
+  .stage-tab{padding:8px 4px;border:none;border-radius:4px;cursor:pointer;font-weight:bold;font-size:11px;background:transparent;color:#8b949e;text-align:center;transition:0.15s}
+  .stage-tab.active-1{background:#1f6feb;color:#fff}
+  .stage-tab.active-2{background:#8957e5;color:#fff}
+  .stage-tab.active-3{background:#238636;color:#fff}
+
+  .btn-group{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+  button.action-btn{padding:8px 10px;border:0;border-radius:5px;cursor:pointer;font-weight:600;font-size:12px;transition:0.15s}
+  button.primary{background:#238636;color:#fff}
+  button.primary:hover{background:#2ea043}
+  button.secondary{background:#21262d;border:1px solid #30363d;color:#c9d1d9}
+  button.secondary:hover{background:#30363d}
+  button.danger{background:#da3633;color:#fff}
+  button.danger:hover{background:#f85149}
+
+  .card{background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:10px}
+  .card-title{font-weight:bold;color:#8b949e;margin-bottom:6px;font-size:11px;text-transform:uppercase}
+
+  #status{padding:9px 10px;background:#05070a;border-radius:5px;line-height:1.6;font-family:monospace;font-size:12px;border:1px solid #30363d}
+  .ok{color:#3fb950}.bad{color:#f85149}.warn{color:#d29922}
+
+  .stat-row{display:flex;justify-content:space-between;margin:3px 0;font-size:12px}
+  .stat-val{font-weight:bold;color:#58a6ff}
+
+  .radar-status{display:flex;align-items:center;gap:6px;font-weight:bold;font-size:12px}
+  .radar-dot{width:10px;height:10px;border-radius:50%;background:#3fb950}
+
+  .constraint-tag{display:inline-block;padding:2px 5px;border-radius:3px;font-size:10px;font-weight:bold}
+  .tag-ok{background:#1f6feb22;color:#58a6ff;border:1px solid #1f6feb55}
+
+  .speed-ctrl{display:flex;align-items:center;gap:8px;font-size:12px;color:#8b949e}
+  .speed-ctrl input{flex:1;accent-color:#58a6ff}
+
+  #view-wrap{flex:1;position:relative;background:#090d13}
+  canvas{display:block;width:100%;height:100%;cursor:crosshair}
+  .tip-box{position:absolute;bottom:12px;left:12px;background:rgba(13,17,23,0.92);border:1px solid #30363d;padding:8px 12px;border-radius:6px;font-size:12px;color:#adbac7;line-height:1.6;pointer-events:none}
+</style>
+</head>
+<body>
+
+<aside id="side">
+  <h2>
+    <span>规划器控制台</span>
+    <span id="badge" style="font-size:11px;padding:2px 6px;border-radius:4px;background:#238636;color:#fff">合规</span>
+  </h2>
+
+  <!-- 阶段独立切换标签 -->
+  <div class="card">
+    <div class="card-title">独立阶段路线选择</div>
+    <div class="stage-tabs">
+      <button class="stage-tab active-1" id="tab-1" onclick="switchStage(1)">第 1 阶段<br><span style="font-size:10px;font-weight:normal">12个任务点</span></button>
+      <button class="stage-tab" id="tab-2" onclick="switchStage(2)">第 2 阶段<br><span style="font-size:10px;font-weight:normal">4条隧道覆盖</span></button>
+      <button class="stage-tab" id="tab-3" onclick="switchStage(3)">第 3 阶段<br><span style="font-size:10px;font-weight:normal">道路补漏回程</span></button>
+    </div>
+  </div>
+
+  <div class="btn-group">
+    <button class="action-btn primary" id="play-btn" onclick="togglePlay()">启动小车</button>
+    <button class="action-btn secondary" onclick="resetCurrentStage()">重置本阶段</button>
+    <button class="action-btn danger" style="grid-column: span 2" onclick="clearAllObstacles()">清除所有障碍点</button>
+  </div>
+
+  <!-- 原生约束状态监视卡片 -->
+  <div class="card">
+    <div class="card-title">规划器原生约束监视</div>
+    <div class="stat-row">
+      <span>正交网格行走:</span>
+      <span class="constraint-tag tag-ok">严禁斜行 (100%直角)</span>
+    </div>
+    <div class="stat-row">
+      <span>连续普通节点:</span>
+      <span class="stat-val" id="stat-ord-count" style="color:#d29922">0 / 2 (允许)</span>
+    </div>
+    <div class="stat-row">
+      <span>超节点约束规则:</span>
+      <span style="font-size:11px;color:#8b949e">过 2 普通节点必经超节点</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">车头 30cm 感知雷达</div>
+    <div class="radar-status">
+      <span class="radar-dot" id="radar-dot"></span>
+      <span id="radar-text" style="color:#3fb950">前方 30cm 无障碍</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">小车运行调速</div>
+    <div class="speed-ctrl">
+      <span>极慢</span>
+      <input type="range" id="speed-slider" min="1" max="4" value="2" onchange="updateSpeed()">
+      <span>适中</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">本阶段规划指标</div>
+    <div class="stat-row"><span>剩余里程:</span><span class="stat-val" id="stat-len">0.00 m</span></div>
+    <div class="stat-row"><span>途经节点数:</span><span class="stat-val" id="stat-pts">0</span></div>
+    <div class="stat-row"><span>全场已覆盖道路:</span><span class="stat-val" id="stat-cov">0 / 27</span></div>
+  </div>
+
+  <div id="status">系统初始化完成</div>
+</aside>
+
+<div id="view-wrap">
+  <canvas id="view"></canvas>
+  <div class="tip-box">
+    <b>🖱️ 严格拓扑运行特性：</b><br>
+    • <b>绝不走斜线</b>：小车全程锁定车道中心线移动，直角拐弯；<br>
+    • <b>超节点约束</b>：带金圈的为【超节点】。连续走满 2 个普通节点后，路径必须前往超节点；<br>
+    • <b>左键放置障碍 / 右键撤销</b>：小车探头 30cm 遇障自动紧急制动并在线合规重规划。
+  </div>
+</div>
+
+<script>
+// ==================== 1. 赛场拓扑数据 ====================
+const DATA = {
+  "arena": {
+    "width_m": 3.2, "height_m": 4.4,
+    "free_regions": [ [0.0, 0.0, 3.2, 3.2], [1.0, 3.2, 2.2, 4.2], [1.5, 4.2, 1.7, 4.4] ]
+  },
+  "nodes": {
+    "launch": [1.6, 4.3], "launch_junction": [1.6, 4.1],
+    "x0_y0": [0.1, 0.1], "x1_y0": [1.1, 0.1], "x2_y0": [2.1, 0.1], "x3_y0": [3.1, 0.1],
+    "x0_y1": [0.1, 1.1], "x1_y1": [1.1, 1.1], "x2_y1": [2.1, 1.1], "x3_y1": [3.1, 1.1],
+    "x0_y2": [0.1, 2.1], "x1_y2": [1.1, 2.1], "x2_y2": [2.1, 2.1], "x3_y2": [3.1, 2.1],
+    "x0_y3": [0.1, 3.1], "x1_y3": [1.1, 3.1], "x2_y3": [2.1, 3.1], "x3_y3": [3.1, 3.1],
+    "x1_y4": [1.1, 4.1], "x2_y4": [2.1, 4.1]
+  },
+  "lanes": [
+    {"id":"LAUNCH","from":"launch","to":"launch_junction","width_m":0.2,"bidirectional":true,"inspection":false,"tunnel":false},
+    {"id":"ROAD_TOP_LEFT","from":"x1_y4","to":"launch_junction","width_m":0.2,"bidirectional":true,"inspection":true,"tunnel":false},
+    {"id":"ROAD_TOP_RIGHT","from":"launch_junction","to":"x2_y4","width_m":0.2,"bidirectional":true,"inspection":true,"tunnel":false},
+    {"id":"ROAD_BOTTOM_LEFT","from":"x0_y0","to":"x1_y0","width_m":0.2,"bidirectional":true,"inspection":true,"tunnel":false},
+    {"id":"TUNNEL_4","from":"x1_y0","to":"x2_y0","width_m":0.2,"bidirectional":true,"inspection":true,"tunnel":true},
+    {"id":"ROAD_BOTTOM_RIGHT","from":"x2_y0","to":"x3_y0","width_m":0.2,"bidirectional":true,"inspection":true,"tunnel":false},
+    {"id":"ROAD_Y1_LEFT","from":"x0_y1","to":"x1_y1","width_m":0.2,"bidirectional":true,"inspection":true,"tunnel":false},
+    {"id":"TUNNEL_1","from":"x1_y1","to":"x2_y1","width_m":0.2,"bidirectional":true,"inspection":true,"tunnel":true},
+    {"id":"ROAD_Y1_RIGHT","from":"x2_y1","to":"x3_y1","width_m":0.2,"bidirectional":true,"inspection":true,"tunnel":false},
+    {"id":"ROAD_Y2_LEFT","from":"x0_y2","to":"x1_y2","width_m":0.2,"bidirectional":true,"inspection":true,"tunnel":false},
+    {"id":"TUNNEL_2","from":"x1_y2","to":"x2_y2","width_m":0.2,"bidirectional":true,"inspection":true,"tunnel":true},
+    {"id":"ROAD_Y2_RIGHT","from":"x2_y2","to":"x3_y2","width_m":0.2,"bidirectional":true,"inspection":true,"tunnel":false},
+    {"id":"ROAD_Y3_LEFT","from":"x0_y3","to":"x1_y3","width_m":0.2,"bidirectional":true,"inspection":true,"tunnel":false},
+    {"id":"TUNNEL_3","from":"x1_y3","to":"x2_y3","width_m":0.2,"bidirectional":true,"inspection":true,"tunnel":true},
+    {"id":"ROAD_Y3_RIGHT","from":"x2_y3","to":"x3_y3","width_m":0.2,"bidirectional":true,"inspection":true,"tunnel":false},
+    {"id":"ROAD_X0_Y0","from":"x0_y0","to":"x0_y1","width_m":0.2,"bidirectional":true,"inspection":true,"tunnel":false},
+    {"id":"ROAD_X0_Y1","from":"x0_y1","to":"x0_y2","width_m":0.2,"bidirectional":true,"inspection":true,"tunnel":false},
+    {"id":"ROAD_X0_Y2","from":"x0_y2","to":"x0_y3","width_m":0.2,"bidirectional":true,"inspection":true,"tunnel":false},
+    {"id":"ROAD_X1_Y0","from":"x1_y0","to":"x1_y1","width_m":0.2,"bidirectional":true,"inspection":true,"tunnel":false},
+    {"id":"ROAD_X1_Y1","from":"x1_y1","to":"x1_y2","width_m":0.2,"bidirectional":true,"inspection":true,"tunnel":false},
+    {"id":"ROAD_X1_Y2","from":"x1_y2","to":"x1_y3","width_m":0.2,"bidirectional":true,"inspection":true,"tunnel":false},
+    {"id":"ROAD_X1_Y3","from":"x1_y3","to":"x1_y4","width_m":0.2,"bidirectional":true,"inspection":true,"tunnel":false},
+    {"id":"ROAD_X2_Y0","from":"x2_y0","to":"x2_y1","width_m":0.2,"bidirectional":true,"inspection":true,"tunnel":false},
+    {"id":"ROAD_X2_Y1","from":"x2_y1","to":"x2_y2","width_m":0.2,"bidirectional":true,"inspection":true,"tunnel":false},
+    {"id":"ROAD_X2_Y2","from":"x2_y2","to":"x2_y3","width_m":0.2,"bidirectional":true,"inspection":true,"tunnel":false},
+    {"id":"ROAD_X2_Y3","from":"x2_y3","to":"x2_y4","width_m":0.2,"bidirectional":true,"inspection":true,"tunnel":false},
+    {"id":"ROAD_X3_Y0","from":"x3_y0","to":"x3_y1","width_m":0.2,"bidirectional":true,"inspection":true,"tunnel":false},
+    {"id":"ROAD_X3_Y1","from":"x3_y1","to":"x3_y2","width_m":0.2,"bidirectional":true,"inspection":true,"tunnel":false},
+    {"id":"ROAD_X3_Y2","from":"x3_y2","to":"x3_y3","width_m":0.2,"bidirectional":true,"inspection":true,"tunnel":false}
+  ],
+  "tasks": {
+    "1":"x1_y4","2":"x0_y3","3":"x0_y2","4":"x0_y1","5":"x0_y0","6":"x1_y0",
+    "7":"x2_y0","8":"x3_y0","9":"x3_y1","10":"x3_y2","11":"x3_y3","12":"x2_y4"
+  },
+  "missions": {
+    "default_targets":["1","2","3","4","5","6","7","8","9","10","11","12"],
+    "default_inspection_lanes":[
+      "ROAD_TOP_LEFT","ROAD_TOP_RIGHT","ROAD_BOTTOM_LEFT","TUNNEL_4","ROAD_BOTTOM_RIGHT",
+      "ROAD_Y1_LEFT","TUNNEL_1","ROAD_Y1_RIGHT","ROAD_Y2_LEFT","TUNNEL_2","ROAD_Y2_RIGHT",
+      "ROAD_Y3_LEFT","TUNNEL_3","ROAD_Y3_RIGHT","ROAD_X0_Y0","ROAD_X0_Y1","ROAD_X0_Y2",
+      "ROAD_X1_Y0","ROAD_X1_Y1","ROAD_X1_Y2","ROAD_X1_Y3","ROAD_X2_Y0","ROAD_X2_Y1",
+      "ROAD_X2_Y2","ROAD_X2_Y3","ROAD_X3_Y0","ROAD_X3_Y1","ROAD_X3_Y2"
+    ]
+  },
+  "home_node":"launch"
+};
+
+const canvas = document.getElementById('view');
+const ctx = canvas.getContext('2d');
+
+const nodes = DATA.nodes;
+const lanes = DATA.lanes;
+const home = DATA.home_node;
+const targets = DATA.missions.default_targets.map(id => ({ id, node: DATA.tasks[id] }));
+const supernodeSet = new Set(Object.values(DATA.tasks)); // 12 个 RFID 任务超节点
+const allInspectionLanes = DATA.missions.default_inspection_lanes.map(id => lanes.find(l => l.id === id)).filter(Boolean);
+const tunnelLanes = allInspectionLanes.filter(l => l.tunnel);
+const ordinaryLanes = allInspectionLanes.filter(l => !l.tunnel);
+
+function isSupernode(nodeName) {
+  return supernodeSet.has(nodeName);
+}
+
+// ==================== 2. 全局状态 ====================
+let currentActiveStage = 1;
+let obstacles = []; // 障碍点 [{x, y}]
+
+// 小车实时物理状态
+let car = {
+  x: nodes.launch[0],
+  y: nodes.launch[1],
+  yaw: -Math.PI / 2,
+  running: false,
+  ordinaryCount: 1 // 继承 C++ 代码：launch 初始为 1
+};
+
+let completedTasks = new Set();
+let coveredLanes = new Set();
+
+let activePathPoints = []; // 严格正交的密集折线插值点
+let activeNodeRoute = [];  // 途径节点
+let currentPathIndex = 0;
+let animTimer = null;
+let moveStep = 0.003;
+const SENSOR_RANGE = 0.30; // 30cm 探障距离
+
+function dist(a, b) { return Math.hypot(a[0] - b[0], a[1] - b[1]); }
+
+// 点到线段投影与距离
+function distToSegment(p, a, b) {
+  const dx = b[0] - a[0], dy = b[1] - a[1];
+  const l2 = dx * dx + dy * dy;
+  if (l2 === 0) return dist(p, a);
+  let t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2));
+  return dist(p, [a[0] + t * dx, a[1] + t * dy]);
+}
+
+function projectToSegment(p, a, b) {
+  const dx = b[0] - a[0], dy = b[1] - a[1];
+  const l2 = dx * dx + dy * dy;
+  if (l2 === 0) return [...a];
+  let t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2));
+  return [a[0] + t * dx, a[1] + t * dy];
+}
+
+// 寻找小车当前所在的车道 (确保坐标严格落在正交车道线上)
+function getCarLane(pos) {
+  let bestLane = null, minDist = Infinity, bestProj = null;
+  for (const lane of lanes) {
+    const na = nodes[lane.from], nb = nodes[lane.to];
+    const d = distToSegment(pos, na, nb);
+    if (d < minDist) {
+      minDist = d;
+      bestLane = lane;
+      bestProj = projectToSegment(pos, na, nb);
+    }
+  }
+  return { lane: bestLane, proj: bestProj, dist: minDist };
+}
+
+// 坐标映射
+function scaleParams() {
+  const pad = 35;
+  const s = Math.min((canvas.width - pad * 2) / DATA.arena.width_m, (canvas.height - pad * 2) / DATA.arena.height_m);
+  const ox = pad + (canvas.width - pad * 2 - DATA.arena.width_m * s) / 2;
+  const oy = canvas.height - pad - (canvas.height - pad * 2 - DATA.arena.height_m * s) / 2;
+  return { s, ox, oy };
+}
+function pt(p) { const { s, ox, oy } = scaleParams(); return [ox + p[0] * s, oy - p[1] * s]; }
+function un(x, y) { const { s, ox, oy } = scaleParams(); return [(x - ox) / s, (oy - y) / s]; }
+
+function resize() {
+  canvas.width = canvas.parentElement.clientWidth;
+  canvas.height = canvas.parentElement.clientHeight;
+  draw();
+}
+window.addEventListener('resize', resize);
+
+// ==================== 3. 碰撞检测 ====================
+const OBSTACLE_RADIUS = 0.10;
+
+function isSegmentBlocked(a, b) {
+  for (const obs of obstacles) {
+    if (distToSegment([obs.x, obs.y], a, b) <= OBSTACLE_RADIUS + 0.05) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function laneBlocked(lane) {
+  return isSegmentBlocked(nodes[lane.from], nodes[lane.to]);
+}
+
+// ==================== 4. 严格状态约束图搜索 (严禁斜行 + 超节点约束) ====================
+
+/**
+ * 严格图搜索:
+ * 1. 状态由 (node, ordinaryCount) 组成，完全还原 C++ 约束。
+ * 2. ordinaryCount 达到 2 时，下一个节点必须是超节点 (ordinaryCount 变为 0)，若尝试走向第 3 个普通节点直接剪枝！
+ * 3. 起点小车移动：严格沿所在车道中心线驶向其端点，绝无斜线！
+ */
+function searchConstrainedPath(startPos, startOrdCount, goalNode, allowTunnel) {
+  const { lane: curLane, proj } = getCarLane(startPos);
+  if (!curLane) return null;
+
+  // 1. 生成正交起点种子 (只允许沿当前所在车道向两端端点移动)
+  const na = nodes[curLane.from], nb = nodes[curLane.to];
+  let seeds = [];
+
+  // 向 curLane.from 移动
+  if (!isSegmentBlocked(proj, na)) {
+    const nextOrd = isSupernode(curLane.from) ? 0 : startOrdCount + 1;
+    if (nextOrd < 3) {
+      seeds.push({ node: curLane.from, count: nextOrd, cost: dist(proj, na), viaLane: curLane });
+    }
+  }
+  // 向 curLane.to 移动
+  if (!isSegmentBlocked(proj, nb)) {
+    const nextOrd = isSupernode(curLane.to) ? 0 : startOrdCount + 1;
+    if (nextOrd < 3) {
+      seeds.push({ node: curLane.to, count: nextOrd, cost: dist(proj, nb), viaLane: curLane });
+    }
+  }
+
+  if (seeds.length === 0) return null; // 无法以合规方式离开当前路段
+
+  // 2. 带 ordinaryCount 维度的状态图搜索
+  let dists = {};
+  let prev = {};
+  let q = [];
+
+  for (const seed of seeds) {
+    const key = `${seed.node}_${seed.count}`;
+    dists[key] = seed.cost;
+    prev[key] = { prevKey: '__START__', node: seed.node, lane: seed.viaLane };
+    q.push({ node: seed.node, count: seed.count, cost: seed.cost });
+  }
+
+  let bestGoalKey = null;
+
+  while (q.length) {
+    q.sort((a, b) => a.cost - b.cost);
+    let curr = q.shift();
+    const currKey = `${curr.node}_${curr.count}`;
+    if (curr.cost > dists[currKey]) continue;
+
+    if (curr.node === goalNode) {
+      bestGoalKey = currKey;
+      break;
+    }
+
+    for (const lane of lanes) {
+      if (!allowTunnel && lane.tunnel) continue;
+      if (laneBlocked(lane)) continue;
+
+      let nextNode = null;
+      if (lane.from === curr.node) nextNode = lane.to;
+      else if (lane.bidirectional && lane.to === curr.node) nextNode = lane.from;
+      if (!nextNode) continue;
+
+      // 【核心约束】：过两个普通节点一定要过超节点
+      const nextIsSuper = isSupernode(nextNode);
+      const nextCount = nextIsSuper ? 0 : curr.count + 1;
+
+      if (nextCount >= 3) {
+        continue; // 剪枝！连续普通节点数禁止 >= 3
+      }
+
+      const edgeDist = dist(nodes[curr.node], nodes[nextNode]);
+      const nextCost = curr.cost + edgeDist;
+      const nextKey = `${nextNode}_${nextCount}`;
+
+      if (dists[nextKey] === undefined || nextCost < dists[nextKey]) {
+        dists[nextKey] = nextCost;
+        prev[nextKey] = { prevKey: currKey, node: curr.node, lane: lane };
+        q.push({ node: nextNode, count: nextCount, cost: nextCost });
+      }
+    }
+  }
+
+  if (!bestGoalKey) return null;
+
+  // 3. 回溯路径并构建纯正交折线坐标 (绝不跨越无道路区域走斜线)
+  let nodePath = [];
+  let usedLanes = [];
+  let currKey = bestGoalKey;
+
+  while (currKey && currKey !== '__START__') {
+    const nodeName = currKey.split('_')[0];
+    nodePath.unshift(nodeName);
+    const pInfo = prev[currKey];
+    if (pInfo && pInfo.lane) usedLanes.unshift(pInfo.lane);
+    currKey = pInfo ? pInfo.prevKey : null;
+  }
+
+  // 组装折线点：proj -> nodePath[0] -> nodePath[1] ...
+  let rawPts = [proj];
+  for (const n of nodePath) {
+    rawPts.push(nodes[n]);
+  }
+
+  return {
+    path: nodePath,
+    points: rawPts,
+    cost: dists[bestGoalKey],
+    lanes: usedLanes,
+    endCount: parseInt(bestGoalKey.split('_')[1])
+  };
+}
+
+// 寻找最近的未巡检边 (严格遵守约束)
+function findNearestUncoveredLaneStrict(startPos, startOrdCount, targetLanes, covered, allowTunnel) {
+  let best = null;
+  for (const lane of targetLanes) {
+    if (covered.has(lane.id) || laneBlocked(lane)) continue;
+    for (const entry of [lane.from, lane.to]) {
+      const exit = entry === lane.from ? lane.to : lane.from;
+      const res = searchConstrainedPath(startPos, startOrdCount, entry, allowTunnel);
+      if (res) {
+        // 评估穿越该车道是否也合规
+        const exitOrd = isSupernode(exit) ? 0 : res.endCount + 1;
+        if (exitOrd < 3) {
+          if (!best || res.cost < best.cost) {
+            best = { lane, entry, exit, pathToEntry: res, exitOrd, cost: res.cost };
+          }
+        }
+      }
+    }
+  }
+  return best;
+}
+
+// ==================== 5. 在线重规划业务逻辑 ====================
+
+function replanFromCurrentPosition() {
+  const currentPos = [car.x, car.y];
+  let pts = [currentPos];
+  let nodeRoute = [];
+  let err = null;
+  let runningOrdCount = car.ordinaryCount;
+
+  if (currentActiveStage === 1) {
+    const remainingTargets = targets.filter(t => !completedTasks.has(t.id));
+    let currP = currentPos;
+
+    for (const t of remainingTargets) {
+      const res = searchConstrainedPath(currP, runningOrdCount, t.node, true);
+      if (!res) {
+        err = `任务点 T${t.id} (${t.node}) 无法在“超节点约束”下连通到达（或被阻断）！`;
+        break;
+      }
+      res.lanes.forEach(l => { if (l.inspection) coveredLanes.add(l.id); });
+      for (let i = 1; i < res.points.length; i++) pts.push(res.points[i]);
+      for (const n of res.path) nodeRoute.push(n);
+
+      runningOrdCount = 0; // 到达任务点必为超节点，计数重置为 0
+      currP = nodes[t.node];
+    }
+  } else if (currentActiveStage === 2) {
+    let currP = currentPos;
+    while (true) {
+      const cand = findNearestUncoveredLaneStrict(currP, runningOrdCount, tunnelLanes, coveredLanes, true);
+      if (!cand) break;
+
+      const toEntry = cand.pathToEntry;
+      toEntry.lanes.forEach(l => { if (l.inspection) coveredLanes.add(l.id); });
+      for (let i = 1; i < toEntry.points.length; i++) pts.push(toEntry.points[i]);
+      for (const n of toEntry.path) nodeRoute.push(n);
+
+      // 正交穿过隧道
+      pts.push(nodes[cand.exit]);
+      nodeRoute.push(cand.exit);
+      coveredLanes.add(cand.lane.id);
+
+      runningOrdCount = cand.exitOrd;
+      currP = nodes[cand.exit];
+    }
+    const missedTunnels = tunnelLanes.filter(l => !coveredLanes.has(l.id));
+    if (missedTunnels.length > 0) err = `${missedTunnels.length} 条隧道无法在约束下完成巡检`;
+  } else if (currentActiveStage === 3) {
+    let currP = currentPos;
+    while (true) {
+      const cand = findNearestUncoveredLaneStrict(currP, runningOrdCount, ordinaryLanes, coveredLanes, false);
+      if (!cand) break;
+
+      const toEntry = cand.pathToEntry;
+      toEntry.lanes.forEach(l => { if (l.inspection) coveredLanes.add(l.id); });
+      for (let i = 1; i < toEntry.points.length; i++) pts.push(toEntry.points[i]);
+      for (const n of toEntry.path) nodeRoute.push(n);
+
+      pts.push(nodes[cand.exit]);
+      nodeRoute.push(cand.exit);
+      coveredLanes.add(cand.lane.id);
+
+      runningOrdCount = cand.exitOrd;
+      currP = nodes[cand.exit];
+    }
+
+    // 回程回到 launch
+    const toHome = searchConstrainedPath(currP, runningOrdCount, home, false);
+    if (!toHome) {
+      err = `回程受阻！无法在“不走隧道”且“不超过2普通节点”约束下回到 launch`;
+    } else {
+      toHome.lanes.forEach(l => { if (l.inspection) coveredLanes.add(l.id); });
+      for (let i = 1; i < toHome.points.length; i++) pts.push(toHome.points[i]);
+      for (const n of toHome.path) nodeRoute.push(n);
+    }
+  }
+
+  // 生成绝对正交（纯水平或纯垂直）的高密度插值轨迹
+  activePathPoints = [];
+  let totalLen = 0;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i], b = pts[i + 1];
+    const d = dist(a, b);
+    totalLen += d;
+    const count = Math.max(2, Math.ceil(d / 0.008));
+    for (let j = 0; j < count; j++) {
+      activePathPoints.push({
+        x: a[0] + (b[0] - a[0]) * j / count,
+        y: a[1] + (b[1] - a[1]) * j / count
+      });
+    }
+  }
+  if (pts.length > 0) activePathPoints.push({ x: pts[pts.length - 1][0], y: pts[pts.length - 1][1] });
+
+  activeNodeRoute = nodeRoute;
+  currentPathIndex = 0;
+
+  // 更新面板
+  document.getElementById('stat-len').innerText = `${totalLen.toFixed(2)} m`;
+  document.getElementById('stat-pts').innerText = nodeRoute.length;
+  document.getElementById('stat-cov').innerText = `${coveredLanes.size} / ${allInspectionLanes.length}`;
+  document.getElementById('stat-ord-count').innerText = `${car.ordinaryCount} / 2 (允许)`;
+
+  const badge = document.getElementById('badge');
+  const statusEl = document.getElementById('status');
+  if (err) {
+    badge.style.background = '#da3633';
+    badge.innerText = '路线受阻';
+    statusEl.innerHTML = `<span class="bad">【重规划报警】\n${err}</span>`;
+  } else {
+    badge.style.background = '#238636';
+    badge.innerText = '合规规划完成';
+    statusEl.innerHTML = `<span class="ok">【路线规划成功】\n• 严格正交车道直行 (无斜线)\n• 严格遵守最多连走2普通节点约束</span>`;
+  }
+
+  draw();
+}
+
+// ==================== 6. 30cm 车头探障检测 ====================
+function checkFrontSensor() {
+  const radarDot = document.getElementById('radar-dot');
+  const radarText = document.getElementById('radar-text');
+
+  let detectedObs = null;
+  let minObsDist = Infinity;
+
+  for (const obs of obstacles) {
+    const d = dist([car.x, car.y], [obs.x, obs.y]);
+    if (d <= SENSOR_RANGE + OBSTACLE_RADIUS) {
+      const angleToObs = Math.atan2(obs.y - car.y, obs.x - car.x);
+      let angleDiff = Math.abs(angleToObs - car.yaw);
+      while (angleDiff > Math.PI) angleDiff = Math.abs(angleDiff - 2 * Math.PI);
+
+      // 车头前方 60 度扇形感知锥
+      if (angleDiff <= (Math.PI / 3)) {
+        if (d < minObsDist) {
+          minObsDist = d;
+          detectedObs = obs;
+        }
+      }
+    }
+  }
+
+  if (detectedObs) {
+    radarDot.style.background = '#f85149';
+    radarText.style.color = '#f85149';
+    radarText.innerText = `⚠️ 前方 ${(minObsDist * 100).toFixed(0)}cm 探出障碍物！`;
+    return true;
+  } else {
+    radarDot.style.background = '#3fb950';
+    radarText.style.color = '#3fb950';
+    radarText.innerText = `前方 30cm 无障碍 (通畅)`;
+    return false;
+  }
+}
+
+// ==================== 7. 小车慢速步进仿真 ====================
+function stepCar() {
+  if (!car.running || activePathPoints.length === 0) return;
+
+  // 1. 30cm 探头激光检测
+  if (checkFrontSensor()) {
+    document.getElementById('status').innerHTML = `<span class="warn">【探障触发】\n小车前方 30cm 感知到障碍阻断！已自动制动并执行在线重规划。</span>`;
+    replanFromCurrentPosition();
+    return;
+  }
+
+  // 2. 正交路径步进
+  if (currentPathIndex < activePathPoints.length - 1) {
+    currentPathIndex++;
+    const nextP = activePathPoints[currentPathIndex];
+    const prevP = activePathPoints[Math.max(0, currentPathIndex - 1)];
+
+    car.x = nextP.x;
+    car.y = nextP.y;
+
+    // 锁定正交航向角 (只能为 0, 90, 180, 270 度)
+    const dx = nextP.x - prevP.x;
+    const dy = nextP.y - prevP.y;
+    if (Math.abs(dx) > 1e-4 || Math.abs(dy) > 1e-4) {
+      if (Math.abs(dx) > Math.abs(dy)) {
+        car.yaw = dx > 0 ? 0 : Math.PI;
+      } else {
+        car.yaw = dy > 0 ? Math.PI / 2 : -Math.PI / 2;
+      }
+    }
+
+    // 检查经过节点并实时刷新普通节点计数
+    for (const [name, coord] of Object.entries(nodes)) {
+      if (dist([car.x, car.y], coord) < 0.015) {
+        if (isSupernode(name)) {
+          car.ordinaryCount = 0; // 经过超节点，归零
+        } else {
+          // 普通节点
+        }
+        document.getElementById('stat-ord-count').innerText = `${car.ordinaryCount} / 2 (允许)`;
+
+        for (const t of targets) {
+          if (t.node === name) completedTasks.add(t.id);
+        }
+      }
+    }
+  } else {
+    togglePlay(false);
+    document.getElementById('status').innerHTML = `<span class="ok">第 ${currentActiveStage} 阶段巡视完毕！可点击切换下一阶段。</span>`;
+  }
+
+  draw();
+}
+
+function togglePlay(forceState) {
+  car.running = forceState !== undefined ? forceState : !car.running;
+  const btn = document.getElementById('play-btn');
+
+  if (car.running) {
+    btn.className = 'action-btn danger';
+    btn.innerText = '暂停运行';
+    if (animTimer) clearInterval(animTimer);
+    animTimer = setInterval(stepCar, 30);
+  } else {
+    btn.className = 'action-btn primary';
+    btn.innerText = '启动小车';
+    if (animTimer) {
+      clearInterval(animTimer);
+      animTimer = null;
+    }
+  }
+}
+
+function updateSpeed() {
+  const val = parseInt(document.getElementById('speed-slider').value);
+  moveStep = 0.0015 * val;
+}
+
+// ==================== 8. 阶段控制 ====================
+function switchStage(stageNum) {
+  togglePlay(false);
+  currentActiveStage = stageNum;
+
+  document.querySelectorAll('.stage-tab').forEach((tab, idx) => {
+    tab.className = `stage-tab ${idx + 1 === stageNum ? 'active-' + stageNum : ''}`;
+  });
+
+  resetCurrentStage();
+}
+
+function resetCurrentStage() {
+  togglePlay(false);
+
+  if (currentActiveStage === 1) {
+    car.x = nodes.launch[0];
+    car.y = nodes.launch[1];
+    car.yaw = -Math.PI / 2;
+    car.ordinaryCount = 1;
+    completedTasks.clear();
+    coveredLanes.clear();
+  } else if (currentActiveStage === 2) {
+    car.x = nodes.x2_y4[0];
+    car.y = nodes.x2_y4[1];
+    car.yaw = -Math.PI / 2;
+    car.ordinaryCount = 0;
+  } else if (currentActiveStage === 3) {
+    car.x = nodes.x2_y0[0];
+    car.y = nodes.x2_y0[1];
+    car.yaw = Math.PI / 2;
+    car.ordinaryCount = 0;
+  }
+
+  replanFromCurrentPosition();
+}
+
+// ==================== 9. 画布绘制渲染 ====================
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // 1. Arena 背景
+  ctx.fillStyle = "#111720";
+  ctx.strokeStyle = "#212b38";
+  ctx.lineWidth = 1.5;
+  for (const reg of DATA.arena.free_regions) {
+    const a = pt([reg[0], reg[1]]), b = pt([reg[2], reg[3]]);
+    ctx.fillRect(a[0], b[1], b[0] - a[0], a[1] - b[1]);
+    ctx.strokeRect(a[0], b[1], b[0] - a[0], a[1] - b[1]);
+  }
+
+  // 2. 车道
+  for (const lane of lanes) {
+    const a = pt(nodes[lane.from]), b = pt(nodes[lane.to]);
+    const blocked = laneBlocked(lane);
+
+    ctx.beginPath();
+    ctx.moveTo(a[0], a[1]);
+    ctx.lineTo(b[0], b[1]);
+
+    if (blocked) {
+      ctx.strokeStyle = "#da3633";
+      ctx.lineWidth = 6;
+    } else if (lane.tunnel) {
+      ctx.strokeStyle = "#2962ff";
+      ctx.lineWidth = 7;
+    } else {
+      ctx.strokeStyle = "#212e3e";
+      ctx.lineWidth = 4;
+    }
+    ctx.stroke();
+
+    if (lane.tunnel && !blocked) {
+      ctx.strokeStyle = "#82b1ff";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 4]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+
+  // 3. 当前阶段专属路线 (纯正交，无斜线)
+  if (activePathPoints.length > 1) {
+    const stageColor = currentActiveStage === 1 ? "#38bdf8" : (currentActiveStage === 2 ? "#c084fc" : "#4ade80");
+
+    ctx.strokeStyle = stageColor;
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    const startIdx = Math.max(0, currentPathIndex);
+    const p0 = pt([activePathPoints[startIdx].x, activePathPoints[startIdx].y]);
+    ctx.moveTo(p0[0], p0[1]);
+
+    for (let i = startIdx + 1; i < activePathPoints.length; i += 2) {
+      const p = pt([activePathPoints[i].x, activePathPoints[i].y]);
+      ctx.lineTo(p[0], p[1]);
+    }
+    ctx.stroke();
+  }
+
+  // 4. 节点区分绘制：【超节点】金边高亮，【普通节点】常规小点
+  for (const [name, coord] of Object.entries(nodes)) {
+    const p = pt(coord);
+    const task = targets.find(t => t.node === name);
+    const isHome = name === home;
+    const isSuper = isSupernode(name);
+
+    if (isSuper) {
+      // 绘制超节点金黄光环
+      ctx.beginPath();
+      ctx.arc(p[0], p[1], 10, 0, Math.PI * 2);
+      ctx.strokeStyle = "#d29922";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+
+    ctx.beginPath();
+    ctx.arc(p[0], p[1], isHome ? 7 : (isSuper ? 6 : 3.5), 0, Math.PI * 2);
+    ctx.fillStyle = isHome ? "#3fb950" : (isSuper ? "#f0883e" : "#6e7681");
+    ctx.fill();
+
+    if (task) {
+      ctx.fillStyle = completedTasks.has(task.id) ? "#3fb950" : "#ffffff";
+      ctx.font = "bold 10px monospace";
+      ctx.fillText(`[超]T${task.id}`, p[0] + 9, p[1] + 3);
+    } else if (isHome) {
+      ctx.fillStyle = "#3fb950";
+      ctx.font = "bold 11px sans-serif";
+      ctx.fillText("LAUNCH", p[0] - 22, p[1] - 13);
+    }
+  }
+
+  // 5. 障碍物绘制
+  for (const obs of obstacles) {
+    const p = pt([obs.x, obs.y]);
+    ctx.fillStyle = "#da3633";
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(p[0], p[1], 8, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(p[0] - 3.5, p[1] - 3.5);
+    ctx.lineTo(p[0] + 3.5, p[1] + 3.5);
+    ctx.moveTo(p[0] + 3.5, p[1] - 3.5);
+    ctx.lineTo(p[0] - 3.5, p[1] + 3.5);
+    ctx.stroke();
+  }
+
+  // 6. 小车与车头 30cm 感知雷达
+  const cp = pt([car.x, car.y]);
+  const { s } = scaleParams();
+  const rPixels = SENSOR_RANGE * s; // 30cm 的像素半径
+
+  ctx.save();
+  ctx.translate(cp[0], cp[1]);
+  ctx.rotate(-car.yaw);
+
+  // 30cm 车头感知扇区
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.arc(0, 0, rPixels, -Math.PI / 6, Math.PI / 6);
+  ctx.closePath();
+
+  ctx.fillStyle = "rgba(56, 189, 248, 0.22)";
+  ctx.fill();
+  ctx.strokeStyle = "rgba(56, 189, 248, 0.7)";
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  ctx.fillStyle = "rgba(56, 189, 248, 0.9)";
+  ctx.font = "9px sans-serif";
+  ctx.fillText("30cm", rPixels - 24, -4);
+
+  // 小车质点主体
+  ctx.beginPath();
+  ctx.arc(0, 0, 7, 0, Math.PI * 2);
+  ctx.fillStyle = "#00f2fe";
+  ctx.shadowColor = "#00f2fe";
+  ctx.shadowBlur = 10;
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // 正交车头朝向尖角
+  ctx.fillStyle = "#ffffff";
+  ctx.beginPath();
+  ctx.moveTo(8, 0);
+  ctx.lineTo(1, -3);
+  ctx.lineTo(1, 3);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.restore();
+}
+
+// ==================== 10. 交互控制 (左键阻断，右键撤销) ====================
+
+canvas.addEventListener('click', e => {
+  const clickPos = un(e.offsetX, e.offsetY);
+  const { lane, proj, dist: d } = getCarLane(clickPos);
+
+  if (lane && d < 0.25) {
+    obstacles.push({ x: proj[0], y: proj[1] });
+  } else {
+    obstacles.push({ x: clickPos[0], y: clickPos[1] });
+  }
+
+  replanFromCurrentPosition();
+});
+
+canvas.addEventListener('contextmenu', e => {
+  e.preventDefault();
+  if (obstacles.length === 0) return;
+
+  const clickPos = un(e.offsetX, e.offsetY);
+  let targetIdx = -1, minDist = Infinity;
+
+  for (let i = 0; i < obstacles.length; i++) {
+    const d = dist(clickPos, [obstacles[i].x, obstacles[i].y]);
+    if (d < minDist) {
+      minDist = d;
+      targetIdx = i;
+    }
+  }
+
+  if (targetIdx !== -1 && minDist < 0.25) {
+    obstacles.splice(targetIdx, 1);
+  } else {
+    obstacles.pop();
+  }
+
+  replanFromCurrentPosition();
+});
+
+function clearAllObstacles() {
+  obstacles = [];
+  replanFromCurrentPosition();
+}
+
+// 初始化
+resize();
+updateSpeed();
+resetCurrentStage();
+</script>
+</body>
+</html>

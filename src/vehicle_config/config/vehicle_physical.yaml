@@ -4,8 +4,9 @@
 schema_version: 1
 
 chassis:
-  length_m: 0.1320
-  width_m: 0.1320
+  # A/B 实验：按实车可用外廓切换，确认后再决定最终尺寸。
+  length_m: 0.1250
+  width_m: 0.1250
 
 differential_drive:
   wheel_radius_m: 0.0302

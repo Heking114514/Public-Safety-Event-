@@ -16,7 +16,8 @@ vehicle_loopback_sim:
 
     map_frame_id: map
     base_frame_id: base_link
-    initial_x_m: 0.0
+    # A/B 实验：仿真起点沿初始车头反方向后移 20 mm。
+    initial_x_m: -0.02
     initial_y_m: 0.0
     initial_yaw_rad: 0.0
 
@@ -37,6 +38,9 @@ vehicle_loopback_sim:
     publish_actuator_health: true
     publish_control_telemetry: true
     publish_obstacle_detection: false
+    enforce_static_collision: true
+    # 真值碰撞只表示实际车体，不重复叠加规划器的转弯安全余量。
+    static_collision_margin_m: 0.0
     obstacle_detection_frame_id: camera_link
     obstacle_detection_trigger_range_m: 0.25
     obstacle_detection_trigger_jitter_m: 0.0

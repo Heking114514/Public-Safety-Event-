@@ -18,6 +18,7 @@
 #include <std_msgs/msg/empty.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <tf2_ros/transform_broadcaster.h>
+#include <navigation_safety/checker.hpp>
 
 #include "vehicle_loopback_sim/motion.hpp"
 #include "vehicle_loopback_sim/obstacle.hpp"
@@ -50,6 +51,8 @@ private:
   void publish_dynamic_obstacle(
     const ObstacleDetection & detection, const rclcpp::Time & stamp);
   void publish_status_bundle();
+  void load_collision_model();
+  bool pose_is_safe(const Pose2d & pose, navigation_safety::Report * report = nullptr) const;
 
   std::string map_frame_;
   std::string base_frame_;
@@ -72,6 +75,10 @@ private:
   bool publish_actuator_health_{true};
   bool publish_control_telemetry_{true};
   bool publish_obstacle_detection_{true};
+  bool enforce_static_collision_{true};
+  navigation_safety::Footprint footprint_{};
+  std::vector<navigation_safety::Rectangle> free_regions_;
+  std::vector<navigation_safety::Polygon> static_obstacles_;
 
   Pose2d pose_;
   Twist2d desired_twist_;
