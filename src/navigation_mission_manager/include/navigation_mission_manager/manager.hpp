@@ -155,6 +155,7 @@ private:
   void on_obstacle_polygon(const geometry_msgs::msg::PolygonStamped::SharedPtr message);
   bool promote_pending_obstacle();
   void expire_dynamic_obstacles(double now);
+  std::optional<std::string> infer_blocked_lane_id(const Polygon2d & polygon) const;
   void on_event_candidate(
     const mission_control_interfaces::msg::EventCandidate::SharedPtr message);
   void service_event_reporting(double now);
@@ -238,6 +239,8 @@ private:
   std::optional<std::pair<Polygon2d, double>> pending_obstacle_;
   std::vector<Polygon2d> dynamic_obstacles_;
   std::optional<double> dynamic_obstacles_updated_at_;
+  std::set<std::string> blocked_lane_ids_;
+  uint64_t obstacle_revision_{0};
 
   bool report_goal_pending_{false};
   bool report_result_pending_{false};

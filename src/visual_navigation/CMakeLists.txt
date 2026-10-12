@@ -14,6 +14,7 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 find_package(ament_cmake REQUIRED)
+find_package(builtin_interfaces REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(navigation_safety REQUIRED)
@@ -29,10 +30,9 @@ target_include_directories(turn_maneuver_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
 
-# waypoint_navigator.cpp composes focused navigation members from src/;
-# the ROS-facing node name and interfaces are unchanged.
-add_executable(waypoint_navigator
-  src/waypoint_navigator.cpp
+# Keep the navigator implementation independent from the turn controller so
+# alternate executables can provide the same TurnManeuverController ABI.
+add_library(waypoint_navigator_core STATIC
   src/node_init.cpp
   src/route.cpp
   src/runtime.cpp
@@ -44,10 +44,32 @@ add_executable(waypoint_navigator
   src/progress.cpp
   src/navigation.cpp
   src/output.cpp)
-target_include_directories(waypoint_navigator PRIVATE include)
-target_link_libraries(waypoint_navigator turn_maneuver_core)
+set_target_properties(waypoint_navigator_core PROPERTIES
+  POSITION_INDEPENDENT_CODE ON)
+target_include_directories(waypoint_navigator_core PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+ament_target_dependencies(
+  waypoint_navigator_core
+  builtin_interfaces
+  rclcpp
+  nav_msgs
+  geometry_msgs
+  sensor_msgs
+  std_msgs
+  std_srvs
+  mission_control_interfaces
+  navigation_safety
+)
+
+# The production executable keeps the original turn maneuver implementation.
+add_executable(waypoint_navigator src/waypoint_navigator.cpp)
+target_link_libraries(waypoint_navigator
+  waypoint_navigator_core
+  turn_maneuver_core)
 ament_target_dependencies(
   waypoint_navigator
+  builtin_interfaces
   rclcpp
   nav_msgs
   geometry_msgs
@@ -87,6 +109,11 @@ ament_target_dependencies(
 
 install(TARGETS turn_maneuver_core
   EXPORT turn_maneuver_coreTargets
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib)
+
+install(TARGETS waypoint_navigator_core
+  EXPORT waypoint_navigator_coreTargets
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib)
 
@@ -164,6 +191,16 @@ endif()
 
 ament_export_include_directories(include)
 ament_export_targets(turn_maneuver_coreTargets HAS_LIBRARY_TARGET)
-ament_export_dependencies(navigation_safety)
+ament_export_targets(waypoint_navigator_coreTargets HAS_LIBRARY_TARGET)
+ament_export_dependencies(
+  builtin_interfaces
+  geometry_msgs
+  mission_control_interfaces
+  navigation_safety
+  nav_msgs
+  rclcpp
+  sensor_msgs
+  std_msgs
+  std_srvs)
 
 ament_package()

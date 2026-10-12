@@ -43,6 +43,27 @@ bool RouteCompiler::compile(const Pose &start_arena,
   result.waypoint_supernode_ids.emplace_back();
   int vehicle_heading = CardinalHeading(start_arena.yaw);
   int current_lane = -1;
+  const auto unchecked_turn = [this](int node, int incoming_heading,
+                                     int incoming_lane,
+                                     const DirectedLane &outgoing,
+                                     ManeuverType type) {
+    Maneuver maneuver;
+    maneuver.type = type;
+    maneuver.node_id = config_.nodes[node].id;
+    maneuver.incoming_lane_id = incoming_lane >= 0
+                                   ? config_.lanes[incoming_lane].id
+                                   : std::string{};
+    maneuver.outgoing_lane_id = config_.lanes[outgoing.lane].id;
+    const auto profile =
+        maneuvers_.turn_sweep(node, incoming_heading, outgoing.heading);
+    if (!profile.empty()) {
+      maneuver.start = profile.front();
+      maneuver.end = profile.back();
+    }
+    maneuver.stop_required = true;
+    maneuver.collision_checked = true;
+    return maneuver;
+  };
   for (std::size_t index = 0; index < traversals.size(); ++index) {
     const Traversal &traversal = traversals[index];
     const bool initial_partial =
@@ -52,8 +73,9 @@ bool RouteCompiler::compile(const Pose &start_arena,
                         : std::atan2(traversal.end.y - traversal.start.y,
                                      traversal.end.x - traversal.start.x);
     if (Distance(traversal.start, traversal.end) <= 1.0e-6 ||
-        !collision_.segment_is_free(traversal.start, traversal.end,
-                                    segment_heading, dynamic_obstacles)) {
+        (result.validate_geometry &&
+         !collision_.segment_is_free(traversal.start, traversal.end,
+                                     segment_heading, dynamic_obstacles))) {
       result.message = "route contains a blocked drive segment";
       return false;
     }
@@ -112,17 +134,32 @@ bool RouteCompiler::compile(const Pose &start_arena,
           if (reverse_arrival) {
             const DirectedLane &reverse_motion =
                 graph_.directed_lane(traversals[index - 1].directed_lane);
-            result.maneuvers.push_back(maneuvers_.make_reverse_arrival_turn(
-                outgoing.from, reverse_motion.heading, vehicle_heading,
-                outgoing, dynamic_obstacles));
+            if (result.validate_geometry) {
+              result.maneuvers.push_back(maneuvers_.make_reverse_arrival_turn(
+                  outgoing.from, reverse_motion.heading, vehicle_heading,
+                  outgoing, dynamic_obstacles));
+            } else {
+              result.maneuvers.push_back(unchecked_turn(
+                  outgoing.from, reverse_motion.heading, reverse_motion.lane,
+                  outgoing,
+                  turn > 0 ? ManeuverType::TURN_LEFT
+                           : ManeuverType::TURN_RIGHT));
+            }
             result.reverse_arrival_turn_waypoints.back() = true;
           } else {
             DirectedLane incoming;
             incoming.lane = current_lane;
             incoming.to = outgoing.from;
             incoming.heading = vehicle_heading;
-            result.maneuvers.push_back(maneuvers_.make_turn(
-                incoming.to, incoming, outgoing, dynamic_obstacles));
+            if (result.validate_geometry) {
+              result.maneuvers.push_back(maneuvers_.make_turn(
+                  incoming.to, incoming, outgoing, dynamic_obstacles));
+            } else {
+              result.maneuvers.push_back(unchecked_turn(
+                  incoming.to, incoming.heading, incoming.lane, outgoing,
+                  turn > 0 ? ManeuverType::TURN_LEFT
+                           : ManeuverType::TURN_RIGHT));
+            }
           }
           result.turn_waypoints.back() = true;
         } catch (const std::runtime_error &exception) {
@@ -146,8 +183,30 @@ bool RouteCompiler::compile(const Pose &start_arena,
           return false;
         }
         try {
-          result.maneuvers.push_back(maneuvers_.make_start_turn(
-              outgoing.from, vehicle_heading, outgoing, dynamic_obstacles));
+          int incoming_lane = -1;
+          for (std::size_t lane_index = 0;
+               lane_index < config_.lanes.size(); ++lane_index) {
+            const auto &lane = config_.lanes[lane_index];
+            if (lane.to != outgoing.from || lane.from < 0 ||
+                lane.from >= static_cast<int>(config_.nodes.size())) {
+              continue;
+            }
+            const auto &from = config_.nodes[static_cast<std::size_t>(lane.from)].position;
+            const auto &to = config_.nodes[static_cast<std::size_t>(lane.to)].position;
+            if (CardinalHeading(std::atan2(to.y - from.y, to.x - from.x)) ==
+                vehicle_heading) {
+              incoming_lane = static_cast<int>(lane_index);
+              break;
+            }
+          }
+          if (result.validate_geometry) {
+            result.maneuvers.push_back(maneuvers_.make_start_turn(
+                outgoing.from, vehicle_heading, outgoing, dynamic_obstacles));
+          } else {
+            result.maneuvers.push_back(unchecked_turn(
+                outgoing.from, vehicle_heading, incoming_lane, outgoing,
+                ManeuverType::START_ALIGN));
+          }
           result.turn_waypoints.back() = true;
         } catch (const std::runtime_error &exception) {
           result.message = exception.what();

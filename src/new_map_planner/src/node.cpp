@@ -220,10 +220,17 @@ private:
       planner_request.target_ids = request->target_ids;
       planner_request.required_lane_ids = request->required_lane_ids;
       planner_request.completed_lane_ids = request->completed_lane_ids;
+      planner_request.blocked_lane_ids = request->blocked_lane_ids;
+      planner_request.obstacle_revision = request->obstacle_revision;
+      planner_request.validate_geometry = request->validate_geometry;
+      planner_request.online_geometry_validation =
+          request->online_geometry_validation;
       planner_request.return_home = request->return_home;
       planner_request.allow_partial = request->allow_partial;
       planner_request.ordinary_nodes_since_task =
           request->ordinary_nodes_since_task;
+       planner_request.ordinary_nodes_since_task_exact =
+           request->ordinary_nodes_since_task_exact;
       for (const geometry_msgs::msg::Polygon &polygon :
            request->dynamic_obstacles) {
         Polygon converted;
@@ -243,6 +250,8 @@ private:
       if (result.success) {
         const rclcpp::Time stamp = now();
         response->plan = MakePlanMessage(result, stamp);
+        response->plan.blocked_lane_ids_used = request->blocked_lane_ids;
+        response->plan.obstacle_revision = request->obstacle_revision;
         plan_publisher_->publish(response->plan);
         arena_path_publisher_->publish(response->plan.arena_path);
         navigation_path_publisher_->publish(response->plan.navigation_path);

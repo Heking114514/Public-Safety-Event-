@@ -158,6 +158,13 @@ bool WaypointNavigator::ActivateNavigation(std::string &result,
     result = "Waypoint route is not loaded";
     return false;
   }
+  if (!visual_navigation::RouteReplacementAllowsStart(
+          routeReplacementRequiredForId_)) {
+    result = "A new route id is required after turn recovery";
+    PublishStop();
+    SetState("TURN_NEED_REPLAN");
+    return false;
+  }
   if (pendingFrontObstacle_ || !obstacleRecoveryController_.idle()) {
     result = "A new route is required after obstacle recovery";
     return false;

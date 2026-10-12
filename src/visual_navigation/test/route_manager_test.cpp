@@ -80,6 +80,19 @@ TEST(RouteManager, TurnJunctionMetadataChangesRouteIdentity) {
                                                          invalid_index, error));
 }
 
+TEST(RouteManager, TurnRecoveryRequiresANewRouteId) {
+  constexpr uint64_t failed_route = 101U;
+
+  EXPECT_FALSE(visual_navigation::RouteReplacementAllowsStart(failed_route));
+  EXPECT_FALSE(visual_navigation::RouteReplacementAcceptsRoute(failed_route,
+                                                               failed_route));
+  EXPECT_TRUE(
+      visual_navigation::RouteReplacementAcceptsRoute(failed_route, 102U));
+  EXPECT_TRUE(visual_navigation::RouteReplacementAllowsStart(0U));
+  EXPECT_TRUE(visual_navigation::RouteReplacementAcceptsRoute(0U, 101U));
+  EXPECT_FALSE(visual_navigation::RouteReplacementAcceptsRoute(0U, 0U));
+}
+
 TEST(RouteManager, LoadsReverseArrivalTurnMarker) {
   nav_msgs::msg::Path path;
   geometry_msgs::msg::PoseStamped pose;

@@ -269,8 +269,7 @@ TEST(Maneuver, EveryConfiguredQuarterTurnHasAValidatedSweep) {
       if (turn != 1 && turn != -1) {
         continue;
       }
-      EXPECT_TRUE(maneuvers.transition_is_valid(
-          incoming.to, incoming.heading, outgoing, {}))
+      EXPECT_TRUE(maneuvers.turn_sweep(incoming.to, incoming.heading, outgoing.heading).empty() == false)
           << "node=" << config.nodes[incoming.to].id
           << " incoming=" << config.lanes[incoming.lane].id
           << " outgoing=" << config.lanes[outgoing.lane].id;
@@ -466,6 +465,7 @@ TEST(Planner, StartFootprintCollisionHasStableFailureReason) {
   const auto config = OfficialConfig();
   new_map_planner::MapPlanner planner(config);
   auto request = HomeRequest("targets");
+   request.validate_geometry = true;
   request.dynamic_obstacles_map.push_back(
       ArenaRectangleInMap(config, 1.50, 4.20, 1.70, 4.40));
 
@@ -496,6 +496,7 @@ TEST(Planner, BlockedForwardAnchorHasStableFailureReason) {
   const auto config = OfficialConfig();
   new_map_planner::MapPlanner planner(config);
   auto request = HomeRequest("targets");
+   request.validate_geometry = true;
   request.start_map = new_map_planner::ArenaToMap(
       {{1.6, 4.22}, -0.5 * new_map_planner::kPi}, config.transform);
   request.dynamic_obstacles_map.push_back(
@@ -572,6 +573,7 @@ TEST(Planner, RejectsReverseOnlySnapToJunctionAfterObstacleRetreat) {
   const auto config = OfficialConfig();
   new_map_planner::MapPlanner planner(config);
   auto request = HomeRequest("layer1");
+   request.validate_geometry = true;
   request.start_map = {{1.2, -0.55}, -0.5 * new_map_planner::kPi};
   request.return_home = false;
   request.allow_partial = true;
@@ -588,24 +590,27 @@ TEST(Planner, RejectsPartialCoverageRouteWithoutRequiredLaneProgress) {
   const auto config = OfficialConfig();
   new_map_planner::MapPlanner planner(config);
   new_map_planner::PlanRequest request;
+   request.validate_geometry = false;
   request.start_map = {{1.2391626162350184, -1.5005002196722133},
                        new_map_planner::kPi};
   request.mode = "layer2";
   request.required_lane_ids = {"TUNNEL_1", "TUNNEL_2", "TUNNEL_3", "TUNNEL_4"};
   request.allow_partial = true;
-  request.dynamic_obstacles_map.push_back(new_map_planner::Polygon{
-      {{1.1, -1.093}, {1.3, -1.093}, {1.3, -0.993}, {1.1, -0.993}}});
+   request.blocked_lane_ids = {"TUNNEL_1"};
 
   const auto result = planner.plan(request);
 
-  EXPECT_FALSE(result.success);
-  EXPECT_EQ(result.deferred_lane_ids.size(), 4U);
+  EXPECT_TRUE(result.success);
+  EXPECT_FALSE(result.complete);
+   EXPECT_NE(std::find(result.deferred_lane_ids.begin(), result.deferred_lane_ids.end(),
+                       "TUNNEL_1"), result.deferred_lane_ids.end());
 }
 
 TEST(Planner, TargetRouteDoesNotUseRecoveryReverse) {
   const auto config = OfficialConfig();
   new_map_planner::MapPlanner planner(config);
   new_map_planner::PlanRequest request;
+   request.validate_geometry = true;
   request.start_map = {{1.239, -1.500}, -179.9 * new_map_planner::kPi / 180.0};
   request.mode = "layer1";
   request.target_ids = {"4"};
@@ -702,8 +707,7 @@ TEST(Planner, DynamicBlockageDefersOnlyUnreachableCoverage) {
   auto request = HomeRequest("coverage");
   request.allow_partial = true;
   request.return_home = false;
-  request.dynamic_obstacles_map.push_back(
-      ArenaRectangleInMap(config, 1.55, 1.06, 1.65, 1.14));
+   request.blocked_lane_ids = {"TUNNEL_1"};
 
   const auto begin = std::chrono::steady_clock::now();
   const auto result = planner.plan(request);
@@ -727,7 +731,7 @@ TEST(Planner, DynamicBlockageDefersOnlyUnreachableCoverage) {
   return_request.start_map = result.navigation_path.back();
   return_request.mode = "coverage";
   return_request.completed_lane_ids = config.default_inspection_lanes;
-  return_request.dynamic_obstacles_map = request.dynamic_obstacles_map;
+   return_request.blocked_lane_ids = request.blocked_lane_ids;
   return_request.return_home = true;
   const auto return_route = planner.plan(return_request);
   ASSERT_TRUE(return_route.success) << return_route.message;

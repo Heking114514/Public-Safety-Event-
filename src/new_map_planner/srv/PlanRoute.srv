@@ -14,11 +14,18 @@ string[] required_lane_ids
 string[] completed_lane_ids
 # Dynamic obstacle polygons are also expressed in the navigation map frame.
 geometry_msgs/Polygon[] dynamic_obstacles
+# Preferred online corridor input: physical lane IDs are blocked in both directions.
+string[] blocked_lane_ids
+uint64 obstacle_revision
+# Explicit collision/footprint validation switches. Either true enables checks.
+bool validate_geometry
+bool online_geometry_validation
 bool return_home
 bool allow_partial
 bool activate
 # Number of ordinary junctions visited since the last task junction.
 uint8 ordinary_nodes_since_task
+bool ordinary_nodes_since_task_exact
 ---
 bool success
 bool activated

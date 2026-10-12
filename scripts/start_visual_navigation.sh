@@ -138,6 +138,7 @@ ROUTE_MODE="planner"
 ROUTE_FILE=""
 ROUTE_SOURCE="planner:/waypoint_navigation/route_input"
 CONTROL_MODE="waypoint"
+CONTROLLER_MODE="${NAVIGATION_CONTROLLER:-production}"
 ENABLE_WAYPOINT_NAVIGATION="true"
 BUILD_IF_NEEDED="true"
 BUILD_ONLY="false"
@@ -190,6 +191,7 @@ Options:
   -a, --autostart           Load the configured CSV and start automatically
   --primitive-rectangle-test
                             Run the experimental A*/action-primitive 1.8 m rectangle controller instead of waypoint navigation
+  --contrast                Replace waypoint_navigator with the Contrast controller
   --no-build                Use only a build verified against current source
   --build-only              Build or verify current source, then exit
   --skip-camera-check       Launch without checking for a connected D455
@@ -301,6 +303,10 @@ while (($# > 0)); do
       AUTOSTART="false"
       ROUTE_MODE="primitive_rectangle"
       ROUTE_SOURCE="primitive_controller:/cmd_vel_nav"
+      shift
+      ;;
+    --contrast)
+      CONTROLLER_MODE="contrast"
       shift
       ;;
     --no-build)
@@ -580,6 +586,9 @@ build_ros_packages() {
     navigation_mission_manager
     fused_odometry
   )
+  if [[ "${CONTROLLER_MODE}" == "contrast" ]]; then
+    packages+=(contrast_controller)
+  fi
   if [[ -d "${WORKSPACE_ROOT}/src/rectangle_odometry_test" ]]; then
     packages+=(rectangle_odometry_test)
   fi
@@ -824,14 +833,22 @@ if [[ "${ODOM_TOPIC}" == "/odometry/landmark_corrected" ]]; then
   VISION_CORRECTION_STATUS="enabled"
 fi
 log "Vision correction: ${VISION_CORRECTION_STATUS}; map: ${VISION_CORRECTION_MAP_FILE}"
-if [[ "${USE_SERIAL}" == "true" ]]; then
+if [[ "${CONTROLLER_MODE}" == "contrast" ]]; then
+  [[ "${USE_SERIAL}" == "true" ]] || fail "Contrast real-vehicle mode requires serial output"
+  log "Controller: Contrast replacement"
+  LAUNCH_PACKAGE="contrast_controller"
+  LAUNCH_FILE="contrast_serial_bringup.launch.py"
+  REQUIRE_ACTUATOR_HEALTH="true"
+elif [[ "${USE_SERIAL}" == "true" ]]; then
   log "Controller serial: ${SERIAL_DEVICE} at ${SERIAL_BAUD_RATE} baud"
+  LAUNCH_PACKAGE="visual_navigation"
   LAUNCH_FILE="visual_navigation_serial_bringup.launch.py"
   # The serial/competition path must not rely only on a launch-file default:
   # make the actuator gate explicit in the recorded command line as well.
   REQUIRE_ACTUATOR_HEALTH="true"
 else
   log "Controller serial: disabled (upper-computer only)"
+  LAUNCH_PACKAGE="visual_navigation"
   LAUNCH_FILE="visual_navigation_bringup.launch.py"
   REQUIRE_ACTUATOR_HEALTH="false"
 fi
@@ -861,26 +878,36 @@ fi
 NAVIGATION_LAUNCH_ARGS=(
   "route_frame:=map"
   "odom_topic:=${ODOM_TOPIC}"
-  "tracking_point_offset_x:=${TRACKING_POINT_OFFSET_X}"
-  "tracking_point_offset_y:=${TRACKING_POINT_OFFSET_Y}"
   "fusion_status_topic:=/odometry/fusion_status"
   "cmd_vel_topic:=/cmd_vel_nav"
-  "require_actuator_health:=${REQUIRE_ACTUATOR_HEALTH}"
   "autostart:=${AUTOSTART}"
-  "enable_waypoint_navigation:=${ENABLE_WAYPOINT_NAVIGATION}"
 )
+if [[ "${CONTROLLER_MODE}" == "contrast" ]]; then
+  NAVIGATION_LAUNCH_ARGS+=(
+    "route_input_topic:=/waypoint_navigation/route_input"
+    "use_sim_time:=false"
+    "serial_device:=${SERIAL_DEVICE}"
+    "serial_baud_rate:=${SERIAL_BAUD_RATE}"
+  )
+else
+  NAVIGATION_LAUNCH_ARGS+=(
+    "tracking_point_offset_x:=${TRACKING_POINT_OFFSET_X}"
+    "tracking_point_offset_y:=${TRACKING_POINT_OFFSET_Y}"
+    "require_actuator_health:=${REQUIRE_ACTUATOR_HEALTH}"
+    "enable_waypoint_navigation:=${ENABLE_WAYPOINT_NAVIGATION}"
+  )
+  if [[ "${USE_SERIAL}" == "true" ]]; then
+    NAVIGATION_LAUNCH_ARGS+=(
+      "serial_device:=${SERIAL_DEVICE}"
+      "serial_baud_rate:=${SERIAL_BAUD_RATE}"
+    )
+  fi
+fi
 if [[ -n "${NAVIGATION_PARAMETERS_FILE}" ]]; then
   NAVIGATION_LAUNCH_ARGS+=("parameters_file:=${NAVIGATION_PARAMETERS_FILE}")
 fi
 if [[ -n "${ROUTE_FILE}" ]]; then
   NAVIGATION_LAUNCH_ARGS+=("route_file:=${ROUTE_FILE}")
-fi
-
-if [[ "${USE_SERIAL}" == "true" ]]; then
-  NAVIGATION_LAUNCH_ARGS+=(
-    "serial_device:=${SERIAL_DEVICE}"
-    "serial_baud_rate:=${SERIAL_BAUD_RATE}"
-  )
 fi
 
 declare -a RUN_INPUT_FILES=(
@@ -900,7 +927,7 @@ declare -a RUN_INPUT_FILES=(
   "vehicle_physical=${WORKSPACE_ROOT}/install/vehicle_config/share/vehicle_config/config/vehicle_physical.yaml"
   "orb_launch=${WORKSPACE_ROOT}/install/orbslam3/share/orbslam3/launch/realsense_d455_stereo_inertial.launch.py"
   "orb_config=${WORKSPACE_ROOT}/install/orbslam3/share/orbslam3/config/stereo-inertial/RealSense_D455.yaml"
-  "navigation_launch=${WORKSPACE_ROOT}/install/visual_navigation/share/visual_navigation/launch/${LAUNCH_FILE}"
+  "navigation_launch=${WORKSPACE_ROOT}/install/${LAUNCH_PACKAGE}/share/${LAUNCH_PACKAGE}/launch/${LAUNCH_FILE}"
   "navigation_base_launch=${WORKSPACE_ROOT}/install/visual_navigation/share/visual_navigation/launch/visual_navigation_bringup.launch.py"
   "waypoint_launch=${WORKSPACE_ROOT}/install/visual_navigation/share/visual_navigation/launch/waypoint_navigation.launch.py"
   "navigation_config=${WORKSPACE_ROOT}/install/visual_navigation/share/visual_navigation/config/waypoint_navigation.yaml"
@@ -1206,7 +1233,7 @@ fi
   "${ODOMETRY_LAUNCH_ARGS[@]}" {RUN_LOCK_FD}>&- &
 STACK_PIDS+=("$!")
 
-"${ROS2_COMMAND}" launch visual_navigation "${LAUNCH_FILE}" \
+"${ROS2_COMMAND}" launch "${LAUNCH_PACKAGE}" "${LAUNCH_FILE}" \
   "${NAVIGATION_LAUNCH_ARGS[@]}" {RUN_LOCK_FD}>&- &
 STACK_PIDS+=("$!")
 

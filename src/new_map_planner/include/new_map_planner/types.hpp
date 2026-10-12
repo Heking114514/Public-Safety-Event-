@@ -154,11 +154,23 @@ struct PlanRequest {
   std::vector<std::string> required_lane_ids;
   std::vector<std::string> completed_lane_ids;
   std::vector<Polygon> dynamic_obstacles_map;
+  std::vector<std::string> blocked_lane_ids;
+  uint64_t obstacle_revision{0};
+  // Geometry is an explicit validation mode. Normal online business requests
+  // leave both switches false so graph planning is not gated by the fixed
+  // controller turn sweep. Either switch enables the legacy checks.
+  bool validate_geometry{false};
+  bool online_geometry_validation{false};
   bool return_home{true};
   bool allow_partial{false};
   int ordinary_nodes_since_task{1};
+  bool ordinary_nodes_since_task_exact{false};
   bool sequential_targets{false};
 };
+
+inline bool GeometryValidationEnabled(const PlanRequest &request) {
+  return request.validate_geometry || request.online_geometry_validation;
+}
 
 enum class PlanFailureReason : uint8_t {
   NONE = 0,
@@ -182,6 +194,7 @@ struct PlanResult {
   bool success{false};
   bool complete{false};
   bool collision_checked{false};
+  bool validate_geometry{false};
   PlanFailureReason failure_reason{PlanFailureReason::NONE};
   std::string message;
   std::vector<Traversal> traversals;

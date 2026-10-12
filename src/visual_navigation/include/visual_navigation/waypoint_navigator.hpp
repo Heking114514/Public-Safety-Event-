@@ -454,6 +454,7 @@ private:
   std::vector<Waypoint> waypoints_;
   std::size_t currentWaypointIndex_{0};
   uint64_t activeRouteId_{0};
+  uint64_t routeReplacementRequiredForId_{0};
   std::optional<std::size_t> authorizedRfidCheckpoint_;
   bool rfidScanActive_{false};
   bool routeLoaded_{false};

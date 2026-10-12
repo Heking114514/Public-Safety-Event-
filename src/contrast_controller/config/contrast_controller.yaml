@@ -1,0 +1,29 @@
+contrast_controller:
+  ros__parameters:
+    # 与正式导航共享参数 ABI；本实现所有运动阶段实际使用统一死区速度。
+    turn_maneuver_enabled: true
+    turn_maneuver_entry_target_x: -0.070
+    turn_maneuver_entry_target_y: 0.0
+    turn_maneuver_entry_speed: 0.035
+    turn_maneuver_creep_speed: 0.035
+    turn_maneuver_turn_linear_speed: 0.035
+
+    # 实车高角速度区间：大误差接近上限，目标附近保持不低于下限。
+    turn_maneuver_angular_speed: 0.65
+    turn_maneuver_min_angular_speed: 0.50
+
+    # 入口必须同时满足纵向、横向和航向门限。
+    turn_maneuver_entry_tolerance: 0.010
+    turn_maneuver_entry_lateral_tolerance: 0.010
+    turn_maneuver_entry_yaw_tolerance: 0.080
+    turn_maneuver_entry_heading_gain: 1.2
+    turn_maneuver_entry_lateral_gain: 2.0
+    turn_maneuver_entry_max_angular_speed: 0.15
+    turn_maneuver_creep_distance: 0.025
+    turn_maneuver_exit_lateral_tolerance: 0.045
+
+    # 每个运动阶段分别计时；暂停期间不消耗阶段预算。
+    turn_maneuver_phase_timeout: 12.0
+    turn_maneuver_no_progress_timeout: 1.5
+    turn_maneuver_min_position_progress: 0.003
+    turn_maneuver_min_yaw_progress: 0.030

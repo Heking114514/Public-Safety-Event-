@@ -130,9 +130,11 @@ MapPlanner::MapPlanner(PlannerConfig config)
 
 MapPlanner::StartSeedResult
 MapPlanner::start_seeds(const Pose &start,
-                        const std::vector<Polygon> &obstacles) const {
+                        const std::vector<Polygon> &obstacles,
+                        const std::unordered_set<std::string> &blocked_lanes,
+                         bool validate_geometry) const {
   StartSeedResult result;
-  if (!collision_.pose_is_free(start, obstacles)) {
+  if (validate_geometry && !collision_.pose_is_free(start, obstacles)) {
     result.failure_reason = PlanFailureReason::START_POSE_COLLISION;
     return result;
   }
@@ -181,7 +183,7 @@ MapPlanner::start_seeds(const Pose &start,
         continue;
       }
       forward_candidate = true;
-      if (!collision_.segment_is_free(start.position,
+      if (validate_geometry && !collision_.segment_is_free(start.position,
                                       config_.nodes[node].position, start.yaw,
                                       obstacles)) {
         forward_blocked = true;
@@ -199,7 +201,10 @@ MapPlanner::start_seeds(const Pose &start,
   for (std::size_t index = 0; index < graph_.graph().directed_lanes.size();
        ++index) {
     const DirectedLane &directed = graph_.graph().directed_lanes[index];
-    const Point &lane_begin = config_.nodes[directed.from].position;
+     if (blocked_lanes.count(config_.lanes[directed.lane].id) != 0U) {
+       continue;
+     }
+     const Point &lane_begin = config_.nodes[directed.from].position;
     const Point &lane_end = config_.nodes[directed.to].position;
     if (DistanceToSegment(start.position, lane_begin, lane_end) >
         config_.lane_snap_distance) {
@@ -223,7 +228,7 @@ MapPlanner::start_seeds(const Pose &start,
       continue;
     }
     forward_candidate = true;
-    if (!collision_.segment_is_free(start.position, lane_end,
+    if (validate_geometry && !collision_.segment_is_free(start.position, lane_end,
                                     HeadingYaw(directed.heading), obstacles)) {
       forward_blocked = true;
       continue;
@@ -263,6 +268,10 @@ PlanResult MapPlanner::plan(const PlanRequest &request) const {
     return invalid;
   }
   const Pose start = MapToArena(resolved.request.start_map, config_.transform);
+  const std::unordered_set<std::string> blocked_lanes(
+      resolved.request.blocked_lane_ids.begin(),
+      resolved.request.blocked_lane_ids.end());
+  const bool validate_geometry = GeometryValidationEnabled(request);
   std::vector<Polygon> obstacles;
   obstacles.reserve(resolved.request.dynamic_obstacles_map.size());
   for (const Polygon &polygon : request.dynamic_obstacles_map) {
@@ -294,9 +303,9 @@ PlanResult MapPlanner::plan(const PlanRequest &request) const {
         !resolved.request.target_ids.empty()) {
       PlanRequest next_target = resolved.request;
       next_target.target_ids = {resolved.request.target_ids.front()};
-      PlanResult result = plan_targets(next_target, start, obstacles);
+      PlanResult result = plan_targets(next_target, start, obstacles, blocked_lanes, validate_geometry);
       if (!result.success && resolved.request.allow_partial) {
-        return plan_targets(resolved.request, start, obstacles);
+        return plan_targets(resolved.request, start, obstacles, blocked_lanes, validate_geometry);
       }
       if (result.success) {
         result.complete =
@@ -307,16 +316,18 @@ PlanResult MapPlanner::plan(const PlanRequest &request) const {
       }
       return result;
     }
-    return plan_targets(resolved.request, start, obstacles);
+    return plan_targets(resolved.request, start, obstacles, blocked_lanes, validate_geometry);
   }
-  return plan_coverage(resolved.request, start, obstacles,
-                       resolved.allow_tunnel_connectors);
+  return plan_coverage(resolved.request, start, obstacles, blocked_lanes,
+                        validate_geometry, resolved.allow_tunnel_connectors);
 }
 
 PlanResult MapPlanner::plan_turn_recovery(
     const PlanRequest &request, const Pose &start,
     const std::vector<Polygon> &obstacles) const {
   PlanResult result;
+  const bool validate_geometry = true;
+  result.validate_geometry = true;
   result.recovery_only = true;
   if (request.recovery_anchor_node_id.empty() ||
       request.recovery_incoming_lane_id.empty() ||
@@ -374,7 +385,7 @@ PlanResult MapPlanner::plan_turn_recovery(
     return result;
   }
   const Point retreat_end = config_.nodes[retreat->to].position;
-  if (!collision_.segment_is_free(start.position, retreat_end, start.yaw,
+  if (validate_geometry && !collision_.segment_is_free(start.position, retreat_end, start.yaw,
                                   obstacles)) {
     SetFailure(result, PlanFailureReason::RECOVERY_REVERSE_BLOCKED,
                StartFailureMessage(PlanFailureReason::RECOVERY_REVERSE_BLOCKED));
@@ -399,8 +410,11 @@ PlanResult MapPlanner::plan_turn_recovery(
 
 PlanResult
 MapPlanner::plan_targets(const PlanRequest &request, const Pose &start,
-                         const std::vector<Polygon> &obstacles) const {
+                         const std::vector<Polygon> &obstacles,
+                         const std::unordered_set<std::string> &blocked_lanes,
+                         bool validate_geometry) const {
   PlanResult result;
+  result.validate_geometry = validate_geometry;
   const std::vector<std::string> targets =
       request.target_ids.empty() ? config_.default_targets : request.target_ids;
   if (targets.empty()) {
@@ -424,7 +438,7 @@ MapPlanner::plan_targets(const PlanRequest &request, const Pose &start,
     return result;
   }
 
-  const StartSeedResult start_result = start_seeds(start, obstacles);
+  const StartSeedResult start_result = start_seeds(start, obstacles, blocked_lanes, validate_geometry);
   if (start_result.seeds.empty()) {
     SetFailure(result, start_result.failure_reason,
                StartFailureMessage(start_result.failure_reason));
@@ -472,13 +486,18 @@ MapPlanner::plan_targets(const PlanRequest &request, const Pose &start,
   for (std::size_t index = 0; index < directed_count; ++index) {
     const DirectedLane &directed =
         graph_.directed_lane(static_cast<int>(index));
-    lane_free[index] = collision_.segment_is_free(
-        config_.nodes[directed.from].position,
-        config_.nodes[directed.to].position, obstacles);
+    lane_free[index] =
+        blocked_lanes.count(config_.lanes[directed.lane].id) == 0 &&
+        (!validate_geometry || collision_.segment_is_free(
+            config_.nodes[directed.from].position,
+            config_.nodes[directed.to].position, obstacles));
     for (int heading = 0; heading < kHeadingCount; ++heading) {
       transition_free[index * kHeadingCount + heading] =
-          lane_free[index] && maneuvers_.transition_is_valid(
-                                  directed.from, heading, directed, obstacles);
+          lane_free[index] &&
+          TurnQuarterSteps(heading, directed.heading) != 2 &&
+          (!validate_geometry || maneuvers_.transition_is_valid(
+                                     directed.from, heading, directed,
+                                     obstacles));
     }
   }
 
@@ -490,7 +509,9 @@ MapPlanner::plan_targets(const PlanRequest &request, const Pose &start,
     const StartSeed &seed = seeds[index];
     const int count = is_task_node(seed.node)
                           ? 0
-                          : std::max(1, request.ordinary_nodes_since_task);
+                          : (request.ordinary_nodes_since_task_exact
+                                 ? request.ordinary_nodes_since_task
+                                 : std::max(1, request.ordinary_nodes_since_task));
     if (count < 0 || count >= count_states) {
       continue;
     }
@@ -569,7 +590,8 @@ MapPlanner::plan_targets(const PlanRequest &request, const Pose &start,
   if (selected_key == kNoKey) {
     SetFailure(result, PlanFailureReason::NO_FEASIBLE_ROUTE,
                "no forward heading-feasible route reaches the requested "
-               "targets");
+               "targets; best_completed=" + std::to_string(best_partial_count) +
+                   " states=" + std::to_string(records.size()));
     result.deferred_target_ids = targets;
     return result;
   }
@@ -641,10 +663,12 @@ MapPlanner::plan_targets(const PlanRequest &request, const Pose &start,
 }
 
 PlanResult MapPlanner::plan_coverage(const PlanRequest &request,
-                                     const Pose &start,
-                                     const std::vector<Polygon> &obstacles,
-                                     bool allow_tunnel_connectors) const {
-  const StartSeedResult coverage_start_result = start_seeds(start, obstacles);
+                                      const Pose &start,
+                                      const std::vector<Polygon> &obstacles,
+                                      const std::unordered_set<std::string> &blocked_lanes,
+                                      bool validate_geometry,
+                                       bool allow_tunnel_connectors) const {
+  const StartSeedResult coverage_start_result = start_seeds(start, obstacles, blocked_lanes, validate_geometry);
   if (coverage_start_result.seeds.empty()) {
     PlanResult rejected;
     SetFailure(rejected, coverage_start_result.failure_reason,

@@ -170,6 +170,31 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
   turnManeuverConfig_.turn_min_angular_speed = declare_parameter<double>("turn_maneuver_min_angular_speed", 0.15);
   turnManeuverConfig_.creep_linear_speed = declare_parameter<double>("turn_maneuver_creep_speed", 0.030);
   turnManeuverConfig_.entry_position_tolerance = declare_parameter<double>("turn_maneuver_entry_tolerance", 0.010);
+  turnManeuverConfig_.turn_linear_speed = std::max(
+      0.0, declare_parameter<double>("turn_maneuver_turn_linear_speed", 0.010));
+  turnManeuverConfig_.entry_lateral_tolerance = std::max(
+      0.0, declare_parameter<double>(
+               "turn_maneuver_entry_lateral_tolerance", 0.010));
+  turnManeuverConfig_.entry_yaw_tolerance = std::max(
+      0.0, declare_parameter<double>("turn_maneuver_entry_yaw_tolerance", 0.080));
+  turnManeuverConfig_.phase_timeout = std::max(
+      0.0, declare_parameter<double>("turn_maneuver_phase_timeout", 10.0));
+  turnManeuverConfig_.no_progress_timeout = std::max(
+      0.0, declare_parameter<double>("turn_maneuver_no_progress_timeout", 3.0));
+  turnManeuverConfig_.min_position_progress = std::max(
+      0.0, declare_parameter<double>("turn_maneuver_min_position_progress", 0.003));
+  turnManeuverConfig_.min_yaw_progress = std::max(
+      0.0, declare_parameter<double>("turn_maneuver_min_yaw_progress", 0.030));
+  turnManeuverConfig_.creep_distance = declare_parameter<double>(
+      "turn_maneuver_creep_distance", 0.025);
+  turnManeuverConfig_.entry_heading_gain = declare_parameter<double>(
+      "turn_maneuver_entry_heading_gain", 1.2);
+  turnManeuverConfig_.entry_lateral_gain = declare_parameter<double>(
+      "turn_maneuver_entry_lateral_gain", 2.0);
+  turnManeuverConfig_.entry_max_angular_speed = declare_parameter<double>(
+      "turn_maneuver_entry_max_angular_speed", 0.15);
+  turnManeuverConfig_.exit_lateral_tolerance = declare_parameter<double>(
+      "turn_maneuver_exit_lateral_tolerance", 0.045);
   turnManeuverController_.configure(turnManeuverConfig_);
   /* Legacy corner-shunt and trim parameters were removed with the search controller. */
   /*

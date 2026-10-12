@@ -7,7 +7,7 @@ from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import Pose, Quaternion
-from nav_msgs.msg import Odometry
+from nav_msgs.msg import Odometry, Path as PathMessage
 from new_map_mission.state import MissionLayout, PlanSpec, StagedMission
 from new_map_planner.srv import PlanRoute
 import rclpy
@@ -94,6 +94,11 @@ class LoopbackMissionStarter(Node):
             str(self.get_parameter("status_topic").value),
             10,
         )
+        self._route_publisher = self.create_publisher(
+            PathMessage,
+            str(self.get_parameter("route_input_topic").value),
+            10,
+        )
         primary_status_topic = str(self.get_parameter("navigator_status_topic").value)
         self._navigator_status_topics = _parse_status_topics(
             str(self.get_parameter("navigator_status_topics").value),
@@ -149,6 +154,7 @@ class LoopbackMissionStarter(Node):
             "activate_navigation": True,
             "request_delay_s": 1.0,
             "status_topic": "/vehicle_loopback_sim/mission_status",
+            "route_input_topic": "/waypoint_navigation/route_input",
             "navigator_status_topic": "/waypoint_navigation/status",
             "navigator_status_topics": "",
             "odom_topic": "/odometry/fused",
@@ -257,7 +263,14 @@ class LoopbackMissionStarter(Node):
             self._publish_status(f"plan_failed:{mode}:empty_route")
             self.get_logger().error("new map planner returned an empty route")
             return
-        state = "activated" if response.activated else "planned_only"
+        activation_requested = bool(
+            self.get_parameter("activate_navigation").value
+        )
+        activated = bool(response.activated)
+        if activation_requested and not activated:
+            self._route_publisher.publish(plan.navigation_path)
+            activated = True
+        state = "activated" if activated else "planned_only"
         self._publish_status(
             f"{state}:{mode}:poses={len(plan.navigation_path.poses)} "
             f"length={plan.length_m:.2f}:complete={str(plan.complete).lower()}"
@@ -267,7 +280,7 @@ class LoopbackMissionStarter(Node):
             f"{len(plan.navigation_path.poses)} poses, "
             f"{plan.length_m:.2f} m, {response.message}"
         )
-        if not response.activated:
+        if not activated:
             return
         self._active_covered_lane_ids = list(plan.covered_lane_ids)
         self._active_visit_order = list(plan.visit_order)

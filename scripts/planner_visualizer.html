@@ -12,6 +12,7 @@ canvas{background:#1b2733;cursor:crosshair;flex:1;min-width:0}
 <aside id="side"><h2>new_map_planner 本次任务</h2>
 <button class="primary" id="plan">规划本次任务</button><button class="secondary" id="play">运行小车</button><button class="secondary" id="pause">暂停</button><button class="danger" id="clear">清除我画的障碍</button>
 <div id="status">正在初始化…</div>
+<p id="planner-meta" class="hint">状态元数据：初始化…</p>
 <p class="hint">任务顺序严格按规划器业务逻辑：<br>layer1：12 个任务点<br>layer2：隧道覆盖<br>layer3：普通道路补漏并回到 launch</p>
 <p class="hint">空白处拖拽画动态障碍物；点击你画的障碍物删除。页面不绘制配置文件中的固定障碍物。</p>
 <div class="legend">白：赛道　红/橙：你画的障碍影响道路<br>蓝：layer1　紫：layer2　青绿：layer3<br>橙箭头：路径方向　紫色 T：任务点　青：小车</div></aside>
@@ -22,6 +23,8 @@ const DATA={"arena":{"width_m":3.2,"height_m":4.4,"free_regions":[[0.0,0.0,3.2,3
 const canvas=document.getElementById('view'),ctx=canvas.getContext('2d');
 let obstacles=[],globalRoute=[],routeStages=[],routeSteps=[],anim=null,animIndex=0,drag=null,planMessage='';
 const nodes=DATA.nodes, lanes=DATA.lanes, nodeNames=Object.keys(nodes), home=DATA.home_node||'launch';
+const supernodeByNode=Object.fromEntries(Object.entries(DATA.rfid_supernodes||{}).map(([sid,task])=>[DATA.tasks?.[task],sid]));
+const blockedLaneIds=new Set(DATA.blocked_lane_ids||[]), obstacleRevision=Number(DATA.obstacle_revision||0);
 const laneById=Object.fromEntries(lanes.map(l=>[l.id,l]));
 const targets=(DATA.missions.default_targets||[]).map(id=>({id,node:DATA.tasks[id]}));
 const inspection=(DATA.missions.default_inspection_lanes||[]).map(id=>laneById[id]).filter(Boolean);
@@ -35,7 +38,7 @@ addEventListener('resize',resize);
 function distance(a,b){return Math.hypot(a[0]-b[0],a[1]-b[1])}
 function segmentHit(a,b,r){let dx=b[0]-a[0],dy=b[1]-a[1],t0=0,t1=1,p=[-dx,dx,-dy,dy],q=[a[0]-r[0],r[2]-a[0],a[1]-r[1],r[3]-a[1]];for(let i=0;i<4;i++){if(Math.abs(p[i])<1e-12){if(q[i]<0)return false}else{let t=q[i]/p[i];if(p[i]<0){if(t>t1)return false;t0=Math.max(t0,t)}else{if(t<t0)return false;t1=Math.min(t1,t)}}}return true}
 function edgeStatus(a,b){const hx=.125/2+.015,hy=.125/2+.015;let center=false,footprint=false;for(const r of obstacles){if(segmentHit(a,b,r))center=true;if(segmentHit(a,b,[r[0]-hx,r[1]-hy,r[2]+hx,r[3]+hy]))footprint=true}return {center,footprint,blocked:footprint}}
-function neighbors(u,allowTunnel){let out=[];for(const l of lanes){if(!allowTunnel&&l.tunnel)continue;if(l.from===u)out.push([l.to,l]);if(l.bidirectional&&l.to===u)out.push([l.from,l])}return out}
+function neighbors(u,allowTunnel){let out=[];for(const l of lanes){if(blockedLaneIds.has(l.id)||(!allowTunnel&&l.tunnel))continue;if(l.from===u)out.push([l.to,l]);if(l.bidirectional&&l.to===u)out.push([l.from,l])}return out}
 function graphPath(start,goal,allowTunnel=true){if(start===goal)return {nodes:[start],lanes:[]};let q=[start],prev={[start]:null},via={};while(q.length){let u=q.shift();for(const [v,l] of neighbors(u,allowTunnel)){if(v in prev)continue;if(edgeStatus(nodes[u],nodes[v]).blocked)continue;prev[v]=u;via[v]=l.id;q.push(v);if(v===goal){let path=[v],used=[];while(path[0]!==start){let child=path[0];used.unshift(via[child]);path.unshift(prev[child])}return {nodes:path,lanes:used}}} }return null}
 function appendPath(route,from,to,allowTunnel,covered,stage,stageEdges){let p=graphPath(from,to,allowTunnel);if(!p)return null;p.lanes.forEach(id=>{if(inspectionIds.has(id))covered.add(id)});p.nodes.slice(route.length?1:0).forEach(()=>stageEdges.push(stage));return route.concat(p.nodes.slice(route.length?1:0))}
 function appendInspection(route,current,lane,allowTunnel,covered,stage,stageEdges){if(edgeStatus(nodes[lane.from],nodes[lane.to]).blocked)return null;let p=appendPath(route,current,lane.from,allowTunnel,covered,stage,stageEdges);if(!p)return null;covered.add(lane.id);if(p[p.length-1]!==lane.to){p.push(lane.to);stageEdges.push(stage)}return p}
@@ -45,7 +48,7 @@ function buildMission(){let route=[home],current=home,segments=[],covered=new Se
   for(const lane of ordinaryLanes){if(covered.has(lane.id))continue;let p=appendInspection(route,current,lane,false,covered,'layer3',stageEdges);if(!p)return {route,segments,covered,stageEdges,error:'layer3 道路 '+lane.id+' 被阻断或不可达'};route=p;segments.push({stage:'layer3',label:'道路 '+lane.id,end:lane.to});current=lane.to}
   if(current!==home){let p=appendPath(route,current,home,false,covered,'layer3',stageEdges);if(!p)return {route,segments,covered,stageEdges,error:'layer3 回程无法回到 launch'};route=p;segments.push({stage:'layer3',label:'回到 launch',end:home})}
   return {route,segments,covered,stageEdges,error:null}}
-function setStatus(result){let text='本次任务：layer1 → layer2 → layer3\n';text+='任务点：'+targets.length+' 个；隧道：'+tunnelLanes.length+' 条；普通道路：'+ordinaryLanes.length+' 条\n';text+='已覆盖道路：'+result.covered.size+'/'+inspection.length+'\n';text+='全局路径节点：'+result.route.length+'\n';text+=result.error?result.error:'规划完成，终点：'+home;document.getElementById('status').innerHTML=result.error?'<span class="bad">'+text+'</span>':'<span class="ok">'+text+'</span>'}
+function setStatus(result){let text='本次任务：layer1 → layer2 → layer3\n';text+='任务点：'+targets.length+' 个；隧道：'+tunnelLanes.length+' 条；普通道路：'+ordinaryLanes.length+' 条\n';text+='已覆盖道路：'+result.covered.size+'/'+inspection.length+'\n';text+='全局路径节点：'+result.route.length+'\n';text+=result.error?result.error:'规划完成，终点：'+home;document.getElementById('status').innerHTML=result.error?'<span class="bad">'+text+'</span>':'<span class="ok">'+text+'</span>';let count=0,superCount=0;for(const n of result.route){if(supernodeByNode[n]){count=0;superCount++}else count=Math.min(2,count+1)}document.getElementById('planner-meta').textContent='路线道路序列：'+result.route.slice(0,-1).map((n,i)=>n+'→'+result.route[i+1]).join(' | ')+'\nordinary_count='+count+'；超节点='+superCount+'；blocked_lane_ids='+[...blockedLaneIds].join(',')+'；obstacle_revision='+obstacleRevision+'；恢复候选='+[...lanes].filter(l=>!blockedLaneIds.has(l.id)).length}
 function planMission(){if(anim){clearInterval(anim);anim=null}animIndex=0;let result=buildMission();globalRoute=result.route;routeStages=result.stageEdges||[];routeSteps=[];for(let i=0;i<globalRoute.length-1;i++){let a=nodes[globalRoute[i]],b=nodes[globalRoute[i+1]],n=Math.max(2,Math.ceil(distance(a,b)/.02));for(let j=0;j<n;j++)routeSteps.push({x:a[0]+(b[0]-a[0])*j/n,y:a[1]+(b[1]-a[1])*j/n})}if(globalRoute.length)routeSteps.push(nodes[globalRoute[globalRoute.length-1]]);planMessage=result.error||'规划完成';setStatus(result);draw()}
 function arrow(a,b,color){let dx=b[0]-a[0],dy=b[1]-a[1],len=Math.hypot(dx,dy);if(len<8)return;let ux=dx/len,uy=dy/len,mx=(a[0]+b[0])/2,my=(a[1]+b[1])/2,s=7;ctx.fillStyle=color;ctx.beginPath();ctx.moveTo(mx+ux*s,my+uy*s);ctx.lineTo(mx-ux*s-uy*s*.65,my-uy*s+ux*s*.65);ctx.lineTo(mx-ux*s+uy*s*.65,my-uy*s-ux*s*.65);ctx.closePath();ctx.fill()}
 function draw(){ctx.clearRect(0,0,canvas.width,canvas.height);

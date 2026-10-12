@@ -426,4 +426,58 @@ TEST(ReverseMotionCommand, UsesReverseSpecificHeadingAndSpeedSigns) {
   EXPECT_DOUBLE_EQ(noSafeReverse.angular_velocity, 0.0);
 }
 
+TEST(ObstacleRecoveryExitPlan, OrdersSemanticAnchorBeforeEarlierTrace) {
+  std::vector<visual_navigation::RecoveryTraceSample> trace;
+  for (double x : {0.0, 0.2, 0.4, 0.6, 0.8})
+    trace.push_back({{x, 0.0}, 0.0, 0.1, 0.0});
+
+  const auto plan = visual_navigation::BuildRecoveryExitPlan(
+      trace, 4, 2, {0.8, 0.0}, 0.15, 4);
+  ASSERT_TRUE(plan.route_takeover_allowed);
+  ASSERT_GE(plan.candidates.size(), 2U);
+  EXPECT_EQ(plan.candidates[0].template_kind,
+            visual_navigation::RecoveryExitTemplate::SEMANTIC_ANCHOR);
+  EXPECT_EQ(plan.candidates[0].trace_index, 2U);
+  EXPECT_EQ(plan.candidates[1].template_kind,
+            visual_navigation::RecoveryExitTemplate::EARLIER_TRACE);
+  EXPECT_LT(plan.candidates[1].trace_index, plan.candidates[0].trace_index);
+  EXPECT_GE(plan.candidates[0].distance_from_current, 0.25);
+}
+
+TEST(ObstacleRecoveryExitPlan, RejectsInvalidOrTooShortExitWithoutClaimingSafety) {
+  std::vector<visual_navigation::RecoveryTraceSample> trace{
+      {{0.0, 0.0}, 0.0, 0.1, 0.0},
+      {{0.1, 0.0}, 0.0, 0.1, 0.0},
+      {{0.2, 0.0}, 0.0, 0.1, 0.0}};
+  const auto plan = visual_navigation::BuildRecoveryExitPlan(
+      trace, 2, 1, {0.2, 0.0}, 0.5);
+  EXPECT_TRUE(plan.candidates.empty());
+  EXPECT_TRUE(plan.route_takeover_allowed);
+
+  const auto invalid = visual_navigation::BuildRecoveryExitPlan(
+      trace, 1, 1, {0.1, 0.0}, 0.05);
+  EXPECT_TRUE(invalid.candidates.empty());
+  EXPECT_TRUE(invalid.route_takeover_allowed);
+}
+
+TEST(ObstacleRecoveryExitPlan, EnforcesExplicitStateBoundaries) {
+  using visual_navigation::RecoveryExitState;
+  EXPECT_TRUE(visual_navigation::IsRecoveryExitTransitionAllowed(
+      RecoveryExitState::UNAVAILABLE, RecoveryExitState::CANDIDATE));
+  EXPECT_TRUE(visual_navigation::IsRecoveryExitTransitionAllowed(
+      RecoveryExitState::CANDIDATE, RecoveryExitState::SELECTED));
+  EXPECT_TRUE(visual_navigation::IsRecoveryExitTransitionAllowed(
+      RecoveryExitState::SELECTED, RecoveryExitState::EXECUTING));
+  EXPECT_TRUE(visual_navigation::IsRecoveryExitTransitionAllowed(
+      RecoveryExitState::EXECUTING, RecoveryExitState::COMPLETED));
+  EXPECT_TRUE(visual_navigation::IsRecoveryExitTransitionAllowed(
+      RecoveryExitState::EXECUTING, RecoveryExitState::REJECTED));
+  EXPECT_TRUE(visual_navigation::IsRecoveryExitTransitionAllowed(
+      RecoveryExitState::REJECTED, RecoveryExitState::SELECTED));
+  EXPECT_FALSE(visual_navigation::IsRecoveryExitTransitionAllowed(
+      RecoveryExitState::COMPLETED, RecoveryExitState::SELECTED));
+  EXPECT_FALSE(visual_navigation::IsRecoveryExitTransitionAllowed(
+      RecoveryExitState::CANDIDATE, RecoveryExitState::EXECUTING));
+}
+
 } // namespace

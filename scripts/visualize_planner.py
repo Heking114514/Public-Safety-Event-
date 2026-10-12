@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import heapq
+import json
 import math
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -33,7 +34,98 @@ Point = tuple[float, float]
 Rect = tuple[float, float, float, float]
 
 
-def parse_point(value: str) -> Point:
+def load_planner_metadata(path: Path) -> dict:
+    """Load optional mission metadata without depending on ROS messages."""
+    with path.open(encoding="utf-8") as stream:
+        raw = yaml.safe_load(stream) or {}
+    tasks = {str(k): str(v) for k, v in (raw.get("tasks") or {}).items()}
+    supernodes = {str(node): str(task) for node, task in (raw.get("rfid_supernodes") or {}).items()}
+    task_to_supernode = {task: node for node, task in supernodes.items()}
+    missions = raw.get("missions") or {}
+    return {
+        "tasks": tasks,
+        "supernodes": supernodes,
+        "task_to_supernode": task_to_supernode,
+        "default_targets": [str(v) for v in missions.get("default_targets", [])],
+        "default_inspection_lanes": [str(v) for v in missions.get("default_inspection_lanes", [])],
+    }
+
+
+def lane_sequence(route: Sequence[str], lanes: Sequence[tuple]) -> list[dict]:
+    """Resolve each route hop to a lane and preserve its travel direction."""
+    result = []
+    for source, target in zip(route, route[1:]):
+        match = next((lane for lane in lanes
+                      if ((lane[1] == source and lane[2] == target) or
+                          (lane[3] and lane[1] == target and lane[2] == source))), None)
+        if match:
+            result.append({"lane_id": match[0], "from": source, "to": target,
+                           "direction": f"{source}->{target}"})
+    return result
+
+
+def recovery_candidates(nodes: dict[str, Point], lanes: Sequence[tuple],
+                        blocked_lane_ids: set[str], current: str,
+                        heading: str = "") -> list[dict]:
+    """Return inspectable, conservative recovery exits from a graph node.
+
+    This is intentionally an assessment-only view. It does not generate a
+    reverse path or claim that an unimplemented controller action is available.
+    """
+    candidates = []
+    for lane_id, src, dst, bidirectional in lanes:
+        if lane_id in blocked_lane_ids:
+            continue
+        if src == current:
+            resume = dst
+        elif bidirectional and dst == current:
+            resume = src
+        else:
+            continue
+        candidates.append({"candidate_id": f"{lane_id}:{resume}",
+                           "resume_node": resume, "resume_lane": lane_id,
+                           "resume_heading": heading or f"{current}->{resume}",
+                           "recovery_template": "T_JUNCTION" if len(nodes) else "",
+                           "recovery_edges": [lane_id]})
+    return candidates
+
+
+def build_trace(path: Path, route: Sequence[str], lanes: Sequence[tuple],
+                blocked_lane_ids: Iterable[str] = (), obstacle_revision: int = 0,
+                ordinary_count: int = 0, start: str = "", goal: str = "",
+                graph_nodes: dict[str, Point] | None = None,
+                recovery_input: Sequence[dict] | None = None) -> dict:
+    metadata = load_planner_metadata(path)
+    blocked = sorted(set(blocked_lane_ids))
+    supernode_by_node = {metadata["tasks"].get(task, ""): supernode
+                          for supernode, task in metadata["supernodes"].items()}
+    count = int(ordinary_count)
+    nodes_trace = []
+    for node in route:
+        supernode = supernode_by_node.get(node)
+        if supernode:
+            count = 0
+        else:
+            count = min(count + 1, 2)
+        nodes_trace.append({"node": node, "supernode_id": supernode,
+                            "node_type": "supernode" if supernode else "ordinary",
+                            "ordinary_count": count})
+    lane_trace = lane_sequence(route, lanes)
+    return {
+        "start": start or (route[0] if route else ""),
+        "goal": goal or (route[-1] if route else ""),
+        "route_nodes": list(route), "route_lanes": lane_trace,
+        "nodes": nodes_trace, "supernodes": metadata["supernodes"],
+        "ordinary_count": count, "blocked_lane_ids": blocked,
+        "obstacle_revision": int(obstacle_revision),
+        "recovery_candidates": [candidate for candidate in (
+            list(recovery_input) if recovery_input is not None else recovery_candidates(
+                graph_nodes or {node: (0.0, 0.0) for node in metadata["tasks"].values()}, lanes,
+                set(blocked), route[-1] if route else ""))
+            if not set(candidate.get("recovery_edges", [])) & set(blocked)],
+    }
+
+
     x, y = (float(v) for v in value.split(","))
     return x, y
 
@@ -137,10 +229,14 @@ def edge_status(a: Point, b: Point, free: Sequence[Rect], obstacles: Sequence[Re
     return center_ok, footprint_ok
 
 
-def dijkstra(nodes, lanes, free, obstacles, length, width, margin, start, goal):
+def dijkstra(nodes, lanes, free, obstacles, length, width, margin, start, goal,
+             blocked_lane_ids: Iterable[str] = ()):
+    blocked = set(blocked_lane_ids)
     outgoing = {name: [] for name in nodes}
     statuses = {}
     for lane_id, src, dst, bidirectional in lanes:
+        if lane_id in blocked:
+            continue
         for u, v in ((src, dst), (dst, src)) if bidirectional else ((src, dst),):
             center_ok, footprint_ok = edge_status(nodes[u], nodes[v], free, obstacles, length, width, margin)
             statuses[(u, v)] = (lane_id, center_ok, footprint_ok)
@@ -181,6 +277,14 @@ def main() -> int:
     parser.add_argument("--obstacle", action="append", default=[], metavar="x1,y1,x2,y2", help="dynamic rectangle; repeatable")
     parser.add_argument("--save", type=Path, help="save PNG instead of opening a window")
     parser.add_argument("--gui", action="store_true", help="open interactive controls (default when --save is omitted)")
+    parser.add_argument("--mode", choices=("map", "mission"), default="map", help="map view or mission metadata view")
+    parser.add_argument("--show-supernodes", action="store_true", help="show supernode metadata in mission trace")
+    parser.add_argument("--show-ordinary-count", action="store_true", help="include ordinary_count in mission trace")
+    parser.add_argument("--show-blocked-edges", action="store_true", help="include blocked lane ids in mission trace")
+    parser.add_argument("--blocked-lane", action="append", default=[], help="temporarily blocked lane id; repeatable")
+    parser.add_argument("--obstacle-revision", type=int, default=0, help="obstacle snapshot revision for trace output")
+    parser.add_argument("--ordinary-count", type=int, default=0, help="ordinary nodes already counted at the start")
+    parser.add_argument("--trace", type=Path, help="write a JSON route/state trace")
     args = parser.parse_args()
 
     _, nodes, lanes, free, static, length, width, margin = load_config(args.config)
@@ -188,8 +292,28 @@ def main() -> int:
     goal = nodes.get(args.goal, parse_point(args.goal) if "," in args.goal else None)
     if start is None or goal is None:
         parser.error("start/goal must be a node id or x,y")
-    radius = math.hypot(length, width) / 2.0 + margin
     dynamic = [parse_rect(v) for v in args.obstacle]
+    start_name = args.start if args.start in nodes else nearest_node(nodes, start)
+    goal_name = args.goal if args.goal in nodes else nearest_node(nodes, goal)
+    initial_path, _ = dijkstra(nodes, lanes, free, static + dynamic, length, width, margin,
+                                start_name, goal_name, args.blocked_lane)
+    if args.trace:
+        trace = build_trace(args.config, initial_path, lanes, args.blocked_lane,
+                            args.obstacle_revision, args.ordinary_count,
+                            start_name, goal_name, nodes)
+        # Keep the default map trace useful while allowing --mode mission to
+        # request all metadata explicitly.
+        if args.mode == "map" and not args.show_supernodes:
+            trace.pop("supernodes", None)
+        if args.mode == "map" and not args.show_ordinary_count:
+            for item in trace["nodes"]:
+                item.pop("ordinary_count", None)
+            trace.pop("ordinary_count", None)
+        if args.mode == "map" and not args.show_blocked_edges:
+            trace.pop("blocked_lane_ids", None)
+        args.trace.parent.mkdir(parents=True, exist_ok=True)
+        args.trace.write_text(json.dumps(trace, ensure_ascii=False, indent=2), encoding="utf-8")
+    radius = math.hypot(length, width) / 2.0 + margin
     fig, ax = plt.subplots(figsize=(10, 10))
     plt.subplots_adjust(bottom=.18, left=.08, right=.98)
     route_state = {"points": [], "car": None, "animation": None}
@@ -200,7 +324,9 @@ def main() -> int:
             start = nodes.get(start_value, parse_point(start_value) if "," in start_value else None)
             goal = nodes.get(goal_value, parse_point(goal_value) if "," in goal_value else None)
             if start is None or goal is None: raise ValueError("start/goal must be node id or x,y")
-            path, statuses = dijkstra(nodes, lanes, free, static + dynamic, length, width, margin, nearest_node(nodes, start), nearest_node(nodes, goal))
+            path, statuses = dijkstra(nodes, lanes, free, static + dynamic, length, width, margin,
+                                      nearest_node(nodes, start), nearest_node(nodes, goal),
+                                      args.blocked_lane)
         except (ValueError, TypeError) as exc:
             status_box.set_val(str(exc)); return
         ax.clear()

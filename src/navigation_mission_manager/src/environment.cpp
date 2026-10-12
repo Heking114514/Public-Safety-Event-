@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <regex>
 
 namespace navigation_mission_manager
@@ -239,6 +240,12 @@ bool MissionManager::promote_pending_obstacle()
   }
   merge_obstacle(
     dynamic_obstacles_, pending_obstacle_->first, obstacle_merge_distance_m_);
+  const auto blocked_lane = infer_blocked_lane_id(pending_obstacle_->first);
+  if (blocked_lane.has_value() && blocked_lane_ids_.insert(*blocked_lane).second) {
+    ++obstacle_revision_;
+    publish_text("blocked_lane:" + *blocked_lane + ":revision=" +
+      std::to_string(obstacle_revision_));
+  }
   if (max_dynamic_obstacles_ > 0 &&
     dynamic_obstacles_.size() > static_cast<std::size_t>(max_dynamic_obstacles_))
   {
@@ -251,6 +258,28 @@ bool MissionManager::promote_pending_obstacle()
   return true;
 }
 
+std::optional<std::string> MissionManager::infer_blocked_lane_id(const Polygon2d & polygon) const
+{
+  if (!pose_.has_value() || !active_route_.has_value() || polygon.empty()) {
+    return std::nullopt;
+  }
+  const auto center = polygon_center(polygon);
+  double best_distance = std::numeric_limits<double>::max();
+  std::optional<std::string> result;
+  for (const auto & maneuver : active_route_->plan.maneuvers) {
+    const auto distance_to = [&center](const geometry_msgs::msg::Pose & pose) {
+        return std::hypot(center.first - pose.position.x, center.second - pose.position.y);
+      };
+    const double distance = std::min(distance_to(maneuver.start_pose), distance_to(maneuver.end_pose));
+    const std::string lane_id = !maneuver.outgoing_lane_id.empty() ?
+      maneuver.outgoing_lane_id : maneuver.incoming_lane_id;
+    if (!lane_id.empty() && distance < best_distance) {
+      best_distance = distance;
+      result = lane_id;
+    }
+  }
+  return result;
+}
 void MissionManager::expire_dynamic_obstacles(double now)
 {
   if (!dynamic_obstacles_.empty() && obstacle_memory_expired(
@@ -258,9 +287,14 @@ void MissionManager::expire_dynamic_obstacles(double now)
   {
     dynamic_obstacles_.clear();
     dynamic_obstacles_updated_at_.reset();
+    if (!blocked_lane_ids_.empty()) {
+      blocked_lane_ids_.clear();
+      ++obstacle_revision_;
+    }
     publish_text("dynamic_obstacles_expired");
   }
 }
+
 
 std::optional<EventData> MissionManager::event_data(
   const mission_control_interfaces::msg::EventCandidate & message) const

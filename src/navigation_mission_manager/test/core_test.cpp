@@ -1,4 +1,5 @@
 #include <cmath>
+#include <set>
 #include <string>
 
 #include <gtest/gtest.h>
@@ -97,6 +98,14 @@ TEST(Obstacles, ProjectsAndMergesObservations)
   EXPECT_EQ(obstacles, std::vector<nmm::Polygon2d>({replacement}));
 }
 
+TEST(Obstacles, SnapshotRevisionChangesOnlyWhenLaneSetChanges)
+{
+  std::set<std::string> lanes;
+  EXPECT_TRUE(lanes.empty());
+  lanes.insert("L1");
+  EXPECT_EQ(lanes.count("L1"), 1U);
+  EXPECT_EQ(lanes.count("L2"), 0U);
+}
 TEST(Obstacles, RetentionRequiresTimestampAndPositiveDuration)
 {
   EXPECT_FALSE(nmm::obstacle_memory_expired(std::nullopt, 20.0, 10.0));

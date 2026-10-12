@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <fstream>
 #include <limits>
 #include <sstream>
@@ -15,6 +16,16 @@
 #include "nav_msgs/msg/path.hpp"
 
 namespace visual_navigation {
+
+inline bool RouteReplacementAllowsStart(uint64_t failed_route_id) {
+  return failed_route_id == 0U;
+}
+
+inline bool RouteReplacementAcceptsRoute(uint64_t failed_route_id,
+                                         uint64_t candidate_route_id) {
+  return candidate_route_id != 0U &&
+         (failed_route_id == 0U || candidate_route_id != failed_route_id);
+}
 
 struct RouteWaypoint {
   double x{0.0};
@@ -154,10 +165,12 @@ public:
           std::isfinite(pose.position.z) &&
           std::abs(pose.position.z - 2.0e-3) <= 1.0e-6;
       const bool rfid_height = std::isfinite(pose.position.z) &&
-          std::abs(pose.position.z - 3.0e-3) <= 1.0e-6;
-      const bool rfid_turn_height = std::isfinite(pose.position.z) &&
+                               std::abs(pose.position.z - 3.0e-3) <= 1.0e-6;
+      const bool rfid_turn_height =
+          std::isfinite(pose.position.z) &&
           std::abs(pose.position.z - 4.0e-3) <= 1.0e-6;
-      const bool rfid_reverse_turn_height = std::isfinite(pose.position.z) &&
+      const bool rfid_reverse_turn_height =
+          std::isfinite(pose.position.z) &&
           std::abs(pose.position.z - 5.0e-3) <= 1.0e-6;
       if (!std::isfinite(pose.position.x) || !std::isfinite(pose.position.y) ||
           (!ordinary_height && !turn_junction_height &&
@@ -175,10 +188,10 @@ public:
       waypoint.turn_junction = turn_junction_height || reverse_arrival_height;
       waypoint.turn_junction = waypoint.turn_junction || rfid_turn_height ||
                                rfid_reverse_turn_height;
-      waypoint.reverse_arrival_turn = reverse_arrival_height ||
-                                      rfid_reverse_turn_height;
-      waypoint.rfid_supernode = rfid_height || rfid_turn_height ||
-                                rfid_reverse_turn_height;
+      waypoint.reverse_arrival_turn =
+          reverse_arrival_height || rfid_reverse_turn_height;
+      waypoint.rfid_supernode =
+          rfid_height || rfid_turn_height || rfid_reverse_turn_height;
       waypoint.yaw = quaternion_yaw(pose.orientation);
       waypoint.speed = default_speed;
       waypoint.tolerance = default_tolerance;

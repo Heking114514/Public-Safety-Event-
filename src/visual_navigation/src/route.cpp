@@ -10,8 +10,7 @@ bool WaypointNavigator::RouteStartsWithTurn() const {
   constexpr double kMaximumSnapPrefix = 0.02;
   return waypoints_.size() > 1 && waypoints_[1].turn_junction &&
          std::hypot(waypoints_[1].x - waypoints_[0].x,
-                    waypoints_[1].y - waypoints_[0].y) <=
-             kMaximumSnapPrefix;
+                    waypoints_[1].y - waypoints_[0].y) <= kMaximumSnapPrefix;
 }
 
 bool WaypointNavigator::LoadRoute(const std::string &routeFile) {
@@ -60,11 +59,14 @@ void WaypointNavigator::PublishRoutePath() {
     pose.header = path.header;
     pose.pose.position.x = waypoint.x;
     pose.pose.position.y = waypoint.y;
-    pose.pose.position.z = waypoint.rfid_supernode ?
-        (waypoint.reverse_arrival_turn ? 5.0e-3 :
-         (waypoint.turn_junction ? 4.0e-3 : 3.0e-3)) :
-        (waypoint.reverse_arrival_turn ? 2.0e-3 :
-         (waypoint.turn_junction ? 1.0e-3 : 0.0));
+    pose.pose.position.z =
+        waypoint.rfid_supernode
+            ? (waypoint.reverse_arrival_turn
+                   ? 5.0e-3
+                   : (waypoint.turn_junction ? 4.0e-3 : 3.0e-3))
+            : (waypoint.reverse_arrival_turn
+                   ? 2.0e-3
+                   : (waypoint.turn_junction ? 1.0e-3 : 0.0));
     pose.pose.orientation = QuaternionFromYaw(yaw);
     path.poses.push_back(pose);
   }
@@ -79,26 +81,28 @@ void WaypointNavigator::PublishRouteAck(uint64_t route_id) {
 }
 
 void WaypointNavigator::HandleConfirmRfidCheckpoint(
-    const mission_control_interfaces::srv::ConfirmRfidCheckpoint::Request::SharedPtr
-        request,
+    const mission_control_interfaces::srv::ConfirmRfidCheckpoint::Request::
+        SharedPtr request,
     mission_control_interfaces::srv::ConfirmRfidCheckpoint::Response::SharedPtr
         response) {
-  if (!navigationActive_ || !routeLoaded_ ||
-      request->route_id == 0U || request->route_id != activeRouteId_ ||
+  if (!navigationActive_ || !routeLoaded_ || request->route_id == 0U ||
+      request->route_id != activeRouteId_ ||
       request->waypoint_index < currentWaypointIndex_ ||
       request->waypoint_index > currentWaypointIndex_ + 1U ||
       request->waypoint_index >= waypoints_.size() ||
       !waypoints_[request->waypoint_index].rfid_supernode ||
       request->supernode_id.empty()) {
     response->accepted = false;
-    response->message = "RFID checkpoint does not match the active route target";
+    response->message =
+        "RFID checkpoint does not match the active route target";
     return;
   }
   authorizedRfidCheckpoint_ = request->waypoint_index;
   rfidScanActive_ = false;
   response->accepted = true;
   response->message = "RFID checkpoint authorized";
-  RCLCPP_INFO(get_logger(), "RFID checkpoint authorized: route=%lu waypoint=%u supernode=%s",
+  RCLCPP_INFO(get_logger(),
+              "RFID checkpoint authorized: route=%lu waypoint=%u supernode=%s",
               static_cast<unsigned long>(activeRouteId_),
               request->waypoint_index, request->supernode_id.c_str());
 }
@@ -130,6 +134,17 @@ void WaypointNavigator::HandleRouteInput(
                  "Ignoring dynamic route without a non-zero route id");
     return;
   }
+  if (!visual_navigation::RouteReplacementAcceptsRoute(
+          routeReplacementRequiredForId_, route_id)) {
+    PublishStop();
+    SetState("TURN_NEED_REPLAN");
+    RCLCPP_WARN(
+        get_logger(),
+        "Ignoring route %lu; a new route id is required after turn recovery",
+        static_cast<unsigned long>(route_id));
+    return;
+  }
+  const bool clearsTurnRecoveryLock = routeReplacementRequiredForId_ != 0U;
   const bool preserveExecutedTrace =
       (state_ == "GOAL_REACHED" && obstacleRecoveryController_.idle()) ||
       obstacleRecoveryController_.route_may_take_over();
@@ -183,6 +198,8 @@ void WaypointNavigator::HandleRouteInput(
 
     routeStartTurnAuthorized_ = RouteStartsWithTurn();
     activeRouteId_ = route_id;
+    if (clearsTurnRecoveryLock)
+      routeReplacementRequiredForId_ = 0U;
     std::string activation_result;
     if (!ActivateNavigation(activation_result, preserveExecutedTrace)) {
       PublishRoutePath();
@@ -215,6 +232,8 @@ void WaypointNavigator::HandleRouteInput(
 
   waypoints_ = std::move(loadedWaypoints);
   activeRouteId_ = route_id;
+  if (clearsTurnRecoveryLock)
+    routeReplacementRequiredForId_ = 0U;
   authorizedRfidCheckpoint_.reset();
   rfidScanActive_ = false;
   routeStartTurnAuthorized_ = RouteStartsWithTurn();

@@ -24,8 +24,9 @@ void MissionManager::start_mission(const std::vector<std::string> & targets)
   reset_rfid();
   dynamic_obstacles_.clear();
   dynamic_obstacles_updated_at_.reset();
+  blocked_lane_ids_.clear();
+  ++obstacle_revision_;
   pending_obstacle_.reset();
-  front_blocked_ = false;
   latest_range_.reset();
   clear_active_route();
   clear_obstacle_recovery();
@@ -70,6 +71,8 @@ void MissionManager::reset_mission()
   reset_rfid();
   dynamic_obstacles_.clear();
   dynamic_obstacles_updated_at_.reset();
+  blocked_lane_ids_.clear();
+  ++obstacle_revision_;
   pending_obstacle_.reset();
   ++plan_generation_;
   planning_pending_ = false;
@@ -136,8 +139,11 @@ void MissionManager::request_plan()
   for (const auto & obstacle : dynamic_obstacles_) {
     request->dynamic_obstacles.push_back(polygon_message(obstacle));
   }
+  fill_blocked_lane_snapshot(*request, blocked_lane_ids_, obstacle_revision_);
   request->return_home = spec.return_home;
   request->allow_partial = spec.allow_partial;
+  request->validate_geometry = true;
+  request->online_geometry_validation = true;
   request->activate = false;
   request->ordinary_nodes_since_task = ordinary_nodes_since_task_;
   RCLCPP_INFO(
@@ -213,6 +219,13 @@ void MissionManager::on_plan_response(
     return;
   }
   const auto & plan = response->plan;
+  if (!obstacle_snapshot_matches(plan, blocked_lane_ids_, obstacle_revision_)) {
+    RCLCPP_WARN(
+      get_logger(), "规划结果使用了过期障碍快照，丢弃并重新规划: revision=%lu",
+      static_cast<unsigned long>(obstacle_revision_));
+    schedule_plan(true);
+    return;
+  }
   const bool recovery_request = context.start_mode ==
     new_map_planner::srv::PlanRoute::Request::START_MODE_TURN_RECOVERY;
   if (recovery_request != plan.recovery_only) {

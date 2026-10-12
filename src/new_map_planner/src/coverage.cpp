@@ -47,6 +47,10 @@ PlanResult CoveragePlanner::plan(
     const std::vector<CoverageStart> &starts,
     bool allow_tunnel_connectors) const {
   PlanResult result;
+  const std::unordered_set<std::string> blocked_lanes(
+      request.blocked_lane_ids.begin(), request.blocked_lane_ids.end());
+  result.validate_geometry = false;
+
   std::vector<std::string> required = request.required_lane_ids.empty()
                                           ? config_.default_inspection_lanes
                                           : request.required_lane_ids;
@@ -85,13 +89,10 @@ PlanResult CoveragePlanner::plan(
     const DirectedLane &directed = graph_.directed_lane(static_cast<int>(index));
     lane_free[index] =
         (allow_tunnel_connectors || !config_.lanes[directed.lane].tunnel) &&
-        collision_.segment_is_free(config_.nodes[directed.from].position,
-                                   config_.nodes[directed.to].position,
-                                   obstacles);
+        blocked_lanes.count(config_.lanes[directed.lane].id) == 0;
     for (int heading = 0; heading < kHeadingCount; ++heading) {
       transition_free[index * kHeadingCount + heading] =
-          lane_free[index] && maneuvers_.transition_is_valid(
-                                  directed.from, heading, directed, obstacles);
+          lane_free[index] && TurnQuarterSteps(heading, directed.heading) != 2;
     }
   }
 
@@ -267,7 +268,9 @@ PlanResult CoveragePlanner::plan(
     state.ordinary_count =
         is_task_node(seed.node)
             ? 0
-            : std::max(1, request.ordinary_nodes_since_task);
+            : (request.ordinary_nodes_since_task_exact
+                   ? request.ordinary_nodes_since_task
+                   : std::max(1, request.ordinary_nodes_since_task));
     if (state.ordinary_count >= kCountStates) {
       continue;
     }

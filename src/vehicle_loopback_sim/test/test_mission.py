@@ -123,6 +123,16 @@ def test_nearest_lane_geometry_snaps_to_lane_direction_and_width():
     assert math.isclose(vertical["width_m"], 0.30)
 
 
+
+def test_mission_publishes_planned_route_when_activation_is_requested():
+    source = MISSION_SOURCE.read_text(encoding="utf-8")
+
+    assert '"route_input_topic": "/waypoint_navigation/route_input"' in source
+    assert "self._route_publisher = self.create_publisher(" in source
+    assert "self._route_publisher.publish(plan.navigation_path)" in source
+    assert "if activation_requested and not activated:" in source
+
+
 def test_mission_logger_calls_use_rclpy_signature():
     tree = ast.parse(MISSION_SOURCE.read_text(encoding="utf-8"))
     logger_methods = {"debug", "info", "warning", "warn", "error", "fatal"}

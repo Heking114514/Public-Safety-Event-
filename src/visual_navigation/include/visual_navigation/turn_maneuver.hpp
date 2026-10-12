@@ -26,6 +26,18 @@ struct TurnManeuverConfig {
   double entry_speed{0.035}; double turn_angular_speed{0.35};
   double turn_min_angular_speed{0.15}; double creep_linear_speed{0.030};
   double entry_position_tolerance{0.010};
+  double turn_linear_speed{0.010};
+  double entry_lateral_tolerance{0.010};
+  double entry_yaw_tolerance{0.080};
+  double phase_timeout{10.0};
+  double no_progress_timeout{3.0};
+  double min_position_progress{0.003};
+  double min_yaw_progress{0.030};
+  double creep_distance{0.025};
+  double entry_heading_gain{1.2};
+  double entry_lateral_gain{2.0};
+  double entry_max_angular_speed{0.15};
+  double exit_lateral_tolerance{0.045};
 };
 struct TurnManeuverInput { CornerShuntContext context; bool motion_allowed{true}; bool localization_valid{true}; bool obstacle_blocked{false}; bool cancel{false}; };
 struct TurnManeuverDecision {
@@ -50,6 +62,9 @@ private:
   TurnManeuverConfig config_; CornerShuntContext captured_;
   TurnManeuverPhase phase_{TurnManeuverPhase::IDLE}; bool active_{false}; bool capture_valid_{false};
   double phase_started_at_{0.0}; double creep_start_x_{0.0}; double creep_start_y_{0.0};
+  CornerShuntPose progress_pose_;
+  double progress_started_at_{0.0};
+  TurnManeuverPhase paused_phase_{TurnManeuverPhase::IDLE};
 };
 }  // namespace visual_navigation
 #endif  // VISUAL_NAVIGATION__TURN_MANEUVER_HPP_

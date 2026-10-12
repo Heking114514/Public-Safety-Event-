@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <string>
 #include <vector>
 
 namespace visual_navigation {
@@ -21,6 +22,136 @@ struct RecoveryTraceSample {
   double linear_velocity{0.0};
   double angular_velocity{0.0};
 };
+
+inline double RecoveryPointDistance(const RecoveryPoint &first,
+                                    const RecoveryPoint &second);
+
+enum class RecoveryExitTemplate {
+  SEMANTIC_ANCHOR,
+  EARLIER_TRACE,
+  ROUTE_TAKEOVER
+};
+
+enum class RecoveryExitState {
+  UNAVAILABLE,
+  CANDIDATE,
+  SELECTED,
+  EXECUTING,
+  COMPLETED,
+  REJECTED
+};
+
+// A candidate is descriptive only: it never claims geometric safety. The
+// existing navigator remains the owner of obstacle classification and command
+// publication; a future adapter may apply its own footprint check before
+// selecting one of these trace-backed exits.
+struct RecoveryExitCandidate {
+  RecoveryExitTemplate template_kind{RecoveryExitTemplate::SEMANTIC_ANCHOR};
+  RecoveryExitState state{RecoveryExitState::CANDIDATE};
+  RecoveryTraceSample target;
+  std::size_t trace_index{0};
+  double distance_from_current{0.0};
+  bool trace_backed{false};
+};
+
+struct RecoveryExitPlan {
+  std::vector<RecoveryExitCandidate> candidates;
+  bool route_takeover_allowed{false};
+};
+
+inline const char *RecoveryExitTemplateName(RecoveryExitTemplate kind) {
+  switch (kind) {
+  case RecoveryExitTemplate::SEMANTIC_ANCHOR:
+    return "semantic_anchor";
+  case RecoveryExitTemplate::EARLIER_TRACE:
+    return "earlier_trace";
+  case RecoveryExitTemplate::ROUTE_TAKEOVER:
+    return "route_takeover";
+  }
+  return "unknown";
+}
+
+inline const char *RecoveryExitStateName(RecoveryExitState state) {
+  switch (state) {
+  case RecoveryExitState::UNAVAILABLE:
+    return "unavailable";
+  case RecoveryExitState::CANDIDATE:
+    return "candidate";
+  case RecoveryExitState::SELECTED:
+    return "selected";
+  case RecoveryExitState::EXECUTING:
+    return "executing";
+  case RecoveryExitState::COMPLETED:
+    return "completed";
+  case RecoveryExitState::REJECTED:
+    return "rejected";
+  }
+  return "unknown";
+}
+
+// State boundaries are deliberately narrow. Rejection may choose another
+// candidate; completion and unavailable are terminal until a new plan is built.
+inline bool IsRecoveryExitTransitionAllowed(RecoveryExitState from,
+                                            RecoveryExitState to) {
+  if (from == RecoveryExitState::UNAVAILABLE)
+    return to == RecoveryExitState::CANDIDATE;
+  if (from == RecoveryExitState::CANDIDATE)
+    return to == RecoveryExitState::SELECTED || to == RecoveryExitState::REJECTED;
+  if (from == RecoveryExitState::SELECTED)
+    return to == RecoveryExitState::EXECUTING || to == RecoveryExitState::REJECTED;
+  if (from == RecoveryExitState::EXECUTING)
+    return to == RecoveryExitState::COMPLETED || to == RecoveryExitState::REJECTED;
+  if (from == RecoveryExitState::REJECTED)
+    return to == RecoveryExitState::SELECTED || to == RecoveryExitState::UNAVAILABLE;
+  return false;
+}
+
+// Build only exits that are ordered behind the current trace pose. This keeps
+// the model compatible with the existing reverse controller and avoids
+// inventing a planner/message contract. The first candidate is the semantic
+// anchor; farther candidates are bounded earlier trace positions.
+inline RecoveryExitPlan BuildRecoveryExitPlan(
+    const std::vector<RecoveryTraceSample> &trace,
+    std::size_t current_trace_index, std::size_t anchor_trace_index,
+    const RecoveryPoint &current, double minimum_distance,
+    std::size_t maximum_candidates = 8) {
+  RecoveryExitPlan plan;
+  if (trace.empty() || current_trace_index >= trace.size() ||
+      anchor_trace_index >= trace.size() || anchor_trace_index >= current_trace_index ||
+      !std::isfinite(current.x) || !std::isfinite(current.y) ||
+      !std::isfinite(minimum_distance) || minimum_distance <= 0.0 ||
+      maximum_candidates == 0) {
+    plan.route_takeover_allowed = true;
+    return plan;
+  }
+
+  auto append_candidate = [&](RecoveryExitTemplate kind, std::size_t index) {
+    if (plan.candidates.size() >= maximum_candidates || index >= trace.size())
+      return;
+    const double distance = RecoveryPointDistance(current, trace[index].point);
+    if (!std::isfinite(distance) || distance < minimum_distance)
+      return;
+    if (!plan.candidates.empty() &&
+        plan.candidates.back().trace_index == index)
+      return;
+    RecoveryExitCandidate candidate;
+    candidate.template_kind = kind;
+    candidate.target = trace[index];
+    candidate.trace_index = index;
+    candidate.distance_from_current = distance;
+    candidate.trace_backed = true;
+    plan.candidates.push_back(candidate);
+  };
+
+  append_candidate(RecoveryExitTemplate::SEMANTIC_ANCHOR, anchor_trace_index);
+  for (std::size_t index = anchor_trace_index; index > 0 &&
+                                               plan.candidates.size() < maximum_candidates;
+       --index) {
+    append_candidate(RecoveryExitTemplate::EARLIER_TRACE, index - 1);
+  }
+  plan.route_takeover_allowed = true;
+  return plan;
+}
 
 inline double RecoveryPointDistance(const RecoveryPoint &first,
                                     const RecoveryPoint &second) {

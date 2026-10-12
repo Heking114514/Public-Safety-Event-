@@ -7,6 +7,7 @@
 #include "new_map_planner/route.hpp"
 #include "new_map_planner/types.hpp"
 
+#include <unordered_set>
 #include <vector>
 
 namespace new_map_planner {
@@ -34,11 +35,17 @@ private:
   };
 
   StartSeedResult
-  start_seeds(const Pose &start, const std::vector<Polygon> &obstacles) const;
+  start_seeds(const Pose &start, const std::vector<Polygon> &obstacles,
+              const std::unordered_set<std::string> &blocked_lanes,
+              bool validate_geometry) const;
   PlanResult plan_targets(const PlanRequest &request, const Pose &start,
-                          const std::vector<Polygon> &obstacles) const;
+                          const std::vector<Polygon> &obstacles,
+                          const std::unordered_set<std::string> &blocked_lanes,
+                          bool validate_geometry) const;
   PlanResult plan_coverage(const PlanRequest &request, const Pose &start,
                            const std::vector<Polygon> &obstacles,
+                           const std::unordered_set<std::string> &blocked_lanes,
+                           bool validate_geometry,
                            bool allow_tunnel_connectors = true) const;
   PlanResult plan_turn_recovery(const PlanRequest &request, const Pose &start,
                                 const std::vector<Polygon> &obstacles) const;
