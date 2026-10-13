@@ -30,6 +30,7 @@ def _controller_topics(controller: str) -> dict[str, str]:
         "control_telemetry_topic": f"{root}/control_telemetry",
         "front_obstacle_topic": f"{root}/obstacle/front_blocked",
         "front_obstacle_range_topic": f"{root}/obstacle/front_range",
+        "recovery_obstacle_topic": f"{root}/obstacle/dynamic",
         "tracking_state_topic": f"{root}/tracking_state",
         "cmd_vel_topic": f"{root}/cmd_vel",
         "path_topic": f"{root}/waypoint_path",
@@ -164,6 +165,7 @@ def generate_launch_description():
             contrast_parameters,
             navigation_physical,
             _controller_topics("contrast"),
+            {"recovery_map_file": ParameterValue(arena_config, value_type=str)},
         ],
     )
 

@@ -276,8 +276,15 @@ bool VehicleLoopbackSim::pose_is_safe(
   if (!enforce_static_collision_) {
     return true;
   }
+  std::vector<navigation_safety::Polygon> dynamic;
+  dynamic.reserve(manual_obstacles_.size());
+  for (const auto &polygon : manual_obstacles_) {
+    navigation_safety::Polygon converted;
+    for (const auto &point : polygon) converted.points.push_back({point.first, point.second});
+    dynamic.push_back(std::move(converted));
+  }
   return navigation_safety::pose_is_safe(
-    {{pose.x, pose.y}, pose.yaw}, footprint_, free_regions_, static_obstacles_, {}, report);
+    {{pose.x, pose.y}, pose.yaw}, footprint_, free_regions_, static_obstacles_, dynamic, report);
 }
 
 void VehicleLoopbackSim::create_interfaces()

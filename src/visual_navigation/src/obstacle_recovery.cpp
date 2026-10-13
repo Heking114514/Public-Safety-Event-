@@ -4,6 +4,12 @@ void WaypointNavigator::HandleFrontObstacle(
     const std_msgs::msg::Bool::SharedPtr message) {
   if (!message)
     return;
+  if (!poseRecoveryPhase_.empty()) {
+    frontObstacleReported_ = message->data;
+    frontObstacleReceived_ = true;
+    lastFrontObstacleArrival_ = std::chrono::steady_clock::now();
+    return;
+  }
   const auto currentTime = std::chrono::steady_clock::now();
   if (!message->data) {
     frontObstacleReported_ = false;
@@ -361,6 +367,7 @@ void WaypointNavigator::RecordExecutedPose() {
 void WaypointNavigator::BeginObstacleRecovery() {
   if (!pendingFrontObstacle_ || !navigationActive_)
     return;
+  if (poseRecoveryEnabled_) { BeginPoseRecovery(); return; }
   routeTransitionRetreat_ = false;
   if (!obstacleRecoveryController_.idle()) {
     // A range callback can race with the control tick that already accepted
@@ -602,6 +609,8 @@ void WaypointNavigator::RunObstacleRecovery() {
 }
 
 void WaypointNavigator::ResetObstacleRecovery(bool preserveExecutedTrace) {
+  poseRecoveryPhase_.clear();
+  recoveryCandidates_.clear();
   const auto now = std::chrono::steady_clock::now();
   const bool keepBlockedEvent =
       preserveExecutedTrace && frontObstacleReported_ &&

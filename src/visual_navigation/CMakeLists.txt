@@ -23,6 +23,8 @@ find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(mission_control_interfaces REQUIRED)
+find_package(yaml_cpp_vendor REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
 add_library(turn_maneuver_core src/turn_maneuver.cpp)
 set_target_properties(turn_maneuver_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -37,6 +39,8 @@ add_library(waypoint_navigator_core STATIC
   src/route.cpp
   src/runtime.cpp
   src/obstacle_recovery.cpp
+  src/pose_recovery.cpp
+  src/pose_recovery_control.cpp
   src/corner_shunt.cpp
   src/control.cpp
   src/maneuvers.cpp
@@ -61,6 +65,8 @@ ament_target_dependencies(
   mission_control_interfaces
   navigation_safety
 )
+
+target_link_libraries(waypoint_navigator_core yaml-cpp)
 
 # The production executable keeps the original turn maneuver implementation.
 add_executable(waypoint_navigator src/waypoint_navigator.cpp)
@@ -186,6 +192,15 @@ if(BUILD_TESTING)
   target_include_directories(control_state_test PRIVATE include)
   ament_add_gtest(obstacle_recovery_test test/obstacle_recovery_test.cpp)
   target_include_directories(obstacle_recovery_test PRIVATE include)
+  ament_add_gtest(pose_recovery_test
+    test/pose_recovery_test.cpp src/pose_recovery.cpp
+    ../vehicle_loopback_sim/src/motion.cpp)
+  target_compile_features(pose_recovery_test PRIVATE cxx_std_17)
+  target_include_directories(pose_recovery_test PRIVATE include ../vehicle_loopback_sim/include)
+  ament_target_dependencies(pose_recovery_test mission_control_interfaces navigation_safety)
+  target_link_libraries(pose_recovery_test yaml-cpp)
+  set_tests_properties(pose_recovery_test PROPERTIES
+    ENVIRONMENT "POSE_RECOVERY_ARENA=${CMAKE_CURRENT_SOURCE_DIR}/../new_map_planner/config/arena.yaml")
   add_launch_test(test/waypoint_navigator_launch_test.py TIMEOUT 30)
 endif()
 
@@ -193,6 +208,7 @@ ament_export_include_directories(include)
 ament_export_targets(turn_maneuver_coreTargets HAS_LIBRARY_TARGET)
 ament_export_targets(waypoint_navigator_coreTargets HAS_LIBRARY_TARGET)
 ament_export_dependencies(
+  yaml_cpp_vendor
   builtin_interfaces
   geometry_msgs
   mission_control_interfaces

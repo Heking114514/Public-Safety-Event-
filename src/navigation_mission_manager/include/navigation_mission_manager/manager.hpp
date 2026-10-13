@@ -40,6 +40,8 @@
 
 #include "navigation_mission_manager/events.hpp"
 #include "navigation_mission_manager/mission.hpp"
+#include <mission_control_interfaces/srv/select_recovery.hpp>
+#include "navigation_mission_manager/recovery_session.hpp"
 #include "navigation_mission_manager/obstacles.hpp"
 
 namespace navigation_mission_manager
@@ -90,6 +92,7 @@ public:
   void request_shutdown_hold();
 
 private:
+  friend struct ManagerRecoveryTestAccess;
   void declare_parameters();
   void load_configuration();
   void create_interfaces();
@@ -145,6 +148,25 @@ private:
     uint64_t generation, const std::string & planner_message,
     rclcpp::Client<mission_control_interfaces::srv::ContinueRetreat>::SharedFuture future);
   void clear_obstacle_recovery();
+  void on_pose_recovery(const mission_control_interfaces::msg::NavigationRecoveryState & state);
+  void service_pose_recovery();
+  void clear_pose_recovery();
+  bool waiting_for_pose_candidates() const
+  {
+    return pose_recovery_enabled_ && latest_navigation_recovery_.has_value() &&
+      latest_navigation_recovery_->phase == "braking" && active_route_.has_value() &&
+      latest_navigation_recovery_->route_id == active_route_->route_id;
+  }
+  void preserve_interrupted_progress();
+  void evaluate_recovery_candidate();
+  void on_recovery_evaluation(
+    uint64_t generation, uint64_t revision, uint32_t candidate_id, const PlanSpec & spec,
+    rclcpp::Client<new_map_planner::srv::PlanRoute>::SharedFuture future);
+  void select_recovery_candidate(uint32_t candidate_id);
+  void on_recovery_selection(
+    uint64_t generation, uint64_t revision, uint32_t candidate_id,
+    rclcpp::Client<mission_control_interfaces::srv::SelectRecovery>::SharedFuture future);
+
 
   void on_odometry(const nav_msgs::msg::Odometry::SharedPtr message);
   void on_insight(const std_msgs::msg::String::SharedPtr message);
@@ -170,6 +192,8 @@ private:
   void on_speech_text(const std_msgs::msg::String::SharedPtr message);
   void service_speech_text(double now);
   void service_rfid(double now);
+  void validate_pending_rfid(double now);
+  void reject_pending_rfid(const std::string & reason);
   void send_rfid_speech(double now);
   void on_rfid_speech(
     int number,
@@ -221,6 +245,16 @@ private:
   std::optional<mission_control_interfaces::msg::NavigationRecoveryState>
     latest_navigation_recovery_;
   bool turn_replan_waiting_for_recovery_{false};
+  bool pose_recovery_enabled_{false};
+  RecoverySession pose_recovery_;
+  std::vector<mission_control_interfaces::msg::RecoveryCandidate> recovery_candidates_;
+  std::size_t recovery_candidate_index_{0};
+  bool recovery_evaluation_pending_{false};
+  bool recovery_selection_pending_{false};
+  bool recovery_selection_accepted_{false};
+  bool recovery_handed_off_{false};
+  uint64_t recovery_snapshot_revision_{0};
+  bool pose_obstacles_latched_{false};
   int completed_stages_{0};
 
   bool retreat_pending_{false};
@@ -254,6 +288,9 @@ private:
   std::set<std::size_t> route_checkpoint_authorizations_pending_;
   std::set<std::string> rfid_confirmed_tasks_;
   std::set<int> rfid_announced_;
+  std::optional<int> rfid_pending_card_;
+  uint64_t rfid_pending_route_id_{0};
+  double rfid_next_hold_retry_at_{0.0};
   std::optional<int> rfid_active_;
   int rfid_active_card_{0};
   std::string rfid_active_supernode_;
@@ -320,6 +357,7 @@ private:
   double public_service_timeout_s_{2.0};
   bool auto_start_pending_{false};
 
+  rclcpp::Client<mission_control_interfaces::srv::SelectRecovery>::SharedPtr select_recovery_client_;
   rclcpp::Client<new_map_planner::srv::PlanRoute>::SharedPtr planner_client_;
   rclcpp::Client<mission_control_interfaces::srv::SetMotionHold>::SharedPtr hold_client_;
   rclcpp::Client<mission_control_interfaces::srv::ContinueRetreat>::SharedPtr retreat_client_;

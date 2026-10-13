@@ -160,7 +160,8 @@ void WaypointNavigator::HandleRouteInput(
     return;
   }
 
-  if (pendingFrontObstacle_ || obstacleRecoveryController_.braking() ||
+  if ((!poseRecoveryPhase_.empty() && poseRecoveryPhase_ != "complete") ||
+      pendingFrontObstacle_ || obstacleRecoveryController_.braking() ||
       obstacleRecoveryController_.reversing()) {
     RCLCPP_WARN(get_logger(),
                 "Ignoring a replacement route until obstacle retreat reaches "
@@ -174,7 +175,7 @@ void WaypointNavigator::HandleRouteInput(
     // A repeated publish is also the ACK-loss recovery path. Do not reset a
     // route that is still running; re-ACK it and publish the current state so
     // the frontend can arm completion even when the original status was lost.
-    if (navigationActive_) {
+    if (navigationActive_ && poseRecoveryPhase_.empty()) {
       activeRouteId_ = route_id;
       PublishRoutePath();
       PublishRouteAck(route_id);
@@ -188,7 +189,7 @@ void WaypointNavigator::HandleRouteInput(
     // Replanning may legitimately return the same geometry after we have
     // retreated to its entrance. This new route id must release the completed
     // recovery state before normal activation can acknowledge it.
-    if (obstacleRecoveryController_.route_may_take_over()) {
+    if (obstacleRecoveryController_.route_may_take_over() || poseRecoveryPhase_ == "complete") {
       currentWaypointIndex_ = 0;
       pathSegmentInitialized_ = false;
       resumePathFromCurrentPose_ = true;

@@ -9,6 +9,15 @@ namespace navigation_mission_manager
 void MissionManager::on_navigation_recovery_state(
   const mission_control_interfaces::msg::NavigationRecoveryState::SharedPtr message)
 {
+  if (!message->phase.empty()) {
+    if (pose_recovery_enabled_) {
+      on_pose_recovery(*message);
+    }
+    return;
+  }
+  if (pose_recovery_.active) {
+    return;
+  }
   latest_navigation_recovery_ = *message;
   RCLCPP_INFO(
     get_logger(),
@@ -25,6 +34,12 @@ void MissionManager::on_navigator_status(const std_msgs::msg::String::SharedPtr 
 {
   const std::string status = message->data;
   navigator_status_ = status;
+  if (pose_recovery_enabled_ && (pose_recovery_.active || waiting_for_pose_candidates() ||
+    status.rfind("OBSTACLE_", 0U) == 0U || status == "TURN_NEED_REPLAN" ||
+    status.rfind("FAULT_OBSTACLE", 0U) == 0U))
+  {
+    return;  // Durable pose state owns recovery; status strings cannot start replay.
+  }
   if (task_confirmation_mode_ == "route" && !rfid_active_.has_value() &&
     status.rfind("RFID_SCANNING:", 0U) == 0U)
   {
@@ -308,6 +323,9 @@ void MissionManager::on_retreat_response(
 
 void MissionManager::clear_obstacle_recovery()
 {
+  clear_pose_recovery();
+  latest_navigation_recovery_.reset();
+  turn_replan_waiting_for_recovery_ = false;
   ++retreat_generation_;
   retreat_pending_ = false;
   awaiting_retreat_ = false;

@@ -131,6 +131,10 @@ void MissionManager::on_public_continue_retreat(
   const mission_control_interfaces::srv::ContinueRetreat::Request::SharedPtr request,
   mission_control_interfaces::srv::ContinueRetreat::Response::SharedPtr response)
 {
+  if (pose_recovery_enabled_) {
+    response->message = "pose recovery uses candidate selection; legacy retreat is disabled";
+    return;
+  }
   if (!mission_running_public_.load()) {
     response->message = "no active mission";
     return;

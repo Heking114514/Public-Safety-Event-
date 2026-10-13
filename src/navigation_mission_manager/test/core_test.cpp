@@ -7,6 +7,7 @@
 #include "navigation_mission_manager/events.hpp"
 #include "navigation_mission_manager/mission.hpp"
 #include "navigation_mission_manager/obstacles.hpp"
+#include "navigation_mission_manager/recovery_session.hpp"
 
 namespace nmm = navigation_mission_manager;
 
@@ -112,4 +113,51 @@ TEST(Obstacles, RetentionRequiresTimestampAndPositiveDuration)
   EXPECT_FALSE(nmm::obstacle_memory_expired(10.0, 20.0, 0.0));
   EXPECT_FALSE(nmm::obstacle_memory_expired(10.0, 19.9, 10.0));
   EXPECT_TRUE(nmm::obstacle_memory_expired(10.0, 20.0, 10.0));
+}
+
+TEST(RecoveryProtocol, RejectsRetiredAndMismatchedControllerMessages)
+{
+  nmm::RecoverySession session;
+  EXPECT_FALSE(session.begin(0, 1, 1));
+  EXPECT_FALSE(session.begin(2, 0, 1));
+  ASSERT_TRUE(session.begin(2, 1, 8));
+  const auto generation = session.generation;
+  EXPECT_TRUE(session.matches(2, 1, 8));
+  EXPECT_FALSE(session.matches(2, 1, 9));
+  EXPECT_FALSE(session.matches(3, 1, 8));
+  EXPECT_FALSE(session.begin(2, 2, 9));
+  session.reset();
+  EXPECT_GT(session.generation, generation);
+  EXPECT_FALSE(session.matches(2, 1, 8));
+  EXPECT_FALSE(session.begin(2, 1, 8));
+  EXPECT_TRUE(session.begin(3, 2, 9));
+}
+
+TEST(RecoveryProtocol, BlocksBorrowingOrExitingEitherDirectionOfPhysicalLane)
+{
+  const std::set<std::string> blocked{"ROAD_TOP_LEFT"};
+  EXPECT_TRUE(nmm::recovery_borrows_blocked_lane({"ROAD_TOP_LEFT"}, "L2", blocked));
+  EXPECT_TRUE(nmm::recovery_borrows_blocked_lane({}, "ROAD_TOP_LEFT", blocked));
+  EXPECT_FALSE(nmm::recovery_borrows_blocked_lane({"L1"}, "L2", blocked));
+}
+
+TEST(MissionModel, BlockedRoadIsSkippedWithoutCoverageOrTaskTunnelCompletion)
+{
+  nmm::StagedMission mission(layout());
+  mission.start({"1"});
+  const auto road = mission.layout().road_lane_ids.front();
+  const auto tunnel = mission.layout().tunnel_lane_ids.front();
+  mission.skip_blocked_roads({road, tunnel});
+  EXPECT_EQ(mission.skipped_roads(), std::set<std::string>({road}));
+  EXPECT_EQ(mission.confirmed_lanes().count(road), 0U);
+  EXPECT_EQ(mission.progress_count(), 0U);
+  EXPECT_EQ(mission.remaining_tasks(), std::vector<std::string>({"1"}));
+  EXPECT_EQ(mission.remaining_tunnels().size(), mission.layout().tunnel_lane_ids.size());
+  EXPECT_EQ(mission.remaining_roads().size(), mission.layout().road_lane_ids.size() - 1);
+  const auto tasks = mission.plan_spec();
+  mission.commit(tasks, {"1"}, {}, false);
+  EXPECT_EQ(mission.current_stage(), "layer2");
+  EXPECT_EQ(mission.remaining_tunnels().size(), mission.layout().tunnel_lane_ids.size());
+  mission.reset();
+  EXPECT_TRUE(mission.skipped_roads().empty());
 }

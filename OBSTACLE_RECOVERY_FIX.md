@@ -1,6 +1,6 @@
 # 避障恢复修复方案
 
-日期：2026-10-12。状态：待实现；本文不代表代码已修改或仿真已通过。
+日期：2026-10-12 至 2026-10-13。状态：已实现并完成局部仿真验收；六个场景五个完整通过，第六个场景在正常 90° 转弯确认前结束。完整证据见 [Contrast 局部避障恢复验收报告](src/contrast_controller/POSE_RECOVERY_VALIDATION_REPORT.md)。
 
 ## 1. 修复目标
 
@@ -59,7 +59,7 @@
 
 ## 4. 新恢复流程
 
-以下阶段用于解释方案，不表示已经实现的状态名。
+实现使用结构化的 `NavigationRecoveryState` 与 `SelectRecovery` 契约；消息阶段包括 `braking`、`candidates`、`planning_motion`、`motion`、`complete` 和 `failed`。以下小节同时保留设计边界与实现判据，实际场景数据见验收报告。
 
 ### 4.1 障碍锁存与控制权
 
@@ -83,7 +83,7 @@
 
 满足现有入口范围即可转弯，不新增正常转弯完成门槛。[当前入口参数](src/contrast_controller/config/contrast_controller.yaml#L15)为纵向、横向各 `0.010 m`，航向 `0.080 rad`；执行以实际加载值为准，不为过测试临时放宽。
 
-具体入口点及动作组合需按现有地图与车身计算，再进行局部仿真，目前尚未完成数值设计。
+具体入口由 `PoseRecovery` 根据当前实测位姿、车身外廓、地图静态几何和锁存障碍搜索有限 primitive 组合；每个控制周期使用同一轮轴/base_link 运动学和角速度限幅模型复核。实际地图测试找到 `TUNNEL_3` 出口，845 次展开、22 段动作；无优化构建约 `0.213 s`，`-O2` 约 `0.030 s`。
 
 ### 4.4 双向姿态调整
 
@@ -207,7 +207,7 @@ S0 至 S4 稳定后，随功能加入 T 字借道、两次转弯、十字筛选�
 
 ### 6.5 现有碰撞检查限制
 
-[当前碰撞判断](src/vehicle_loopback_sim/src/simulator.cpp#L273)未包含手动障碍，必须独立核对整个车身与实际障碍间距，不能以无静态警告证明未碰障碍。
+[当前碰撞判断](src/vehicle_loopback_sim/src/simulator.cpp#L273)现已包含手动动态障碍，并在候选位姿和最终位姿检查整个车身；运行器仍独立检查保护事件和实际轨迹，不能以安全终点掩盖危险请求。
 
 [运动更新](src/vehicle_loopback_sim/src/runtime.cpp#L55)会拒绝危险候选并归零速度，还需检查保护介入，只看安全终点会掩盖危险请求。
 
@@ -230,6 +230,14 @@ S0 至 S4 稳定后，随功能加入 T 字借道、两次转弯、十字筛选�
 
 ## 8. 本次交付范围
 
-本次只新增本文，并在[Contrast 变更记录](src/contrast_controller/CHANGELOG.md)登记文档变更。未修改控制代码、消息、配置、launch 或旧报告，未构建、未启动新仿真。
+本轮已完成以下实现和验证：
 
-[旧避障报告](src/contrast_controller/OBSTACLE_VALIDATION_REPORT.md)仅为旧直路场景历史记录，不能证明本方案及路口恢复模板通过。
+1. 在 Contrast 控制器中启用结构化 PoseRecovery，保持正式控制器默认关闭，正常直行和普通巡航转弯路径不变。
+2. 新增恢复候选、选择服务和阶段消息；控制器负责实际位姿下的有限安全动作，总控负责障碍锁存、出口筛选、只读规划评估、候选选择和实际出口后的正式规划。
+3. 让 loopback 的手动动态障碍进入最终碰撞保护，恢复运行器记录 Bool、Range、动态多边形、位姿、命令、阶段、日志和轨迹。
+4. 运行六个独立 ROS 域场景，其中五个从发现障碍完整恢复并继续实测直行至少 `0.20 m`；第六个 `after_normal_90deg_turn` 完成规划并进入 `FOLLOWING`，但在正常 90° 转弯确认前结束场景等待。
+5. 完成 `visual_navigation`、`navigation_mission_manager` 的包级测试，以及 Contrast 的恢复契约测试和新增 PoseRecovery、总控恢复测试；Contrast 正常转弯 gtest 继续读取用户工作树中的调试参数，本轮未修改这些参数，当前失败不作为恢复实现通过依据。完整结果见 [验收报告](src/contrast_controller/POSE_RECOVERY_VALIDATION_REPORT.md)。
+
+本轮未宣称完整 12 个任务点、4 条隧道、24 条普通道路及返航在插障后的最终任务终态，也未宣称实车视觉、制动距离或正常 90° 转弯后的第六场恢复流程已完成。用户正在调试的正常转弯参数保持原样，后续可在其调参完成后重新跑正常转弯单测和第六场场景；当前恢复协议的五场通过证据和安全边界仍有效。
+
+[历史直路避障报告](src/contrast_controller/OBSTACLE_VALIDATION_REPORT.md)仍只证明旧的动态重规划闭环；本报告中的六场记录才是本次路口姿态恢复协议的验收证据。

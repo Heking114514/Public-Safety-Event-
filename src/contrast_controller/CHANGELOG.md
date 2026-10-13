@@ -2,7 +2,17 @@
 
 ## 未发布
 
-- 新增[避障恢复修复方案](../../OBSTACLE_RECOVERY_FIX.md)：明确允许朝障碍方向前进的双向姿态调整、出口评估与实际出口交接，以及利用现有仿真固定短场景定位问题的步骤。本次仅更新文档，尚未实施或验证新恢复逻辑。
+- 修复恢复阶段在 `RETREAT_TO_TURN_POINT` 的倒车扫掠被阻断后立即进入 `FAULT_POSE_RECOVERY_SWEEP` 的问题：确认停车后，仅执行一次有界短距离前进调整，沿入路航向闭环回中；不再朝身后的转弯锚点前进转向。调整结束再次确认停车，再给一次回撤重试原有有限时长。前进和重试均检查真实车身扫掠，持续阻断安全报错，现有控制 YAML 参数保持不变。
+
+- 增加 `--forward-adjustment-fixture` 可复现边界场景；在输出目录生成独立测试地图并使用 2 mm 规划余量，正式地图仍为 15 mm。验收要求一次阻断、一次调整、两次实测停车、回撤重试、单次严格转弯以及恢复后 0.20 m 连续直行；结果保存分支计数、实测调整距离和时长。
+
+- 恢复转弯改为复用 Contrast 的 `TurnManeuverController`：倒车到合法转弯点后先确认停车，再严格执行 `CAPTURE -> APPROACH_ENTRY -> TURN_60 -> DIAGONAL_CREEP -> TURN_30 -> COMPLETE`；移除恢复专用的目标跟踪弧线。每条严格动作命令继续经过车身扫掠安全检查，不支持的单次转角安全停止。
+
+- 六场独立 ROS 域严格转弯 loopback 验收全部通过：证据目录为 `/tmp/contrast_strict_turn_all_final/`，恢复后实测连续直行 `0.20040–0.20073 m`，无 `FAULT`、协议错误或碰撞保护拦截。
+
+- 新增 `run_pose_recovery_scenarios.py` 六场独立 ROS 域验收工具，记录真实障碍检测、恢复阶段、位姿、命令、轨迹、日志、转弯入口误差和恢复后连续直行证据；启动前等待任务管理器进入 `IDLE`，避免就绪竞态造成误判。
+
+- 新增[避障恢复修复方案](../../OBSTACLE_RECOVERY_FIX.md)：明确允许朝障碍方向前进的双向姿态调整、出口评估与实际出口交接，以及利用现有仿真固定短场景定位问题的步骤。本次方案已落地，最终六场局部验收全部通过。
 
 - 接通 Contrast 避障验证入口 `obstacle_validation.launch.py`：正式任务总控独占规划和 loopback 检查点授权，仿真检测开启且静态碰撞保护保持开启；完成直路障碍的检测、刹停、倒退、动态障碍上报、碰撞校验重规划和后续路线恢复实跑。详细证据见 `OBSTACLE_VALIDATION_REPORT.md`。
 - 修复总控规划请求未显式打开 `validate_geometry` 与 `online_geometry_validation` 的问题；此前动态多边形虽已传给规划器，但可能生成穿过障碍的路线。
@@ -17,9 +27,9 @@
 - 单元测试复用生产输出限幅、真实 `30 mm` 轴心偏移和静态车体碰撞检查，覆盖 launch 路口左右转以及停转、平移伪进展和入口越界。
 - 增加 A/B 仿真专用真值检查点辅助节点：两侧均需匹配本条路线 ACK、位置接近、实际速度归零并连续保持一秒后，才授权同一超节点继续；该流程不模拟物理 RFID、位置修正或播报。
 
-- 新增独立 `contrast_controller` ROS 2 包和同名可执行文件，链接
-  `visual_navigation::waypoint_navigator_core`，完整复用正式导航的路线、健康检查、
-  障碍恢复、话题和服务，只替换同 ABI 的转弯动作实现。
+- 新增独立 `contrast_controller` ROS 2 包和同名可执行文件，链接独立的
+  `contrast_navigation_core::contrast_waypoint_navigator_core`，完整复用正式导航的路线、健康检查、
+  障碍恢复、话题和服务，只在 Contrast 核心内实现对比控制动作。
 - 新转弯统一使用 YAML 注入的 `0.035 m/s` 实车死区线速度；`TURN_60` 和
   `TURN_30` 使用航向反馈，并将角速度限制在 YAML 配置的 `0.50` 至
   `0.65 rad/s` 区间。

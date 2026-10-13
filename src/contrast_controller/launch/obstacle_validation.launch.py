@@ -52,6 +52,7 @@ def generate_launch_description():
                 "continue_retreat_service": controller + "/continue_obstacle_retreat",
                 "continue_route_retreat_service": controller + "/continue_route_retreat",
                 "confirm_rfid_checkpoint_service": controller + "/confirm_rfid_checkpoint",
+                "select_recovery_service": controller + "/select_recovery",
                 "front_obstacle_topic": root + "/obstacle/front_blocked",
                 "front_range_topic": root + "/obstacle/front_range",
                 "dynamic_obstacle_topic": root + "/obstacle/dynamic",

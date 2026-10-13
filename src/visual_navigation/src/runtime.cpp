@@ -270,6 +270,7 @@ void WaypointNavigator::HandleSetMotionHold(
   if (request->hold) {
     motionHolds_[source] = reason;
     if (!wasHeld) {
+      poseRecovery_.pause_clock();
       motionHoldStartedAt_ = now();
       motionHoldStartInitialized_ = true;
       pathProgressSupervisor_.Reset();

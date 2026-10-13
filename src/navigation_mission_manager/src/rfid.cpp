@@ -28,7 +28,7 @@ std::string render_announcement(std::string value, const std::string & number)
 
 void MissionManager::reset_rfid()
 {
-  bool release_rfid = rfid_active_.has_value();
+  bool release_rfid = rfid_active_.has_value() || rfid_pending_card_.has_value();
   bool release_speech = speech_active_.has_value() && speech_active_->request_hold;
   {
     std::lock_guard<std::mutex> lock(hold_state_mutex_);
@@ -46,6 +46,9 @@ void MissionManager::reset_rfid()
   route_checkpoint_authorizations_pending_.clear();
   rfid_confirmed_tasks_.clear();
   rfid_announced_.clear();
+  rfid_pending_card_.reset();
+  rfid_pending_route_id_ = 0U;
+  rfid_next_hold_retry_at_ = 0.0;
   rfid_active_.reset();
   rfid_active_card_ = 0;
   rfid_active_supernode_.clear();
@@ -160,42 +163,95 @@ void MissionManager::service_speech_text(double now_seconds)
 void MissionManager::on_rfid_number(const std_msgs::msg::Int32::SharedPtr message)
 {
   const int number = message->data;
-  if (number < 1 || number > 12) {
-    RCLCPP_WARN_THROTTLE(
-      get_logger(), *get_clock(), 5000,
-      "RFID card number %d is outside the reader's supported range", number);
-    return;
-  }
   if (!mission_->running() || mission_->paused() || !active_route_.has_value() ||
-    !active_route_->acknowledged || rfid_active_.has_value())
+    !active_route_->acknowledged || rfid_active_.has_value() || rfid_pending_card_.has_value())
   {
     return;
   }
+
+  const double now_seconds = steady_seconds();
+  rfid_pending_card_ = number;
+  rfid_pending_route_id_ = active_route_->route_id;
+  rfid_phase_ = "waiting_hold";
+  rfid_next_hold_retry_at_ = now_seconds;
+  rfid_release_at_.reset();
+  rfid_correction_stable_since_.reset();
+  rfid_stationary_since_.reset();
+  rfid_correction_deadline_ = 0.0;
+  request_hold(
+    "rfid", true,
+    "RFID candidate received; stopping before card and position validation");
+  publish_text("rfid_stop_requested:card=" + std::to_string(number));
+  RCLCPP_INFO(
+    get_logger(), "RFID candidate received: card=%d; motion hold requested before validation", number);
+}
+
+void MissionManager::reject_pending_rfid(const std::string & reason)
+{
+  if (!rfid_pending_card_.has_value()) {
+    return;
+  }
+  const int number = *rfid_pending_card_;
+  RCLCPP_WARN(
+    get_logger(), "RFID candidate rejected after stop: card=%d reason=%s",
+    number, reason.c_str());
+  publish_text(
+    "rfid_rejected:card=" + std::to_string(number) + ",reason=" + reason);
+  request_hold("rfid", false, "RFID candidate rejected: " + reason);
+  rfid_pending_card_.reset();
+  rfid_pending_route_id_ = 0U;
+  rfid_next_hold_retry_at_ = 0.0;
+  rfid_phase_ = "idle";
+  rfid_release_at_.reset();
+  rfid_correction_stable_since_.reset();
+  rfid_stationary_since_.reset();
+  rfid_correction_deadline_ = 0.0;
+}
+
+void MissionManager::validate_pending_rfid(double now_seconds)
+{
+  if (!rfid_pending_card_.has_value()) {
+    return;
+  }
+  const int number = *rfid_pending_card_;
+  if (number < 1 || number > 12) {
+    reject_pending_rfid("card_number_out_of_range");
+    return;
+  }
+  if (!mission_->running() || mission_->paused() || !active_route_.has_value() ||
+    !active_route_->acknowledged || active_route_->route_id != rfid_pending_route_id_)
+  {
+    reject_pending_rfid("mission_or_route_not_ready");
+    return;
+  }
+
   const auto checkpoint = expected_rfid_checkpoint();
   if (!checkpoint.has_value()) {
-    RCLCPP_WARN_THROTTLE(
-      get_logger(), *get_clock(), 3000,
-      "Ignoring RFID card %d outside the expected route supernode window", number);
+    reject_pending_rfid("outside_expected_route_window");
     return;
   }
   const std::string & supernode_id = checkpoint->second;
   const auto task = mission_->layout().supernode_task_ids.find(supernode_id);
   if (task == mission_->layout().supernode_task_ids.end()) {
-    fault("RFID 超节点没有对应的地图任务点：" + supernode_id);
+    reject_pending_rfid("supernode_task_not_configured");
     return;
   }
-  const double now_seconds = steady_seconds();
   const auto recent = rfid_recent_.find(checkpoint->first);
   if (recent != rfid_recent_.end() && now_seconds - recent->second < rfid_event_cooldown_s_) {
+    reject_pending_rfid("event_cooldown");
     return;
   }
+
   rfid_recent_[checkpoint->first] = now_seconds;
   rfid_active_ = std::stoi(task->second);
   rfid_active_card_ = number;
   rfid_active_supernode_ = supernode_id;
   rfid_active_waypoint_index_ = checkpoint->first;
   rfid_active_route_id_ = active_route_->route_id;
-  rfid_phase_ = "waiting_hold";
+  rfid_pending_card_.reset();
+  rfid_pending_route_id_ = 0U;
+  rfid_next_hold_retry_at_ = 0.0;
+  rfid_phase_ = "correcting";
   rfid_release_at_.reset();
   rfid_correction_stable_since_.reset();
   rfid_stationary_since_.reset();
@@ -205,12 +261,9 @@ void MissionManager::on_rfid_number(const std_msgs::msg::Int32::SharedPtr messag
     mission_->requested_tasks().end() && !rfid_announcement_template_.empty();
   rfid_speech_attempts_ = 0;
   rfid_next_speech_at_ = now_seconds;
-  request_hold(
-    "rfid", true,
-    "RFID " + std::to_string(number) + " confirmed at " + supernode_id);
   publish_text("rfid_detected:card=" + std::to_string(number) + ",supernode=" + supernode_id);
   RCLCPP_INFO(
-    get_logger(), "RFID checkpoint captured: card=%d supernode=%s task=%s waypoint=%zu",
+    get_logger(), "RFID checkpoint accepted after stationary validation: card=%d supernode=%s task=%s waypoint=%zu",
     number, supernode_id.c_str(), task->second.c_str(), checkpoint->first);
 }
 
@@ -252,6 +305,53 @@ void MissionManager::on_current_waypoint(const std_msgs::msg::Int32::SharedPtr m
 void MissionManager::service_rfid(double now_seconds)
 {
   service_speech_text(now_seconds);
+  if (rfid_pending_card_.has_value()) {
+    bool held = false;
+    {
+      std::lock_guard<std::mutex> lock(hold_state_mutex_);
+      held = active_hold_sources_.count(kRfidHoldSource) != 0U;
+    }
+    if (!held) {
+      if (now_seconds >= rfid_next_hold_retry_at_) {
+        request_hold(
+          "rfid", true,
+          "RFID candidate received; stopping before card and position validation");
+        rfid_next_hold_retry_at_ = now_seconds + 0.5;
+      }
+      return;
+    }
+    if (!pose_.has_value() || !pose_->fresh(odom_timeout_s_)) {
+      rfid_stationary_since_.reset();
+      return;
+    }
+    if (pose_->linear_speed > rfid_stop_speed_mps_) {
+      rfid_stationary_since_.reset();
+      rfid_stationary_reference_x_ = pose_->x;
+      rfid_stationary_reference_y_ = pose_->y;
+      return;
+    }
+    if (!rfid_stationary_since_.has_value()) {
+      rfid_stationary_since_ = now_seconds;
+      rfid_stationary_reference_x_ = pose_->x;
+      rfid_stationary_reference_y_ = pose_->y;
+      return;
+    }
+    if (std::hypot(
+        pose_->x - rfid_stationary_reference_x_,
+        pose_->y - rfid_stationary_reference_y_) >
+      rfid_stationary_position_tolerance_m_)
+    {
+      rfid_stationary_since_ = now_seconds;
+      rfid_stationary_reference_x_ = pose_->x;
+      rfid_stationary_reference_y_ = pose_->y;
+      return;
+    }
+    if (now_seconds - *rfid_stationary_since_ < rfid_stationary_settle_s_) {
+      return;
+    }
+    validate_pending_rfid(now_seconds);
+    return;
+  }
   if (!rfid_active_.has_value()) {
     return;
   }
@@ -468,6 +568,11 @@ void MissionManager::on_rfid_checkpoint_authorization(
   uint64_t route_id, std::size_t waypoint_index, bool route_mode,
   rclcpp::Client<mission_control_interfaces::srv::ConfirmRfidCheckpoint>::SharedFuture future)
 {
+  if (pose_recovery_enabled_ && (!mission_->running() ||
+    !active_route_.has_value() || active_route_->route_id != route_id))
+  {
+    return;  // Late authorization from an aborted/interrupted route is stale.
+  }
   mission_control_interfaces::srv::ConfirmRfidCheckpoint::Response::SharedPtr response;
   try {
     response = future.get();

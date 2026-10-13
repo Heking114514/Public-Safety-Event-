@@ -22,6 +22,7 @@ void MissionManager::start_mission(const std::vector<std::string> & targets)
   mission_running_public_.store(true);
   events_->reset();
   reset_rfid();
+  pose_obstacles_latched_ = false;
   dynamic_obstacles_.clear();
   dynamic_obstacles_updated_at_.reset();
   blocked_lane_ids_.clear();
@@ -69,6 +70,7 @@ void MissionManager::reset_mission()
   mission_running_public_.store(false);
   events_->reset();
   reset_rfid();
+  pose_obstacles_latched_ = false;
   dynamic_obstacles_.clear();
   dynamic_obstacles_updated_at_.reset();
   blocked_lane_ids_.clear();
@@ -98,6 +100,11 @@ void MissionManager::schedule_plan(bool replanning)
 
 void MissionManager::request_plan()
 {
+  if (waiting_for_pose_candidates() ||
+    (pose_recovery_.active && !recovery_handed_off_))
+  {
+    return;
+  }
   if (planning_pending_) {
     plan_due_at_ = steady_seconds() + 0.10;
     return;
@@ -131,7 +138,9 @@ void MissionManager::request_plan()
   request->recovery_anchor_node_id = context.recovery_anchor_node_id;
   request->incoming_lane_id = context.recovery_incoming_lane_id;
   request->allow_reverse_departure = context.allow_reverse_departure;
-  next_planning_context_ = PlanningContext{};
+  if (!recovery_handed_off_) {
+    next_planning_context_ = PlanningContext{};
+  }
   request->mode = spec.mode;
   request->target_ids = spec.target_ids;
   request->required_lane_ids = spec.required_lane_ids;
@@ -146,6 +155,7 @@ void MissionManager::request_plan()
   request->online_geometry_validation = true;
   request->activate = false;
   request->ordinary_nodes_since_task = ordinary_nodes_since_task_;
+  request->ordinary_nodes_since_task_exact = pose_recovery_enabled_;
   RCLCPP_INFO(
     get_logger(),
     "发送规划请求: mode=%s start=(%.3f, %.3f, %.1fdeg) targets=%zu "
@@ -182,7 +192,7 @@ void MissionManager::on_plan_response(
   const PlanningContext & context,
   rclcpp::Client<new_map_planner::srv::PlanRoute>::SharedFuture future)
 {
-  if (generation != plan_generation_) {
+  if (generation != plan_generation_ || !mission_->running()) {
     if (pending_plan_generation_ == generation) {
       planning_pending_ = false;
       pending_plan_generation_ = 0U;

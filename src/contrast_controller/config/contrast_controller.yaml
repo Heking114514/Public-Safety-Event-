@@ -1,16 +1,25 @@
 contrast_controller:
   ros__parameters:
     # 与正式导航共享参数 ABI；本实现所有运动阶段实际使用统一死区速度。
+    obstacle_pose_recovery_enabled: true
+    recovery_linear_speed: 0.035
+    recovery_angular_speed: 0.65
+    recovery_primitive_s: 0.45
+    recovery_margin_m: 0.002
+    recovery_exit_distance_m: 0.18
+    recovery_max_radius_m: 0.85
+    recovery_max_expansions: 220000
+    recovery_progress_timeout_s: 2.0
+    recovery_selection_timeout_s: 30.0
+    recovery_switch_stop_s: 0.22
     turn_maneuver_enabled: true
     turn_maneuver_entry_target_x: -0.070
     turn_maneuver_entry_target_y: 0.0
     turn_maneuver_entry_speed: 0.035
-    turn_maneuver_creep_speed: 0.035
-    turn_maneuver_turn_linear_speed: 0.035
-
-    # 实车高角速度区间：大误差接近上限，目标附近保持不低于下限。
     turn_maneuver_angular_speed: 0.65
     turn_maneuver_min_angular_speed: 0.50
+    turn_maneuver_creep_speed: 0.035
+    turn_maneuver_turn_linear_speed: 0.035
 
     # 入口必须同时满足纵向、横向和航向门限。
     turn_maneuver_entry_tolerance: 0.010
