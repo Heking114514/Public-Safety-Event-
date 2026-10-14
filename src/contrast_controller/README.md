@@ -89,6 +89,8 @@ ros2 launch contrast_controller contrast_comparison.launch.py \
 
 ## 避障闭环验证
 
+Contrast 的 loopback 入口额外加载 `config/simulation_turn.yaml`：正常转弯入口为路口前 30 mm，角速度固定为 0.65 rad/s，中间直行 5 mm，入口纵向容差为 3 mm。它用于让车辆通过正常路口后继续测试避障；实车串口入口仍使用原配置。车辆尺寸和地图碰撞检查保持原配置。
+
 使用专用入口开启 loopback 障碍检测，并由正式 `navigation_mission_manager` 独占路线规划、检查点授权和动态障碍重规划：
 
 ```bash
