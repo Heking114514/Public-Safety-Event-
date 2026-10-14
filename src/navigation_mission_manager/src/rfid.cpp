@@ -67,6 +67,8 @@ void MissionManager::reset_rfid()
   rfid_speech_attempts_ = 0;
   rfid_next_speech_at_ = 0.0;
   speech_queue_.clear();
+  ++speech_generation_;
+  speech_next_send_at_ = 0.0;
   speech_active_.reset();
   speech_release_at_.reset();
   speech_pending_ = false;
@@ -83,8 +85,8 @@ void MissionManager::enqueue_speech_text(const std::string & input, bool request
   const auto first = text.find_first_not_of(" \t");
   const auto last = text.find_last_not_of(" \t");
   text = first == std::string::npos ? std::string{} : text.substr(first, last - first + 1U);
-  if (text.empty() || text.size() > 128U || text.find('\n') != std::string::npos ||
-    text.find('\r') != std::string::npos)
+  if (text.empty() || text.size() > 128U || text.find('\0') != std::string::npos ||
+    text.find('\n') != std::string::npos || text.find('\r') != std::string::npos)
   {
     return;
   }
@@ -119,40 +121,50 @@ void MissionManager::service_speech_text(double now_seconds)
       return;
     }
   }
-  if (!speech_pending_ && !speech_release_at_.has_value() &&
+  if (!speech_pending_ && !rfid_active_.has_value() && !rfid_pending_card_.has_value() &&
+    !speech_release_at_.has_value() &&
     now_seconds >= speech_next_send_at_ && speaker_client_->service_is_ready())
   {
     auto request = std::make_shared<mission_control_interfaces::srv::SpeakText::Request>();
     request->text = speech_active_->text;
     speech_pending_ = true;
-    if (speech_active_->request_hold) {
-      speech_release_at_ = now_seconds + speech_hold_duration_s_;
-    }
+    ++speech_active_->attempts;
+    const uint64_t generation = ++speech_generation_;
     const bool request_hold = speech_active_->request_hold;
     speaker_client_->async_send_request(
       request,
-      [this, request_hold](
+      [this, request_hold, generation](
         rclcpp::Client<mission_control_interfaces::srv::SpeakText>::SharedFuture future) {
+        if (generation != speech_generation_ || !speech_active_.has_value()) {
+          return;
+        }
+        speech_pending_ = false;
+        bool success = false;
         try {
           const auto response = future.get();
-          if (!response->success) {
+          success = response->success;
+          if (!success) {
             RCLCPP_ERROR(
               get_logger(), "mission speech failed: %s", response->message.c_str());
-          } else {
-            speech_next_send_at_ = steady_seconds() + speech_min_interval_s_;
-          }
-          if (!request_hold) {
-            speech_active_.reset();
-            speech_release_at_.reset();
-            speech_pending_ = false;
           }
         } catch (const std::exception & error) {
           RCLCPP_ERROR(get_logger(), "mission speech service failed: %s", error.what());
-          if (!request_hold) {
-            speech_active_.reset();
-            speech_release_at_.reset();
-            speech_pending_ = false;
-          }
+        }
+        speech_next_send_at_ = steady_seconds() + speech_min_interval_s_;
+        if (!success && speech_active_->attempts < 3U) {
+          return;
+        }
+        if (!success && request_hold) {
+          speech_active_.reset();
+          speech_queue_.clear();
+          fault("mission speech failed after three attempts; vehicle remains stopped");
+          return;
+        }
+        if (request_hold) {
+          speech_release_at_ = steady_seconds() + speech_hold_duration_s_;
+        } else {
+          speech_active_.reset();
+          speech_release_at_.reset();
         }
       });
   } else if (speech_release_at_.has_value() && now_seconds >= *speech_release_at_) {
@@ -529,7 +541,7 @@ void MissionManager::service_rfid(double now_seconds)
 void MissionManager::send_rfid_speech(double now_seconds)
 {
   if (!rfid_active_.has_value() || rfid_active_card_ <= 0 || rfid_speech_pending_ ||
-    !speaker_client_->service_is_ready() || now_seconds < rfid_next_speech_at_)
+    speech_pending_ || !speaker_client_->service_is_ready() || now_seconds < rfid_next_speech_at_)
   {
     return;
   }
@@ -540,9 +552,12 @@ void MissionManager::send_rfid_speech(double now_seconds)
   rfid_speech_pending_ = true;
   speaker_client_->async_send_request(
     request,
-    [this, number](
+    [this, number, generation = speech_generation_](
       rclcpp::Client<mission_control_interfaces::srv::SpeakText>::SharedFuture future)
     {
+      if (generation != speech_generation_) {
+        return;
+      }
       on_rfid_speech(number, future);
     });
 }

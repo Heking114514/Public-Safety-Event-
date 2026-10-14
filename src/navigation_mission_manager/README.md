@@ -96,14 +96,25 @@ loopback 显式使用 `task_confirmation_mode: route`，在路线已 ACK、实�
 
 其他节点可以向 `/navigation_mission/speech_text` 发布 `std_msgs/String`。总控会排队文本，
 申请 `navigation_mission_manager/speech` 驻停，调用 `/cup_car_serial/speak_text` 下发给
-下位机；相邻文本默认间隔 `1.2 s`，RFID 文本下发后驻停 3 秒再释放。RFID 播报使用同一个下发链路。
+下位机。服务等待匹配请求编号的 MCU `ESTIMATED_DONE` 后才成功返回，串口写入成功不代表播报完成。
+当前语音模块未提供已知的播放结束反馈，MCU 按文本长度保守估算占用时间；这不是扬声器真实完成确认。
+普通驻停播报在服务成功后再等待 `speech_hold_duration_s`（默认 3 秒）释放，失败最多尝试三次。
+相邻队列项还保留 `speech_min_interval_s`（默认 `1.2 s`）间隔；RFID 使用同一服务链路与自己的驻停参数。
 
-总控直接订阅视觉识别模块的 `/insight` 和 `/safe` 两个 `std_msgs/String` 话题。`/insight`
-中的 `targets` 按原顺序转换为“发现N号刀具”或“发现N号嫌疑人”，进入同一条播报队列；
+总控直接订阅 `/insight` 和 `/safe` 两个 `std_msgs/String` 话题。`/insight`
+中的 `targets` 按原顺序转换为“发现N号刀具”或“发现N号嫌疑人”，同帧新增目标合并为一条播报；
+超过 128 UTF-8 字节时在目标边界分成多条，每条等待 MCU 估算完成反馈后才继续。
 连续帧中的同一目标只入队一次，目标列表清空后允许再次播报。识别结果播报只调用串口语音 service，
 不由总控新增驻停；识别模块原有的 `inspection` 驻停申请保持不变。`/safe` 中的障碍状态和距离由总控直接记录，并向控制器转发现有
 `/obstacle/front_blocked`、`/obstacle/front_range` 消息；距离沿当前融合位姿投影为总控内部的地图障碍，复用原有避障重规划链路。
 视觉话题没有发布者时，总控保持原有行为。
+
+`insight_cup`（审计版本 `6d6f410`）目前是独立 C++17 / RealSense RGB 程序，
+输出 `recognition_event.v1` 的 `events.jsonl` 和 HTTP 页面，没有 ROS 发布器。
+其 `stage2.predicted_class` / `candidate_class` 不能直接当作本适配器的顶层 `targets`。
+接入时须明确转换为 `/insight` 所需 JSON；`/safe` 还需要真实距离。
+`/perception/event_candidate` 需要 `map` 坐标系位姿、身份和置信度，
+`/perception/dynamic_obstacle` 需要地图多边形，RGB 像素框不能代替地图坐标。
 
 其他节点需要控制车辆驻停或请求障碍倒退时，应调用总控入口：
 `/navigation_mission/set_motion_hold` 和

@@ -91,14 +91,35 @@ void MissionManager::on_insight(const std_msgs::msg::String::SharedPtr message)
     visual_announced_targets_.clear();
     return;
   }
+  std::string batch;
+  std::vector<std::string> batch_targets;
+  const auto flush = [&]() {
+      if (batch.empty() || speech_queue_.size() >= 64U) {
+        return;
+      }
+      enqueue_speech_text(batch, false);
+      visual_announced_targets_.insert(batch_targets.begin(), batch_targets.end());
+      batch.clear();
+      batch_targets.clear();
+    };
   for (const auto & target : targets) {
     const auto text = target_announcement(target);
-    if (text.empty() || !visual_announced_targets_.insert(target).second) {
+    if (text.empty() || text.size() > 128U || visual_announced_targets_.count(target) != 0U) {
       continue;
     }
-    enqueue_speech_text(text, false);
-    RCLCPP_INFO(get_logger(), "Insight target queued: %s", text.c_str());
+    if (!batch.empty() && batch.size() + 3U + text.size() > 128U) {
+      flush();
+      if (!batch.empty()) {
+        break;
+      }
+    }
+    if (!batch.empty()) {
+      batch += "，";
+    }
+    batch += text;
+    batch_targets.push_back(target);
   }
+  flush();
 }
 
 void MissionManager::on_safe(const std_msgs::msg::String::SharedPtr message)

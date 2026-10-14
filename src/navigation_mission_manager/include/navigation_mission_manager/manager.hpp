@@ -324,11 +324,13 @@ private:
   {
     std::string text;
     bool request_hold{true};
+    unsigned int attempts{0};
   };
   std::deque<SpeechItem> speech_queue_;
   std::optional<SpeechItem> speech_active_;
   std::optional<double> speech_release_at_;
   bool speech_pending_{false};
+  uint64_t speech_generation_{0};
   double speech_next_send_at_{0.0};
 
   double speech_hold_duration_s_{3.0};

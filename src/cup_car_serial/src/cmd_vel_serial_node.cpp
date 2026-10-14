@@ -23,6 +23,7 @@
 #include "mission_control_interfaces/msg/control_telemetry.hpp"
 #include "mission_control_interfaces/srv/speak_text.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "rmw/types.h"
 #include "sensor_msgs/msg/imu.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/int32.hpp"
@@ -33,6 +34,7 @@
 #include "cup_car_serial/mcu_clock_mapper.hpp"
 #include "cup_car_serial/protocol.hpp"
 #include "cup_car_serial/rfid_event_deduplicator.hpp"
+#include "cup_car_serial/tts2_protocol.hpp"
 
 namespace
 {
@@ -50,6 +52,22 @@ constexpr uint8_t kBmi088StatusSampleTimeout = 0x40U;
 constexpr uint32_t kBmi088StartupBiasSamples = 600U;
 constexpr uint8_t kRfidStatusCardPresent = 0x02U;
 constexpr uint8_t kRfidStatusNumberValid = 0x20U;
+
+uint32_t make_tts2_id_seed()
+{
+  const auto system_ticks = static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count());
+  const auto steady_ticks = static_cast<uint64_t>(
+    std::chrono::steady_clock::now().time_since_epoch().count());
+  uint64_t mixed = system_ticks ^ (steady_ticks + 0x9e3779b97f4a7c15ULL +
+    (system_ticks << 6U) + (system_ticks >> 2U));
+  mixed ^= mixed >> 33U;
+  mixed *= 0xff51afd7ed558ccdULL;
+  mixed ^= mixed >> 33U;
+  const uint32_t seed = static_cast<uint32_t>(mixed);
+  return seed == 0U ? 1U : seed;
+}
 
 std::string utf8_to_gbk(const std::string & text)
 {
@@ -324,7 +342,7 @@ public:
       speak_text_service_,
       std::bind(
         &CmdVelSerialNode::handle_speak_text, this,
-        std::placeholders::_1, std::placeholders::_2));
+        std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 
     subscription_ = create_subscription<geometry_msgs::msg::Twist>(
       topic_, rclcpp::QoS(10),
@@ -359,6 +377,14 @@ public:
   }
 
 private:
+  struct PendingSpeech
+  {
+    std::shared_ptr<rmw_request_id_t> request_header;
+    rclcpp::Service<mission_control_interfaces::srv::SpeakText>::SharedPtr service;
+    std::unique_ptr<cup_car_serial::Tts2RequestTracker> tracker;
+    std::string frame;
+  };
+
   void connect()
   {
     last_connect_attempt_ = std::chrono::steady_clock::now();
@@ -398,6 +424,9 @@ private:
 
   void set_connected(bool connected)
   {
+    if (!connected) {
+      fail_pending_speech("controller serial port disconnected before estimated speech completion");
+    }
     if (connection_state_published_ && connected == last_connection_state_) {
       return;
     }
@@ -477,6 +506,7 @@ private:
         std_msgs::msg::String message;
         message.data = line;
         receivePublisher_->publish(message);
+        process_tts2_telemetry(line);
         publish_encoder_frame(line);
         publish_bmi088_imu_frame(line);
         publish_bmi088_attitude_frame(line);
@@ -555,32 +585,114 @@ private:
   }
 
   void handle_speak_text(
-    const mission_control_interfaces::srv::SpeakText::Request::SharedPtr request,
-    mission_control_interfaces::srv::SpeakText::Response::SharedPtr response)
+    const rclcpp::Service<mission_control_interfaces::srv::SpeakText>::SharedPtr service,
+    const std::shared_ptr<rmw_request_id_t> request_header,
+    const mission_control_interfaces::srv::SpeakText::Request::SharedPtr request)
   {
+    const auto respond = [&service, &request_header](bool success, const std::string & message) {
+        auto response = std::make_shared<mission_control_interfaces::srv::SpeakText::Response>();
+        response->success = success;
+        response->message = message;
+        service->send_response(*request_header, *response);
+      };
+
+    if (pendingSpeech_) {
+      respond(false, "another speech request is already pending");
+      return;
+    }
     if (request->text.empty() || request->text.size() > 128U ||
+      request->text.find('\0') != std::string::npos ||
       request->text.find_first_of("\r\n") != std::string::npos)
     {
-      response->success = false;
-      response->message = "speech text must contain 1 to 128 characters without newlines";
+      respond(false, "speech text must contain 1 to 128 UTF-8 bytes without NUL or newlines");
       return;
     }
-    std::lock_guard<std::mutex> lock(serial_mutex_);
     if (!serial_connected_) {
-      response->success = false;
-      response->message = "controller serial port is disconnected";
+      respond(false, "controller serial port is disconnected");
       return;
     }
+
     try {
-      const std::string frame = "TTS," + utf8_to_gbk(request->text) + "\r\n";
-      serial_.write_all(frame);
-      response->success = true;
-      response->message = "speech text sent to controller";
-      RCLCPP_INFO(get_logger(), "Sent mission speech text to MCU: %s", request->text.c_str());
+      const std::string gbk = utf8_to_gbk(request->text);
+      const uint32_t id = tts2IdGenerator_.Next();
+      const std::string frame = cup_car_serial::make_tts2_request_frame(id, gbk);
+      const auto started = std::chrono::steady_clock::now();
+      auto pending = std::make_unique<PendingSpeech>();
+      pending->service = service;
+      pending->request_header = request_header;
+      pending->frame = frame;
+      pending->tracker = std::make_unique<cup_car_serial::Tts2RequestTracker>(
+        id, started, std::chrono::milliseconds(200), std::chrono::seconds(1),
+        std::chrono::seconds(120));
+      pendingSpeech_ = std::move(pending);
+      RCLCPP_INFO(
+        get_logger(), "Queued MCU TTS2 request id=%u (%zu GBK bytes)",
+        id, gbk.size());
     } catch (const std::exception & error) {
-      response->success = false;
-      response->message = error.what();
+      respond(false, error.what());
     }
+  }
+
+  void transmit_pending_speech()
+  {
+    if (!pendingSpeech_) {
+      return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (pendingSpeech_->tracker->check_deadline(now) ==
+      cup_car_serial::Tts2RequestResult::TIMED_OUT)
+    {
+      finish_pending_speech(false, "timed out waiting for MCU estimated speech completion");
+      return;
+    }
+    if (pendingSpeech_->tracker->should_transmit(now)) {
+      serial_.write_all(pendingSpeech_->frame);
+      pendingSpeech_->tracker->mark_transmitted(now);
+    }
+  }
+
+  void process_tts2_telemetry(const std::string & line)
+  {
+    cup_car_serial::Tts2TelemetryFrame frame;
+    if (!cup_car_serial::parse_tts2_telemetry_frame(line, &frame)) {
+      if (line.rfind("TTS,", 0U) == 0U) {
+        RCLCPP_WARN(get_logger(), "Ignoring malformed TTS telemetry frame: '%s'", line.c_str());
+      }
+      return;
+    }
+    if (!pendingSpeech_) {
+      return;
+    }
+    const auto result = pendingSpeech_->tracker->observe(
+      frame, std::chrono::steady_clock::now());
+    if (result == cup_car_serial::Tts2RequestResult::SUCCEEDED) {
+      finish_pending_speech(
+        true,
+        "MCU estimated speech occupation elapsed (800 ms per GBK character plus 1500 ms); "
+        "this is an estimate, with no playback feedback");
+    } else if (result == cup_car_serial::Tts2RequestResult::FAILED) {
+      finish_pending_speech(
+        false, std::string("MCU reported TTS ") + cup_car_serial::tts2_status_name(frame.status));
+    } else if (result == cup_car_serial::Tts2RequestResult::TIMED_OUT) {
+      finish_pending_speech(false, "timed out waiting for MCU estimated speech completion");
+    }
+  }
+
+  void finish_pending_speech(bool success, const std::string & message)
+  {
+    if (!pendingSpeech_) {
+      return;
+    }
+    auto pending = std::move(pendingSpeech_);
+    auto response = std::make_shared<mission_control_interfaces::srv::SpeakText::Response>();
+    response->success = success;
+    response->message = message;
+    pending->service->send_response(*pending->request_header, *response);
+  }
+
+  void fail_pending_speech(const std::string & message)
+  {
+    finish_pending_speech(false, message);
   }
 
   void publish_bmi088_imu_frame(const std::string & line)
@@ -908,6 +1020,7 @@ private:
         serial_.write_all(std::string(rpy_frame, rpy_frame_length));
       }
       receive_feedback();
+      transmit_pending_speech();
     } catch (const std::exception & error) {
       RCLCPP_ERROR(get_logger(), "Serial communication failed: %s", error.what());
       serial_.close();
@@ -939,6 +1052,8 @@ private:
   cup_car_serial::ActuatorTrackingDecision latestTrackingDecision_{};
   std::string lastTrackingStatus_;
   SerialPort serial_;
+  cup_car_serial::Tts2IdGenerator tts2IdGenerator_{make_tts2_id_seed()};
+  std::unique_ptr<PendingSpeech> pendingSpeech_;
   std::mutex serial_mutex_;
   bool serial_connected_{false};
   bool connection_state_published_{false};

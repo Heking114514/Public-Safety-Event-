@@ -41,7 +41,14 @@ RFID,time_ms,card_sequence,status,protocol_status,tag_type,sak,number,uid_hex\r\
 - `roll`、`pitch`、`yaw` 来自 `/imu/rpy`（`geometry_msgs/msg/Vector3Stamped`），单位 rad。
 - RFID 有效新读卡事件只发布到 `/cup_car_serial/rfid_number` 和 UID 话题。任务去重、
   驻停时间、播报文本和恢复行驶由 `navigation_mission_manager` 负责。串口节点的
-  `/cup_car_serial/speak_text` service 只执行 UTF-8 到 GBK 转码和串口发送。
+  `/cup_car_serial/speak_text` service 将 UTF-8 转为 GBK，并异步等待 MCU 状态反馈。
+  输入限制为 1..128 UTF-8 字节，转码后最多 128 GBK 字节；拒绝控制字节、NUL 和 `<`/`>`。
+  命令为 `TTS2,<非零uint32编号>,<GBK文本>\r\n`，反馈为 `TTS,<编号>,<状态>\r\n`。
+  `QUEUED`、`PLAYING` 不结束请求，仅匹配编号的 `ESTIMATED_DONE` 返回成功。
+  MCU 按每字 800 ms 加 1500 ms 估算占用，服务成功不是扬声器真实播放完成确认。
+  未获接收反馈时首秒内每 200 ms 重发同一编号，接收后停止重发；总超时 120 秒。
+  `BUSY`、`INVALID`、`ERROR`、断连或超时返回失败，已有待完成请求时新请求立即失败。
+  等待期间周期速度与传感器反馈继续工作；需要配套 TTS2 MCU 固件，旧固件会超时。
 - 编码器输出类型为 `std_msgs/msg/Int32MultiArray`，`data` 固定为
   `[sample_time_ms, sample_sequence, left_total_ticks, right_total_ticks]`。
   节点兼容旧固件的 `ENC,left_total,right_total`，其前两项补零。

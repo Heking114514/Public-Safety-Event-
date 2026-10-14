@@ -87,6 +87,31 @@ struct ManagerRfidTestAccess
   static double stop_deadline(const MissionManager & m) {return m.rfid_next_hold_retry_at_;}
   static double settle(const MissionManager & m) {return m.rfid_stationary_settle_s_;}
   static void reset(MissionManager & m) {m.reset_rfid();}
+  static void insight(MissionManager & m, const std::string & data)
+  {
+    auto message = std::make_shared<std_msgs::msg::String>();
+    message->data = data;
+    m.on_insight(message);
+  }
+  static std::vector<std::string> queued(const MissionManager & m)
+  {
+    std::vector<std::string> result;
+    for (const auto & item : m.speech_queue_) {result.push_back(item.text);}
+    return result;
+  }
+  static void enqueue(MissionManager & m, const std::string & text)
+  {m.enqueue_speech_text(text, false);}
+  static void tick_speech(MissionManager & m, double time)
+  {m.service_speech_text(time);}
+  static bool speech_pending(const MissionManager & m) {return m.speech_pending_;}
+  static bool release_scheduled(const MissionManager & m)
+  {return m.speech_release_at_.has_value();}
+  static void held_speech(MissionManager & m)
+  {
+    m.active_hold_sources_.insert("navigation_mission_manager/speech");
+  }
+  static void held_text(MissionManager & m)
+  {m.enqueue_speech_text("测试播报", true);}
 };
 }  // namespace navigation_mission_manager
 
@@ -369,6 +394,127 @@ TEST_F(ManagerRfidTest, SpeechUsesObservedCardWhenNumberChangesAtSamePhysicalChe
     collect(2U);
     executor.spin_some();
   }
+}
+
+TEST_F(ManagerRfidTest, InsightBatchesInOrderAndSuppressesContinuousTargets)
+{
+  using Access = nmm::ManagerRfidTestAccess;
+  Access::insight(*manager, R"({"targets":["f2","k1","f2","invalid"]})");
+  auto texts = Access::queued(*manager);
+  ASSERT_EQ(texts.size(), 1U);
+  EXPECT_EQ(texts.front(), "发现2号嫌疑人，发现1号刀具");
+  Access::insight(*manager, R"({"targets":["k1","f2"]})");
+  EXPECT_EQ(Access::queued(*manager).size(), 1U);
+  Access::insight(*manager, R"({"targets":[]})");
+  Access::insight(*manager, R"({"targets":["f2"]})");
+  EXPECT_EQ(Access::queued(*manager).size(), 2U);
+}
+
+TEST_F(ManagerRfidTest, InsightSplitsOnlyAtTargetBoundariesAndKeepsAllTargets)
+{
+  using Access = nmm::ManagerRfidTestAccess;
+  Access::insight(*manager,
+    R"({"targets":["f1","f2","f3","f4","f5","f6","f7","f8","f9","f10"]})");
+  const auto texts = Access::queued(*manager);
+  ASSERT_GT(texts.size(), 1U);
+  std::string combined;
+  for (const auto & text : texts) {
+    EXPECT_LE(text.size(), 128U);
+    combined += text;
+  }
+  for (int i = 1; i <= 10; ++i) {
+    EXPECT_NE(combined.find("发现" + std::to_string(i) + "号嫌疑人"), std::string::npos);
+  }
+}
+
+TEST_F(ManagerRfidTest, SpeechRejectsInvalidBytesAndAccepts128ByteBoundary)
+{
+  using Access = nmm::ManagerRfidTestAccess;
+  Access::enqueue(*manager, std::string(128U, 'a'));
+  Access::enqueue(*manager, std::string(129U, 'a'));
+  Access::enqueue(*manager, "   ");
+  Access::enqueue(*manager, "a\r\nb");
+  Access::enqueue(*manager, std::string("a\0b", 3U));
+  ASSERT_EQ(Access::queued(*manager).size(), 1U);
+}
+
+TEST_F(ManagerRfidTest, SpeechHoldWaitsForServiceCompletionBeforeReleaseTimer)
+{
+  using Speech = mission_control_interfaces::srv::SpeakText;
+  using Access = nmm::ManagerRfidTestAccess;
+  auto speech_service = server->create_service<Speech>(
+    "/manager_rfid_test/speech",
+    [](Speech::Request::SharedPtr, Speech::Response::SharedPtr response) {
+      response->success = true;
+    });
+  Access::prepare_speech(*manager);
+  ASSERT_TRUE(Access::wait_for_speech(*manager));
+  Access::held_text(*manager);
+  Access::held_speech(*manager);
+  Access::tick_speech(*manager, nmm::steady_seconds());
+  // Leave the server unspun to keep its completion response pending.
+  Access::tick_speech(*manager, nmm::steady_seconds() + 1000.0);
+  EXPECT_TRUE(Access::speech_pending(*manager));
+  EXPECT_FALSE(Access::release_scheduled(*manager));
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (Access::speech_pending(*manager) && std::chrono::steady_clock::now() < deadline) {
+    executor.spin_once(std::chrono::milliseconds(10));
+  }
+  EXPECT_FALSE(Access::speech_pending(*manager));
+  EXPECT_TRUE(Access::release_scheduled(*manager));
+}
+
+TEST_F(ManagerRfidTest, ResetIgnoresLateSpeechCompletion)
+{
+  using Speech = mission_control_interfaces::srv::SpeakText;
+  using Access = nmm::ManagerRfidTestAccess;
+  auto speech_service = server->create_service<Speech>(
+    "/manager_rfid_test/speech",
+    [](Speech::Request::SharedPtr, Speech::Response::SharedPtr response) {
+      response->success = true;
+    });
+  Access::prepare_speech(*manager);
+  ASSERT_TRUE(Access::wait_for_speech(*manager));
+  Access::held_text(*manager);
+  Access::held_speech(*manager);
+  Access::tick_speech(*manager, nmm::steady_seconds());
+  ASSERT_TRUE(Access::speech_pending(*manager));
+  Access::reset(*manager);
+  collect(1U);
+  executor.spin_some();
+  EXPECT_FALSE(Access::speech_pending(*manager));
+  EXPECT_FALSE(Access::release_scheduled(*manager));
+}
+
+TEST_F(ManagerRfidTest, VisualSpeechWaitsWhileRfidWorkflowIsActive)
+{
+  using Speech = mission_control_interfaces::srv::SpeakText;
+  using Access = nmm::ManagerRfidTestAccess;
+  std::vector<std::string> spoken;
+  auto speech_service = server->create_service<Speech>(
+    "/manager_rfid_test/speech",
+    [&spoken](Speech::Request::SharedPtr request, Speech::Response::SharedPtr response) {
+      spoken.push_back(request->text);
+      response->success = true;
+    });
+  Access::prepare_speech(*manager);
+  ASSERT_TRUE(Access::wait_for_speech(*manager));
+  Access::route(*manager);
+  receive(12);
+  stop_and_settle();
+  Access::insight(*manager, R"({"targets":["f2"]})");
+  Access::tick_speech(*manager, nmm::steady_seconds());
+  executor.spin_some();
+  EXPECT_FALSE(Access::speech_pending(*manager));
+  EXPECT_TRUE(spoken.empty());
+  Access::finish(*manager);
+  Access::tick_speech(*manager, nmm::steady_seconds());
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (spoken.empty() && std::chrono::steady_clock::now() < deadline) {
+    executor.spin_once(std::chrono::milliseconds(10));
+  }
+  ASSERT_EQ(spoken.size(), 1U);
+  EXPECT_EQ(spoken.front(), "发现2号嫌疑人");
 }
 
 TEST_F(ManagerRfidTest, InvalidCardIsRejectedOnlyAfterStop)
