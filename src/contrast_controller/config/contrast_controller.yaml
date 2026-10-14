@@ -14,12 +14,12 @@ contrast_controller:
     recovery_switch_stop_s: 0.22
     turn_maneuver_enabled: true
     turn_maneuver_entry_target_x: -0.070
-    turn_maneuver_entry_target_y: 0.0
+    turn_maneuver_entry_target_y: -0.015
     turn_maneuver_entry_speed: 0.035
     turn_maneuver_angular_speed: 0.35
     turn_maneuver_min_angular_speed: 0.15
     turn_maneuver_creep_speed: 0.030
-    turn_maneuver_turn_linear_speed: 0.035
+    turn_maneuver_turn_linear_speed: 0.010
 
 
     # 入口必须同时满足纵向、横向和航向门限。
