@@ -161,8 +161,10 @@ void WaypointNavigator::ResetRunControl() {
 }
 
 double WaypointNavigator::UpdatePathPid(double error, double crossTrackError,
-                                        bool allowIntegral, double yawRate) {
+                                        bool allowIntegral, double yawRate,
+                                        double proportionalScale) {
   return pathTrackingController_.update_pid(error, crossTrackError,
                                             allowIntegral, yawRate,
-                                            std::chrono::steady_clock::now());
+                                            std::chrono::steady_clock::now(),
+                                            proportionalScale);
 }

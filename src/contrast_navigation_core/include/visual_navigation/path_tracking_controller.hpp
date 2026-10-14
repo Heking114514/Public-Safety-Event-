@@ -37,7 +37,7 @@ public:
 
   double update_pid(
     double error, double cross_track_error, bool allow_integral,
-    double yaw_rate, TimePoint current_time)
+    double yaw_rate, TimePoint current_time, double proportional_scale = 1.0)
   {
     if (!std::isfinite(error) || !std::isfinite(cross_track_error) ||
       !std::isfinite(yaw_rate))
@@ -61,7 +61,7 @@ public:
     previous_error_ = error;
     last_pid_time_ = current_time;
     pid_initialized_ = true;
-    const double command = kp_ * error + ki_ * integral_ + kd_ * derivative -
+    const double command = proportional_scale * kp_ * error + ki_ * integral_ + kd_ * derivative -
       yaw_rate_damping_ * yaw_rate;
     return std::max(-maximum_angular_speed_, std::min(maximum_angular_speed_, command));
   }

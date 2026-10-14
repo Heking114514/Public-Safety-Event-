@@ -123,6 +123,24 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
       0.0, declare_parameter<double>("path_curvature_feedforward_gain", 1.0));
   preTurnPathAngularRatio_ = std::max(
       0.0, declare_parameter<double>("pre_turn_path_angular_ratio", 1.2));
+  pathAdaptiveCorrectionEnabled_ = declare_parameter<bool>(
+      "path_adaptive_correction_enabled", false);
+  pathAdaptiveMaxAngularRatio_ = std::max(
+      preTurnPathAngularRatio_, declare_parameter<double>(
+          "path_adaptive_max_angular_ratio", 8.0));
+  pathAdaptiveGainScale_ = std::max(
+      1.0, declare_parameter<double>("path_adaptive_gain_scale", 1.5));
+  pathAdaptiveHeadingStart_ = std::max(
+      0.0, declare_parameter<double>("path_adaptive_heading_start", 0.035));
+  pathAdaptiveHeadingFull_ = std::max(
+      pathAdaptiveHeadingStart_ + 0.001,
+      declare_parameter<double>("path_adaptive_heading_full", 0.20));
+  pathAdaptiveMinimumSpeed_ = std::clamp(
+      declare_parameter<double>("path_adaptive_minimum_speed", 0.030),
+      minLinearCommandSpeed_, std::max(minLinearCommandSpeed_, maxLinearSpeed_));
+  pathAdaptiveBrakingBlendDistance_ = std::max(
+      0.001, declare_parameter<double>(
+          "path_adaptive_braking_blend_distance", 0.10));
   pathPidIntegralLimit_ =
       std::max(0.0, declare_parameter<double>("path_pid_integral_limit", 0.20));
   pathTrackingController_.configure(pathPidKp_, pathPidKi_, pathPidKd_,
