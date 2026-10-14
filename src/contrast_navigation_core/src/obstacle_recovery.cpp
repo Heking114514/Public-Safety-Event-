@@ -47,8 +47,11 @@ void WaypointNavigator::HandleFrontObstacle(
   const bool forwardMotionActive = lastMotionCommand_.linear.x > 1.0e-4;
   const bool forwardFollowerActive =
       state_ == "FOLLOWING" || state_ == "BRAKING_APPROACH";
+  const bool normalTurnActive = turnManeuverController_.active() &&
+                               stoppedAtPlannedTurn_ &&
+                               !stoppedTurnReverseArrival_;
   if (frontObstacleEventHandled_ || !navigationActive_ || MotionHeld() ||
-      (!forwardMotionActive && !forwardFollowerActive) ||
+      (!forwardMotionActive && !forwardFollowerActive && !normalTurnActive) ||
       pendingFrontObstacle_ || !obstacleRecoveryController_.idle()) {
     return;
   }
@@ -57,8 +60,8 @@ void WaypointNavigator::HandleFrontObstacle(
   // Classification may subsequently identify a normal wall beyond a turn.
   pendingFrontObstacle_ = true;
   frontObstacleEventHandled_ = true;
-  pendingObstacleAtActiveTurn_ = EarlyPlannedTurnActive();
-  pendingObstacleTurnDistance_ = pendingObstacleAtActiveTurn_
+  pendingObstacleAtActiveTurn_ = normalTurnActive;
+  pendingObstacleTurnDistance_ = EarlyPlannedTurnActive()
                                      ? DistanceToStoppedTurn() +
                                            vehicleFrontOffset_ +
                                            expectedObstacleTolerance_
@@ -610,6 +613,9 @@ void WaypointNavigator::RunObstacleRecovery() {
 
 void WaypointNavigator::ResetObstacleRecovery(bool preserveExecutedTrace) {
   poseRecoveryPhase_.clear();
+  turnObstacleContextValid_ = false;
+  turnObstacleContext_ = {};
+  turnObstacleReturnContext_ = {};
   recoveryCandidates_.clear();
   const auto now = std::chrono::steady_clock::now();
   const bool keepBlockedEvent =

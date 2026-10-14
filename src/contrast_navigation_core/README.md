@@ -5,3 +5,5 @@
 源码从当前 `visual_navigation::waypoint_navigator_core` 拆出一份，保留相同的 C++ 命名空间、消息接口、参数接口和控制话题接口，便于逐项对照。`visual_navigation` 继续构建并运行自己的核心；`contrast_controller` 链接本包的 `contrast_waypoint_navigator_core`，不再链接 `visual_navigation::waypoint_navigator_core`。
 
 当前包只提供静态核心库，不直接启动 ROS 节点。可通过 `contrast_controller` 的对比或避障验证 launch 运行它。这样修改本包中的路径跟踪、障碍恢复或姿态恢复实现时，不会改动正式 `visual_navigation` 控制器。
+
+道路恢复由 `pose_recovery.cpp`（地图和车身运动学）、`recovery_routes.cpp`（T/X 完整动作预检）、`recovery_execution.cpp`（实时执行和停车确认）及 `turn_recovery.cpp`（正常转弯中遇障返回）组成。只有实际出口通过道路、航向和安全校验后才报告完成；完整结果见 [本轮核对记录](../contrast_controller/RECOVERY_REVIEW.md)。

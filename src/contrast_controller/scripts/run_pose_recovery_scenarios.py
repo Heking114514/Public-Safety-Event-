@@ -13,8 +13,8 @@ PASS requires actual detection, candidates -> motion -> complete with matching I
 then >= .20 m continuous measured forward FOLLOWING with |cmd/odom angular| < .1.
 The recovery protocol additionally requires live reverse evidence, a stop before
 any direction change, RETREAT_TO_TURN_POINT -> ALIGN_FOR_TURN -> TURN_INTO_EXIT
-ordering, and the first turn command to be within the legal junction position,
-road-center and heading tolerances. FAULT, failed phase, static guard intervention,
+ordering, real TURN_60 -> TURN_30 evidence for each fixed turn, and independent
+map projections for turn-entry and exit-side checks. FAULT, failed phase, static guard intervention,
 missing evidence and timeout fail.
 """
 from __future__ import annotations
@@ -26,6 +26,7 @@ import json
 import math
 import os
 from pathlib import Path
+from recovery_evidence import RoadMap, angle_error, measured_direction_stop_error
 import re
 import signal
 import subprocess
@@ -59,6 +60,36 @@ def scenarios():
                           targets=["2" if direction < 0 else "11"], after_turn=False))
     cases.append(dict(name="after_normal_90deg_turn", initial=[1.5, -.5, math.pi],
                       obstacle=[1.2, -1.05], targets=["2"], after_turn=True))
+    for case in cases:
+        case.update(junction="x1_y3", expected_turns=None)
+    cases.extend([
+        dict(name="t_90", initial=[2.36, -1.5, 0.0], obstacle=[2.72, -1.5],
+             targets=["4"], after_turn=False, junction="x0_y2",
+             expected_template="t_junction_left", expected_turns=1),
+        dict(name="t_u", initial=[2.36, -1.5, 0.0], obstacle=[2.72, -1.5],
+             targets=["4"], after_turn=False, junction="x0_y2",
+             expected_template="t_junction_reverse", expected_turns=2),
+        dict(name="x_left", initial=[1.2, -.66, -math.pi/2], obstacle=[1.2, -1.02],
+             targets=["2"], after_turn=False, junction="x1_y3",
+             expected_template="x_junction_left", expected_turns=1),
+        dict(name="x_right", initial=[1.2, -.66, -math.pi/2], obstacle=[1.2, -1.02],
+             targets=["2"], after_turn=False, junction="x1_y3",
+             expected_template="x_junction_right", expected_turns=1),
+        dict(name="x_reverse", initial=[1.2, -.66, -math.pi/2], obstacle=[1.2, -1.02],
+             targets=["2"], after_turn=False, junction="x1_y3",
+             expected_template="x_junction_reverse", expected_turns=2),
+        dict(name="long_retreat", initial=[1.2, -1.36, -math.pi/2],
+             obstacle=[1.2, -1.48], targets=["2"], after_turn=False,
+             junction="x1_y3", expected_turns=1, minimum_reverse_m=.85,
+             obstacle_half_size=[.09, .01]),
+        dict(name="during_normal_90deg_turn", initial=[1.5, -.5, math.pi],
+             obstacle=[1.2, -.90], targets=["2"], after_turn=False,
+             junction="x1_y3", during_turn=True, expected_turns=None,
+             original_lane="ROAD_X1_Y2"),
+        dict(name="south_offcenter", initial=[1.215, -.66, -math.pi/2],
+             obstacle=[1.2, -1.02], targets=["2"], after_turn=False,
+             junction="x1_y3", expected_turns=1),
+    ])
     return cases
 
 
@@ -92,7 +123,7 @@ def stop_owned(process, first_timeout=8):
             continue
 
 
-def plot_trace(directory, case, odom, phases, polygon):
+def plot_trace(directory, case, odom, phases, polygon, road_map):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -114,7 +145,7 @@ def plot_trace(directory, case, odom, phases, polygon):
         if pose and phase["phase"] not in seen:
             ax.annotate(phase["phase"], (pose[0], pose[1]))
             seen.add(phase["phase"])
-    ax.scatter(*JUNCTION, marker="+", color="black", label="junction")
+    ax.scatter(*road_map.nodes[case["junction"]], marker="+", color="black", label="junction")
     ax.scatter(*case["initial"][:2], marker="o", color="green", label="initial")
     ax.set(xlabel="map x [m]", ylabel="map y [m]", title=case["name"], aspect="equal")
     ax.grid(True)
@@ -126,8 +157,17 @@ def plot_trace(directory, case, odom, phases, polygon):
 
 class Evidence:
     """Evidence state and continuous straight-run measurement; never commands motion."""
-    def __init__(self, case):
+    def __init__(self, case, road_map=None, entry_config=None):
         self.case = case
+        self.road_map = road_map
+        self.entry_config = entry_config or (-.070, 0.0)
+        self.candidates = {}
+        self.candidate_by_id = {}
+        self.selected_candidate_id = None
+        self.turn_phase_history = []
+        self.recovery_active = False
+        self.injected_during_turn = False
+        self.detected_status = ""
         self.events, self.odom, self.cmd, self.phases = [], [], [], []
         self.status = ""
         self.manager_ready = False
@@ -161,10 +201,21 @@ class Evidence:
         if value.startswith("POSE_RECOVERY_"):
             if not self.recovery_status_history or self.recovery_status_history[-1] != value:
                 self.recovery_status_history.append(value)
-        self.turn_seen |= "TURN_60" in value or "TURN_30" in value or \
-            "POSE_RECOVERY_TURN_INTO_EXIT" in value
+        self.turn_seen |= "TURN_60" in value or "TURN_30" in value
+        if value.startswith("POSE_RECOVERY_"):
+            self.recovery_active = True
+        if value in ("POSE_RECOVERY_TURN_60", "POSE_RECOVERY_TURN_30"):
+            if not self.turn_phase_history or self.turn_phase_history[-1] != value:
+                self.turn_phase_history.append(value)
         if "FAULT" in value:
             self.failure = "controller/manager status: " + value
+
+    def observe_mission_status(self, value):
+        if "FAULT" in value:
+            self.failure = value
+        match = re.search(r"pose_recovery_select:candidate=(\d+)", value)
+        if match:
+            self.selected_candidate_id = int(match.group(1))
 
     def observe_recovery(self, msg):
         phase = str(msg.phase).lower()
@@ -180,6 +231,11 @@ class Evidence:
         self.phases.append(record)
         for candidate in getattr(msg, "candidates", []):
             self.candidate_headings[str(candidate.resume_lane)] = float(candidate.resume_heading)
+            record = dict(template_id=str(candidate.template_id), resume_lane=str(candidate.resume_lane),
+                          resume_node=str(candidate.resume_node), resume_heading=float(candidate.resume_heading),
+                          borrowed_lane_ids=list(candidate.borrowed_lane_ids))
+            self.candidate_by_id[int(candidate.candidate_id)] = record
+            self.candidates.setdefault(str(candidate.resume_lane), record)
         if phase == "failed":
             self.failure = "recovery phase failed: " + msg.reason
         if self.injected_at is None or rid <= 0:
@@ -208,16 +264,15 @@ class Evidence:
     def validate_recovery_protocol(self):
         history = self.recovery_status_history
         required = ["POSE_RECOVERY_RETREAT_TO_TURN_POINT",
-                    "POSE_RECOVERY_ALIGN_FOR_TURN",
-                    "POSE_RECOVERY_TURN_INTO_EXIT"]
-        positions = []
+                    "POSE_RECOVERY_TURN_APPROACH_ENTRY",
+                    "POSE_RECOVERY_TURN_60",
+                    "POSE_RECOVERY_TURN_30"]
         cursor = -1
         for name in required:
             try:
                 cursor = history.index(name, cursor + 1)
             except ValueError:
                 return "missing recovery phase order: " + name
-            positions.append(cursor)
         reverse = [row for row in self.odom
                    if row["status"] == required[0] and row["linear"] < -.005]
         if not reverse:
@@ -227,29 +282,65 @@ class Evidence:
                    abs(row["linear"]) < .002 and abs(row["angular"]) < .03]
         if not stopped:
             return "no measured stop before recovery direction change"
-        previous_sign, stopped_since_motion = 0, False
-        for row in self.odom:
-            if row["status"] in ("POSE_RECOVERY_ALIGN_FOR_TURN", "POSE_RECOVERY_TURN_INTO_EXIT"):
-                break
-            if not row["status"].startswith("POSE_RECOVERY_"):
-                continue
-            sign = 1 if row["linear"] > .005 else -1 if row["linear"] < -.005 else 0
-            if sign:
-                if previous_sign and sign != previous_sign and not stopped_since_motion:
-                    return "recovery direction changed without measured stop"
-                previous_sign, stopped_since_motion = sign, False
-            elif row["status"] == "POSE_RECOVERY_DIRECTION_STOP" and abs(row["angular"]) < .03:
-                stopped_since_motion = True
-        if history.count("POSE_RECOVERY_ALIGN_FOR_TURN") != 1:
-            return "strict recovery turn must begin exactly once"
-        if not self.turn_entries:
-            return "no measured TURN_INTO_EXIT entry"
-        entry = self.turn_entries[0]
-        if entry["position_error"] > .04:
-            return "turn entered before legal point/road center convergence: " + \
-                f'{entry["position_error"]:.3f} m'
-        if not self.turn_seen:
-            return "strict turn controller never entered TURN_60/TURN_30"
+        stop_error = measured_direction_stop_error(self.odom)
+        if stop_error:
+            return stop_error
+        turns60 = sum("TURN_60" in value for value in self.turn_phase_history)
+        turns30 = sum("TURN_30" in value for value in self.turn_phase_history)
+        expected = self.case.get("expected_turns")
+        if turns60 == 0 or turns60 != turns30 or (expected is not None and turns60 != expected):
+            return f"fixed-turn evidence incomplete: TURN_60={turns60}, TURN_30={turns30}, expected={expected}"
+        if len(self.turn_entries) != turns60:
+            return "no independent measured entry pose for each fixed turn"
+        selected = self.candidate_by_id.get(self.selected_candidate_id) or self.candidates.get(self.complete_lane)
+        if selected is None:
+            return "selected recovery lane has no published candidate"
+        if selected["resume_lane"] != self.complete_lane:
+            return "reported actual exit lane differs from selected candidate"
+        if self.road_map is None or self.complete_pose is None:
+            return "missing independent map/exit pose evidence"
+        for index, entry in enumerate(self.turn_entries):
+            lane = selected["borrowed_lane_ids"][0] if index == 0 and "reverse" in selected["template_id"] else selected["resume_lane"]
+            outgoing = self.road_map.projection((entry["x"],entry["y"]), lane, selected["resume_node"])["heading"]
+            checked = self.road_map.turn_entry((entry["x"],entry["y"]), entry["yaw"],
+                selected["resume_node"], *self.entry_config, outgoing_heading=outgoing)
+            entry.update(checked)
+            if entry["position_error"] > .020 or entry["road_center_error"] > .020 or entry["heading_error"] > .10:
+                return "fixed turn began before independent entry convergence: " + repr(entry)
+        if self.case.get("expected_template") and selected["template_id"] != self.case["expected_template"]:
+            return "selected template does not exercise requested direction: " + selected["template_id"]
+        error = self.road_map.exit_error(
+            (self.complete_pose["x"], self.complete_pose["y"]), self.complete_pose["yaw"], selected)
+        if error:
+            return error
+        measured_reverse = sum(math.hypot(b["x"]-a["x"], b["y"]-a["y"])
+            for a,b in zip(reverse,reverse[1:]) if 0 < b["stamp"]-a["stamp"] <= .15)
+        if measured_reverse < self.case.get("minimum_reverse_m", 0.0):
+            return f"long retreat not observed: {measured_reverse:.3f} m"
+        if self.case.get("during_turn"):
+            if not self.injected_during_turn:
+                return "obstacle was not injected during real normal TURN_60/TURN_30"
+            if self.detected_status not in ("TURN_60", "TURN_DIAGONAL_CREEP", "TURN_30",
+                                            "POSE_RECOVERY_FINISH_CURRENT_TURN"):
+                return "obstacle was detected outside active normal turn: " + self.detected_status
+            cursor = -1
+            phases = [item["phase"] for item in self.phases]
+            for phase in ("finish_turn", "turn_stop", "reverse_turn", "return_straight", "braking"):
+                try:
+                    cursor = phases.index(phase, cursor + 1)
+                except ValueError:
+                    return "missing interrupted-turn recovery phase: " + phase
+            returning = [row for row in self.odom if row["status"].startswith("POSE_RECOVERY_REVERSE_TURN")
+                         and row["linear"] < -.005]
+            if not returning:
+                return "no measured reverse fixed turn back to original lane"
+            original = [row for row in self.odom if row["status"] == "POSE_RECOVERY_ORIGINAL_LANE_STOP"]
+            if not original:
+                return "no measured original-lane return pose"
+            row = original[-1]
+            projection = self.road_map.projection((row["x"],row["y"]), self.case["original_lane"])
+            if abs(projection["cross"]) > .025 or angle_error(row["yaw"],self.case["initial"][2]) > .15:
+                return "interrupted-turn recovery did not restore original lane and heading"
         heading = self.candidate_headings.get(self.complete_lane)
         if heading is None:
             return "selected recovery lane has no published candidate heading"
@@ -269,11 +360,12 @@ class Evidence:
         row = dict(t=self.now(), stamp=stamp, x=p.x, y=p.y, yaw=yaw,
                    linear=twist.linear.x, angular=twist.angular.z, status=self.status)
         self.odom.append(row)
-        if self.status == "POSE_RECOVERY_TURN_INTO_EXIT" and not self.turn_entries:
-            position_error = math.hypot(p.x - JUNCTION[0], p.y - JUNCTION[1])
-            self.turn_entries.append(dict(t=row["t"], x=p.x, y=p.y, yaw=yaw,
-                                          position_error=position_error,
-                                          road_center_error=position_error))
+        turns60 = sum("TURN_60" in value for value in self.turn_phase_history)
+        if self.status == "POSE_RECOVERY_TURN_60" and len(self.turn_entries) < turns60:
+            if self.road_map is not None:
+                entry = self.road_map.turn_entry((p.x, p.y), yaw, self.case["junction"], *self.entry_config)
+                entry.update(t=row["t"], x=p.x, y=p.y, yaw=yaw)
+                self.turn_entries.append(entry)
         if self.case["after_turn"] and self.turn_seen and self.status == "FOLLOWING":
             yaw_error = abs(math.atan2(math.sin(yaw + math.pi/2), math.cos(yaw + math.pi/2)))
             self.normal_turn_confirmed |= yaw_error < .15 and abs(p.x - 1.2) < .06
@@ -306,7 +398,12 @@ class Evidence:
 def worker(config_path):
     config = json.loads(Path(config_path).read_text(encoding="utf-8"))
     directory, case = Path(config["directory"]), config["case"]
-    evidence, process, node = Evidence(case), None, None
+    map_path = config["planner_config"]
+    import yaml
+    controller_config = Path(config["controller_config"])
+    params = yaml.safe_load(controller_config.read_text(encoding="utf-8"))["contrast_controller"]["ros__parameters"]
+    entry_config = (params["recovery_turn_entry_target_x"], params["recovery_turn_entry_target_y"])
+    evidence, process, node = Evidence(case, RoadMap(map_path), entry_config), None, None
     polygon, result = [], dict(pass_=False, reason="not started")
     interrupted = False
 
@@ -356,6 +453,7 @@ def worker(config_path):
         def blocked(msg):
             if msg.data and evidence.injected_at is not None and evidence.detected_at is None:
                 evidence.detected_at = evidence.now()
+                evidence.detected_status = evidence.status
 
         def dynamic(msg):
             if len(msg.polygon.points) >= 3 and evidence.injected_at is not None:
@@ -366,7 +464,7 @@ def worker(config_path):
         subscribe("status", String, ROOT + "/navigator_status",
                   lambda msg: evidence.observe_status(msg.data), durable)
         subscribe("mission_status", String, "/comparison/mission_status",
-                  lambda msg: setattr(evidence, "failure", msg.data) if "FAULT" in msg.data else None)
+                  lambda msg: evidence.observe_mission_status(msg.data))
         def manager_state(msg):
             evidence.manager_ready = msg.state == MissionState.IDLE
             if msg.state == MissionState.FAULT:
@@ -433,13 +531,19 @@ def worker(config_path):
             evidence.add("manager_start", message_to_ordereddict(response))
             if not response.accepted:
                 raise RuntimeError("manager rejected START: " + response.message)
-            wait_until(lambda: evidence.status == "FOLLOWING" and evidence.odom and
-                       evidence.odom[-1]["linear"] > .005 and
-                       (not case["after_turn"] or evidence.normal_turn_confirmed),
-                       config["timeout"], "normal approach / required real 90 degree turn")
+            if case.get("during_turn"):
+                wait_until(lambda: evidence.status in ("TURN_60", "TURN_30", "CORNER_SHUNT_TURN_60", "CORNER_SHUNT_TURN_30"),
+                           config["timeout"], "real normal fixed-turn phase before injection")
+                evidence.injected_during_turn = True
+            else:
+                wait_until(lambda: evidence.status == "FOLLOWING" and evidence.odom and
+                           evidence.odom[-1]["linear"] > .005 and
+                           (not case["after_turn"] or evidence.normal_turn_confirmed),
+                           config["timeout"], "normal approach / required real 90 degree turn")
             x, y = case["obstacle"]
             # Fixed test fixture, .20 m across road and .12 m along road, same as GUI defaults.
-            polygon = [(x-.10, y-.06), (x+.10, y-.06), (x+.10, y+.06), (x-.10, y+.06)]
+            hx, hy = case.get("obstacle_half_size", [.10, .06])
+            polygon = [(x-hx, y-hy), (x+hx, y-hy), (x+hx, y+hy), (x-hx, y+hy)]
             obstacle = PolygonStamped()
             obstacle.header.frame_id = "map"
             obstacle.header.stamp = node.get_clock().now().to_msg()
@@ -520,6 +624,12 @@ def worker(config_path):
                       recovery_status_history=evidence.recovery_status_history,
                        turn_entries=evidence.turn_entries,
                        protocol_error=evidence.protocol_error,
+                       turn_phase_history=evidence.turn_phase_history,
+                       selected_candidate_id=evidence.selected_candidate_id,
+                       candidate_by_id=evidence.candidate_by_id,
+                       injected_during_turn=evidence.injected_during_turn,
+                       detected_status=evidence.detected_status,
+                       map_id=evidence.road_map.map_id,
                        max_continuous_straight_m=evidence.max_distance,
                       normal_turn_confirmed=evidence.normal_turn_confirmed,
                       bad_log_lines=bad_lines, nodes_required=sorted(REQUIRED_NODES))
@@ -539,7 +649,7 @@ def worker(config_path):
             for event in evidence.events:
                 writer.writerow([event["t"], event["kind"], json.dumps(event["data"], ensure_ascii=False)])
         try:
-            plot_trace(directory, case, evidence.odom, evidence.phases, polygon)
+            plot_trace(directory, case, evidence.odom, evidence.phases, polygon, evidence.road_map)
         except Exception as error:
             result.update({"pass": False, "plot_error": str(error),
                            "reason": result["reason"] + "; PNG export failed: " + str(error)})
@@ -556,33 +666,25 @@ def main():
     fallback = Path("/media/hjh/Data/rosbag_recording/navigation_runs")
     base = next((p for p in (preferred, fallback) if p.is_dir() and os.access(p, os.W_OK)), Path("/tmp"))
     parser.add_argument("--output", type=Path, default=base / ("pose_recovery_" + datetime.now().strftime("%Y%m%d_%H%M%S")))
-    parser.add_argument("--base-domain", type=int, default=170, help="six distinct domains; discovery refuses occupied domain")
+    parser.add_argument("--base-domain", type=int, default=170, help="one distinct domain per scenario; refuses occupied domains")
     parser.add_argument("--timeout", type=float, default=180, help="maximum seconds per approach and per obstacle recovery")
     parser.add_argument("--startup-timeout", type=float, default=45)
-    parser.add_argument("--planner-config", type=Path, help="optional existing arena config; default fixtures assume official arena")
-    parser.add_argument("--scenario", "--only", action="append", choices=[c["name"] for c in scenarios()], help="select subset for debugging; default runs all six")
-    parser.add_argument("--forward-adjustment-fixture", action="store_true",
-                        help="run one corner-sweep fixture using an output-local map with 2 mm planning margin")
+    parser.add_argument("--planner-config", type=Path, help="optional existing arena config; default scenarios require matching map geometry")
+    parser.add_argument("--scenario", "--only", action="append", choices=[c["name"] for c in scenarios()], help="select scenarios; direction cases fail unless their expected template actually executes")
     parser.add_argument("--require-forward-adjustment", action="store_true",
                         help="require exactly one blocked retreat, forward adjustment and confirmed-stop retry")
-    parser.add_argument("--list", action="store_true", help="list fixtures without importing ROS or starting processes")
+    parser.add_argument("--all", action="store_true", help="run every directional scenario; default is original six plus interrupted turn")
+    parser.add_argument("--list", action="store_true", help="list scenarios without importing ROS or starting processes")
     parser.add_argument("--worker", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.worker:
         return worker(args.worker)
     cases = [c for c in scenarios() if not args.scenario or c["name"] in args.scenario]
-    if args.forward_adjustment_fixture:
-        if args.scenario or args.planner_config:
-            parser.error("--forward-adjustment-fixture uses its own official-arena test map")
-        cases = [dict(name="retreat_sweep_fallback",
-                      initial=[1.2, -1.1, -math.pi/2-math.radians(6)],
-                      obstacle=[1.2, -1.4], targets=["11"], after_turn=False,
-                      fixture_obstacle_arena=[.562, 3.030, .563, 3.031],
-                      fixture_planning_margin_m=.002)]
-        args.require_forward_adjustment = True
     if args.list:
         print(json.dumps(cases, ensure_ascii=False, indent=2))
         return 0
+    if not args.scenario and not args.all:
+        cases = [case for case in cases if case["name"] in {c["name"] for c in scenarios()[:6]} or case.get("during_turn")]
     if not 0 <= args.base_domain <= 232 - len(cases) + 1:
         parser.error("domain range must lie within 0..232")
     if min(args.timeout, args.startup_timeout) <= 0:
@@ -591,6 +693,9 @@ def main():
     for setup in [Path("/opt/ros/humble/setup.bash"), workspace / "install/setup.bash"]:
         if not setup.is_file():
             parser.error("missing ROS setup: " + str(setup))
+    planner_config = args.planner_config or workspace / "src/new_map_planner/config/arena.yaml"
+    if not planner_config.is_file():
+        parser.error("missing scenario map: " + str(planner_config))
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)  # Never overwrite earlier evidence.
     results, current = [], None
@@ -600,20 +705,10 @@ def main():
             directory.mkdir()
             config = dict(case=case, directory=str(directory), domain_id=args.base_domain + index,
                           timeout=args.timeout, startup_timeout=args.startup_timeout,
-                          planner_config=str(args.planner_config.resolve()) if args.planner_config else None,
+                          planner_config=str(planner_config.resolve()),
+                          controller_config=str(workspace / "src/contrast_controller/config/contrast_controller.yaml"),
                           require_forward_adjustment=args.require_forward_adjustment)
             dump(directory / "scenario.json", config)
-            if args.forward_adjustment_fixture:
-                import yaml
-                from ament_index_python.packages import get_package_share_directory
-                base_map = Path(get_package_share_directory("new_map_planner")) / "config/arena.yaml"
-                arena = yaml.safe_load(base_map.read_text(encoding="utf-8"))
-                arena["arena"]["obstacles"].append(case["fixture_obstacle_arena"])
-                arena["planning"]["safety_margin_m"] = case["fixture_planning_margin_m"]
-                fixture_map = directory / "fixture_arena.yaml"
-                fixture_map.write_text(yaml.safe_dump(arena, sort_keys=False), encoding="utf-8")
-                config.update(planner_config=str(fixture_map), fixture_base_config=str(base_map))
-                dump(directory / "scenario.json", config)
             env = dict(os.environ, ROS_DOMAIN_ID=str(config["domain_id"]),
                        ROS_LOG_DIR=str(directory / "ros_logs"), RCUTILS_COLORIZED_OUTPUT="0")
             # Positional shell arguments preserve paths and never interpolate user shell code.

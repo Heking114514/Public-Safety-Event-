@@ -35,6 +35,7 @@
 #include "std_msgs/msg/u_int64.hpp"
 #include "std_srvs/srv/trigger.hpp"
 #include "visual_navigation/pose_recovery.hpp"
+#include "visual_navigation/recovery_stop.hpp"
 #include "geometry_msgs/msg/polygon_stamped.hpp"
 #include "mission_control_interfaces/srv/select_recovery.hpp"
 #include "visual_navigation/control_state.hpp"
@@ -237,6 +238,16 @@ private:
   void BeginPoseRecovery();
   bool RunPoseRecovery();
   void PublishPoseRecovery(const std::string &phase);
+  void FailPoseRecovery(const std::string &reason);
+  void BeginRecoveryStop(double active_now);
+  bool RecoveryStopCompleted(double active_now);
+  visual_navigation::PoseRecovery::Pose RecoveryPose() const;
+  bool RecoveryCommandSafe(const geometry_msgs::msg::Twist &command) const;
+  bool BeginTurnObstacleRecovery();
+  bool RunTurnObstacleRecovery();
+  void PauseActiveTurn();
+  bool CheckReverseTurnPlan() const;
+  void FinishTurnObstacleRecovery();
   bool poseRecoveryEnabled_{false};
   std::string poseRecoveryPhase_;
   uint64_t poseRecoveryId_{0}, poseRecoveryRevision_{0};
@@ -247,15 +258,20 @@ private:
   std::vector<mission_control_interfaces::msg::RecoveryCandidate> recoveryCandidates_;
   mission_control_interfaces::msg::RecoveryCandidate recoverySelected_;
   std::size_t recoveryStep_{0};
-  double recoveryStepStarted_{0.0}, recoveryPauseUntil_{0.0}, recoveryLastProgress_{0.0};
-  visual_navigation::PoseRecovery::Pose recoveryProgressPose_;
+  double recoveryStepStarted_{0.0}, recoveryLastProgress_{0.0};
   bool recoveryStepArmed_{false};
-  bool recoveryForwardAdjustPending_{false};
-  bool recoveryForwardAdjustActive_{false};
-  bool recoveryForwardAdjustStopping_{false};
-  bool recoveryForwardAdjustAttempted_{false};
   bool recoveryTurnManeuverStarted_{false};
-  double recoveryForwardAdjustStarted_{0.0};
+  visual_navigation::RecoveryStopGuard recoveryStopGuard_;
+  visual_navigation::TurnManeuverConfig recoveryTurnConfig_;
+  visual_navigation::TurnManeuverController recoveryTurnController_;
+  visual_navigation::CornerShuntContext turnObstacleContext_, turnObstacleReturnContext_;
+  bool turnObstacleContextValid_{false};
+  bool recoveryStopPending_{false};
+  bool recoveryDirectionStop_{false};
+  int recoveryMotionDirection_{0};
+  bool recoveryNewHazard_{false};
+  std::vector<navigation_safety::Polygon> recoveryObservedObstacles_;
+  double recoveryBestError_{0.0};
   rclcpp::Subscription<geometry_msgs::msg::PolygonStamped>::SharedPtr recoveryPolygonSubscription_;
   rclcpp::Service<mission_control_interfaces::srv::SelectRecovery>::SharedPtr selectRecoveryService_;
 

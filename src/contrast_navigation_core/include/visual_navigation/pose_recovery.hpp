@@ -5,17 +5,25 @@
 #include <map>
 #include <navigation_safety/checker.hpp>
 #include <mission_control_interfaces/msg/recovery_candidate.hpp>
+#include "visual_navigation/turn_maneuver.hpp"
 
 namespace visual_navigation {
-// One bounded local search per exit selection. No recorded poses are consumed.
+// Road actions use mapped junctions and the existing fixed quarter-turn.
 class PoseRecovery {
 public:
   using Pose = navigation_safety::Pose;
   struct Step {
+    enum class Kind { STRAIGHT, FIXED_TURN, STOP };
     Pose start, end, target;
     double linear, angular, duration;
     double initial_angular{0.0};
     std::string phase{"RETREAT_TO_TURN_POINT"};
+    Kind kind{Kind::STRAIGHT};
+    navigation_safety::Point junction{};
+    double geometry_heading{0.0}, target_heading{0.0};
+    bool reverse_arrival{false};
+    std::string lane_id;
+    navigation_safety::Point road_origin{};
   };
   struct Config {
     double speed{0.035}, angular{0.65}, primitive_s{0.45};
@@ -23,6 +31,9 @@ public:
     double base_offset_x{0.030}, base_offset_y{0.0};
     double angular_acceleration{1.8}, angular_deceleration{3.0}, control_dt{1.0/30.0};
     int max_expansions{220000};
+    TurnManeuverConfig turn;
+    double linear_acceleration{0.2}, linear_deceleration{0.3};
+    double minimum_linear_speed{0.0};
   };
   void load(const std::string &map_file, navigation_safety::Footprint footprint,
             const Config &config);
@@ -32,6 +43,12 @@ public:
             const mission_control_interfaces::msg::RecoveryCandidate &candidate,
             const std::vector<std::string> &blocked);
   bool safe(const std::vector<Pose> &poses) const;
+  void set_dynamic_obstacles(const std::vector<navigation_safety::Polygon> &obstacles);
+  bool exit_matches(const Pose &pose,
+    const mission_control_interfaces::msg::RecoveryCandidate &candidate) const;
+  std::string lane_at_pose(const Pose &pose) const;
+  void set_incoming_lane(const std::string &lane,
+                        navigation_safety::Point junction);
   Pose integrate(Pose pose, double v, double w, double dt) const;
   std::vector<Pose> motion_samples(Pose pose, double v, double target_w,
                                    double initial_w, double duration,
@@ -53,11 +70,21 @@ private:
   std::vector<navigation_safety::Polygon> static_, dynamic_;
   std::map<std::string, navigation_safety::Point> nodes_;
   std::vector<Lane> lanes_;
+  std::vector<navigation_safety::Polygon> observed_;
+  bool live_obstacles_set_{false};
   std::string anchor_, blocked_lane_;
+  std::string incoming_override_;
+  navigation_safety::Point junction_override_{};
   std::vector<Step> steps_;
   double active_time_{0.0}, last_wall_{0.0};
   bool paused_{true};
   int last_expansions_{0};
+  bool append_straight(Pose &pose, Pose target, double direction,
+                       const std::string &phase, const std::string &lane);
+  bool append_turn(Pose &pose, navigation_safety::Point junction,
+                   double incoming, double outgoing, bool reverse_arrival,
+                   const std::string &lane);
+  bool braking_safe(Pose pose, double linear, double angular) const;
 };
 } // namespace visual_navigation
 #endif

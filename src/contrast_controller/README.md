@@ -20,29 +20,29 @@
 
 入口调整在动作开始时固定前进或倒退方向，并同时闭环修正纵向、横向和航向误差；入口位置与航向条件同时满足后才进入第一段转弯，越过入口捕获盒则停车请求新路线，不反复换向。两段转弯保持实车可响应的固定线速度，角速度由目标航向反馈计算并限制在配置的最小、最大值之间；中间直行段使用 YAML 中独立的 `25 mm` 正投影距离，达到上限仍未对准则停车。
 
-每个运动阶段都有独立阶段超时和无进展检查。转向阶段只认可朝目标减小的航向误差，平移不能掩盖停转；超时或无实际进展时输出零命令并返回 `NEED_REPLAN`，共享导航器要求新的 route id 后才能恢复。直接调用核心时支持暂停预算，但实节点的任务 hold 会复位 maneuver，恢复后从当前路线状态重新捕获，不承诺原阶段无缝续跑。
+每个运动阶段都有独立阶段超时和无进展检查。转向阶段只认可朝目标减小的航向误差，平移不能掩盖停转；超时或无实际进展时输出零命令并返回 `NEED_REPLAN`，共享导航器要求新的 route id 后才能恢复。任务 hold 和定位暂停保留动作上下文；暂停时输出零速，恢复后的阶段计时不计入暂停时间。
 
-## 避障恢复的严格转弯交接
+## 本轮道路避障恢复
 
-Contrast 避障恢复先沿当前道路倒车到候选路口转弯点附近，确认车轮和融合速度已经停止，再启动同一个 `TurnManeuverController`。恢复阶段严格按 `CAPTURE`、`APPROACH_ENTRY`、`TURN_60`、`DIAGONAL_CREEP`、`TURN_30`、`COMPLETE` 执行；恢复控制器不另行合成目标跟踪弧线。严格动作的每条非零命令都经过实时车身扫掠安全检查，单次固定动作无法表示的目标转角会停车进入故障保护。恢复使用的 `recovery_linear_speed`、`recovery_angular_speed`、`recovery_primitive_s`、`recovery_max_radius_m` 和 `recovery_max_expansions` 参数保持原值。
+直路障碍先按真实道路航向倒退到车后最近路口的合法入口，确认停车，再执行固定 `CAPTURE → APPROACH_ENTRY → TURN_60 → DIAGONAL_CREEP → TURN_30` 动作。T/X 的左右出口使用一次固定转弯，反向出口借用旁支执行两次固定转弯。双转之间按已确认的设计执行：旁支前进、停车、短倒车入位、停车、第二次转弯。每次换向都需要开始停车之后的新遥测、连续停止样本和保持时间。
 
-## 回撤受阻后的有界前进调整
+恢复采用 `recovery_turn_*` 独立配置，正常行驶参数保持隔离基线。旧 `recovery_max_radius_m` 仅保留参数兼容性，长倒车终点由道路拓扑决定；候选在发布前及被选中时均预检完整动作。预检和执行都使用真实输出限幅、底盘死区和中央车辆物理参数，逐周期检查车身轨迹及制动尾迹。
 
-首次回撤命令被车身扫掠拒绝时，先停车并确认轮速，再沿入路航向与实时横向误差闭环前进一次。前进时间为 `clamp(0.5 * recovery_primitive_s, 0.20, 0.45)`，当前配置为 0.225 s；每条命令照常执行扫掠检查。结束后再次停车确认，再给一次原有有限预算的回撤重试。前进不安全或重试仍受阻时安全报错，不循环换向，也不会在调整过程中启动转弯。现有正常及恢复参数不变。
+正常转弯中出现异常障碍时保存原转弯上下文，安全完成原动作、停车、执行固定倒转返回原车道、停车，再按后方路口 T/X 模板恢复。原动作或返回动作不安全会明确停车失败。
 
-默认六场正式地图回归与专用分支验证分别运行：
+完成恢复前检查真实道路、出口侧位置、横向偏差、目标航向和车身安全。新障碍使当前事务失效并停车，不继续使用旧的安全计划。恢复动作不提交 RFID、隧道或道路覆盖进度。
+
+本轮验证结果见 [RECOVERY_REVIEW.md](RECOVERY_REVIEW.md)。此前报告中“六场全通过”的历史记录不作为当前分支的验收结果。
 
 ```bash
 source /opt/ros/humble/setup.bash
 source install/setup.bash
+python3 src/contrast_controller/scripts/run_pose_recovery_scenarios.py --list
 python3 src/contrast_controller/scripts/run_pose_recovery_scenarios.py \
-  --output /tmp/contrast_six_new
-python3 src/contrast_controller/scripts/run_pose_recovery_scenarios.py \
-  --forward-adjustment-fixture --base-domain 226 \
-  --output /tmp/contrast_adjustment_new --timeout 75
+  --scenario south_nominal --output /tmp/contrast_recovery_new
 ```
 
-专用夹具只在输出目录生成测试地图，加入 1 mm 角点障碍，并将测试规划余量由正式 15 mm 设为与恢复一致的 2 mm，以避免初始规划直接拒绝该边界姿态。正式地图文件不变。验收必须记录一次调整、两次实测停车、安全回撤、一次严格转弯和完成后的 0.20 m 连续直行；详情见 [POSE_RECOVERY_VALIDATION_REPORT.md](POSE_RECOVERY_VALIDATION_REPORT.md)。
+运行器记录真实内部转弯阶段、独立道路投影、全程实测换向停车、候选编号、恢复完成和恢复后连续前进；总控路线 ACK 需在任务管理器日志中单独核对。方向场景必须实际选中对应模板；没有选中时记录覆盖不足。碰撞保护介入、故障或缺少证据均不能通过。
 
 ## 构建与测试
 
@@ -50,7 +50,7 @@ python3 src/contrast_controller/scripts/run_pose_recovery_scenarios.py \
 
 ```bash
 colcon build --packages-up-to contrast_controller
-colcon test --packages-select contrast_controller --event-handlers console_direct+
+colcon test --packages-select contrast_navigation_core contrast_controller --event-handlers console_direct+
 colcon test-result --verbose
 ```
 

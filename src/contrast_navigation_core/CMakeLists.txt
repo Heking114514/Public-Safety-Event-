@@ -32,7 +32,10 @@ add_library(contrast_waypoint_navigator_core STATIC
   src/runtime.cpp
   src/obstacle_recovery.cpp
   src/pose_recovery.cpp
+  src/recovery_routes.cpp
   src/pose_recovery_control.cpp
+  src/recovery_execution.cpp
+  src/turn_recovery.cpp
   src/corner_shunt.cpp
   src/control.cpp
   src/maneuvers.cpp
@@ -83,5 +86,17 @@ ament_export_dependencies(
   sensor_msgs
   std_msgs
   std_srvs)
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  find_package(vehicle_loopback_sim REQUIRED)
+  ament_add_gtest(recovery_stop_test test/recovery_stop_test.cpp)
+  target_include_directories(recovery_stop_test PRIVATE include)
+  ament_add_gtest(recovery_routes_test
+    test/recovery_routes_test.cpp
+    ../contrast_controller/src/turn_maneuver.cpp)
+  target_link_libraries(recovery_routes_test contrast_waypoint_navigator_core
+    vehicle_loopback_sim::loopback_sim_core yaml-cpp)
+endif()
 
 ament_package()
