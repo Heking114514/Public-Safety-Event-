@@ -34,7 +34,9 @@ void MissionManager::start_mission(const std::vector<std::string> & targets)
   completed_route_retreat_available_ = false;
   next_planning_context_ = PlanningContext{};
   completed_stages_ = 0;
-  ordinary_nodes_since_task_ = 1;
+  // 精确计数表示已经经过的普通节点；新任务尚未经过任何节点。
+  // 前方起点/路口由规划器的接入段和道路扩展各计一次。
+  ordinary_nodes_since_task_ = pose_recovery_enabled_ ? 0 : 1;
   plan_retries_ = 0;
   no_progress_routes_ = 0;
   request_hold("operator", false, "new mission started");

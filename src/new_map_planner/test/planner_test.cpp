@@ -102,6 +102,26 @@ TEST(Transform, LaunchPoseIsMapOrigin) {
   EXPECT_NEAR(round_trip.yaw, 0.0, 1.0e-9);
 }
 
+TEST(Planner, FreshMissionBehindLaunchHasNoPreviouslyPassedOrdinaryNode) {
+  const auto config = OfficialConfig();
+  new_map_planner::MapPlanner planner(config);
+  auto request = HomeRequest("layer1");
+  request.start_map = {{-.02, 0.0}, 0.0};  // loopback YAML 的默认初始位姿。
+  request.return_home = false;
+  request.allow_partial = true;
+  request.ordinary_nodes_since_task_exact = true;
+  request.ordinary_nodes_since_task = 1;
+  EXPECT_FALSE(planner.plan(request).success);  // 复现旧总控虚增一次计数。
+  request.ordinary_nodes_since_task = 0;
+  const auto result = planner.plan(request);
+  ASSERT_TRUE(result.success) << result.message;
+  ASSERT_FALSE(result.visit_order.empty());
+  EXPECT_EQ(result.visit_order.front(), "1");
+  EXPECT_NEAR(result.navigation_path.front().position.x, -.02, 1e-9);
+  EXPECT_TRUE(result.collision_checked);
+  for (const auto &traversal : result.traversals) EXPECT_FALSE(traversal.reverse);
+}
+
 TEST(Planner, ExactTwelveTargetRouteIsExecutableAndReturnsHome) {
   const auto config = OfficialConfig();
   new_map_planner::MapPlanner planner(config);
