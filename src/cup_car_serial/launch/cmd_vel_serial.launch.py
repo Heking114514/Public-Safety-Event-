@@ -43,6 +43,9 @@ def generate_launch_description():
                 "speak_text_service": ParameterValue(
                     speak_text_service, value_type=str
                 ),
+                "speech_protocol": ParameterValue(
+                    LaunchConfiguration("speech_protocol"), value_type=str
+                ),
                 "send_rate_hz": ParameterValue(send_rate_hz, value_type=float),
                 "command_timeout_s": ParameterValue(
                     command_timeout_s, value_type=float
@@ -70,6 +73,7 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "speak_text_service", default_value="/cup_car_serial/speak_text"
             ),
+            DeclareLaunchArgument("speech_protocol", default_value="legacy"),
             DeclareLaunchArgument("send_rate_hz", default_value="20.0"),
             DeclareLaunchArgument("command_timeout_s", default_value="0.4"),
             DeclareLaunchArgument("rpy_timeout_s", default_value="0.4"),

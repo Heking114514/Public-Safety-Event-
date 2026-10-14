@@ -274,6 +274,10 @@ public:
       "rfid_uid_topic", "/cup_car_serial/rfid_uid");
     speak_text_service_ = declare_parameter<std::string>(
       "speak_text_service", "/cup_car_serial/speak_text");
+    speech_protocol_ = declare_parameter<std::string>("speech_protocol", "legacy");
+    if (speech_protocol_ != "legacy" && speech_protocol_ != "tts2") {
+      throw std::invalid_argument("speech_protocol must be legacy or tts2");
+    }
     bmi088_raw_imu_topic_ = declare_parameter<std::string>(
       "bmi088_raw_imu_topic", "/cup_car_serial/bmi088_raw_imu");
     bmi088_attitude_topic_ = declare_parameter<std::string>(
@@ -383,6 +387,10 @@ private:
     rclcpp::Service<mission_control_interfaces::srv::SpeakText>::SharedPtr service;
     std::unique_ptr<cup_car_serial::Tts2RequestTracker> tracker;
     std::string frame;
+    bool legacy{false};
+    bool transmitted{false};
+    std::chrono::milliseconds legacy_occupation{0};
+    std::chrono::steady_clock::time_point legacy_done_at{};
   };
 
   void connect()
@@ -620,14 +628,26 @@ private:
       auto pending = std::make_unique<PendingSpeech>();
       pending->service = service;
       pending->request_header = request_header;
-      pending->frame = frame;
+      pending->legacy = speech_protocol_ == "legacy";
+      pending->frame = pending->legacy ? "TTS," + gbk + "\r\n" : frame;
+      size_t characters = 0U;
+      for (size_t i = 0U; i < gbk.size(); ++i) {
+        if (static_cast<unsigned char>(gbk[i]) >= 0x81U) {
+          ++i;  // Payload has already passed GBK structure validation.
+        }
+        ++characters;
+      }
+      // Include a conservative UART transfer allowance. Legacy firmware has no
+      // playback acknowledgement; this is only local queue pacing.
+      pending->legacy_occupation = std::chrono::milliseconds(
+        1500U + 800U * characters + 10U * gbk.size());
       pending->tracker = std::make_unique<cup_car_serial::Tts2RequestTracker>(
         id, started, std::chrono::milliseconds(200), std::chrono::seconds(1),
         std::chrono::seconds(120));
       pendingSpeech_ = std::move(pending);
       RCLCPP_INFO(
-        get_logger(), "Queued MCU TTS2 request id=%u (%zu GBK bytes)",
-        id, gbk.size());
+        get_logger(), "Queued MCU speech protocol=%s id=%u (%zu GBK bytes)",
+        speech_protocol_.c_str(), id, gbk.size());
     } catch (const std::exception & error) {
       respond(false, error.what());
     }
@@ -639,6 +659,18 @@ private:
       return;
     }
     const auto now = std::chrono::steady_clock::now();
+    if (pendingSpeech_->legacy) {
+      if (!pendingSpeech_->transmitted) {
+        serial_.write_all(pendingSpeech_->frame);
+        pendingSpeech_->transmitted = true;
+        pendingSpeech_->legacy_done_at = now + pendingSpeech_->legacy_occupation;
+      } else if (now >= pendingSpeech_->legacy_done_at) {
+        finish_pending_speech(
+          true, "Legacy TTS frame sent; local occupation estimate elapsed; "
+          "no MCU acknowledgement or playback confirmation");
+      }
+      return;
+    }
     if (pendingSpeech_->tracker->check_deadline(now) ==
       cup_car_serial::Tts2RequestResult::TIMED_OUT)
     {
@@ -660,7 +692,7 @@ private:
       }
       return;
     }
-    if (!pendingSpeech_) {
+    if (!pendingSpeech_ || pendingSpeech_->legacy) {
       return;
     }
     const auto result = pendingSpeech_->tracker->observe(
@@ -1039,6 +1071,7 @@ private:
   std::string rfid_number_topic_;
   std::string rfid_uid_topic_;
   std::string speak_text_service_;
+  std::string speech_protocol_;
   std::string bmi088_raw_imu_topic_;
   std::string bmi088_attitude_topic_;
   std::string bmi088_frame_id_;
