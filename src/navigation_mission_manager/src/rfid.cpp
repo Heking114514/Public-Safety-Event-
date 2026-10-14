@@ -46,6 +46,7 @@ void MissionManager::reset_rfid()
   route_checkpoint_authorizations_pending_.clear();
   rfid_confirmed_tasks_.clear();
   rfid_announced_.clear();
+  rfid_duplicate_guard_.reset();
   rfid_pending_card_.reset();
   rfid_pending_route_id_ = 0U;
   rfid_next_hold_retry_at_ = 0.0;
@@ -167,6 +168,15 @@ void MissionManager::on_rfid_number(const std_msgs::msg::Int32::SharedPtr messag
   // confirmation. Even an idle or restarted manager must stop on a card.
   if (rfid_active_.has_value() || rfid_pending_card_.has_value())
   {
+    return;
+  }
+
+  refresh_rfid_duplicate_guard();
+  if (rfid_duplicate_guard_.has_value() && rfid_duplicate_guard_->card == number &&
+    pose_.has_value() && pose_->fresh(odom_timeout_s_) &&
+    std::isfinite(pose_->x) && std::isfinite(pose_->y))
+  {
+    RCLCPP_DEBUG(get_logger(), "Ignoring repeated RFID card %d near completed checkpoint", number);
     return;
   }
 
@@ -307,8 +317,23 @@ void MissionManager::on_current_waypoint(const std_msgs::msg::Int32::SharedPtr m
   current_waypoint_index_ = message->data;
 }
 
+void MissionManager::refresh_rfid_duplicate_guard()
+{
+  if (!rfid_duplicate_guard_.has_value() || !pose_.has_value() ||
+    !pose_->fresh(odom_timeout_s_) || !std::isfinite(pose_->x) || !std::isfinite(pose_->y))
+  {
+    return;
+  }
+  if (std::hypot(pose_->x - rfid_duplicate_guard_->x, pose_->y - rfid_duplicate_guard_->y) >
+    rfid_detection_radius_m_)
+  {
+    rfid_duplicate_guard_.reset();
+  }
+}
+
 void MissionManager::service_rfid(double now_seconds)
 {
+  refresh_rfid_duplicate_guard();
   service_speech_text(now_seconds);
   if (rfid_pending_card_.has_value()) {
     if (rfid_phase_ == "delaying_stop") {
@@ -667,6 +692,16 @@ void MissionManager::finish_rfid_workflow()
     rfid_confirmed_tasks_.insert(std::to_string(*rfid_active_));
   }
   rfid_confirmed_waypoints_.insert(rfid_active_waypoint_index_);
+  if (rfid_active_.has_value() && active_route_.has_value() &&
+    active_route_->route_id == rfid_active_route_id_ &&
+    rfid_active_waypoint_index_ < active_route_->plan.navigation_path.poses.size())
+  {
+    const auto & point =
+      active_route_->plan.navigation_path.poses[rfid_active_waypoint_index_].pose.position;
+    if (std::isfinite(point.x) && std::isfinite(point.y)) {
+      rfid_duplicate_guard_ = CompletedRfidVisit{rfid_active_card_, point.x, point.y};
+    }
+  }
   request_hold("rfid", false, "RFID patrol stop completed");
   rfid_active_.reset();
   rfid_active_card_ = 0;

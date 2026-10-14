@@ -210,6 +210,7 @@ private:
   void on_current_waypoint(const std_msgs::msg::Int32::SharedPtr message);
   void begin_rfid_post_speech(double now, bool speech_required);
   void finish_rfid_workflow();
+  void refresh_rfid_duplicate_guard();
 
   geometry_msgs::msg::Pose pose_message() const;
   geometry_msgs::msg::Polygon polygon_message(const Polygon2d & polygon) const;
@@ -289,6 +290,13 @@ private:
   std::set<std::size_t> route_checkpoint_authorizations_pending_;
   std::set<std::string> rfid_confirmed_tasks_;
   std::set<int> rfid_announced_;
+  struct CompletedRfidVisit
+  {
+    int card;
+    double x;
+    double y;
+  };
+  std::optional<CompletedRfidVisit> rfid_duplicate_guard_;
   std::optional<int> rfid_pending_card_;
   uint64_t rfid_pending_route_id_{0};
   double rfid_next_hold_retry_at_{0.0};

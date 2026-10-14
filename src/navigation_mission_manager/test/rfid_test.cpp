@@ -62,6 +62,15 @@ struct ManagerRfidTestAccess
     m.pose_->linear_speed = speed;
     m.service_rfid(time);
   }
+  static void finish(MissionManager & m) {m.finish_rfid_workflow();}
+  static void move(MissionManager & m, double dx)
+  {
+    m.pose_->x += dx;
+    m.pose_->received_at = steady_seconds();
+  }
+  static void stale_pose(MissionManager & m)
+  {m.pose_->received_at = steady_seconds() - m.odom_timeout_s_ - 1.0;}
+  static double radius(const MissionManager & m) {return m.rfid_detection_radius_m_;}
   static double stop_deadline(const MissionManager & m) {return m.rfid_next_hold_retry_at_;}
   static double settle(const MissionManager & m) {return m.rfid_stationary_settle_s_;}
   static void reset(MissionManager & m) {m.reset_rfid();}
@@ -237,6 +246,77 @@ TEST_F(ManagerRfidTest, ValidCardNeedsHoldConfirmationAndStableStationaryPose)
   EXPECT_TRUE(nmm::ManagerRfidTestAccess::active(*manager));
   EXPECT_FALSE(nmm::ManagerRfidTestAccess::pending(*manager));
   EXPECT_FALSE(nmm::ManagerRfidTestAccess::faulted(*manager));
+}
+
+TEST_F(ManagerRfidTest, CompletedCardNearCheckpointDoesNotStopAgainAfterRouteChange)
+{
+  nmm::ManagerRfidTestAccess::route(*manager);
+  receive(12);
+  stop_and_settle();
+  ASSERT_TRUE(nmm::ManagerRfidTestAccess::active(*manager));
+  nmm::ManagerRfidTestAccess::finish(*manager);
+  collect(2U);
+  nmm::ManagerRfidTestAccess::change_route(*manager);
+  nmm::ManagerRfidTestAccess::move(*manager, 0.044);
+  for (int i = 0; i < 3; ++i) {
+    nmm::ManagerRfidTestAccess::receive(*manager, 12);
+    EXPECT_FALSE(nmm::ManagerRfidTestAccess::pending(*manager));
+    nmm::ManagerRfidTestAccess::service(*manager, nmm::steady_seconds() + 10.0);
+  }
+  executor.spin_some();
+  EXPECT_EQ(requests.size(), 2U);
+  nmm::ManagerRfidTestAccess::receive(*manager, 11);
+  EXPECT_TRUE(nmm::ManagerRfidTestAccess::pending(*manager));
+  nmm::ManagerRfidTestAccess::service(
+    *manager, nmm::ManagerRfidTestAccess::stop_deadline(*manager));
+  collect(3U);
+  EXPECT_TRUE(requests.back().hold);
+}
+
+TEST_F(ManagerRfidTest, LeavingCheckpointRearmsSameCardEvenWhenReturning)
+{
+  nmm::ManagerRfidTestAccess::route(*manager);
+  receive(12);
+  stop_and_settle();
+  ASSERT_TRUE(nmm::ManagerRfidTestAccess::active(*manager));
+  nmm::ManagerRfidTestAccess::finish(*manager);
+  collect(2U);
+  const double departure = nmm::ManagerRfidTestAccess::radius(*manager) + 0.01;
+  nmm::ManagerRfidTestAccess::move(*manager, departure);
+  nmm::ManagerRfidTestAccess::service(*manager, nmm::steady_seconds());
+  nmm::ManagerRfidTestAccess::move(*manager, -departure);
+  nmm::ManagerRfidTestAccess::receive(*manager, 12);
+  EXPECT_TRUE(nmm::ManagerRfidTestAccess::pending(*manager));
+  nmm::ManagerRfidTestAccess::service(
+    *manager, nmm::ManagerRfidTestAccess::stop_deadline(*manager));
+  collect(3U);
+  EXPECT_TRUE(requests.back().hold);
+}
+
+TEST_F(ManagerRfidTest, StalePoseDoesNotSuppressCardAfterCompletion)
+{
+  nmm::ManagerRfidTestAccess::route(*manager);
+  receive(12);
+  stop_and_settle();
+  ASSERT_TRUE(nmm::ManagerRfidTestAccess::active(*manager));
+  nmm::ManagerRfidTestAccess::finish(*manager);
+  collect(2U);
+  nmm::ManagerRfidTestAccess::stale_pose(*manager);
+  nmm::ManagerRfidTestAccess::receive(*manager, 12);
+  EXPECT_TRUE(nmm::ManagerRfidTestAccess::pending(*manager));
+}
+
+TEST_F(ManagerRfidTest, ResetClearsCompletedCardSuppression)
+{
+  nmm::ManagerRfidTestAccess::route(*manager);
+  receive(12);
+  stop_and_settle();
+  ASSERT_TRUE(nmm::ManagerRfidTestAccess::active(*manager));
+  nmm::ManagerRfidTestAccess::finish(*manager);
+  collect(2U);
+  nmm::ManagerRfidTestAccess::reset(*manager);
+  nmm::ManagerRfidTestAccess::receive(*manager, 12);
+  EXPECT_TRUE(nmm::ManagerRfidTestAccess::pending(*manager));
 }
 
 TEST_F(ManagerRfidTest, InvalidCardIsRejectedOnlyAfterStop)

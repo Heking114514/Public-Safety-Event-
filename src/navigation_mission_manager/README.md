@@ -83,7 +83,10 @@ waypoint_navigator -> /cmd_vel_nav
 `/fused_odometry/correct_map_position` 请求校正，并等待融合位姿进入目标点 `0.025 m` 范围且
 稳定 `0.20 s`。非播报点驻停 `1 s`，播报点沿用播报和原有驻停时间。最后总控通过导航器
 `/waypoint_navigator/confirm_rfid_checkpoint` 服务放行指定路线号、航点序号和超节点 ID。
-卡号重复按当前物理点去重，因此相同卡号可在不同物理超节点再次使用。
+完成 RFID 放行后，在已完成点的 `rfid_detection_radius_m` 范围内（默认 `0.30 m`），
+同卡号重复事件不再触发延迟停车；此状态保留到下一条路线。新鲜定位确认离开该范围后解除
+屏蔽，再次返回或在其他物理点读到同卡号可重新停车。不同卡号正常处理；定位缺失或过期时
+仍按读卡停车流程处理。显式任务启动/复位会清除屏蔽。
 规划器的 `visit_order` 只描述预计访问顺序，不再直接作为任务点完成凭据。
 实车默认使用 `task_confirmation_mode: rfid`，因此只有真实 RFID 事件可以确认任务点。
 loopback 显式使用 `task_confirmation_mode: route`，在路线已 ACK、实际执行并收到
