@@ -1,0 +1,9 @@
+{
+  "passed": true,
+  "traces": 18,
+  "independent_rk4_substeps": 85600,
+  "max_endpoint_state_error": 2.3333765475364032e-14,
+  "min_sampled_clearance_after_margin_m": 2.0258954060992096e-06,
+  "substeps_per_control_interval": 100,
+  "method": "RK4 of base_link differential equations"
+}

@@ -34,6 +34,9 @@
 #include "std_msgs/msg/string.hpp"
 #include "std_msgs/msg/u_int64.hpp"
 #include "std_srvs/srv/trigger.hpp"
+#include "visual_navigation/pose_recovery.hpp"
+#include "geometry_msgs/msg/polygon_stamped.hpp"
+#include "mission_control_interfaces/srv/select_recovery.hpp"
 #include "visual_navigation/control_state.hpp"
 #include "visual_navigation/turn_maneuver.hpp"
 #include "visual_navigation/fusion_health_policy.hpp"
@@ -229,6 +232,26 @@ private:
   double ControlYawRate() const;
 
   visual_navigation::NavigationInputStatus CurrentNavigationInputs() const;
+
+  void InitPoseRecovery();
+  void BeginPoseRecovery();
+  bool RunPoseRecovery();
+  void PublishPoseRecovery(const std::string &phase);
+  bool poseRecoveryEnabled_{false};
+  std::string poseRecoveryPhase_;
+  uint64_t poseRecoveryId_{0}, poseRecoveryRevision_{0};
+  visual_navigation::PoseRecovery poseRecovery_;
+  navigation_safety::Polygon poseRecoveryObstacle_;
+  geometry_msgs::msg::PolygonStamped latestRecoveryPolygon_;
+  std::chrono::steady_clock::time_point recoveryPolygonTime_{};
+  std::vector<mission_control_interfaces::msg::RecoveryCandidate> recoveryCandidates_;
+  mission_control_interfaces::msg::RecoveryCandidate recoverySelected_;
+  std::size_t recoveryStep_{0};
+  double recoveryStepStarted_{0.0}, recoveryPauseUntil_{0.0}, recoveryLastProgress_{0.0};
+  visual_navigation::PoseRecovery::Pose recoveryProgressPose_;
+  bool recoveryStepArmed_{false};
+  rclcpp::Subscription<geometry_msgs::msg::PolygonStamped>::SharedPtr recoveryPolygonSubscription_;
+  rclcpp::Service<mission_control_interfaces::srv::SelectRecovery>::SharedPtr selectRecoveryService_;
 
   void RunControl();
 

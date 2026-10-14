@@ -14,10 +14,12 @@ from vehicle_config import parameters_for
 def generate_launch_description():
     visual_share = Path(get_package_share_directory("visual_navigation"))
     contrast_share_path = Path(get_package_share_directory("contrast_controller"))
+    map_share = Path(get_package_share_directory("new_map_planner"))
     serial_share = FindPackageShare("cup_car_serial")
     contrast_share = FindPackageShare("contrast_controller")
     production_config = visual_share / "config" / "waypoint_navigation.yaml"
     contrast_config = contrast_share_path / "config" / "contrast_controller.yaml"
+    default_recovery_map = str(map_share / "config" / "arena.yaml")
     with contrast_config.open("r", encoding="utf-8") as stream:
         contrast_parameters = yaml.safe_load(stream)["contrast_controller"][
             "ros__parameters"
@@ -35,6 +37,7 @@ def generate_launch_description():
     front_obstacle_range_topic = LaunchConfiguration("front_obstacle_range_topic")
     cmd_vel_topic = LaunchConfiguration("cmd_vel_topic")
     route_input_topic = LaunchConfiguration("route_input_topic")
+    recovery_map_file = LaunchConfiguration("recovery_map_file")
     autostart = LaunchConfiguration("autostart")
     use_sim_time = LaunchConfiguration("use_sim_time")
     serial_device = LaunchConfiguration("serial_device")
@@ -83,6 +86,9 @@ def generate_launch_description():
                 "cmd_vel_topic": ParameterValue(cmd_vel_topic, value_type=str),
                 "route_input_topic": ParameterValue(
                     route_input_topic, value_type=str
+                ),
+                "recovery_map_file": ParameterValue(
+                    recovery_map_file, value_type=str
                 ),
                 "autostart": ParameterValue(autostart, value_type=bool),
                 "use_sim_time": ParameterValue(use_sim_time, value_type=bool),
@@ -142,6 +148,9 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "route_input_topic",
                 default_value="/waypoint_navigation/route_input",
+            ),
+            DeclareLaunchArgument(
+                "recovery_map_file", default_value=default_recovery_map
             ),
             DeclareLaunchArgument("autostart", default_value="false"),
             DeclareLaunchArgument("use_sim_time", default_value="false"),

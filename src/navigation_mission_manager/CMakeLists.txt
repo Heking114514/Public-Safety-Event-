@@ -36,6 +36,7 @@ add_executable(mission_manager_node
   src/main.cpp
   src/node.cpp
   src/planning.cpp
+  src/pose_recovery.cpp
   src/recovery.cpp
   src/rfid.cpp
   src/services.cpp)

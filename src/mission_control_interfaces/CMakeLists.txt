@@ -17,6 +17,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/MissionState.msg"
   "msg/MotionHoldState.msg"
   "msg/NavigationRecoveryState.msg"
+  "msg/RecoveryCandidate.msg"
+  "srv/SelectRecovery.srv"
   "srv/ContinueRetreat.srv"
   "srv/ControlMission.srv"
   "srv/CorrectMapPosition.srv"

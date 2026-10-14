@@ -1,0 +1,14 @@
+{
+  "certified": true,
+  "angle_domain_deg": [-40, 40],
+  "stationary_goal_band_deg": [-3, 3],
+  "lipschitz_enclosure_cells": 3725,
+  "max_cell_width_deg": 0.01,
+  "roundoff_padding_m": 1.0000000000000001e-09,
+  "safe_turn_interval_width_lower_bound_m": 0.012839597204592518,
+  "largest_prep_lateral_tick_m": 0.00074991887796762918,
+  "prep_path_upper_bound_m": 0.02069746795889213,
+  "total_base_path_upper_bound_m": 0.06679470001477511,
+  "inflated_footprint_abs_x_upper_bound_m": 0.15801147478783972,
+  "allowed_abs_x_m": 0.20000000000000001
+}

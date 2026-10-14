@@ -660,6 +660,8 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
           std::bind(&WaypointNavigator::HandleConfirmRfidCheckpoint, this,
                     std::placeholders::_1, std::placeholders::_2));
 
+  InitPoseRecovery();
+
   routeLoaded_ = LoadRoute(routeFile_);
   if (routeLoaded_) {
     PublishRoutePath();

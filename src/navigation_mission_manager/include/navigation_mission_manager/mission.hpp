@@ -60,6 +60,8 @@ public:
   void commit_empty(const PlanSpec & spec, bool plan_complete);
   std::size_t progress_count() const;
   std::string summary() const;
+  void skip_blocked_roads(const std::set<std::string> & blocked);
+  const std::set<std::string> & skipped_roads() const {return skipped_roads_;}
 
   const MissionLayout & layout() const {return layout_;}
   const std::vector<std::string> & requested_tasks() const {return requested_tasks_;}
@@ -77,6 +79,7 @@ private:
   std::set<std::string> completed_tasks_;
   std::set<std::string> completed_tunnels_;
   std::set<std::string> confirmed_lanes_;
+  std::set<std::string> skipped_roads_;
   bool started_{false};
   bool running_{false};
   bool paused_{false};

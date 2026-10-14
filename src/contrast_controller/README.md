@@ -1,9 +1,9 @@
 # contrast_controller
 
-`contrast_controller` 是独立的 ROS 2 对照控制包。可执行文件复用
-`visual_navigation` 导出的完整 `waypoint_navigator_core`，话题、服务、路线处理、
-定位健康检查、停车和障碍恢复均沿用正式导航实现；本包只提供同一头文件 ABI 下的
-`visual_navigation::TurnManeuverController` 实现。
+`contrast_controller` 是独立的 ROS 2 对照控制包。可执行文件链接
+`contrast_navigation_core` 导出的 `contrast_waypoint_navigator_core`，保留正式导航的
+话题、服务、路线处理、定位健康检查和停车协议；对照动作与恢复修复均位于 Contrast
+包内，不影响其他控制器的调参。
 
 ## 运行边界
 
@@ -21,6 +21,28 @@
 入口调整在动作开始时固定前进或倒退方向，并同时闭环修正纵向、横向和航向误差；入口位置与航向条件同时满足后才进入第一段转弯，越过入口捕获盒则停车请求新路线，不反复换向。两段转弯保持实车可响应的固定线速度，角速度由目标航向反馈计算并限制在配置的最小、最大值之间；中间直行段使用 YAML 中独立的 `25 mm` 正投影距离，达到上限仍未对准则停车。
 
 每个运动阶段都有独立阶段超时和无进展检查。转向阶段只认可朝目标减小的航向误差，平移不能掩盖停转；超时或无实际进展时输出零命令并返回 `NEED_REPLAN`，共享导航器要求新的 route id 后才能恢复。直接调用核心时支持暂停预算，但实节点的任务 hold 会复位 maneuver，恢复后从当前路线状态重新捕获，不承诺原阶段无缝续跑。
+
+## 避障恢复的严格转弯交接
+
+Contrast 避障恢复先沿当前道路倒车到候选路口转弯点附近，确认车轮和融合速度已经停止，再启动同一个 `TurnManeuverController`。恢复阶段严格按 `CAPTURE`、`APPROACH_ENTRY`、`TURN_60`、`DIAGONAL_CREEP`、`TURN_30`、`COMPLETE` 执行；恢复控制器不另行合成目标跟踪弧线。严格动作的每条非零命令都经过实时车身扫掠安全检查，单次固定动作无法表示的目标转角会停车进入故障保护。恢复使用的 `recovery_linear_speed`、`recovery_angular_speed`、`recovery_primitive_s`、`recovery_max_radius_m` 和 `recovery_max_expansions` 参数保持原值。
+
+## 回撤受阻后的有界前进调整
+
+首次回撤命令被车身扫掠拒绝时，先停车并确认轮速，再沿入路航向与实时横向误差闭环前进一次。前进时间为 `clamp(0.5 * recovery_primitive_s, 0.20, 0.45)`，当前配置为 0.225 s；每条命令照常执行扫掠检查。结束后再次停车确认，再给一次原有有限预算的回撤重试。前进不安全或重试仍受阻时安全报错，不循环换向，也不会在调整过程中启动转弯。现有正常及恢复参数不变。
+
+默认六场正式地图回归与专用分支验证分别运行：
+
+```bash
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+python3 src/contrast_controller/scripts/run_pose_recovery_scenarios.py \
+  --output /tmp/contrast_six_new
+python3 src/contrast_controller/scripts/run_pose_recovery_scenarios.py \
+  --forward-adjustment-fixture --base-domain 226 \
+  --output /tmp/contrast_adjustment_new --timeout 75
+```
+
+专用夹具只在输出目录生成测试地图，加入 1 mm 角点障碍，并将测试规划余量由正式 15 mm 设为与恢复一致的 2 mm，以避免初始规划直接拒绝该边界姿态。正式地图文件不变。验收必须记录一次调整、两次实测停车、安全回撤、一次严格转弯和完成后的 0.20 m 连续直行；详情见 [POSE_RECOVERY_VALIDATION_REPORT.md](POSE_RECOVERY_VALIDATION_REPORT.md)。
 
 ## 构建与测试
 
@@ -115,4 +137,4 @@ scripts/start_visual_navigation.sh --contrast --no-build
 
 部署启动文件应以 `contrast_controller` 替换正式导航可执行文件，并按以下顺序向同一
 节点注入参数：正式导航通用参数、本包转弯参数、`vehicle_config` 生成的物理参数。
-这样 A/B 对照只改变转弯控制实现，不会分叉导航外围逻辑。
+这样对照动作与恢复控制的改动集中于 Contrast 包内，不影响其他控制器的现有参数。
