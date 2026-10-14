@@ -75,7 +75,10 @@ waypoint_navigator -> /cmd_vel_nav
 
 串口桥只发布 `/cup_car_serial/rfid_number`。导航器到达超节点后沿来向以 `0.035 m/s` 低速
 扫描，最多越过地图节点 `0.20 m` 并停等读卡；里程计本身不能确认节点、推进路线或触发转弯。
-读到卡后任务总控申请 `navigation_mission_manager/rfid` 驻停，等待驻停生效，向
+读到卡号后任务总控先申请 `navigation_mission_manager/rfid` 驻停，不以任务是否运行、是否
+暂停或路线是否 ACK 作为停车前置条件。等待驻停生效、车速降低且位置稳定后，再校验卡号、
+任务状态、路线号和预期点位。任务或路线未就绪时进入 `FAULT` 并保持驻停，需显式重新启动或
+复位任务后恢复；不会释放驻停让旧路线继续执行。校验通过后向
 `/fused_odometry/correct_map_position` 请求校正，并等待融合位姿进入目标点 `0.025 m` 范围且
 稳定 `0.20 s`。非播报点驻停 `1 s`，播报点沿用播报和原有驻停时间。最后总控通过导航器
 `/waypoint_navigator/confirm_rfid_checkpoint` 服务放行指定路线号、航点序号和超节点 ID。

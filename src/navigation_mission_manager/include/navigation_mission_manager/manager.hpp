@@ -93,6 +93,7 @@ public:
 
 private:
   friend struct ManagerRecoveryTestAccess;
+  friend struct ManagerRfidTestAccess;
   void declare_parameters();
   void load_configuration();
   void create_interfaces();

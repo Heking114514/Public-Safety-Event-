@@ -163,15 +163,16 @@ void MissionManager::service_speech_text(double now_seconds)
 void MissionManager::on_rfid_number(const std_msgs::msg::Int32::SharedPtr message)
 {
   const int number = message->data;
-  if (!mission_->running() || mission_->paused() || !active_route_.has_value() ||
-    !active_route_->acknowledged || rfid_active_.has_value() || rfid_pending_card_.has_value())
+  // Mission and route checks belong after the motion hold and stationary
+  // confirmation. Even an idle or restarted manager must stop on a card.
+  if (rfid_active_.has_value() || rfid_pending_card_.has_value())
   {
     return;
   }
 
   const double now_seconds = steady_seconds();
   rfid_pending_card_ = number;
-  rfid_pending_route_id_ = active_route_->route_id;
+  rfid_pending_route_id_ = active_route_.has_value() ? active_route_->route_id : 0U;
   rfid_phase_ = "waiting_hold";
   rfid_next_hold_retry_at_ = now_seconds;
   rfid_release_at_.reset();
@@ -197,7 +198,14 @@ void MissionManager::reject_pending_rfid(const std::string & reason)
     number, reason.c_str());
   publish_text(
     "rfid_rejected:card=" + std::to_string(number) + ",reason=" + reason);
-  request_hold("rfid", false, "RFID candidate rejected: " + reason);
+  if (reason == "mission_or_route_not_ready") {
+    // Keep the RFID hold until an explicit mission start/reset clears it.
+    // Releasing it here could resume an old route after a manager restart.
+    fault("RFID card " + std::to_string(number) +
+      " detected, but mission or route is not ready; vehicle remains stopped");
+  } else {
+    request_hold("rfid", false, "RFID candidate rejected: " + reason);
+  }
   rfid_pending_card_.reset();
   rfid_pending_route_id_ = 0U;
   rfid_next_hold_retry_at_ = 0.0;
