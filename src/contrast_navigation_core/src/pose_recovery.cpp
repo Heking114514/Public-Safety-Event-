@@ -14,6 +14,9 @@ double wrap(double a) { return std::atan2(std::sin(a), std::cos(a)); }
 }
 void PoseRecovery::load(const std::string &path, navigation_safety::Footprint footprint,
                         const Config &config) {
+  if (!std::isfinite(config.forward_obstacle_clearance_m) ||
+      config.forward_obstacle_clearance_m<=0)
+    throw std::invalid_argument("forward obstacle clearance must be supplied and positive");
   config_ = config; footprint_ = footprint; footprint_.margin = config.margin;
   const auto root = YAML::LoadFile(path);
   const double ox = root["frame"]["map_origin_m"][0].as<double>();

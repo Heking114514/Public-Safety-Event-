@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <limits>
 #include <navigation_safety/checker.hpp>
 #include <mission_control_interfaces/msg/recovery_candidate.hpp>
 #include "visual_navigation/turn_maneuver.hpp"
@@ -35,7 +36,7 @@ public:
     TurnManeuverConfig turn;
     double linear_acceleration{0.2}, linear_deceleration{0.3};
     double minimum_linear_speed{0.0};
-    double forward_adjustment_m{0.08};
+    double forward_obstacle_clearance_m{std::numeric_limits<double>::quiet_NaN()};
   };
   void load(const std::string &map_file, navigation_safety::Footprint footprint,
             const Config &config);
@@ -45,6 +46,8 @@ public:
             const mission_control_interfaces::msg::RecoveryCandidate &candidate,
             const std::vector<std::string> &blocked);
   bool safe(const std::vector<Pose> &poses) const;
+  double obstacle_clearance(const Pose &pose) const;
+  bool adjustment_safe(const std::vector<Pose> &poses) const;
   void set_dynamic_obstacles(const std::vector<navigation_safety::Polygon> &obstacles);
   bool exit_matches(const Pose &pose,
     const mission_control_interfaces::msg::RecoveryCandidate &candidate) const;
@@ -93,7 +96,7 @@ private:
   bool plan_direct(const Pose &start,
     const mission_control_interfaces::msg::RecoveryCandidate &candidate,
     const std::vector<std::string> &blocked);
-  bool braking_safe(Pose pose, double linear, double angular) const;
+  bool braking_safe(Pose pose, double linear, double angular, bool adjustment=false) const;
   Pose turn_entry(navigation_safety::Point junction, double incoming,
                   double outgoing) const;
 };

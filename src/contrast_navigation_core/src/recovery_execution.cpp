@@ -63,16 +63,22 @@ bool WaypointNavigator::RecoveryCommandSafe(const geometry_msgs::msg::Twist &com
   double w = visual_navigation::LimitRate(command.angular.z, lastMotionCommand_.angular.z,
     maxAngularAcceleration_, maxAngularDeceleration_, dt);
   auto pose = RecoveryPose();
+  const auto &steps=poseRecovery_.steps();
+  const bool adjustment=poseRecoveryPhase_=="motion" && recoveryStep_<steps.size() &&
+    steps[recoveryStep_].phase=="FORWARD_ADJUSTMENT";
+  const auto safe=[&](const auto &sweep) {
+    return adjustment ? poseRecovery_.adjustment_safe(sweep) : poseRecovery_.safe(sweep);
+  };
   // 检查本周期真实限速输出及紧急减速到停的车身扫掠。
   auto sweep = poseRecovery_.motion_samples(pose, v, w, w, dt);
-  if (!poseRecovery_.safe(sweep)) return false;
+  if (!safe(sweep)) return false;
   pose = sweep.back();
   const double brake_dt = 1.0 / controlFrequency_;
   while (std::abs(v) > 1e-9 || std::abs(w) > 1e-9) {
     v = visual_navigation::LimitRate(0.0, v, maxLinearAcceleration_, maxLinearDeceleration_, brake_dt);
     w = visual_navigation::LimitRate(0.0, w, maxAngularAcceleration_, maxAngularDeceleration_, brake_dt);
     sweep = poseRecovery_.motion_samples(pose, v, w, w, brake_dt);
-    if (!poseRecovery_.safe(sweep)) return false;
+    if (!safe(sweep)) return false;
     pose = sweep.back();
   }
   return true;

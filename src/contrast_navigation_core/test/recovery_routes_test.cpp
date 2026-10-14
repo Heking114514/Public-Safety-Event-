@@ -32,7 +32,7 @@ Recovery make_recovery() {
   config.margin=parameters["recovery_margin_m"].as<double>();
   config.max_radius=parameters["recovery_max_radius_m"].as<double>();
   config.exit_distance=parameters["recovery_exit_distance_m"].as<double>();
-  config.forward_adjustment_m=parameters["recovery_forward_adjustment_m"].as<double>();
+  config.forward_obstacle_clearance_m=parameters["recovery_forward_obstacle_clearance_m"].as<double>();
   config.turn.entry_target_x=parameters["recovery_turn_entry_target_x"].as<double>();
   config.turn.entry_target_y=parameters["recovery_turn_entry_target_y"].as<double>();
   config.turn.entry_speed=parameters["turn_maneuver_entry_speed"].as<double>();
@@ -276,30 +276,38 @@ TEST(RecoveryRoutes, EachFixedTurnHasExactlyTheConfiguredSignedEntry) {
 TEST(RecoveryRoutes, ForwardAdjustmentCanMoveTowardObstacleBeforeRetreat) {
   auto recovery=make_recovery();
   // 恢复入口附近发生位姿修正，固定入路仍由已锁存道路提供。
-  const Recovery::Pose start{{1.2,-.41},-pi/2};
+  const Recovery::Pose start{{1.2,-.31},-pi/2};
   recovery.set_incoming_lane("ROAD_Y3_LEFT",{1.2,-.5});
-  auto config=recovery.config(); config.forward_adjustment_m=0;
+  auto config=recovery.config(); config.forward_obstacle_clearance_m=.5;
   recovery.load(workspace()+"/src/new_map_planner/config/arena.yaml",
     {0.125,0.125,0,0,0},config); // 尺寸来源 vehicle_physical.yaml。
   recovery.set_incoming_lane("ROAD_Y3_LEFT",{1.2,-.5});
   const auto obstacle=navigation_safety::rectangle_polygon({1.11,-.86,1.29,-.78});
   EXPECT_TRUE(recovery.candidates(start,obstacle).empty());
-  config.forward_adjustment_m=.08; // 当前 Contrast YAML 的调整上限。
+  config.forward_obstacle_clearance_m=.03; // 用户要求的车身外廓净距。
   recovery.load(workspace()+"/src/new_map_planner/config/arena.yaml",
     {0.125,0.125,0,0,0},config);
   recovery.set_incoming_lane("ROAD_Y3_LEFT",{1.2,-.5});
   const auto candidates=recovery.candidates(start,obstacle);
   ASSERT_FALSE(candidates.empty());
-  ASSERT_TRUE(recovery.plan(start,candidates.front(),{}));
+  // 总控会把当前障碍道路列入 blocked；允许在真实障碍前的安全部分调整。
+  ASSERT_TRUE(recovery.plan(start,candidates.front(),{recovery.blocked_lane()}));
   ASSERT_GE(recovery.steps().size(),3U);
   EXPECT_EQ(recovery.steps()[0].phase,"FORWARD_ADJUSTMENT");
   EXPECT_GT(recovery.steps()[0].linear,0);
   EXPECT_LT(recovery.steps()[0].end.position.y,start.position.y);
+  EXPECT_GT(start.position.y-recovery.steps()[0].end.position.y,.08);
   EXPECT_EQ(recovery.steps()[1].kind,Recovery::Step::Kind::STOP);
   EXPECT_LT(recovery.steps()[2].linear,0);
   RecoveryReplay replay(recovery,workspace());
   ASSERT_TRUE(replay.run(start,recovery.steps())) << replay.failure();
   EXPECT_TRUE(recovery.exit_matches(replay.actual(),candidates.front()));
+  ASSERT_FALSE(replay.adjustment_trace().empty());
+  for (const auto &actual:replay.adjustment_trace()) {
+    // 障碍最近边 y=-.78；独立按实车正方形外廓计算最低角点，包含偏航。
+    const double half_extent=.0625*(std::abs(std::cos(actual.yaw))+std::abs(std::sin(actual.yaw)));
+    EXPECT_GE(actual.position.y-half_extent-(-.78),.03);
+  }
 }
 
 TEST(RecoveryRoutes, UserGuiBoundaryEntryIsUnsafeEvenAfterForwardAdjustment) {
@@ -311,6 +319,29 @@ TEST(RecoveryRoutes, UserGuiBoundaryEntryIsUnsafeEvenAfterForwardAdjustment) {
   EXPECT_TRUE(candidates.empty());
   EXPECT_TRUE(recovery.unsafe_entry_rejected());
   EXPECT_FALSE(recovery.safe({{{3.2,1.57},-pi/2}}));
+  EXPECT_TRUE(recovery.steps().empty());
+}
+
+TEST(RecoveryRoutes, ForwardAdjustmentStopsAtBodyClearanceRatherThanCameraRange) {
+  auto recovery=make_recovery();
+  recovery.set_dynamic_obstacles({navigation_safety::rectangle_polygon({1.1,-.86,1.3,-.78})});
+  // 车身长 0.125 m，来自 vehicle_physical.yaml；中心到障碍还有 9.25 cm 时净距为 3 cm。
+  const Recovery::Pose outside{{1.2,-.6874},-pi/2},inside{{1.2,-.6876},-pi/2};
+  EXPECT_NEAR(recovery.obstacle_clearance(outside),.0301,1e-9);
+  EXPECT_NEAR(recovery.obstacle_clearance(inside),.0299,1e-9);
+  EXPECT_TRUE(recovery.adjustment_safe({outside}));
+  EXPECT_TRUE(recovery.safe({inside}));
+  EXPECT_FALSE(recovery.adjustment_safe({inside}));
+  // 车身有偏航时，最近的角点决定净距。
+  EXPECT_FALSE(recovery.adjustment_safe({{{1.2,-.68},-pi/2+.2}}));
+}
+
+TEST(RecoveryRoutes, ClearanceLimitRejectsOtherwiseCollisionFreeAdjustment) {
+  auto recovery=make_recovery();
+  recovery.set_incoming_lane("ROAD_Y3_LEFT",{1.2,-.5});
+  const auto candidates=recovery.candidates({{1.2,-.31},-pi/2},
+    navigation_safety::rectangle_polygon({1.11,-.54,1.29,-.52}));
+  EXPECT_TRUE(candidates.empty());
   EXPECT_TRUE(recovery.steps().empty());
 }
 

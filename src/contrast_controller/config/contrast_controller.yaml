@@ -11,7 +11,8 @@ contrast_controller:
     recovery_max_expansions: 220000
     recovery_progress_timeout_s: 2.0
     recovery_selection_timeout_s: 30.0
-    recovery_forward_adjustment_m: 0.08
+    # 前进调整时车身外廓与障碍物的最小净距，不是相机测距。
+    recovery_forward_obstacle_clearance_m: 0.03
     recovery_switch_stop_s: 0.22
     # 仅恢复动作使用，正常巡航参数保持当前调试值。
     recovery_turn_angular_speed: 0.40

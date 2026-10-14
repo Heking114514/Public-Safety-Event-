@@ -34,6 +34,7 @@ public:
            const std::vector<visual_navigation::PoseRecovery::Step> &steps) {
     actual_={start.position.x,start.position.y,start.yaw};
     for(const auto &step:steps) {
+      adjusting_=step.phase=="FORWARD_ADJUSTMENT";
       bool result=false;
       if(step.kind==visual_navigation::PoseRecovery::Step::Kind::FIXED_TURN) result=turn(step);
       else if(step.kind==visual_navigation::PoseRecovery::Step::Kind::STOP) result=stop();
@@ -50,6 +51,9 @@ public:
   std::size_t turns60() const {return turns60_;}
   std::size_t turns30() const {return turns30_;}
   double reverse_distance() const {return reverse_distance_;}
+  const std::vector<visual_navigation::PoseRecovery::Pose> &adjustment_trace() const {
+    return adjustment_trace_;
+  }
 
 private:
   using Step=visual_navigation::PoseRecovery::Step;
@@ -76,9 +80,12 @@ private:
       if(twist_.linear_x<0)
         reverse_distance_+=std::hypot(actual_.x-previous.x,actual_.y-previous.y);
       sweep.push_back(actual());
+      if(adjusting_) adjustment_trace_.push_back(actual());
     }
     now_+=dt; ++sample_;
-    if(!recovery_.safe(sweep)) {failure_="独立车辆积分的实际扫掠不安全";return false;}
+    if(!(adjusting_ ? recovery_.adjustment_safe(sweep) : recovery_.safe(sweep))) {
+      failure_="独立车辆积分的实际扫掠或前移净距不安全";return false;
+    }
     return true;
   }
   bool stop() {
@@ -154,6 +161,8 @@ private:
   vehicle_loopback_sim::Twist2d twist_;
   double track_{0},max_linear_{0},max_angular_{0},now_{0};
   double reverse_distance_{0.0};
+  bool adjusting_{false};
+  std::vector<visual_navigation::PoseRecovery::Pose> adjustment_trace_;
   std::uint64_t sample_{0};
   std::size_t turns60_{0},turns30_{0};
   std::string failure_;

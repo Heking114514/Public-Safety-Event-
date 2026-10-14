@@ -55,7 +55,8 @@ void WaypointNavigator::InitPoseRecovery() {
   config.max_expansions = declare_parameter<int>("recovery_max_expansions", 220000);
   declare_parameter<double>("recovery_progress_timeout_s", 2.0);
   declare_parameter<double>("recovery_selection_timeout_s", 30.0);
-  config.forward_adjustment_m = declare_parameter<double>("recovery_forward_adjustment_m", 0.08);
+  config.forward_obstacle_clearance_m = declare_parameter<double>(
+    "recovery_forward_obstacle_clearance_m", std::numeric_limits<double>::quiet_NaN());
   declare_parameter<double>("recovery_switch_stop_s", 0.22);
   recoveryTurnConfig_ = turnManeuverConfig_;
   recoveryTurnConfig_.turn_angular_speed =
@@ -76,6 +77,7 @@ void WaypointNavigator::InitPoseRecovery() {
   const double stop_timeout = declare_parameter<double>("recovery_stop_timeout_s", 2.0);
   const double stop_dwell = get_parameter("recovery_switch_stop_s").as_double();
   const double limits[] = {config.speed, config.angular, config.margin, config.exit_distance,
+    config.forward_obstacle_clearance_m,
     recoveryTurnConfig_.turn_angular_speed, recoveryTurnConfig_.turn_min_angular_speed,
     recoveryTurnConfig_.entry_target_x, recoveryTurnConfig_.entry_target_y,
     recoveryTurnConfig_.creep_distance,
@@ -87,6 +89,7 @@ void WaypointNavigator::InitPoseRecovery() {
   if (config.speed < minLinearCommandSpeed_ || config.speed > maxLinearSpeed_ ||
       config.angular <= 0.0 || config.angular > maxAngularSpeed_ ||
       config.margin < 0.0 || config.exit_distance <= 0.0 ||
+      config.forward_obstacle_clearance_m <= 0.0 ||
       recoveryTurnConfig_.turn_angular_speed > maxAngularSpeed_ ||
       recoveryTurnConfig_.turn_min_angular_speed <= 0.0 ||
       recoveryTurnConfig_.turn_min_angular_speed > recoveryTurnConfig_.turn_angular_speed ||

@@ -113,12 +113,12 @@ bool PoseRecovery::exit_matches(const Pose &pose,
     std::abs(lateral) <= std::min(0.04, it->width/2) && safe({pose});
 }
 
-bool PoseRecovery::braking_safe(Pose pose, double v, double w) const {
+bool PoseRecovery::braking_safe(Pose pose, double v, double w, bool adjustment) const {
   while (std::abs(v)>1e-9 || std::abs(w)>1e-9) {
     v=LimitRate(0.0,v,config_.linear_acceleration,config_.linear_deceleration,config_.control_dt);
     w=LimitRate(0.0,w,config_.angular_acceleration,config_.angular_deceleration,config_.control_dt);
     const auto sweep=motion_samples(pose,v,w,w,config_.control_dt);
-    if (!safe(sweep)) return false;
+    if (!(adjustment ? adjustment_safe(sweep) : safe(sweep))) return false;
     pose=sweep.back();
   }
   return true;
@@ -130,6 +130,8 @@ bool PoseRecovery::append_straight(Pose &pose, Pose target, double direction,
   const double distance=length(pose.position,target.position);
   const double duration=distance/config_.speed+config_.turn.phase_timeout;
   const double c=std::cos(target.yaw), s=std::sin(target.yaw);
+  const bool adjustment=phase=="FORWARD_ADJUSTMENT";
+  if (adjustment && !adjustment_safe({pose})) return false;
   double v=0.0, w=0.0, elapsed=0.0;
   bool complete=false;
   while (elapsed<=duration) {
@@ -153,7 +155,8 @@ bool PoseRecovery::append_straight(Pose &pose, Pose target, double direction,
     w=LimitRate(target_w,w,config_.angular_acceleration,
                 config_.angular_deceleration,config_.control_dt);
     const auto sweep=motion_samples(pose,v,w,w,config_.control_dt);
-    if (!safe(sweep) || !braking_safe(sweep.back(),v,w)) return false;
+    if (!(adjustment ? adjustment_safe(sweep) : safe(sweep)) ||
+        !braking_safe(sweep.back(),v,w,adjustment)) return false;
     pose=sweep.back(); elapsed+=config_.control_dt;
   }
   if (!complete) return false;
