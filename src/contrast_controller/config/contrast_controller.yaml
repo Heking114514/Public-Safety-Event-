@@ -16,10 +16,11 @@ contrast_controller:
     turn_maneuver_entry_target_x: -0.070
     turn_maneuver_entry_target_y: 0.0
     turn_maneuver_entry_speed: 0.035
-    turn_maneuver_angular_speed: 0.65
-    turn_maneuver_min_angular_speed: 0.50
-    turn_maneuver_creep_speed: 0.035
+    turn_maneuver_angular_speed: 0.35
+    turn_maneuver_min_angular_speed: 0.15
+    turn_maneuver_creep_speed: 0.030
     turn_maneuver_turn_linear_speed: 0.035
+
 
     # 入口必须同时满足纵向、横向和航向门限。
     turn_maneuver_entry_tolerance: 0.010
