@@ -329,8 +329,10 @@ private:
   std::optional<SpeechItem> speech_active_;
   std::optional<double> speech_release_at_;
   bool speech_pending_{false};
+  double speech_next_send_at_{0.0};
 
   double speech_hold_duration_s_{3.0};
+  double speech_min_interval_s_{1.2};
   double rfid_event_cooldown_s_{3.0};
   double rfid_hold_duration_s_{3.0};
   double rfid_stop_duration_s_{1.0};

@@ -153,6 +153,7 @@ void MissionManager::declare_parameters()
     "public_continue_retreat_service", "/navigation_mission/continue_obstacle_retreat");
   public_service_timeout_s_ = declare_parameter("public_service_timeout_s", 2.0);
   speech_hold_duration_s_ = declare_parameter("speech_hold_duration_s", 3.0);
+  speech_min_interval_s_ = declare_parameter("speech_min_interval_s", 1.2);
   rfid_event_cooldown_s_ = declare_parameter("rfid_event_cooldown_s", 3.0);
   rfid_hold_duration_s_ = declare_parameter("rfid_hold_duration_s", 3.0);
   rfid_stop_duration_s_ = declare_parameter("rfid_stop_duration_s", 1.0);

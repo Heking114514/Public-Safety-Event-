@@ -96,7 +96,7 @@ loopback 显式使用 `task_confirmation_mode: route`，在路线已 ACK、实�
 
 其他节点可以向 `/navigation_mission/speech_text` 发布 `std_msgs/String`。总控会排队文本，
 申请 `navigation_mission_manager/speech` 驻停，调用 `/cup_car_serial/speak_text` 下发给
-下位机，播报完成后驻停 3 秒再释放；RFID 播报使用同一个下发链路。
+下位机；相邻文本默认间隔 `1.2 s`，RFID 文本下发后驻停 3 秒再释放。RFID 播报使用同一个下发链路。
 
 总控直接订阅视觉识别模块的 `/insight` 和 `/safe` 两个 `std_msgs/String` 话题。`/insight`
 中的 `targets` 按原顺序转换为“发现N号刀具”或“发现N号嫌疑人”，进入同一条播报队列；

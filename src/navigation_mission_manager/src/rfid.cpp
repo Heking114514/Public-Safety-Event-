@@ -120,7 +120,7 @@ void MissionManager::service_speech_text(double now_seconds)
     }
   }
   if (!speech_pending_ && !speech_release_at_.has_value() &&
-    speaker_client_->service_is_ready())
+    now_seconds >= speech_next_send_at_ && speaker_client_->service_is_ready())
   {
     auto request = std::make_shared<mission_control_interfaces::srv::SpeakText::Request>();
     request->text = speech_active_->text;
@@ -138,6 +138,8 @@ void MissionManager::service_speech_text(double now_seconds)
           if (!response->success) {
             RCLCPP_ERROR(
               get_logger(), "mission speech failed: %s", response->message.c_str());
+          } else {
+            speech_next_send_at_ = steady_seconds() + speech_min_interval_s_;
           }
           if (!request_hold) {
             speech_active_.reset();

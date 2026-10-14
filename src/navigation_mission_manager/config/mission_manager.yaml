@@ -33,6 +33,7 @@ navigation_mission_manager:
     public_continue_retreat_service: /navigation_mission/continue_obstacle_retreat
     public_service_timeout_s: 2.0
     speech_hold_duration_s: 3.0
+    speech_min_interval_s: 1.2
 
     auto_start: false
     target_ids: "1,2,3,4,5,6,7,8,9,10,11,12"
