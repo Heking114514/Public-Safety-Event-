@@ -45,7 +45,6 @@
 #include "visual_navigation/obstacle_recovery.hpp"
 #include "visual_navigation/odometry_input_validation.hpp"
 #include "visual_navigation/path_control.hpp"
-#include "visual_navigation/adaptive_path.hpp"
 #include "visual_navigation/path_progress_supervisor.hpp"
 #include "visual_navigation/path_tracking_controller.hpp"
 #include "visual_navigation/rate_limiter.hpp"
@@ -334,7 +333,7 @@ private:
   void ResetRunControl();
 
   double UpdatePathPid(double error, double crossTrackError, bool allowIntegral,
-                       double yawRate, double proportionalScale = 1.0);
+                       double yawRate);
 
   visual_navigation::CornerShuntContext
   BuildCornerShuntContext(const ControlFrame &frame) const;
@@ -420,13 +419,6 @@ private:
   double maxLateralAcceleration_{0.22};
   double pathCurvatureFeedforwardGain_{1.0};
   double preTurnPathAngularRatio_{1.2};
-  bool pathAdaptiveCorrectionEnabled_{false};
-  double pathAdaptiveMaxAngularRatio_{8.0};
-  double pathAdaptiveGainScale_{1.5};
-  double pathAdaptiveHeadingStart_{0.035};
-  double pathAdaptiveHeadingFull_{0.20};
-  double pathAdaptiveMinimumSpeed_{0.030};
-  double pathAdaptiveBrakingBlendDistance_{0.10};
   double pathPidIntegralLimit_{0.20};
   double rotateInPlaceThreshold_{0.18};
   double rotateInPlaceExitThreshold_{0.035};

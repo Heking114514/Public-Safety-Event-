@@ -24,8 +24,6 @@ void WaypointNavigator::RunRfidScan(const ControlFrame &frame) {
       std::cos(heading) * (currentY_ - pathSegmentStartY_) -
       std::sin(heading) * (currentX_ - pathSegmentStartX_);
   // Continue the incoming lane controller without resetting its PID state.
-  // The route heading already follows travel direction, including reverse.
-  // Keep its signed lateral error; only the body heading needs the pi offset.
   // Scanning changes speed and checkpoint handling, not the steering law.
   double controlDt = 1.0 / controlFrequency_;
   if (motionCommandInitialized_) {
@@ -34,62 +32,27 @@ void WaypointNavigator::RunRfidScan(const ControlFrame &frame) {
     if (measuredDt > 0.0 && measuredDt <= 0.2)
       controlDt = measuredDt;
   }
-  if (pathAdaptiveCorrectionEnabled_) {
-    command.linear.x = scanDirection *
-        visual_navigation::AdaptiveCorrectionSpeedLimit(
-            std::abs(command.linear.x), headingError, crossTrackError,
-            pathAdaptiveHeadingStart_, pathAdaptiveHeadingFull_,
-            crossTrackSlowdownStart_, crossTrackSlowdownFull_,
-            pathAdaptiveMinimumSpeed_);
-  }
   const double trackingSpeed = std::abs(visual_navigation::LimitRate(
       command.linear.x, lastMotionCommand_.linear.x, maxLinearAcceleration_,
       maxLinearDeceleration_, controlDt));
   const double pathError = visual_navigation::StanleyPathError(
-      headingError, crossTrackError, crossTrackGain_,
+      headingError, scanDirection * crossTrackError, crossTrackGain_,
       trackingSpeed, stanleySofteningSpeed_,
       maxCrossTrackCorrection_);
   const bool allowPathIntegral = std::abs(headingError) < 0.30 &&
                                  std::abs(crossTrackError) < 0.08;
   const double feedbackAngularSpeed = UpdatePathPid(
-      pathError, crossTrackError, allowPathIntegral,
-      frame.control_yaw_rate,
-      pathAdaptiveCorrectionEnabled_
-          ? 1.0 + (pathAdaptiveGainScale_ - 1.0) *
-                visual_navigation::AdaptiveErrorBlend(
-                    std::abs(pathError), pathAdaptiveHeadingStart_,
-                    pathAdaptiveHeadingFull_)
-          : 1.0);
+      pathError, scanDirection * crossTrackError, allowPathIntegral,
+      frame.control_yaw_rate);
   const double lateralAngularLimit =
       visual_navigation::LateralAccelerationAngularLimit(
           maxPathAngularSpeed_, command.linear.x, maxLateralAcceleration_);
-  command.angular.z = pathAdaptiveCorrectionEnabled_
-      ? visual_navigation::AdaptivePathDeadband(
-          feedbackAngularSpeed, pathError, frame.control_yaw_rate,
-          pathAngularActivationError_, pathYawResponseThreshold_,
-          minPathAngularSpeed_, lateralAngularLimit)
-      : visual_navigation::CompensatePathTurnDeadband(
+  command.angular.z = visual_navigation::CompensatePathTurnDeadband(
       feedbackAngularSpeed, pathError, frame.control_yaw_rate,
       pathAngularActivationError_, pathYawResponseThreshold_,
       minPathAngularSpeed_, lateralAngularLimit);
-  if (pathAdaptiveCorrectionEnabled_) {
-    const double stoppingDistance = visual_navigation::BrakingDistance(
-        trackingSpeed, effectiveBrakingDeceleration_, brakingControlDelay_,
-        brakingSafetyMargin_);
-    const double brakingBlend = visual_navigation::AdaptiveErrorBlend(
-        stoppingDistance + pathAdaptiveBrakingBlendDistance_ -
-            (rfidScanMaxDistance_ - passed),
-        0.0, pathAdaptiveBrakingBlendDistance_);
-    command.angular.z = visual_navigation::AdaptivePathAngularSpeed(
-        command.angular.z, command.linear.x, headingError,
-        crossTrackError, preTurnPathAngularRatio_,
-        pathAdaptiveMaxAngularRatio_, pathAdaptiveHeadingStart_,
-        pathAdaptiveHeadingFull_, crossTrackSlowdownStart_,
-        crossTrackSlowdownFull_, brakingBlend);
-  } else {
-    command.angular.z = visual_navigation::StopRequiredPathAngularSpeed(
-        command.angular.z, command.linear.x, preTurnPathAngularRatio_);
-  }
+  command.angular.z = visual_navigation::StopRequiredPathAngularSpeed(
+      command.angular.z, command.linear.x, preTurnPathAngularRatio_);
   PublishMotionCommand(command);
   SetState("RFID_SCANNING:" + std::to_string(currentWaypointIndex_));
 }
@@ -126,13 +89,7 @@ void WaypointNavigator::RunPath(const ControlFrame &frame) {
       pathCurvature, maxLateralAcceleration_);
   const double approachDistance = visual_navigation::EndpointApproachDistance(
       frame.distance, frame.path_projection);
-  double limitedLinearSpeed = pathAdaptiveCorrectionEnabled_
-      ? visual_navigation::AdaptiveCorrectionSpeedLimit(
-            unscaledTrackingSpeed, headingError, crossTrackError,
-            pathAdaptiveHeadingStart_, pathAdaptiveHeadingFull_,
-            crossTrackSlowdownStart_, crossTrackSlowdownFull_,
-            pathAdaptiveMinimumSpeed_)
-      : unscaledTrackingSpeed;
+  double limitedLinearSpeed = unscaledTrackingSpeed;
   if (frame.waypoint_requires_stop) {
     limitedLinearSpeed = visual_navigation::BrakingSpeedLimit(
         limitedLinearSpeed, approachDistance, effectiveBrakingDeceleration_,
@@ -203,13 +160,7 @@ void WaypointNavigator::RunPath(const ControlFrame &frame) {
                                  std::abs(crossTrackError) < 0.08;
   const double pathFeedbackAngularSpeed =
       UpdatePathPid(pathError, crossTrackError, allowPathIntegral,
-                    frame.control_yaw_rate,
-                    pathAdaptiveCorrectionEnabled_ && !aligningPath
-                        ? 1.0 + (pathAdaptiveGainScale_ - 1.0) *
-                              visual_navigation::AdaptiveErrorBlend(
-                                  std::abs(pathError), pathAdaptiveHeadingStart_,
-                                  pathAdaptiveHeadingFull_)
-                        : 1.0);
+                    frame.control_yaw_rate);
   geometry_msgs::msg::Twist command;
   bool brakingApproach = false;
   const double segmentProgress =
@@ -311,40 +262,25 @@ void WaypointNavigator::RunPath(const ControlFrame &frame) {
         visual_navigation::LateralAccelerationAngularLimit(
             maxPathAngularSpeed_, command.linear.x,
             maxLateralAcceleration_);
-    command.angular.z = pathAdaptiveCorrectionEnabled_
-        ? visual_navigation::AdaptivePathDeadband(
-            feedforwardAngularSpeed + pathFeedbackAngularSpeed, pathError,
-            frame.control_yaw_rate, pathAngularActivationError_,
-            pathYawResponseThreshold_, minPathAngularSpeed_, lateralAngularLimit)
-        : visual_navigation::CompensatePathTurnDeadband(
+    command.angular.z = visual_navigation::CompensatePathTurnDeadband(
         feedforwardAngularSpeed + pathFeedbackAngularSpeed, pathError,
         frame.control_yaw_rate, pathAngularActivationError_,
         pathYawResponseThreshold_,
         minPathAngularSpeed_,
         lateralAngularLimit);
+    if (frame.waypoint_requires_stop) {
+      // On a straight approach, a near-zero braking speed must not leave an
+      // angular-only command that pivots the car before the junction.
+      command.angular.z = visual_navigation::StopRequiredPathAngularSpeed(
+          command.angular.z, command.linear.x, preTurnPathAngularRatio_);
+    }
+
     const double measuredSpeed = inputCache_.odometry_velocity_valid()
                                      ? std::abs(inputCache_.odometry_velocity())
                                      : std::abs(lastMotionCommand_.linear.x);
     const double stoppingDistance = visual_navigation::BrakingDistance(
         measuredSpeed, effectiveBrakingDeceleration_, brakingControlDelay_,
         brakingSafetyMargin_);
-    if (pathAdaptiveCorrectionEnabled_) {
-      // The strict stop ratio belongs to the braking zone, not the whole lane.
-      const double brakingBlend = frame.waypoint_requires_stop
-          ? visual_navigation::AdaptiveErrorBlend(
-                stoppingDistance + pathAdaptiveBrakingBlendDistance_ -
-                    approachDistance,
-                0.0, pathAdaptiveBrakingBlendDistance_)
-          : 0.0;
-      command.angular.z = visual_navigation::AdaptivePathAngularSpeed(
-          command.angular.z, command.linear.x, headingError, crossTrackError,
-          preTurnPathAngularRatio_, pathAdaptiveMaxAngularRatio_,
-          pathAdaptiveHeadingStart_, pathAdaptiveHeadingFull_,
-          crossTrackSlowdownStart_, crossTrackSlowdownFull_, brakingBlend);
-    } else if (frame.waypoint_requires_stop) {
-      command.angular.z = visual_navigation::StopRequiredPathAngularSpeed(
-          command.angular.z, command.linear.x, preTurnPathAngularRatio_);
-    }
     brakingApproach = frame.waypoint_requires_stop &&
                       approachDistance <= stoppingDistance &&
                       command.linear.x > 0.0;
