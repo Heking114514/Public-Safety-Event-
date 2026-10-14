@@ -63,7 +63,8 @@ WaypointNavigator::RunBrake(const ControlFrame &frame) {
                 frame.path_heading +
                 (reverseSegmentActive_ && !reverseArrivalTurn ? kPi : 0.0));
   const double plannedTurnError = NormalizeAngle(nextHeading - geometryHeading);
-  stoppedTurnGeometryHeading_ = geometryHeading;
+  stoppedAtLaunchDeparture_ = frame.launch_departure;
+  stoppedTurnGeometryHeading_ = frame.launch_departure ? launchDeparture_.heading() : geometryHeading;
   stoppedTurnArrivalHeading_ = currentYaw_;
   stoppedTurnTargetHeading_ = nextHeading;
   stoppedTurnReverseArrival_ = reverseArrivalTurn;

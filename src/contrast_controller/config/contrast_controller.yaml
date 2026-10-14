@@ -1,5 +1,17 @@
 contrast_controller:
   ros__parameters:
+    # 仅出门首次转弯固定在距地图起点 11 cm 处；其他路口不受影响。
+    launch_departure_enabled: true
+    # 柔性纠偏：航向/横向偏差越大，转向上限越高、前进越慢。
+    path_adaptive_correction_enabled: true
+    # |w|/|v| 从 pre_turn_path_angular_ratio 平滑增加到此值（1/m）。
+    path_adaptive_max_angular_ratio: 8.0
+    path_adaptive_gain_scale: 1.5  # 大偏差时 P 增益最多为基础值的 1.5 倍
+    path_adaptive_heading_start: 0.035  # 约 2°，以下维持轻柔纠偏
+    path_adaptive_heading_full: 0.20    # 约 11.5°，达到最大纠偏/降速
+    path_adaptive_minimum_speed: 0.030  # m/s；临近停车仍服从刹车速度
+    # 进入刹车区前 10 cm 平滑收紧；刹车区内禁止角速度独立旋转。
+    path_adaptive_braking_blend_distance: 0.10
     # 与正式导航共享参数 ABI；本实现所有运动阶段实际使用统一死区速度。
     obstacle_pose_recovery_enabled: true
     recovery_linear_speed: 0.035

@@ -59,6 +59,17 @@ WaypointNavigator::ControlFrame WaypointNavigator::BuildControlFrame(
   } else {
     frame.waypoint_reached = continuousWaypointPassed;
   }
+  frame.approach_distance = visual_navigation::EndpointApproachDistance(
+      frame.distance, frame.path_projection);
+  frame.launch_departure = launchDeparture_.applies(waypoints_, currentWaypointIndex_);
+  if (frame.launch_departure) {
+    const double remaining = launchDeparture_.remaining(currentX_, currentY_);
+    // BrakingSpeedLimit subtracts the safety margin. Add it here so the
+    // launch stop remains at 11 cm rather than 11 cm minus that margin.
+    frame.approach_distance = std::max(0.0, remaining) + brakingSafetyMargin_;
+    frame.waypoint_reached = remaining <= visual_navigation::LaunchDeparture::stop_tolerance() &&
+        std::abs(frame.path_projection.cross_track) <= waypointPassLateralTolerance_;
+  }
   return frame;
 }
 

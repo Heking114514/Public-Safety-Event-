@@ -209,6 +209,9 @@ bool WaypointNavigator::RunPoseRecovery() {
       if (std::abs(turn_error)<0.55 || std::abs(turn_error)>2.55) {
         fail("FAULT_POSE_RECOVERY_UNSUPPORTED_TURN");return true;
       }
+      // Pose recovery uses the ordinary junction entry. Do not inherit the
+      // one-time 11 cm launch override from the first outbound turn.
+      turnManeuverController_.configure(turnManeuverConfig_);
       turnManeuverController_.begin(t);
       recoveryTurnManeuverStarted_=true;
       PublishStop();SetState("POSE_RECOVERY_ALIGN_FOR_TURN");return true;

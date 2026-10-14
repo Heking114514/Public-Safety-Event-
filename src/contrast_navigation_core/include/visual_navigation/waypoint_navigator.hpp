@@ -45,10 +45,12 @@
 #include "visual_navigation/obstacle_recovery.hpp"
 #include "visual_navigation/odometry_input_validation.hpp"
 #include "visual_navigation/path_control.hpp"
+#include "visual_navigation/adaptive_path.hpp"
 #include "visual_navigation/path_progress_supervisor.hpp"
 #include "visual_navigation/path_tracking_controller.hpp"
 #include "visual_navigation/rate_limiter.hpp"
 #include "visual_navigation/route_manager.hpp"
+#include "visual_navigation/launch_departure.hpp"
 #include "visual_navigation/turn_progress_supervisor.hpp"
 #include "visual_navigation/turn_maneuver.hpp"
 #include "visual_navigation/turn_settle_controller.hpp"
@@ -139,6 +141,8 @@ private:
     double delta_x{0.0};
     double delta_y{0.0};
     double distance{0.0};
+    double approach_distance{0.0};
+    bool launch_departure{false};
     double control_yaw_rate{0.0};
     double path_length{0.0};
     double path_heading{0.0};
@@ -151,6 +155,9 @@ private:
   bool LoadRoute(const std::string &routeFile);
 
   bool RouteStartsWithTurn() const;
+  void InitLaunchDeparture();
+  visual_navigation::LaunchDeparture launchDeparture_;
+  bool stoppedAtLaunchDeparture_{false};
 
   void PublishRoutePath();
 
@@ -339,7 +346,7 @@ private:
   void ResetRunControl();
 
   double UpdatePathPid(double error, double crossTrackError, bool allowIntegral,
-                       double yawRate);
+                       double yawRate, double proportionalScale = 1.0);
 
   visual_navigation::CornerShuntContext
   BuildCornerShuntContext(const ControlFrame &frame) const;
@@ -425,6 +432,13 @@ private:
   double maxLateralAcceleration_{0.22};
   double pathCurvatureFeedforwardGain_{1.0};
   double preTurnPathAngularRatio_{1.2};
+  bool pathAdaptiveCorrectionEnabled_{false};
+  double pathAdaptiveMaxAngularRatio_{8.0};
+  double pathAdaptiveGainScale_{1.5};
+  double pathAdaptiveHeadingStart_{0.035};
+  double pathAdaptiveHeadingFull_{0.20};
+  double pathAdaptiveMinimumSpeed_{0.030};
+  double pathAdaptiveBrakingBlendDistance_{0.10};
   double pathPidIntegralLimit_{0.20};
   double rotateInPlaceThreshold_{0.18};
   double rotateInPlaceExitThreshold_{0.035};

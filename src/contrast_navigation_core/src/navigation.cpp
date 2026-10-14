@@ -148,6 +148,7 @@ void WaypointNavigator::ResetManeuver() {
 }
 
 void WaypointNavigator::ResetRunControl() {
+  stoppedAtLaunchDeparture_ = false;
   stoppedAtPlannedTurn_ = false;
   firstHalfTurnPending_ = false;
   stoppedTurnGeometryHeading_ = 0.0;
@@ -161,8 +162,10 @@ void WaypointNavigator::ResetRunControl() {
 }
 
 double WaypointNavigator::UpdatePathPid(double error, double crossTrackError,
-                                        bool allowIntegral, double yawRate) {
+                                        bool allowIntegral, double yawRate,
+                                        double proportionalScale) {
   return pathTrackingController_.update_pid(error, crossTrackError,
                                             allowIntegral, yawRate,
-                                            std::chrono::steady_clock::now());
+                                            std::chrono::steady_clock::now(),
+                                            proportionalScale);
 }

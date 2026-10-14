@@ -29,6 +29,7 @@ find_package(yaml-cpp REQUIRED)
 add_library(contrast_waypoint_navigator_core STATIC
   src/node_init.cpp
   src/route.cpp
+  src/launch_departure.cpp
   src/runtime.cpp
   src/obstacle_recovery.cpp
   src/pose_recovery.cpp

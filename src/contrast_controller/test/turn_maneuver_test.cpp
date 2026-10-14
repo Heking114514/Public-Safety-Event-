@@ -1,6 +1,7 @@
 #include "navigation_safety/checker.hpp"
 #include "vehicle_loopback_sim/motion.hpp"
 #include "visual_navigation/rate_limiter.hpp"
+#include "visual_navigation/launch_departure.hpp"
 #include "visual_navigation/turn_maneuver.hpp"
 
 #include <algorithm>
@@ -188,8 +189,10 @@ private:
   std::vector<navigation_safety::Polygon> obstacles_;
 };
 
-void AssertComplete(visual_navigation::TurnManeuverInput input, bool guard) {
-  const auto config = TestConfig();
+void AssertComplete(visual_navigation::TurnManeuverInput input, bool guard,
+                    bool launch = false) {
+  auto config = TestConfig();
+  if (launch) config.entry_target_x = 0.11 - input.context.junction_x;
   visual_navigation::TurnManeuverController controller(config);
   TruthModel truth(guard);
   controller.begin(0.0);
@@ -223,6 +226,14 @@ TEST(ContrastTurn, FullLeftAndRightAtLaunchWithRealOutputAndCollision) {
     auto input = Input(0.173, 0.0, 0.0, direction);
     input.context.junction_x = 0.2;
     AssertComplete(input, true);
+  }
+}
+
+TEST(ContrastTurn, FixedElevenCentimetreLaunchWithCollision) {
+  for (double direction : {-1.0, 1.0}) {
+    auto input = Input(0.11, 0.0, 0.0, direction);
+    input.context.junction_x = 0.2;
+    AssertComplete(input, true, true);
   }
 }
 
@@ -274,4 +285,64 @@ TEST(ContrastTurn, EntryOvershootCannotReverseForever) {
   const auto decision = controller.update(input, 2 * kStep);
   EXPECT_EQ(decision.result, Result::NEED_REPLAN);
   EXPECT_DOUBLE_EQ(decision.command.linear_x, 0.0);
+}
+
+// Route fixtures follow arena.yaml: home=(0,0), first junction=(0.20,0).
+TEST(ContrastLaunch, FixedHomeDistanceAndOrdinaryRoutes) {
+  visual_navigation::LaunchDeparture launch;
+  launch.configure(0.0, 0.0, 0.20, 0.0);
+  std::vector<visual_navigation::RouteWaypoint> route(3);
+  route[1].x = 0.20;
+  route[1].turn_junction = true;
+  route[2].x = 0.20;
+  route[2].y = -0.50;
+  EXPECT_TRUE(launch.applies(route, 1));
+  EXPECT_FALSE(launch.applies(route, 0));
+  EXPECT_FALSE(launch.applies(route, 2));
+  EXPECT_NEAR(launch.remaining(0.04, 0.0), 0.07, 1e-12);
+  EXPECT_NEAR(launch.entry_target_x(), -0.09, 1e-12);
+  route[0].x = 0.04; // A replan from the outbound lane still targets home+11cm.
+  EXPECT_TRUE(launch.applies(route, 1));
+  route[0].x = 0.15;
+  EXPECT_FALSE(launch.applies(route, 1));
+  route[0].x = 1.0;
+  route[1].x = 1.2;
+  route[2].x = 1.2;
+  EXPECT_FALSE(launch.applies(route, 1));
+}
+
+TEST(ContrastLaunch, HomeGeometryRotatesWithMapAndRejectsReturn) {
+  visual_navigation::LaunchDeparture launch;
+  launch.configure(1.0, 2.0, 1.0, 2.20);
+  std::vector<visual_navigation::RouteWaypoint> route(3);
+  route[0].x = route[1].x = 1.0;
+  route[0].y = 2.0;
+  route[1].y = route[2].y = 2.20;
+  route[1].turn_junction = true;
+  route[2].x = 1.50;
+  EXPECT_TRUE(launch.applies(route, 1));
+  EXPECT_NEAR(launch.remaining(1.0, 2.04), 0.07, 1e-12);
+  route[1].reverse_arrival_turn = true;
+  EXPECT_FALSE(launch.applies(route, 1));
+  route[1].reverse_arrival_turn = false;
+  route[1].rfid_supernode = true;
+  EXPECT_FALSE(launch.applies(route, 1));
+  route[1].rfid_supernode = false;
+  std::swap(route[0], route[1]); // Return to home is not outbound departure.
+  EXPECT_FALSE(launch.applies(route, 1));
+}
+
+TEST(ContrastLaunch, OrdinaryRecoveryRestoresEntryAfterLaunchOverride) {
+  auto ordinary = TestConfig();
+  auto launch = ordinary;
+  launch.entry_target_x = -0.09;
+  visual_navigation::TurnManeuverController controller(launch);
+  controller.configure(ordinary);
+  controller.begin(0.0);
+  auto input = Input(-0.09, 0.0, 0.0);
+  controller.update(input, 0.0);
+  controller.update(input, kStep);
+  const auto decision = controller.update(input, 2 * kStep);
+  EXPECT_EQ(decision.phase, Phase::APPROACH_ENTRY);
+  EXPECT_GT(decision.command.linear_x, 0.0);
 }

@@ -52,6 +52,7 @@ void WaypointNavigator::RunCornerShunt(const ControlFrame &frame,
   input.context = BuildCornerShuntContext(frame);
   const auto decision = turnManeuverController_.update(input, SteadySeconds());
   if (decision.result == visual_navigation::TurnManeuverResult::COMPLETED) {
+    stoppedAtLaunchDeparture_ = false;
     ResetPathFeedback();
     turnManeuverController_.reset();
     controlState_.finish_path_alignment();
