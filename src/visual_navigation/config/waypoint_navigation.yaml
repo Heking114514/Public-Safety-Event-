@@ -32,7 +32,7 @@ waypoint_navigator:
     control_frequency: 30.0
     default_speed: 0.05
     max_linear_speed: 0.05
-    min_linear_command_speed: 0.010
+    min_linear_command_speed: 0.020
     rfid_scan_speed: 0.035
     rfid_scan_max_distance_m: 0.20
     max_angular_speed: 0.75
