@@ -20,10 +20,39 @@ void WaypointNavigator::RunRfidScan(const ControlFrame &frame) {
   const double vehicleHeading =
       NormalizeAngle(heading + (reverseSegmentActive_ ? kPi : 0.0));
   const double headingError = NormalizeAngle(vehicleHeading - currentYaw_);
-  command.angular.z = Clamp(
-      angularGain_ * headingError - turnYawRateDamping_ * frame.control_yaw_rate,
-      -std::min(maxPathAngularSpeed_, 0.25),
-      std::min(maxPathAngularSpeed_, 0.25));
+  const double crossTrackError =
+      std::cos(heading) * (currentY_ - pathSegmentStartY_) -
+      std::sin(heading) * (currentX_ - pathSegmentStartX_);
+  // Continue the incoming lane controller without resetting its PID state.
+  // Scanning changes speed and checkpoint handling, not the steering law.
+  double controlDt = 1.0 / controlFrequency_;
+  if (motionCommandInitialized_) {
+    const double measuredDt = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - lastMotionCommandTime_).count();
+    if (measuredDt > 0.0 && measuredDt <= 0.2)
+      controlDt = measuredDt;
+  }
+  const double trackingSpeed = std::abs(visual_navigation::LimitRate(
+      command.linear.x, lastMotionCommand_.linear.x, maxLinearAcceleration_,
+      maxLinearDeceleration_, controlDt));
+  const double pathError = visual_navigation::StanleyPathError(
+      headingError, scanDirection * crossTrackError, crossTrackGain_,
+      trackingSpeed, stanleySofteningSpeed_,
+      maxCrossTrackCorrection_);
+  const bool allowPathIntegral = std::abs(headingError) < 0.30 &&
+                                 std::abs(crossTrackError) < 0.08;
+  const double feedbackAngularSpeed = UpdatePathPid(
+      pathError, scanDirection * crossTrackError, allowPathIntegral,
+      frame.control_yaw_rate);
+  const double lateralAngularLimit =
+      visual_navigation::LateralAccelerationAngularLimit(
+          maxPathAngularSpeed_, command.linear.x, maxLateralAcceleration_);
+  command.angular.z = visual_navigation::CompensatePathTurnDeadband(
+      feedbackAngularSpeed, pathError, frame.control_yaw_rate,
+      pathAngularActivationError_, pathYawResponseThreshold_,
+      minPathAngularSpeed_, lateralAngularLimit);
+  command.angular.z = visual_navigation::StopRequiredPathAngularSpeed(
+      command.angular.z, command.linear.x, preTurnPathAngularRatio_);
   PublishMotionCommand(command);
   SetState("RFID_SCANNING:" + std::to_string(currentWaypointIndex_));
 }

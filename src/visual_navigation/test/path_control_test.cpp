@@ -3,6 +3,41 @@
 #include <limits>
 
 #include "visual_navigation/path_control.hpp"
+#include "visual_navigation/path_tracking_controller.hpp"
+
+TEST(PathControl, RfidScanEntryKeepsLaneCorrectionAndLowSpeedSteeringBound)
+{
+  visual_navigation::PathTrackingController controller;
+  controller.configure(1.2, 0.08, 0.0, 0.45, 0.2, 0.65);
+  const auto start = visual_navigation::PathTrackingController::Clock::now();
+  constexpr double radians = 3.14159265358979323846 / 180.0;
+  // Recorded entry: lane x=.20, base x=.18, yaw=-83.9 degrees.
+  const double heading_error = -6.1 * radians;
+  const double cross_track = -0.02;
+  const double before_error = visual_navigation::StanleyPathError(
+      heading_error, cross_track, 1.0, 0.048, 0.25, 0.30);
+  const double before = controller.update_pid(
+      before_error, cross_track, true, -0.034, start);
+  const double scan_error = visual_navigation::StanleyPathError(
+      heading_error, cross_track, 1.0, 0.035, 0.25, 0.30);
+  const double scan_feedback = controller.update_pid(
+      scan_error, cross_track, true, -0.034,
+      start + std::chrono::milliseconds(33));
+  const double scan = visual_navigation::StopRequiredPathAngularSpeed(
+      scan_feedback, 0.035, 1.2);
+  EXPECT_LT(before, 0.0);
+  EXPECT_LT(scan, 0.0);
+  EXPECT_LT(std::abs(scan - before), 0.01);
+  EXPECT_LE(std::abs(scan), 0.042 + 1e-12);
+  // A large IMU rate or deadband compensation must not restore the old .25 cap.
+  for (double requested : {-0.25, -0.12, 0.12, 0.25}) {
+    EXPECT_LE(std::abs(visual_navigation::StopRequiredPathAngularSpeed(
+        requested, 0.035, 1.2)), 0.042 + 1e-12);
+  }
+  // Lateral correction remains present when heading is already aligned.
+  EXPECT_GT(visual_navigation::StanleyPathError(
+      0.0, cross_track, 1.0, 0.035, 0.25, 0.30), 0.0);
+}
 
 TEST(PathControl, TrackingPointRotationDoesNotMoveCorrectedBase)
 {
