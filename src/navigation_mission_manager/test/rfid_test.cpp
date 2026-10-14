@@ -62,6 +62,19 @@ struct ManagerRfidTestAccess
     m.pose_->linear_speed = speed;
     m.service_rfid(time);
   }
+  static void prepare_speech(MissionManager & m)
+  {
+    m.speaker_client_ = m.create_client<mission_control_interfaces::srv::SpeakText>(
+      "/manager_rfid_test/speech");
+    m.rfid_announcement_template_ = "已到达{number}号点";
+  }
+  static bool wait_for_speech(MissionManager & m)
+  {return m.speaker_client_->wait_for_service(std::chrono::seconds(2));}
+  static void announce(MissionManager & m)
+  {
+    m.rfid_phase_ = "announcing";
+    m.service_rfid(steady_seconds() + 1.0);
+  }
   static void finish(MissionManager & m) {m.finish_rfid_workflow();}
   static void move(MissionManager & m, double dx)
   {
@@ -317,6 +330,45 @@ TEST_F(ManagerRfidTest, ResetClearsCompletedCardSuppression)
   nmm::ManagerRfidTestAccess::reset(*manager);
   nmm::ManagerRfidTestAccess::receive(*manager, 12);
   EXPECT_TRUE(nmm::ManagerRfidTestAccess::pending(*manager));
+}
+
+TEST_F(ManagerRfidTest, SpeechUsesObservedCardWhenNumberChangesAtSamePhysicalCheckpoint)
+{
+  using Speech = mission_control_interfaces::srv::SpeakText;
+  std::vector<std::string> spoken;
+  auto speech_service = server->create_service<Speech>(
+    "/manager_rfid_test/speech",
+    [&spoken](Speech::Request::SharedPtr request, Speech::Response::SharedPtr response) {
+      spoken.push_back(request->text);
+      response->success = true;
+    });
+  nmm::ManagerRfidTestAccess::prepare_speech(*manager);
+  ASSERT_TRUE(nmm::ManagerRfidTestAccess::wait_for_speech(*manager));
+  for (const int card : {12, 11}) {
+    nmm::ManagerRfidTestAccess::reset(*manager);
+    if (card == 11) {
+      collect(3U);
+      executor.spin_some();
+    }
+    nmm::ManagerRfidTestAccess::route(*manager);
+    requests.clear();
+    receive(card);
+    stop_and_settle();
+    ASSERT_TRUE(nmm::ManagerRfidTestAccess::active(*manager));
+    nmm::ManagerRfidTestAccess::announce(*manager);
+    const std::size_t expected_count = card == 12 ? 1U : 2U;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (spoken.size() < expected_count && std::chrono::steady_clock::now() < deadline) {
+      executor.spin_once(std::chrono::milliseconds(10));
+    }
+    ASSERT_EQ(spoken.size(), expected_count);
+    EXPECT_EQ(spoken.back(), card == 12 ? "已到达十二号点" : "已到达十一号点");
+    // Complete the visit before resetting the next visit at the same point.
+    executor.spin_some();
+    nmm::ManagerRfidTestAccess::finish(*manager);
+    collect(2U);
+    executor.spin_some();
+  }
 }
 
 TEST_F(ManagerRfidTest, InvalidCardIsRejectedOnlyAfterStop)
