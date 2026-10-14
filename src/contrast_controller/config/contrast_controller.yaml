@@ -18,7 +18,7 @@ contrast_controller:
     turn_maneuver_entry_speed: 0.035
 
 
-    turn_maneuver_angular_speed: 0.35
+    turn_maneuver_angular_speed: 0.45
     turn_maneuver_min_angular_speed: 0.25
     turn_maneuver_creep_speed: 0.030
     turn_maneuver_turn_linear_speed: 0.035

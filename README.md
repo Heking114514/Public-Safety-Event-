@@ -18,6 +18,39 @@
 
 工作空间中的 `cup_car_serial` 包会订阅 `/cmd_vel_nav`，并将速度转换为 `vx,az\r\n` 后写入串口。
 
+### 一键 3 米直行测量
+
+在地上标好 3 米起点和终点，车身对齐直线，运行：
+
+```bash
+cd /home/hjh/zhongzhouyanda/dm2325
+./scripts/start_odometry_test.sh
+```
+
+脚本复用现有串口桥和 `odometry_bringup`，启动相机、轮式里程计和融合定位，并自动录包，不启动自动导航器。默认 ROS 域为 `10`，相机序列号为 `038122250473`，双目配置为 `848x480x15`。使用当前已构建的 `install/`，不自动重建工作空间。
+
+关键链路持续就绪后，先静止录制 10 秒，再倒计时 3 秒，以 `linear.x=0.06 m/s`、`angular.z=0` 直行。最长运动 60 秒；**到实测 3 米终点立即按 Ctrl+C**。时间上限不代表实际走满 3 米，也不使用待验证的里程计判断距离。下位机现有的零角速度航向辅助仍会工作。
+
+其他终端可执行：
+
+```bash
+./scripts/start_odometry_test.sh status
+./scripts/start_odometry_test.sh stop
+```
+
+Ctrl+C、`stop`、链路故障和时间到都会先持续发送零速，再关闭本脚本启动的串口、定位和录包进程。已有定位/导航栈或其他速度发布者会使测试拒绝开始。运行中视觉丢失可以使用融合允许的降级状态继续；串口断连、执行器不健康、融合异常或关键里程计过期会停止。
+
+运行目录会打印在终端。有可写的外接录包目录时保存在 `/media/hjh/E/rosbag_recording/odometry_tests/`，否则保存在 `log/odometry_tests/`。每次运行单独保存 `bag/`、三个进程日志、`events.jsonl` 和 `run.json`。录包包含相机/BMI088 IMU、编码器、控制遥测、各层里程计、速度指令、融合状态和测试事件。结束后在 `run.json` 的 `physical_measurement` 填写实际距离、偏移厘米数、左右方向及车头偏角；手推纠偏也应另记发生时刻。
+
+常用选项：
+
+```bash
+./scripts/start_odometry_test.sh --dry-run                # 只预览，不启动
+./scripts/start_odometry_test.sh --setup-only             # 只采集，保持零速
+./scripts/start_odometry_test.sh --serial-device /dev/ttyACM0
+./scripts/start_odometry_test.sh --output-root /path/to/recordings
+```
+
 ## 1. 安全要求
 
 - 首次实车测试时将驱动轮架空，并准备急停。
