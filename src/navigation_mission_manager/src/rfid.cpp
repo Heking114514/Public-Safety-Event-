@@ -173,18 +173,15 @@ void MissionManager::on_rfid_number(const std_msgs::msg::Int32::SharedPtr messag
   const double now_seconds = steady_seconds();
   rfid_pending_card_ = number;
   rfid_pending_route_id_ = active_route_.has_value() ? active_route_->route_id : 0U;
-  rfid_phase_ = "waiting_hold";
-  rfid_next_hold_retry_at_ = now_seconds;
+  rfid_phase_ = "delaying_stop";
+  rfid_next_hold_retry_at_ = now_seconds + 0.5;
   rfid_release_at_.reset();
   rfid_correction_stable_since_.reset();
   rfid_stationary_since_.reset();
   rfid_correction_deadline_ = 0.0;
-  request_hold(
-    "rfid", true,
-    "RFID candidate received; stopping before card and position validation");
-  publish_text("rfid_stop_requested:card=" + std::to_string(number));
+  publish_text("rfid_stop_delayed:card=" + std::to_string(number) + ",delay_s=0.5");
   RCLCPP_INFO(
-    get_logger(), "RFID candidate received: card=%d; motion hold requested before validation", number);
+    get_logger(), "RFID candidate received: card=%d; motion hold scheduled in 0.5 s before validation", number);
 }
 
 void MissionManager::reject_pending_rfid(const std::string & reason)
@@ -314,6 +311,18 @@ void MissionManager::service_rfid(double now_seconds)
 {
   service_speech_text(now_seconds);
   if (rfid_pending_card_.has_value()) {
+    if (rfid_phase_ == "delaying_stop") {
+      if (now_seconds < rfid_next_hold_retry_at_) {
+        return;
+      }
+      rfid_phase_ = "waiting_hold";
+      request_hold(
+        "rfid", true,
+        "RFID candidate received 0.5 s ago; stopping before validation");
+      rfid_next_hold_retry_at_ = now_seconds + 0.5;
+      publish_text("rfid_stop_requested:card=" + std::to_string(*rfid_pending_card_));
+      return;
+    }
     bool held = false;
     {
       std::lock_guard<std::mutex> lock(hold_state_mutex_);

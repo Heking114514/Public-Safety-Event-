@@ -62,6 +62,7 @@ struct ManagerRfidTestAccess
     m.pose_->linear_speed = speed;
     m.service_rfid(time);
   }
+  static double stop_deadline(const MissionManager & m) {return m.rfid_next_hold_retry_at_;}
   static double settle(const MissionManager & m) {return m.rfid_stationary_settle_s_;}
   static void reset(MissionManager & m) {m.reset_rfid();}
 };
@@ -103,6 +104,8 @@ protected:
   {
     nmm::ManagerRfidTestAccess::receive(*manager, number);
     ASSERT_TRUE(nmm::ManagerRfidTestAccess::pending(*manager));
+    nmm::ManagerRfidTestAccess::service(
+      *manager, nmm::ManagerRfidTestAccess::stop_deadline(*manager));
     collect(1U);
     ASSERT_EQ(requests.front().source, "navigation_mission_manager/rfid");
     ASSERT_TRUE(requests.front().hold);
@@ -138,6 +141,42 @@ protected:
   rclcpp::executors::SingleThreadedExecutor executor;
   std::vector<Hold::Request> requests;
 };
+
+TEST_F(ManagerRfidTest, StopsHalfASecondAfterFirstCardWithoutExtendingOnDuplicates)
+{
+  const double before = nmm::steady_seconds();
+  nmm::ManagerRfidTestAccess::receive(*manager, 12);
+  const double deadline = nmm::ManagerRfidTestAccess::stop_deadline(*manager);
+  EXPECT_GE(deadline, before + 0.5);
+  EXPECT_LE(deadline, nmm::steady_seconds() + 0.5);
+  executor.spin_some();
+  EXPECT_TRUE(requests.empty());
+  nmm::ManagerRfidTestAccess::service(*manager, deadline - 0.001);
+  executor.spin_some();
+  EXPECT_TRUE(requests.empty());
+  EXPECT_TRUE(nmm::ManagerRfidTestAccess::pending(*manager));
+  EXPECT_FALSE(nmm::ManagerRfidTestAccess::faulted(*manager));
+  nmm::ManagerRfidTestAccess::receive(*manager, 12);
+  EXPECT_DOUBLE_EQ(nmm::ManagerRfidTestAccess::stop_deadline(*manager), deadline);
+  nmm::ManagerRfidTestAccess::service(*manager, deadline);
+  collect(1U);
+  EXPECT_EQ(requests.front().source, "navigation_mission_manager/rfid");
+  EXPECT_TRUE(requests.front().hold);
+  EXPECT_TRUE(nmm::ManagerRfidTestAccess::pending(*manager));
+}
+
+TEST_F(ManagerRfidTest, ResetCancelsDelayedStop)
+{
+  nmm::ManagerRfidTestAccess::receive(*manager, 12);
+  const double deadline = nmm::ManagerRfidTestAccess::stop_deadline(*manager);
+  nmm::ManagerRfidTestAccess::reset(*manager);
+  collect(1U);
+  EXPECT_FALSE(requests.front().hold);
+  nmm::ManagerRfidTestAccess::service(*manager, deadline + 1.0);
+  executor.spin_some();
+  EXPECT_EQ(requests.size(), 1U);
+  EXPECT_FALSE(nmm::ManagerRfidTestAccess::pending(*manager));
+}
 
 TEST_F(ManagerRfidTest, IdleManagerStopsBeforeCheckingMissionAndKeepsVehicleStopped)
 {
