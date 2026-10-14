@@ -193,7 +193,7 @@ bool WaypointNavigator::ActivateNavigation(std::string &result,
       pathProgressSupervisor_.Reset();
       turnProgressSupervisor_.Reset();
       pathSegmentInitialized_ = false;
-      ResetRunControl();
+      ResetRunControl(preserveExecutedTrace);
       const bool actuator_wait =
           inputs.actuator_required && !ActuatorHealthIsValid(inputs);
       const std::string deferred_state =
@@ -222,7 +222,7 @@ bool WaypointNavigator::ActivateNavigation(std::string &result,
   pathProgressSupervisor_.Reset();
   turnProgressSupervisor_.Reset();
   pathSegmentInitialized_ = false;
-  ResetRunControl();
+  ResetRunControl(preserveExecutedTrace);
   SetState(MotionHeld() ? "HELD_FOR_MISSION" : "WAITING_FOR_LOCALIZATION");
   result = "Waypoint navigation started";
   return true;

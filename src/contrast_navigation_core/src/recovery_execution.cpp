@@ -16,6 +16,7 @@ visual_navigation::PoseRecovery::Pose WaypointNavigator::RecoveryPose() const {
 void WaypointNavigator::FailPoseRecovery(const std::string &reason) {
   PublishStop();
   recoveryTurnController_.reset();
+  cornerReturnController_.reset();
   recoveryStopPending_ = false;
   poseRecoveryPhase_ = "failed";
   SetState(reason);
@@ -168,6 +169,21 @@ bool WaypointNavigator::RunPoseRecovery() {
   geometry_msgs::msg::Twist command;
   if (step.kind == Recovery::Step::Kind::FIXED_TURN) {
     if (!recoveryTurnManeuverStarted_) {
+      const double c = std::cos(step.geometry_heading), s = std::sin(step.geometry_heading);
+      const double sign = NormalizeAngle(step.target_heading - step.geometry_heading) > 0 ? 1.0 : -1.0;
+      const double dx = actual.position.x - step.junction.x;
+      const double dy = actual.position.y - step.junction.y;
+      const double along = dx * c + dy * s - recoveryTurnConfig_.entry_target_x;
+      const double cross = -dx * s + dy * c - sign * recoveryTurnConfig_.entry_target_y;
+      if (std::abs(along) > recoveryTurnConfig_.entry_position_tolerance ||
+          std::abs(cross) > recoveryTurnConfig_.entry_lateral_tolerance ||
+          std::abs(NormalizeAngle(actual.yaw - step.geometry_heading)) >
+            recoveryTurnConfig_.entry_yaw_tolerance) {
+        FailPoseRecovery("FAULT_POSE_RECOVERY_FIXED_ENTRY"); return true;
+      }
+      RCLCPP_INFO(get_logger(), "Recovery fixed entry stopped: junction=(%.4f,%.4f) actual=(%.4f,%.4f) heading=%.4f error=(%.4f,%.4f)",
+        step.junction.x, step.junction.y, actual.position.x, actual.position.y,
+        actual.yaw, along, cross);
       recoveryTurnController_.begin(t);
       recoveryTurnManeuverStarted_ = true;
     }

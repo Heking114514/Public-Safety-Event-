@@ -19,6 +19,21 @@ void WaypointNavigator::PauseActiveTurn() {
 }
 
 bool WaypointNavigator::BeginTurnObstacleRecovery() {
+  if (!turnManeuverController_.active() && lastCornerContextValid_ &&
+      poseRecovery_.lane_at_pose(RecoveryPose()) == lastCornerExitLane_ &&
+      std::abs(NormalizeAngle(currentYaw_-lastCornerContext_.target_heading)) <=
+        turnManeuverConfig_.entry_yaw_tolerance) {
+    normalTurnEntryStop_ = false;
+    normalTurnEntryConfirmed_ = false;
+    turnObstacleContext_ = lastCornerContext_;
+    turnObstacleContextValid_ = true;
+    poseRecoveryPhase_ = "turn_stop";
+    recoveryMotionDirection_ = 0;
+    BeginRecoveryStop(0.0);
+    SetState("POSE_RECOVERY_CURRENT_TURN_STOP");
+    PublishPoseRecovery("turn_stop");
+    return true;
+  }
   if (!turnManeuverController_.active() || !stoppedAtPlannedTurn_ ||
       stoppedTurnReverseArrival_ || currentWaypointIndex_ >= waypoints_.size())
     return false;
@@ -36,6 +51,7 @@ bool WaypointNavigator::BeginTurnObstacleRecovery() {
   recoveryMotionDirection_ = lastMotionCommand_.linear.x > 1e-9 ? 1 :
                               lastMotionCommand_.linear.x < -1e-9 ? -1 : 0;
   poseRecoveryPhase_ = "finish_turn";
+  if (normalTurnEntryStop_) BeginRecoveryStop(0.0);
   pathProgressSupervisor_.Pause();
   turnProgressSupervisor_.Pause();
   SetState("POSE_RECOVERY_FINISH_CURRENT_TURN");
@@ -44,43 +60,31 @@ bool WaypointNavigator::BeginTurnObstacleRecovery() {
 }
 
 bool WaypointNavigator::CheckReverseTurnPlan() const {
-  using Recovery = visual_navigation::PoseRecovery;
-  visual_navigation::TurnManeuverController controller(recoveryTurnConfig_);
-  Recovery::Pose actual = RecoveryPose();
-  const double dt = 1.0 / controlFrequency_;
-  const double maximum = 5.0 * recoveryTurnConfig_.phase_timeout;
-  controller.begin(0.0);
+  visual_navigation::CornerReturnController controller(cornerReturnConfig_);
+  auto context = turnObstacleContext_;
+  auto actual = RecoveryPose();
+  context.pose = {actual.position.x, actual.position.y, actual.yaw};
+  controller.begin(context, 0.0);
   double v = 0.0, w = 0.0;
-  for (double t = 0.0; t <= maximum; t += dt) {
-    auto context = turnObstacleReturnContext_;
-    context.pose = {actual.position.x, actual.position.y,
-                    NormalizeAngle(actual.yaw + kPi)};
-    context.applied_twist = {-v, w};
-    context.measured_twist = context.applied_twist;
-    visual_navigation::TurnManeuverInput input;
+  const double dt = cornerReturnConfig_.control_dt;
+  for (double t = 0.0; t < 6 * cornerReturnConfig_.turn.phase_timeout; t += dt) {
+    visual_navigation::CornerReturnInput input;
     input.context = context;
-    const auto result = controller.update(input, t);
-    if (result.result == visual_navigation::TurnManeuverResult::COMPLETED)
+    input.context.pose = {actual.position.x, actual.position.y, actual.yaw};
+    const auto decision = controller.update(input, t);
+    if (decision.result == visual_navigation::TurnManeuverResult::COMPLETED)
       return poseRecovery_.safe({actual});
-    if (result.result != visual_navigation::TurnManeuverResult::RUNNING)
-      return false;
-    const double target = std::clamp(-result.command.linear_x,
-                                    -maxLinearSpeed_, maxLinearSpeed_);
-    // A return-to-lane action may only drive backwards. A fixed controller
-    // asking for forward entry correction requires a different safe entry.
-    if (target > 1.0e-9) return false;
-    v = visual_navigation::LimitRate(target, v, maxLinearAcceleration_,
-                                     maxLinearDeceleration_, dt);
-    if (std::abs(target) > 1.0e-9 && std::abs(v) < minLinearCommandSpeed_)
-      v = std::copysign(minLinearCommandSpeed_, target);
-    const double target_w = std::clamp(result.command.angular_z,
-                                      -maxAngularSpeed_, maxAngularSpeed_);
-    w = visual_navigation::LimitRate(target_w, w, maxAngularAcceleration_,
-                                     maxAngularDeceleration_, dt);
-    if (std::abs(result.command.linear_x) <= 1.0e-9 &&
-        std::abs(result.command.angular_z) <= 1.0e-9) {
-      v = 0.0;
-      w = 0.0;
+    if (decision.result != visual_navigation::TurnManeuverResult::RUNNING ||
+        decision.command.linear_x > 1e-9) return false;
+    if (std::abs(decision.command.linear_x) <= 1e-9 &&
+        std::abs(decision.command.angular_z) <= 1e-9) v = w = 0.0;
+    else {
+      v = visual_navigation::LimitRate(decision.command.linear_x, v,
+        maxLinearAcceleration_, maxLinearDeceleration_, dt);
+      if (std::abs(v) < minLinearCommandSpeed_)
+        v = std::copysign(minLinearCommandSpeed_, decision.command.linear_x);
+      w = visual_navigation::LimitRate(decision.command.angular_z, w,
+        maxAngularAcceleration_, maxAngularDeceleration_, dt);
     }
     const auto sweep = poseRecovery_.motion_samples(actual, v, w, w, dt);
     if (!poseRecovery_.safe(sweep)) return false;
@@ -95,6 +99,9 @@ void WaypointNavigator::FinishTurnObstacleRecovery() {
   recoveryTurnController_.reset();
   recoveryTurnManeuverStarted_ = false;
   turnManeuverController_.reset();
+  normalTurnEntryStop_ = false;
+  normalTurnEntryConfirmed_ = false;
+  lastCornerContextValid_ = false;
   stoppedAtPlannedTurn_ = false;
   stoppedTurnReverseArrival_ = false;
   controlState_.interrupt_maneuver();
@@ -107,185 +114,156 @@ void WaypointNavigator::FinishTurnObstacleRecovery() {
 
 bool WaypointNavigator::RunTurnObstacleRecovery() {
   const bool owned = poseRecoveryPhase_ == "finish_turn" ||
-      poseRecoveryPhase_ == "turn_stop" ||
-      poseRecoveryPhase_ == "reverse_turn" ||
-      poseRecoveryPhase_ == "return_straight" ||
-      poseRecoveryPhase_ == "return_stop";
+    poseRecoveryPhase_ == "turn_stop" || poseRecoveryPhase_ == "post_turn_point" ||
+    poseRecoveryPhase_ == "post_turn_stop" || poseRecoveryPhase_ == "reverse_turn" ||
+    poseRecoveryPhase_ == "return_stop";
   if (!owned) return false;
   const double t = poseRecovery_.active_seconds(TurnWallSeconds());
-  if (recoveryDirectionStop_) {
-    if (!RecoveryStopCompleted(t)) return true;
-    recoveryDirectionStop_ = false;
-  }
-  const auto fail = [this](const char *reason) {
-    FailPoseRecovery(reason);
-  };
-  const auto live_context = [this](visual_navigation::CornerShuntContext saved,
-                                  bool reverse) {
-    const double c = std::cos(currentYaw_), s = std::sin(currentYaw_);
-    saved.pose = {
-        currentX_ - c * trackingPointOffsetX_ + s * trackingPointOffsetY_,
-        currentY_ - s * trackingPointOffsetX_ - c * trackingPointOffsetY_,
-        NormalizeAngle(currentYaw_ + (reverse ? kPi : 0.0))};
-    const double sign = reverse ? -1.0 : 1.0;
-    saved.applied_twist = {sign * lastMotionCommand_.linear.x,
-                          lastMotionCommand_.angular.z};
-    saved.measured_twist = {
-        sign * (inputCache_.odometry_velocity_valid() ?
-            inputCache_.odometry_velocity() : lastMotionCommand_.linear.x),
-        ControlYawRate()};
+  const auto context = [this]() {
+    auto saved = turnObstacleContext_;
+    const auto p = RecoveryPose();
+    saved.pose = {p.position.x, p.position.y, p.yaw};
+    saved.applied_twist = {lastMotionCommand_.linear.x, lastMotionCommand_.angular.z};
+    saved.measured_twist = {inputCache_.odometry_velocity(), ControlYawRate()};
     saved.measured_yaw_rate_valid = ImuYawRateIsFresh();
     return saved;
   };
-  if (poseRecoveryPhase_ == "finish_turn" ||
-      poseRecoveryPhase_ == "reverse_turn") {
-    const bool reverse = poseRecoveryPhase_ == "reverse_turn";
-    visual_navigation::TurnManeuverInput input;
-    input.context = live_context(reverse ? turnObstacleReturnContext_ :
-                                         turnObstacleContext_, reverse);
-    const auto decision = reverse ? recoveryTurnController_.update(input, t) :
-        turnManeuverController_.update(input, TurnWallSeconds());
-    if (decision.result == visual_navigation::TurnManeuverResult::COMPLETED) {
-      const auto actual = RecoveryPose();
-      const double heading = reverse ? turnObstacleContext_.geometry_heading :
-                                       turnObstacleContext_.target_heading;
-      const double tolerance = reverse ? recoveryTurnConfig_.entry_yaw_tolerance :
-                                         turnManeuverConfig_.entry_yaw_tolerance;
-      const double outgoing_projection =
-          (actual.position.x - turnObstacleContext_.junction_x) * std::cos(heading) +
-          (actual.position.y - turnObstacleContext_.junction_y) * std::sin(heading);
-      if (!poseRecovery_.safe({actual}) ||
-          std::abs(NormalizeAngle(actual.yaw - heading)) > tolerance ||
-          (!reverse && outgoing_projection <= 0.0)) {
-        fail(reverse ? "FAULT_POSE_RECOVERY_RETURN_TURN_POSE" :
-                       "FAULT_POSE_RECOVERY_CURRENT_TURN_POSE");
-        return true;
-      }
-      PublishStop();
-      poseRecoveryPhase_ = reverse ? "return_straight" : "turn_stop";
-      recoveryStepStarted_ = t;
-      BeginRecoveryStop(t);
-      SetState(reverse ? "POSE_RECOVERY_RETURN_TURN_STOP" :
-                         "POSE_RECOVERY_CURRENT_TURN_STOP");
-      PublishPoseRecovery(poseRecoveryPhase_);
-      return true;
-    }
-    if (decision.result != visual_navigation::TurnManeuverResult::RUNNING) {
-      fail(reverse ? "FAULT_POSE_RECOVERY_RETURN_TURN" :
-                     "FAULT_POSE_RECOVERY_CURRENT_TURN");
-      return true;
-    }
+  const auto publish = [this, t](const visual_navigation::CornerShuntTwist &twist,
+                                const std::string &state) {
     geometry_msgs::msg::Twist command;
-    command.linear.x = (reverse ? -1.0 : 1.0) * decision.command.linear_x;
-    command.angular.z = decision.command.angular_z;
-    if (reverse && command.linear.x > 1.0e-9) {
-      fail("FAULT_POSE_RECOVERY_RETURN_ENTRY_DIRECTION");
-      return true;
-    }
+    command.linear.x = twist.linear_x; command.angular.z = twist.angular_z;
     const int direction = command.linear.x > 1e-9 ? 1 : command.linear.x < -1e-9 ? -1 : 0;
     if (direction && recoveryMotionDirection_ && direction != recoveryMotionDirection_) {
       recoveryMotionDirection_ = direction;
       recoveryDirectionStop_ = true;
       BeginRecoveryStop(t);
       SetState("POSE_RECOVERY_DIRECTION_STOP");
-      return true;
+      return;
     }
     if (direction) recoveryMotionDirection_ = direction;
     if (!RecoveryCommandSafe(command)) {
-      fail(reverse ? "FAULT_POSE_RECOVERY_RETURN_TURN_SWEEP" :
-                     "FAULT_POSE_RECOVERY_CURRENT_TURN_SWEEP");
+      FailPoseRecovery("FAULT_POSE_RECOVERY_CORNER_SWEEP"); return;
+    }
+    if (std::abs(command.linear.x) <= 1e-9 && std::abs(command.angular.z) <= 1e-9)
+      PublishStop();
+    else PublishMotionCommand(command);
+    SetState(state);
+  };
+  if (recoveryDirectionStop_) {
+    if (!RecoveryStopCompleted(t)) return true;
+    recoveryDirectionStop_ = false;
+  }
+  if (poseRecoveryPhase_ == "finish_turn") {
+    if (normalTurnEntryStop_) {
+      PauseActiveTurn();
+      if (!RecoveryStopCompleted(t)) return true;
+      normalTurnEntryStop_ = false;
+      if (!visual_navigation::FixedTurnEntryMatches(context(), turnManeuverConfig_)) {
+        FailPoseRecovery("FAULT_POSE_RECOVERY_CURRENT_ENTRY_POSE"); return true;
+      }
+    }
+    visual_navigation::TurnManeuverInput input; input.context = context();
+    const auto decision = turnManeuverController_.update(input, TurnWallSeconds());
+    if (!normalTurnEntryConfirmed_ &&
+        decision.phase == visual_navigation::TurnManeuverPhase::TURN_60 &&
+        std::abs(decision.command.linear_x) <= 1e-9 &&
+        std::abs(decision.command.angular_z) <= 1e-9) {
+      normalTurnEntryStop_ = normalTurnEntryConfirmed_ = true;
+      BeginRecoveryStop(t);
+      SetState("POSE_RECOVERY_CURRENT_ENTRY_STOP");
       return true;
     }
-    if (std::abs(command.linear.x) <= 1.0e-9 &&
-        std::abs(command.angular.z) <= 1.0e-9) PublishStop();
-    else PublishMotionCommand(command);
-    SetState(std::string(reverse ? "POSE_RECOVERY_REVERSE_" :
-                                  "POSE_RECOVERY_FINISH_") +
-             visual_navigation::TurnManeuverStatus(decision.phase));
+    if (decision.result == visual_navigation::TurnManeuverResult::COMPLETED) {
+      PublishStop(); poseRecoveryPhase_ = "turn_stop"; BeginRecoveryStop(t);
+      SetState("POSE_RECOVERY_CURRENT_TURN_STOP"); PublishPoseRecovery("turn_stop");
+    } else if (decision.result != visual_navigation::TurnManeuverResult::RUNNING)
+      FailPoseRecovery("FAULT_POSE_RECOVERY_CURRENT_TURN");
+    else publish(decision.command, std::string("POSE_RECOVERY_FINISH_") +
+      visual_navigation::TurnManeuverStatus(decision.phase));
     return true;
   }
   if (poseRecoveryPhase_ == "turn_stop") {
-    PublishStop();
     if (!RecoveryStopCompleted(t)) return true;
-    turnObstacleReturnContext_ = live_context(turnObstacleContext_, true);
-    turnObstacleReturnContext_.geometry_heading =
-        NormalizeAngle(turnObstacleContext_.target_heading + kPi);
-    turnObstacleReturnContext_.arrival_heading =
-        NormalizeAngle(turnObstacleContext_.target_heading + kPi);
-    turnObstacleReturnContext_.target_heading =
-        NormalizeAngle(turnObstacleContext_.geometry_heading + kPi);
-    turnObstacleReturnContext_.reverse_arrival = true;
+    cornerReturnController_.begin(context(), t);
+    if (!cornerReturnController_.geometry_valid()) {
+      FailPoseRecovery("FAULT_POSE_RECOVERY_RETURN_GEOMETRY"); return true;
+    }
+    poseRecoveryPhase_ = "post_turn_point";
+    recoveryStepStarted_ = t;
+    const auto target = cornerReturnController_.exit_pose();
+    const auto actual = context().pose;
+    recoveryBestError_ = std::hypot(target.x-actual.x,target.y-actual.y);
+    RCLCPP_INFO(get_logger(), "L return fixed outgoing point: target=(%.4f,%.4f,%.4f)",
+      target.x, target.y, target.yaw);
+    PublishPoseRecovery("post_turn_point");
+  }
+  if (poseRecoveryPhase_ == "post_turn_point") {
+    const auto target = cornerReturnController_.exit_pose();
+    const auto actual = context().pose;
+    const double c = std::cos(target.yaw), s = std::sin(target.yaw);
+    const double along = (target.x-actual.x)*c + (target.y-actual.y)*s;
+    const double cross = -(actual.x-target.x)*s + (actual.y-target.y)*c;
+    const double yaw = NormalizeAngle(target.yaw-actual.yaw);
+    if (std::abs(along) <= turnManeuverConfig_.entry_position_tolerance &&
+        std::abs(cross) <= turnManeuverConfig_.entry_lateral_tolerance &&
+        std::abs(yaw) <= turnManeuverConfig_.entry_yaw_tolerance) {
+      PublishStop(); poseRecoveryPhase_ = "post_turn_stop"; BeginRecoveryStop(t);
+      SetState("POSE_RECOVERY_POST_TURN_POINT_STOP"); PublishPoseRecovery("post_turn_stop");
+      return true;
+    }
+    if (t-recoveryStepStarted_ > recoveryBestError_/poseRecovery_.config().speed +
+        turnManeuverConfig_.phase_timeout) {
+      FailPoseRecovery("FAULT_POSE_RECOVERY_POST_TURN_POINT_TIMEOUT"); return true;
+    }
+    const double direction = along >= 0 ? 1.0 : -1.0;
+    visual_navigation::CornerShuntTwist command;
+    command.linear_x = direction*poseRecovery_.config().speed;
+    command.angular_z = std::clamp(turnManeuverConfig_.entry_heading_gain*yaw -
+      direction*turnManeuverConfig_.entry_lateral_gain*cross,
+      -turnManeuverConfig_.entry_max_angular_speed, turnManeuverConfig_.entry_max_angular_speed);
+    publish(command, "POSE_RECOVERY_POST_TURN_POINT"); return true;
+  }
+  if (poseRecoveryPhase_ == "post_turn_stop") {
+    if (!RecoveryStopCompleted(t)) return true;
     if (!CheckReverseTurnPlan()) {
-      fail("FAULT_POSE_RECOVERY_RETURN_TURN_PLAN");
-      return true;
+      FailPoseRecovery("FAULT_POSE_RECOVERY_RETURN_TURN_PLAN"); return true;
     }
-    recoveryTurnController_.begin(t);
-    recoveryMotionDirection_ = 0;
-    poseRecoveryPhase_ = "reverse_turn";
-    SetState("POSE_RECOVERY_REVERSE_CURRENT_TURN");
+    const auto actual = context().pose;
+    const auto target = cornerReturnController_.exit_pose();
+    if (std::hypot(actual.x-target.x,actual.y-target.y) >
+        std::hypot(turnManeuverConfig_.entry_position_tolerance,
+                   turnManeuverConfig_.entry_lateral_tolerance)) {
+      FailPoseRecovery("FAULT_POSE_RECOVERY_POST_TURN_STOP_POSE"); return true;
+    }
+    RCLCPP_INFO(get_logger(), "L outgoing point stopped: actual=(%.4f,%.4f,%.4f)",
+      actual.x,actual.y,actual.yaw);
+    cornerReturnController_.begin(context(), t);
+    recoveryMotionDirection_ = 0; poseRecoveryPhase_ = "reverse_turn";
     PublishPoseRecovery("reverse_turn");
+  }
+  if (poseRecoveryPhase_ == "reverse_turn") {
+    visual_navigation::CornerReturnInput input; input.context = context();
+    const auto decision = cornerReturnController_.update(input, t);
+    if (decision.result == visual_navigation::TurnManeuverResult::COMPLETED) {
+      PublishStop(); poseRecoveryPhase_ = "return_stop"; BeginRecoveryStop(t);
+      SetState("POSE_RECOVERY_RETURN_TURN_STOP"); PublishPoseRecovery("return_stop");
+    } else if (decision.result != visual_navigation::TurnManeuverResult::RUNNING ||
+               decision.command.linear_x > 1e-9)
+      FailPoseRecovery("FAULT_POSE_RECOVERY_RETURN_TURN");
+    else publish(decision.command, std::string("POSE_RECOVERY_REVERSE_") +
+      visual_navigation::CornerReturnStatus(decision.phase));
     return true;
   }
-  if (poseRecoveryPhase_ == "return_straight") {
-    if (recoveryStopPending_) {
-      PublishStop();
-      if (!RecoveryStopCompleted(t)) return true;
-      recoveryStepStarted_ = t;
-    }
-    const auto actual = live_context(turnObstacleContext_, false).pose;
-    const double heading = turnObstacleContext_.geometry_heading;
-    const double dx = actual.x - turnObstacleContext_.junction_x;
-    const double dy = actual.y - turnObstacleContext_.junction_y;
-    const double longitudinal = std::cos(heading) * dx + std::sin(heading) * dy;
-    const double lateral = -std::sin(heading) * dx + std::cos(heading) * dy;
-    const double yaw_error = NormalizeAngle(heading - currentYaw_);
-    if (std::abs(lateral) > recoveryTurnConfig_.exit_lateral_tolerance ||
-        std::abs(yaw_error) > recoveryTurnConfig_.entry_yaw_tolerance) {
-      fail("FAULT_POSE_RECOVERY_ORIGINAL_LANE");
-      return true;
-    }
-    const double target = turnManeuverConfig_.entry_target_x;
-    if (longitudinal <= target + recoveryTurnConfig_.entry_position_tolerance) {
-      poseRecoveryPhase_ = "return_stop";
-      BeginRecoveryStop(t);
-      return true;
-    }
-    if (t - recoveryStepStarted_ >
-        recoveryTurnConfig_.phase_timeout) {
-      fail("FAULT_POSE_RECOVERY_ORIGINAL_LANE_TIMEOUT");
-      return true;
-    }
-    geometry_msgs::msg::Twist command;
-    command.linear.x = -poseRecovery_.config().speed;
-    command.angular.z = std::clamp(
-        recoveryTurnConfig_.entry_heading_gain * yaw_error +
-            recoveryTurnConfig_.entry_lateral_gain * lateral,
-        -recoveryTurnConfig_.entry_max_angular_speed,
-        recoveryTurnConfig_.entry_max_angular_speed);
-    if (!RecoveryCommandSafe(command)) {
-      fail("FAULT_POSE_RECOVERY_ORIGINAL_LANE_SWEEP");
-      return true;
-    }
-    PublishMotionCommand(command);
-    SetState("POSE_RECOVERY_RETREAT_ON_ORIGINAL_LANE");
-    return true;
-  }
-  PublishStop();
-  if (RecoveryStopCompleted(t)) {
-    const auto actual = RecoveryPose();
-    const double heading = turnObstacleContext_.geometry_heading;
-    const double dx = actual.position.x - turnObstacleContext_.junction_x;
-    const double dy = actual.position.y - turnObstacleContext_.junction_y;
-    const double longitudinal = std::cos(heading) * dx + std::sin(heading) * dy;
-    const double lateral = -std::sin(heading) * dx + std::cos(heading) * dy;
-    if (!poseRecovery_.safe({actual}) ||
-        std::abs(NormalizeAngle(actual.yaw - heading)) >
-            recoveryTurnConfig_.entry_yaw_tolerance ||
-        std::abs(lateral) > recoveryTurnConfig_.exit_lateral_tolerance ||
-        longitudinal > turnManeuverConfig_.entry_target_x +
-                           recoveryTurnConfig_.entry_position_tolerance) {
-      fail("FAULT_POSE_RECOVERY_ORIGINAL_LANE_STOP_POSE");
-      return true;
+  if (poseRecoveryPhase_ == "return_stop" && RecoveryStopCompleted(t)) {
+    const auto actual = context().pose;
+    const auto target = cornerReturnController_.entrance_pose();
+    const double dx = actual.x-target.x, dy = actual.y-target.y;
+    const double c = std::cos(target.yaw), s = std::sin(target.yaw);
+    if (!poseRecovery_.safe({RecoveryPose()}) ||
+        std::abs(dx*c+dy*s) > turnManeuverConfig_.entry_position_tolerance ||
+        std::abs(-dx*s+dy*c) > turnManeuverConfig_.entry_lateral_tolerance ||
+        std::abs(NormalizeAngle(actual.yaw-target.yaw)) > turnManeuverConfig_.entry_yaw_tolerance) {
+      FailPoseRecovery("FAULT_POSE_RECOVERY_ORIGINAL_LANE_STOP_POSE"); return true;
     }
     FinishTurnObstacleRecovery();
   }

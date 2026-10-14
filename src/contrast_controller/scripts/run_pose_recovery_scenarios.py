@@ -26,7 +26,7 @@ import json
 import math
 import os
 from pathlib import Path
-from recovery_evidence import RoadMap, angle_error, measured_direction_stop_error
+from recovery_evidence import RoadMap, angle_error, measured_direction_stop_error, fixed_entry_stop_error
 import re
 import signal
 import subprocess
@@ -89,6 +89,28 @@ def scenarios():
         dict(name="south_offcenter", initial=[1.215, -.66, -math.pi/2],
              obstacle=[1.2, -1.02], targets=["2"], after_turn=False,
              junction="x1_y3", expected_turns=1),
+        dict(name="l_during_turn", initial=[.2, -.30, -math.pi/2],
+             obstacle=[.45, -.5], targets=["2"], after_turn=False,
+             junction="launch_junction", during_turn=True, expected_turns=None,
+             original_lane="ROAD_TOP_LEFT", recovery_heading=-math.pi/2,
+             obstacle_half_size=[.04, .09]),
+        dict(name="l_after_turn", initial=[.2, -.30, -math.pi/2],
+             obstacle=[.892, -.5], targets=["2"], after_turn=True,
+             junction="launch_junction", expected_turns=1,
+             original_lane="ROAD_TOP_LEFT", recovery_heading=-math.pi/2,
+             completed_l=True, normal_heading=0.0, normal_x_min=.33,
+             obstacle_half_size=[.06, .10]),
+        dict(name="l_bottom_after", initial=[3.98, -1.5, 0.0],
+             obstacle=[4.2, -.92], targets=["6"], after_turn=True,
+             junction="x0_y1", expected_turns=1, completed_l=True,
+             original_lane="ROAD_X0_Y0", recovery_heading=0.0,
+             normal_heading=math.pi/2, normal_lane="ROAD_BOTTOM_LEFT",
+             normal_corner="x0_y0", obstacle_half_size=[.09, .04]),
+        dict(name="l_bottom_during", initial=[3.98, -1.5, 0.0],
+             obstacle=[4.2, -1.23], targets=["6"], after_turn=False,
+             junction="x0_y1", during_turn=True, expected_turns=1,
+             original_lane="ROAD_X0_Y0", recovery_heading=0.0,
+             obstacle_half_size=[.09, .04]),
     ])
     return cases
 
@@ -161,6 +183,7 @@ class Evidence:
         self.case = case
         self.road_map = road_map
         self.entry_config = entry_config or (-.070, 0.0)
+        self.entry_limits = (.003, .010, .080, .22)
         self.candidates = {}
         self.candidate_by_id = {}
         self.selected_candidate_id = None
@@ -285,6 +308,11 @@ class Evidence:
         stop_error = measured_direction_stop_error(self.odom)
         if stop_error:
             return stop_error
+        rotating = [row for row in self.odom if row["status"] in
+                    ("POSE_RECOVERY_TURN_60", "POSE_RECOVERY_TURN_30") and
+                    abs(row["angular"]) > .15]
+        if not rotating or any(row["linear"] < .005 for row in rotating):
+            return "特定转弯缺少实测前进分量，不能用原地旋转替代"
         turns60 = sum("TURN_60" in value for value in self.turn_phase_history)
         turns30 = sum("TURN_30" in value for value in self.turn_phase_history)
         expected = self.case.get("expected_turns")
@@ -302,11 +330,20 @@ class Evidence:
         for index, entry in enumerate(self.turn_entries):
             lane = selected["borrowed_lane_ids"][0] if index == 0 and "reverse" in selected["template_id"] else selected["resume_lane"]
             outgoing = self.road_map.projection((entry["x"],entry["y"]), lane, selected["resume_node"])["heading"]
+            incoming = (self.case.get("recovery_heading", self.case["initial"][2])
+                        if index == 0 else first_outgoing)
+            # 起始扰动只影响车辆实测姿态，道路入口仍采用地图的正交航向。
+            incoming = round(incoming/(math.pi/2))*(math.pi/2)
+            if self.case["after_turn"] and index == 0 and not self.case.get("completed_l"):
+                incoming = -math.pi/2
             checked = self.road_map.turn_entry((entry["x"],entry["y"]), entry["yaw"],
-                selected["resume_node"], *self.entry_config, outgoing_heading=outgoing)
+                selected["resume_node"], *self.entry_config, outgoing_heading=outgoing,
+                incoming_heading=incoming)
             entry.update(checked)
-            if entry["position_error"] > .020 or entry["road_center_error"] > .020 or entry["heading_error"] > .10:
-                return "fixed turn began before independent entry convergence: " + repr(entry)
+            error = fixed_entry_stop_error(self.odom, entry, incoming, *self.entry_limits)
+            if error:
+                return error + ": " + repr(entry)
+            first_outgoing = outgoing
         if self.case.get("expected_template") and selected["template_id"] != self.case["expected_template"]:
             return "selected template does not exercise requested direction: " + selected["template_id"]
         error = self.road_map.exit_error(
@@ -317,30 +354,47 @@ class Evidence:
             for a,b in zip(reverse,reverse[1:]) if 0 < b["stamp"]-a["stamp"] <= .15)
         if measured_reverse < self.case.get("minimum_reverse_m", 0.0):
             return f"long retreat not observed: {measured_reverse:.3f} m"
-        if self.case.get("during_turn"):
-            if not self.injected_during_turn:
+        if self.case.get("during_turn") or self.case.get("completed_l"):
+            if self.case.get("during_turn") and not self.injected_during_turn:
                 return "obstacle was not injected during real normal TURN_60/TURN_30"
-            if self.detected_status not in ("TURN_60", "TURN_DIAGONAL_CREEP", "TURN_30",
+            if self.case.get("during_turn") and self.detected_status not in ("TURN_60", "TURN_DIAGONAL_CREEP", "TURN_30",
                                             "POSE_RECOVERY_FINISH_CURRENT_TURN"):
                 return "obstacle was detected outside active normal turn: " + self.detected_status
             cursor = -1
             phases = [item["phase"] for item in self.phases]
-            for phase in ("finish_turn", "turn_stop", "reverse_turn", "return_straight", "braking"):
+            prelude = ([] if self.case.get("completed_l") else ["finish_turn"])
+            for phase in prelude + ["turn_stop", "post_turn_point", "post_turn_stop",
+                                    "reverse_turn", "return_stop", "braking"]:
                 try:
                     cursor = phases.index(phase, cursor + 1)
                 except ValueError:
                     return "missing interrupted-turn recovery phase: " + phase
-            returning = [row for row in self.odom if row["status"].startswith("POSE_RECOVERY_REVERSE_TURN")
+            returning = [row for row in self.odom if row["status"].startswith("POSE_RECOVERY_REVERSE_RETURN_TURN")
                          and row["linear"] < -.005]
             if not returning:
                 return "no measured reverse fixed turn back to original lane"
-            original = [row for row in self.odom if row["status"] == "POSE_RECOVERY_ORIGINAL_LANE_STOP"]
+            original = [row for row in self.odom if row["status"] == "POSE_RECOVERY_RETURN_TURN_STOP"]
             if not original:
                 return "no measured original-lane return pose"
             row = original[-1]
             projection = self.road_map.projection((row["x"],row["y"]), self.case["original_lane"])
             if abs(projection["cross"]) > .025 or angle_error(row["yaw"],self.case["initial"][2]) > .15:
                 return "interrupted-turn recovery did not restore original lane and heading"
+            outgoing_stops = [p for p in self.odom
+                if p["status"] == "POSE_RECOVERY_POST_TURN_POINT_STOP" and
+                abs(p["linear"]) < .002 and abs(p["angular"]) < .03]
+            if len(outgoing_stops) < 3 or outgoing_stops[-1]["stamp"]-outgoing_stops[0]["stamp"] < .22:
+                return "L 返回前没有在出口固定点连续实测停稳"
+            if self.case.get("completed_l") or self.case["name"].startswith("l_"):
+                road = self.road_map.lanes[self.case["original_lane"]]
+                corner = road["to"] if road["from"] == selected["resume_node"] else road["from"]
+                anchor = self.road_map.nodes[corner]
+                heading = self.case["initial"][2]
+                dx,dy = row["x"]-anchor[0],row["y"]-anchor[1]
+                if (abs(dx*math.cos(heading)+dy*math.sin(heading)-self.entry_config[0]) >
+                    self.entry_limits[0] or abs(-dx*math.sin(heading)+dy*math.cos(heading)) >
+                    self.entry_limits[1]):
+                    return "L 倒转未回到原道路的 7 cm 固定入口"
         heading = self.candidate_headings.get(self.complete_lane)
         if heading is None:
             return "selected recovery lane has no published candidate heading"
@@ -367,8 +421,14 @@ class Evidence:
                 entry.update(t=row["t"], x=p.x, y=p.y, yaw=yaw)
                 self.turn_entries.append(entry)
         if self.case["after_turn"] and self.turn_seen and self.status == "FOLLOWING":
-            yaw_error = abs(math.atan2(math.sin(yaw + math.pi/2), math.cos(yaw + math.pi/2)))
-            self.normal_turn_confirmed |= yaw_error < .15 and abs(p.x - 1.2) < .06
+            normal_heading = self.case.get("normal_heading", -math.pi/2)
+            confirmed_position = (p.x >= self.case["normal_x_min"] if "normal_x_min" in self.case
+                                  else abs(p.x-1.2) < .06)
+            if "normal_lane" in self.case:
+                projection = self.road_map.projection((p.x,p.y),self.case["normal_lane"],
+                  self.case["normal_corner"])
+                confirmed_position = projection["along"] >= .13 and abs(projection["cross"]) <= .03
+            self.normal_turn_confirmed |= angle_error(yaw,normal_heading) < .15 and confirmed_position
         if self.complete_at is None or self.failure:
             return
         fresh_cmd = self.last_cmd and 0 <= row["t"] - self.last_cmd[0] <= .25
@@ -404,6 +464,9 @@ def worker(config_path):
     params = yaml.safe_load(controller_config.read_text(encoding="utf-8"))["contrast_controller"]["ros__parameters"]
     entry_config = (params["recovery_turn_entry_target_x"], params["recovery_turn_entry_target_y"])
     evidence, process, node = Evidence(case, RoadMap(map_path), entry_config), None, None
+    evidence.entry_limits = (params["recovery_turn_entry_tolerance"],
+        params["turn_maneuver_entry_lateral_tolerance"],
+        params["turn_maneuver_entry_yaw_tolerance"], params["recovery_switch_stop_s"])
     polygon, result = [], dict(pass_=False, reason="not started")
     interrupted = False
 

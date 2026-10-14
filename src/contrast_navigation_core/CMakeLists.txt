@@ -36,6 +36,7 @@ add_library(contrast_waypoint_navigator_core STATIC
   src/pose_recovery_control.cpp
   src/recovery_execution.cpp
   src/turn_recovery.cpp
+  src/corner_return.cpp
   src/corner_shunt.cpp
   src/control.cpp
   src/maneuvers.cpp
@@ -90,6 +91,14 @@ ament_export_dependencies(
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   find_package(vehicle_loopback_sim REQUIRED)
+  ament_add_gtest(corner_return_test
+    test/corner_return_test.cpp src/corner_return.cpp
+    ../contrast_controller/src/turn_maneuver.cpp)
+  target_include_directories(corner_return_test PRIVATE include)
+  target_compile_features(corner_return_test PRIVATE cxx_std_17)
+  target_link_libraries(corner_return_test
+    vehicle_loopback_sim::loopback_sim_core yaml-cpp)
+  ament_target_dependencies(corner_return_test navigation_safety)
   ament_add_gtest(recovery_stop_test test/recovery_stop_test.cpp)
   target_include_directories(recovery_stop_test PRIVATE include)
   ament_add_gtest(recovery_routes_test

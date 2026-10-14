@@ -89,7 +89,7 @@ ros2 launch contrast_controller contrast_comparison.launch.py \
 
 ## 避障闭环验证
 
-Contrast 的 loopback 入口额外加载 `config/simulation_turn.yaml`：正常转弯入口为路口前 30 mm，角速度固定为 0.65 rad/s，中间直行 5 mm，入口纵向容差为 3 mm。它用于让车辆通过正常路口后继续测试避障；实车串口入口仍使用原配置。车辆尺寸和地图碰撞检查保持原配置。
+Contrast 的 loopback 入口额外加载 `config/simulation_turn.yaml`：正常转弯入口沿用正式固定动作的路口前 70 mm，角速度为 0.40 rad/s，中间直行 5 mm，入口纵向容差为 3 mm；到入口后先保持直行入位并停车确认。它用于让车辆通过正常路口后继续测试避障；实车串口入口同样沿用 70 mm 固定入口。车辆尺寸和地图碰撞检查保持原配置。
 
 使用专用入口开启 loopback 障碍检测，并由正式 `navigation_mission_manager` 独占路线规划、检查点授权和动态障碍重规划：
 
@@ -101,6 +101,8 @@ ros2 launch contrast_controller obstacle_validation.launch.py \
 ```
 
 该入口保持 `enforce_static_collision=true`，物理参数仍来自 `vehicle_config`；手工障碍须放在直路中段，不能用 GUI 障碍直接替代实车视觉感知验证。状态时间线和限制见 [OBSTACLE_VALIDATION_REPORT.md](OBSTACLE_VALIDATION_REPORT.md)。
+
+当前严格逐项核对及未通过分支见 [RECOVERY_REVIEW.md](RECOVERY_REVIEW.md)。顶部 L 的下游无解、边界 T 双转越界和实车原正常转弯碰撞测试失败仍保留，不能按仿真局部通过判为全部验收完成。
 
 ## 实车替换启动
 

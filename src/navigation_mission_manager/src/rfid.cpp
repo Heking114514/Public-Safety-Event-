@@ -526,7 +526,8 @@ void MissionManager::on_rfid_speech(
     const std::string detail = response ? response->message : "service exception";
     RCLCPP_ERROR(
       get_logger(), "RFID %d announcement failed: %s", number, detail.c_str());
-    begin_rfid_post_speech(steady_seconds(), true);
+    fault("RFID announcement failed after retries at " + rfid_active_supernode_ +
+      ": " + detail);
   } else {
     rfid_next_speech_at_ = steady_seconds() + 0.2;
   }

@@ -50,7 +50,48 @@ void WaypointNavigator::RunCornerShunt(const ControlFrame &frame,
   turnProgressSupervisor_.Pause();
   visual_navigation::TurnManeuverInput input;
   input.context = BuildCornerShuntContext(frame);
+  if (normalTurnEntryStop_) {
+    if (!RecoveryStopCompleted(SteadySeconds())) {
+      input.motion_allowed = false;
+      turnManeuverController_.update(input, SteadySeconds());
+      return;
+    }
+    normalTurnEntryStop_ = false;
+    if (!visual_navigation::FixedTurnEntryMatches(input.context, turnManeuverConfig_)) {
+      navigationActive_ = false;
+      PublishStop();
+      turnManeuverController_.reset();
+      SetState("FAULT_TURN_ENTRY_STOP_POSE");
+      return;
+    }
+    RCLCPP_INFO(get_logger(), "Normal fixed entry stopped: actual=(%.4f,%.4f,%.4f)",
+      input.context.pose.x,input.context.pose.y,input.context.pose.yaw);
+  }
+  if (poseRecoveryEnabled_ && !input.context.reverse_arrival &&
+      poseRecovery_.junction_at({input.context.junction_x,input.context.junction_y}) ==
+        visual_navigation::PoseRecovery::RoadJunction::CORNER) {
+    lastCornerContext_ = input.context;
+    lastCornerContextValid_ = true;
+    const double h = input.context.target_heading;
+    const double d = poseRecovery_.config().exit_distance;
+    lastCornerExitLane_ = poseRecovery_.lane_at_pose({
+      {input.context.junction_x+d*std::cos(h),input.context.junction_y+d*std::sin(h)},h});
+  } else {
+    lastCornerContextValid_ = false;
+  }
   const auto decision = turnManeuverController_.update(input, SteadySeconds());
+  if (decision.phase == visual_navigation::TurnManeuverPhase::CAPTURE)
+    normalTurnEntryConfirmed_ = false;
+  if (poseRecoveryEnabled_ && !normalTurnEntryConfirmed_ &&
+      decision.phase == visual_navigation::TurnManeuverPhase::TURN_60 &&
+      std::abs(decision.command.linear_x) <= 1e-9 &&
+      std::abs(decision.command.angular_z) <= 1e-9) {
+    normalTurnEntryStop_ = true;
+    normalTurnEntryConfirmed_ = true;
+    BeginRecoveryStop(SteadySeconds());
+    SetState("TURN_ENTRY_STOP");
+    return;
+  }
   if (decision.result == visual_navigation::TurnManeuverResult::COMPLETED) {
     ResetPathFeedback();
     turnManeuverController_.reset();

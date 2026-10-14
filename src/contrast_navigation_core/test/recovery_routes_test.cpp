@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <cmath>
 #include <string>
+#include <fstream>
+#include <cstdio>
+#include <unistd.h>
 #include "visual_navigation/pose_recovery.hpp"
 #include "recovery_replay.hpp"
 
@@ -118,16 +121,19 @@ TEST(RecoveryRoutes, OfficialCrossHasThreeExecutableDirections) {
   }
 }
 
-TEST(RecoveryRoutes, OfficialTUsesOneTurnOrTwoRealTurns) {
+TEST(RecoveryRoutes, OfficialTUsesOneTurnAndRejectsUnsafeSevenCmSecondEntry) {
   auto recovery=make_recovery();
   const Recovery::Pose start{{2.36,-1.5},0};
   const auto candidates=recovery.candidates(start,
     navigation_safety::rectangle_polygon({2.68,-1.59,2.76,-1.41}));
-  for(const auto &name:{"t_junction_left","t_junction_reverse"}) {
-    const auto candidate=find(candidates,name);
-    ASSERT_NE(candidate,nullptr) << name;
-    validate_route(recovery,start,*candidate,std::string(name).find("reverse")!=std::string::npos ? 2 : 1);
-  }
+  const auto candidate=find(candidates,"t_junction_left");
+  ASSERT_NE(candidate,nullptr);
+  validate_route(recovery,start,*candidate,1);
+  // x0_y2 的旁支朝 +y，第二次前进转弯的固定入口在 -y 侧。
+  // 7 cm 入口加 6.25 cm 半车身越过正式场地 y=-1.6 边界，必须拒绝。
+  const Recovery::Pose second_entry{{2.2,-1.5+recovery.config().turn.entry_target_x},pi/2};
+  EXPECT_FALSE(recovery.safe({second_entry}));
+  EXPECT_EQ(find(candidates,"t_junction_reverse"),nullptr);
 }
 
 TEST(RecoveryRoutes, OfficialLongRetreatIsNotTruncatedByOldRadius) {
@@ -192,4 +198,76 @@ TEST(RecoveryRoutes, CompletionRejectsWrongSideWrongLaneAndWrongHeading) {
   EXPECT_FALSE(recovery.exit_matches(exit,fictional));
   fictional=candidate; fictional.resume_node="x0_y0";
   EXPECT_FALSE(recovery.exit_matches(exit,fictional));
+}
+
+TEST(RecoveryRoutes, PhysicalJunctionClassificationUsesAnglesAndUniqueMouths) {
+  auto recovery=make_recovery();
+  using Type=Recovery::RoadJunction;
+  EXPECT_EQ(recovery.junction_type("launch"),Type::DEAD_END);
+  EXPECT_EQ(recovery.junction_type("x0_y0"),Type::CORNER);
+  EXPECT_EQ(recovery.junction_type("x0_y2"),Type::T);
+  EXPECT_EQ(recovery.junction_type("x1_y3"),Type::CROSS);
+  EXPECT_EQ(recovery.junction_at({4.2,-1.5}),Type::CORNER);
+  EXPECT_EQ(recovery.junction_at({4.2,-1.499}),Type::INVALID);
+  // 该夹具仅检验道路角度和重复逻辑边，坐标不作为生产动作配置。
+  const std::string path="/tmp/recovery_topology_"+std::to_string(getpid())+".yaml";
+  {
+    std::ofstream file(path);
+    file << "frame: {map_origin_m: [0, 0], map_x_heading_deg: 0}\n"
+         << "arena: {free_regions: [[-2, -2, 2, 2]], obstacles: []}\n"
+         << "nodes: {a: [0, 0], b: [1, 0], c: [-1, 0], d: [0.5, 0.5]}\n"
+         << "lanes:\n"
+         << "  - {id: ab, from: a, to: b, width_m: 0.2}\n"
+         << "  - {id: ac, from: a, to: c, width_m: 0.2}\n"
+         << "  - {id: ab_duplicate, from: a, to: b, width_m: 0.2}\n"
+         << "  - {id: bd, from: b, to: d, width_m: 0.2}\n";
+  }
+  recovery.load(path,{0.125,0.125,0,0,0},recovery.config());
+  std::remove(path.c_str());
+  EXPECT_EQ(recovery.junction_type("a"),Type::STRAIGHT);
+  EXPECT_EQ(recovery.junction_type("b"),Type::INVALID);
+  const auto candidates=recovery.candidates({{.2,0},0},
+    navigation_safety::rectangle_polygon({.7,-.05,.8,.05}));
+  EXPECT_TRUE(candidates.empty());
+}
+
+TEST(RecoveryRoutes, OfficialCornerAndDeadEndCannotProduceTJunctionCandidates) {
+  auto recovery=make_recovery();
+  // x0_y0 是实际地图90度拐角；它不具备丁字恢复所需的第三个路口方向。
+  // 从拐角沿实际 +y 道路前进，后退锚点为 x0_y0。
+  auto candidates=recovery.candidates({{4.2,-1.34},pi/2},
+    navigation_safety::rectangle_polygon({4.11,-1.02,4.29,-.94}));
+  EXPECT_TRUE(candidates.empty());
+  Candidate fabricated;
+  fabricated.template_id="t_junction_left";
+  fabricated.resume_node="x0_y0"; fabricated.resume_lane="ROAD_X0_Y0";
+  fabricated.resume_heading=pi;
+  EXPECT_FALSE(recovery.plan({{4.2,-1.34},pi/2},fabricated,{}));
+  candidates=recovery.candidates({{.1,0},0},
+    navigation_safety::rectangle_polygon({.17,-.03,.19,.03}));
+  EXPECT_TRUE(candidates.empty());
+}
+
+TEST(RecoveryRoutes, EachFixedTurnHasExactlyTheConfiguredSignedEntry) {
+  auto recovery=make_recovery();
+  const auto candidates=recovery.candidates(x_start,obstacle());
+  ASSERT_FALSE(candidates.empty());
+  for (const auto &candidate : candidates) {
+    ASSERT_TRUE(recovery.plan(x_start,candidate,{}));
+    const auto &steps=recovery.steps();
+    for (std::size_t i=0; i<steps.size(); ++i) {
+      const auto &turn=steps[i];
+      if (turn.kind!=Recovery::Step::Kind::FIXED_TURN) continue;
+      ASSERT_GT(i,0u);
+      const bool preceded_by_stop=steps[i-1].kind==Recovery::Step::Kind::STOP;
+      if (preceded_by_stop) { ASSERT_GE(i,2u); }
+      const auto &entry=preceded_by_stop ? steps[i-2] : steps[i-1];
+      const double c=std::cos(turn.geometry_heading), s=std::sin(turn.geometry_heading);
+      const double dx=entry.target.position.x-turn.junction.x;
+      const double dy=entry.target.position.y-turn.junction.y;
+      EXPECT_NEAR(dx*c+dy*s,recovery.config().turn.entry_target_x,1e-12);
+      const double sign=std::sin(turn.target_heading-turn.geometry_heading)>0 ? 1 : -1;
+      EXPECT_NEAR(-dx*s+dy*c,sign*recovery.config().turn.entry_target_y,1e-12);
+    }
+  }
 }

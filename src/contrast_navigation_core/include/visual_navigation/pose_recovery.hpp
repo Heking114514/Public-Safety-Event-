@@ -12,6 +12,7 @@ namespace visual_navigation {
 class PoseRecovery {
 public:
   using Pose = navigation_safety::Pose;
+  enum class RoadJunction { INVALID, DEAD_END, STRAIGHT, CORNER, T, CROSS };
   struct Step {
     enum class Kind { STRAIGHT, FIXED_TURN, STOP };
     Pose start, end, target;
@@ -47,6 +48,8 @@ public:
   bool exit_matches(const Pose &pose,
     const mission_control_interfaces::msg::RecoveryCandidate &candidate) const;
   std::string lane_at_pose(const Pose &pose) const;
+  RoadJunction junction_type(const std::string &node) const;
+  RoadJunction junction_at(navigation_safety::Point point) const;
   void set_incoming_lane(const std::string &lane,
                         navigation_safety::Point junction);
   Pose integrate(Pose pose, double v, double w, double dt) const;
@@ -85,6 +88,8 @@ private:
                    double incoming, double outgoing, bool reverse_arrival,
                    const std::string &lane);
   bool braking_safe(Pose pose, double linear, double angular) const;
+  Pose turn_entry(navigation_safety::Point junction, double incoming,
+                  double outgoing) const;
 };
 } // namespace visual_navigation
 #endif

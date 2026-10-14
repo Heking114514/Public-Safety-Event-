@@ -26,6 +26,53 @@ void PoseRecovery::set_incoming_lane(const std::string &lane,
   junction_override_ = junction;
 }
 
+PoseRecovery::RoadJunction PoseRecovery::junction_type(const std::string &node) const {
+  const auto center=nodes_.find(node);
+  if (center==nodes_.end()) return RoadJunction::INVALID;
+  std::vector<double> headings;
+  for (const auto &lane : lanes_) {
+    if (lane.from!=node && lane.to!=node) continue;
+    const auto other=nodes_.at(lane.from==node ? lane.to : lane.from);
+    if (length(center->second,other)<1e-9) return RoadJunction::INVALID;
+    const double heading=std::atan2(other.y-center->second.y,other.x-center->second.x);
+    // Duplicate logical edges do not create another physical road mouth.
+    if (std::none_of(headings.begin(),headings.end(),[&](double h) {
+      return std::abs(wrap(h-heading))<0.01;
+    })) headings.push_back(heading);
+  }
+  if (headings.size()==1) return RoadJunction::DEAD_END;
+  if (headings.size()<2 || headings.size()>4) return RoadJunction::INVALID;
+  int opposite_pairs=0, quarter_pairs=0;
+  for (std::size_t i=0; i<headings.size(); ++i) {
+    for (std::size_t j=i+1; j<headings.size(); ++j) {
+      const double delta=std::abs(wrap(headings[i]-headings[j]));
+      if (std::abs(delta-pi)<0.01) ++opposite_pairs;
+      else if (std::abs(delta-pi/2)<0.01) ++quarter_pairs;
+      else return RoadJunction::INVALID;
+    }
+  }
+  if (headings.size()==2)
+    return opposite_pairs==1 ? RoadJunction::STRAIGHT : RoadJunction::CORNER;
+  if (headings.size()==3 && opposite_pairs==1 && quarter_pairs==2) return RoadJunction::T;
+  if (headings.size()==4 && opposite_pairs==2 && quarter_pairs==4) return RoadJunction::CROSS;
+  return RoadJunction::INVALID;
+}
+
+PoseRecovery::RoadJunction PoseRecovery::junction_at(navigation_safety::Point point) const {
+  // Context junctions are mapped points; this is not a nearest-road guess.
+  for (const auto &node : nodes_)
+    if (length(node.second,point)<1e-6) return junction_type(node.first);
+  return RoadJunction::INVALID;
+}
+
+PoseRecovery::Pose PoseRecovery::turn_entry(navigation_safety::Point junction,
+                                           double incoming, double outgoing) const {
+  const double lateral=std::copysign(1.0,wrap(outgoing-incoming))*config_.turn.entry_target_y;
+  const double c=std::cos(incoming), s=std::sin(incoming);
+  return {{junction.x+config_.turn.entry_target_x*c-lateral*s,
+           junction.y+config_.turn.entry_target_x*s+lateral*c},incoming};
+}
+
 std::string PoseRecovery::lane_at_pose(const Pose &pose) const {
   double best = std::numeric_limits<double>::infinity();
   std::string result;
@@ -201,7 +248,9 @@ PoseRecovery::candidates(const Pose &pose, const navigation_safety::Polygon &obs
   for (const auto &l : lanes_) {
     if (l.from==anchor_ || l.to==anchor_) exits.push_back(&l);
   }
-  const std::string junction=exits.size()>=4 ? "x_junction" : "t_junction";
+  const auto topology=junction_type(anchor_);
+  if (topology!=RoadJunction::T && topology!=RoadJunction::CROSS) return {};
+  const std::string junction=topology==RoadJunction::CROSS ? "x_junction" : "t_junction";
   std::vector<mission_control_interfaces::msg::RecoveryCandidate> result;
   for (const auto *exit : exits) {
     if (exit->id==blocked_lane_) continue;
@@ -265,6 +314,8 @@ bool PoseRecovery::plan(const Pose &start,
   if (candidate.resume_node!=anchor_ || nodes_.find(anchor_)==nodes_.end() ||
       forbidden(candidate.resume_lane) ||
       std::any_of(candidate.borrowed_lane_ids.begin(),candidate.borrowed_lane_ids.end(),forbidden)) return false;
+  const auto topology=junction_type(anchor_);
+  if (topology!=RoadJunction::T && topology!=RoadJunction::CROSS) return false;
   dynamic_=observed_;
   for (const auto &lane : lanes_) {
     if (lane.id==blocked_lane_ || !forbidden(lane.id)) continue;
@@ -312,23 +363,14 @@ bool PoseRecovery::plan(const Pose &start,
     if (std::abs(std::abs(wrap(first_heading-heading))-pi/2)>0.01) return false;
   } else if (std::abs(std::abs(wrap(outgoing-heading))-pi/2)>0.01) return false;
   Pose pose=start;
-  bool entered=false;
-  // These are finite positions on the mapped incoming road, never free arcs.
-  // A T stem has less space behind the junction than a through road.
-  for (int i=0; i<=8; ++i) {
-    steps_.clear(); pose=start;
-    const double entry=config_.turn.entry_target_x-0.04+0.005*i;
-    Pose turn_point{{junction.x+entry*std::cos(heading),
-                      junction.y+entry*std::sin(heading)},heading};
-    const double backward=(start.position.x-turn_point.position.x)*std::cos(heading)+
-                          (start.position.y-turn_point.position.y)*std::sin(heading);
-    if (backward < -0.005) continue;
-    if (!append_straight(pose,turn_point,-1,"RETREAT_TO_TURN_POINT",incoming)) continue;
-    if (append_turn(pose,junction,heading,first_heading,true,first_lane)) {
-      entered=true; break;
-    }
+  const Pose turn_point=turn_entry(junction,heading,first_heading);
+  const double backward=(start.position.x-turn_point.position.x)*std::cos(heading)+
+                        (start.position.y-turn_point.position.y)*std::sin(heading);
+  if (backward < -config_.turn.entry_position_tolerance ||
+      !append_straight(pose,turn_point,-1,"RETREAT_TO_TURN_POINT",incoming) ||
+      !append_turn(pose,junction,heading,first_heading,true,first_lane)) {
+    steps_.clear(); return false;
   }
-  if (!entered) { steps_.clear(); return false; }
   if (reverse) {
     const double current=(pose.position.x-junction.x)*std::cos(first_heading)+
                          (pose.position.y-junction.y)*std::sin(first_heading);
@@ -347,19 +389,14 @@ bool PoseRecovery::plan(const Pose &start,
     };
     stop();
     // The same mapped junction is reused; no displaced junction is invented.
-    const double second_entry=config_.turn.entry_target_x;
-    // The short retreat remains inside the shared intersection. A profile
-    // extending the chassis into an unlisted opposite road is not this template.
+    // The short retreat is checked by the complete swept vehicle footprint below.
     const auto branch=std::find_if(lanes_.begin(),lanes_.end(),[&](const Lane &l) {
       return l.id==first_lane;
     });
-    const double rear_extent=footprint_.length/2+footprint_.margin-
-                             footprint_.center_offset_x;
-    if (branch==lanes_.end() || -second_entry+rear_extent>branch->width/2) {
+    if (branch==lanes_.end()) {
       steps_.clear(); return false;
     }
-    Pose second_point{{junction.x+second_entry*std::cos(first_heading),
-                        junction.y+second_entry*std::sin(first_heading)},first_heading};
+    const Pose second_point=turn_entry(junction,first_heading,outgoing);
     if (!append_straight(pose,second_point,-1,"RETREAT_TO_SECOND_TURN_POINT",first_lane)) {
       steps_.clear(); return false;
     }

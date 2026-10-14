@@ -122,6 +122,10 @@ void WaypointNavigator::HandleRetreatRequest(
     bool routeTransition) {
   response->accepted = false;
   response->trace_exhausted = false;
+  if (poseRecoveryEnabled_) {
+    response->message = "strict recovery only accepts obstacle-authorized road templates";
+    return;
+  }
   response->remaining_breadcrumbs = static_cast<std::uint32_t>(
       obstacleRecoveryController_.remaining_breadcrumbs_before_anchor());
   if (!request || !std::isfinite(request->minimum_distance_m) ||
@@ -612,10 +616,15 @@ void WaypointNavigator::RunObstacleRecovery() {
 }
 
 void WaypointNavigator::ResetObstacleRecovery(bool preserveExecutedTrace) {
+  if (!preserveExecutedTrace) {
+    lastCornerContextValid_ = false;
+    lastCornerContext_ = {};
+    lastCornerExitLane_.clear();
+  }
   poseRecoveryPhase_.clear();
+  cornerReturnController_.reset();
   turnObstacleContextValid_ = false;
   turnObstacleContext_ = {};
-  turnObstacleReturnContext_ = {};
   recoveryCandidates_.clear();
   const auto now = std::chrono::steady_clock::now();
   const bool keepBlockedEvent =

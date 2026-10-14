@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <limits>
 #include "visual_navigation/recovery_stop.hpp"
+#include "visual_navigation/turn_maneuver.hpp"
 
 namespace {
 using Guard=visual_navigation::RecoveryStopGuard;
@@ -76,4 +77,33 @@ TEST(RecoveryStop, NonfiniteWheelTelemetryDoesNotConfirmStop) {
     EXPECT_EQ(value.update(12.0,105,true,channels[0],channels[1],channels[2],channels[3],channels[4]),
       Result::TIMED_OUT);
   }
+}
+
+TEST(RecoveryStop, EntryStopTransferRequiresNewFreshDwellAndRejectsPoseDrift) {
+  auto value=guard();
+  value.update(10.01,101,true,0,0,0,0,0);
+  value.update(10.10,102,true,0,0,0,0,0);
+  // 正常入口停车中遇障：切换恢复时钟，禁止复用切换前的停车样本。
+  value.begin(0.0,102);
+  EXPECT_EQ(value.update(.01,102,true,0,0,0,0,0),Result::WAITING);
+  EXPECT_EQ(value.update(.02,103,true,0,0,0,0,0),Result::WAITING);
+  EXPECT_EQ(value.update(.12,104,true,0,0,0,0,0),Result::WAITING);
+  EXPECT_EQ(value.update(.25,105,true,0,0,0,0,0),Result::STOPPED);
+  visual_navigation::TurnManeuverConfig config;
+  // 固定入口与阈值来自当前 simulation_turn.yaml。
+  config.entry_target_x=-.070; config.entry_target_y=0;
+  config.entry_position_tolerance=.003;
+  visual_navigation::CornerShuntContext context;
+  context.junction_x=.2; context.junction_y=-.5;
+  context.geometry_heading=context.arrival_heading=-std::acos(-1.)/2;
+  context.target_heading=0;
+  context.pose={.2,-.43,context.geometry_heading};
+  context.arrival_heading+=.10; // 入场误差不改变固定入口的道路航向。
+  EXPECT_TRUE(visual_navigation::FixedTurnEntryMatches(context,config));
+  context.pose.y+=.004;
+  EXPECT_FALSE(visual_navigation::FixedTurnEntryMatches(context,config));
+  context.pose.y-=.004; context.pose.x+=.012;
+  EXPECT_FALSE(visual_navigation::FixedTurnEntryMatches(context,config));
+  context.pose.x-=.012; context.pose.yaw+=.10;
+  EXPECT_FALSE(visual_navigation::FixedTurnEntryMatches(context,config));
 }

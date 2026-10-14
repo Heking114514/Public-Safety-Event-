@@ -169,6 +169,25 @@ struct ManagerRecoveryTestAccess
     EXPECT_FALSE(m.recovery_selection_pending_);
     EXPECT_TRUE(m.pose_recovery_.active);
   }
+  static void speech_failure(MissionManager & m)
+  {
+    m.rfid_active_ = 1;
+    m.rfid_active_card_ = 1;
+    m.rfid_active_supernode_ = "s1";
+    m.rfid_speech_attempts_ = m.rfid_max_speech_retries_ + 1;
+    m.rfid_phase_ = "announcing";
+    std::promise<mission_control_interfaces::srv::SpeakText::Response::SharedPtr> promise;
+    auto future = promise.get_future().share();
+    auto response = std::make_shared<mission_control_interfaces::srv::SpeakText::Response>();
+    response->success = false;
+    response->message = "test speaker failure";
+    promise.set_value(response);
+    m.on_rfid_speech(1,future);
+    EXPECT_EQ(m.state_, mission_control_interfaces::msg::MissionState::FAULT);
+    EXPECT_EQ(m.rfid_announced_.count(1),0U);
+    EXPECT_EQ(m.mission_->completed_tasks().count("1"),0U);
+    EXPECT_NE(m.rfid_phase_,"post_speech");
+  }
 };
 }  // namespace navigation_mission_manager
 
@@ -216,4 +235,8 @@ TEST_F(ManagerRecoveryTest, LocalPlanningFailureTriesNextCandidate)
 {
   nmm::ManagerRecoveryTestAccess::latch(*manager);
   nmm::ManagerRecoveryTestAccess::selection_retry(*manager);
+}
+TEST_F(ManagerRecoveryTest, ExhaustedSpeechRetriesFaultAndCannotConfirmTask)
+{
+  nmm::ManagerRecoveryTestAccess::speech_failure(*manager);
 }

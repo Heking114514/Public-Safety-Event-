@@ -136,6 +136,8 @@ void WaypointNavigator::ResetPathFeedback() {
 }
 
 void WaypointNavigator::ResetManeuver() {
+  normalTurnEntryStop_ = false;
+  normalTurnEntryConfirmed_ = false;
   continuePathControlOnNextSegment_ = false;
   ResetPathFeedback();
   controlState_.interrupt_maneuver();
@@ -147,7 +149,12 @@ void WaypointNavigator::ResetManeuver() {
   waypointBrakeStoppedTelemetrySamples_ = 0;
 }
 
-void WaypointNavigator::ResetRunControl() {
+void WaypointNavigator::ResetRunControl(bool preserveCornerContext) {
+  if (!preserveCornerContext) {
+    lastCornerContextValid_ = false;
+    lastCornerContext_ = {};
+    lastCornerExitLane_.clear();
+  }
   stoppedAtPlannedTurn_ = false;
   firstHalfTurnPending_ = false;
   stoppedTurnGeometryHeading_ = 0.0;

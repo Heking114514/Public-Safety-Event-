@@ -13,9 +13,9 @@ contrast_controller:
     recovery_selection_timeout_s: 30.0
     recovery_switch_stop_s: 0.22
     # 仅恢复动作使用，正常巡航参数保持当前调试值。
-    recovery_turn_angular_speed: 0.65
-    recovery_turn_min_angular_speed: 0.65
-    recovery_turn_entry_target_x: -0.030
+    recovery_turn_angular_speed: 0.40
+    recovery_turn_min_angular_speed: 0.40
+    recovery_turn_entry_target_x: -0.070
     recovery_turn_entry_target_y: 0.0
     recovery_turn_creep_distance: 0.005
     recovery_turn_entry_tolerance: 0.003

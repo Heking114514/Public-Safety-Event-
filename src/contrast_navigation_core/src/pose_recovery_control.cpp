@@ -58,11 +58,11 @@ void WaypointNavigator::InitPoseRecovery() {
   declare_parameter<double>("recovery_switch_stop_s", 0.22);
   recoveryTurnConfig_ = turnManeuverConfig_;
   recoveryTurnConfig_.turn_angular_speed =
-    declare_parameter<double>("recovery_turn_angular_speed", 0.65);
+    declare_parameter<double>("recovery_turn_angular_speed", 0.40);
   recoveryTurnConfig_.turn_min_angular_speed =
-    declare_parameter<double>("recovery_turn_min_angular_speed", 0.65);
+    declare_parameter<double>("recovery_turn_min_angular_speed", 0.40);
   recoveryTurnConfig_.entry_target_x =
-    declare_parameter<double>("recovery_turn_entry_target_x", -0.030);
+    declare_parameter<double>("recovery_turn_entry_target_x", -0.070);
   recoveryTurnConfig_.entry_target_y =
     declare_parameter<double>("recovery_turn_entry_target_y", 0.0);
   recoveryTurnConfig_.creep_distance =
@@ -96,6 +96,16 @@ void WaypointNavigator::InitPoseRecovery() {
   recoveryStopGuard_.configure(stop_speed, stop_yaw, stop_dwell, stop_timeout,
     static_cast<unsigned>(preTurnStopTelemetrySamples_));
   recoveryTurnController_.configure(recoveryTurnConfig_);
+  cornerReturnConfig_.turn = turnManeuverConfig_;
+  cornerReturnConfig_.base_offset_x = config.base_offset_x;
+  cornerReturnConfig_.base_offset_y = config.base_offset_y;
+  cornerReturnConfig_.linear_acceleration = config.linear_acceleration;
+  cornerReturnConfig_.linear_deceleration = config.linear_deceleration;
+  cornerReturnConfig_.angular_acceleration = config.angular_acceleration;
+  cornerReturnConfig_.angular_deceleration = config.angular_deceleration;
+  cornerReturnConfig_.minimum_linear_speed = config.minimum_linear_speed;
+  cornerReturnConfig_.control_dt = config.control_dt;
+  cornerReturnController_.configure(cornerReturnConfig_);
   poseRecovery_.load(path, footprint, config);
   recoveryPolygonSubscription_ = create_subscription<geometry_msgs::msg::PolygonStamped>(
     declare_parameter<std::string>("recovery_obstacle_topic", "/perception/dynamic_obstacle"), 10,
@@ -108,6 +118,14 @@ void WaypointNavigator::InitPoseRecovery() {
       }
       latestRecoveryPolygon_ = *msg;
       recoveryPolygonTime_ = std::chrono::steady_clock::now();
+      if (recoveryRangeOnly_ && !poseRecoveryPhase_.empty() &&
+          poseRecoveryPhase_ != "motion" && poseRecoveryPhase_ != "candidates") {
+        recoveryRangeOnly_ = false;
+        poseRecoveryObstacle_ = polygon;
+        recoveryObservedObstacles_ = {polygon};
+        poseRecovery_.set_dynamic_obstacles(recoveryObservedObstacles_);
+        return;
+      }
       if (poseRecoveryPhase_.empty() || poseRecoveryPhase_ == "braking" ||
           poseRecoveryPhase_ == "failed" || poseRecoveryPhase_ == "complete") return;
       const bool known = std::any_of(recoveryObservedObstacles_.begin(),
@@ -116,7 +134,6 @@ void WaypointNavigator::InitPoseRecovery() {
         recoveryObservedObstacles_.push_back(polygon);
         poseRecovery_.set_dynamic_obstacles(recoveryObservedObstacles_);
         recoveryNewHazard_ = true;
-        // Keep the original transaction identity so its owner receives failure.
         FailPoseRecovery("FAULT_POSE_RECOVERY_NEW_OBSTACLE");
       }
     });
@@ -183,6 +200,7 @@ void WaypointNavigator::BeginPoseRecovery() {
   if (!poseRecoveryPhase_.empty()) return;
   ++poseRecoveryId_; poseRecoveryRevision_ = 0;
   recoveryNewHazard_ = false;
+  recoveryRangeOnly_ = false;
   poseRecoveryObstacle_.points.clear();
   const auto wall = std::chrono::steady_clock::now();
   const double polygon_age = std::chrono::duration<double>(wall - recoveryPolygonTime_).count();
@@ -190,6 +208,7 @@ void WaypointNavigator::BeginPoseRecovery() {
   if (polygon_age < frontObstacleTimeout_ && latestRecoveryPolygon_.polygon.points.size() >= 3) {
     for (auto p : latestRecoveryPolygon_.polygon.points) poseRecoveryObstacle_.points.push_back({p.x, p.y});
   } else if (frontObstacleRangeReceived_ && range_age < frontObstacleTimeout_) {
+    recoveryRangeOnly_ = true;
     const double near = obstacleSensorForwardOffset_ + frontObstacleRange_;
     const auto base = RecoveryPose();
     for (auto xy : std::vector<std::pair<double, double>>{

@@ -36,6 +36,7 @@
 #include "std_srvs/srv/trigger.hpp"
 #include "visual_navigation/pose_recovery.hpp"
 #include "visual_navigation/recovery_stop.hpp"
+#include "visual_navigation/corner_return.hpp"
 #include "geometry_msgs/msg/polygon_stamped.hpp"
 #include "mission_control_interfaces/srv/select_recovery.hpp"
 #include "visual_navigation/control_state.hpp"
@@ -264,12 +265,20 @@ private:
   visual_navigation::RecoveryStopGuard recoveryStopGuard_;
   visual_navigation::TurnManeuverConfig recoveryTurnConfig_;
   visual_navigation::TurnManeuverController recoveryTurnController_;
-  visual_navigation::CornerShuntContext turnObstacleContext_, turnObstacleReturnContext_;
+  visual_navigation::CornerReturnConfig cornerReturnConfig_;
+  visual_navigation::CornerReturnController cornerReturnController_;
+  visual_navigation::CornerShuntContext lastCornerContext_;
+  bool lastCornerContextValid_{false};
+  bool normalTurnEntryStop_{false};
+  bool normalTurnEntryConfirmed_{false};
+  std::string lastCornerExitLane_;
+  visual_navigation::CornerShuntContext turnObstacleContext_;
   bool turnObstacleContextValid_{false};
   bool recoveryStopPending_{false};
   bool recoveryDirectionStop_{false};
   int recoveryMotionDirection_{0};
   bool recoveryNewHazard_{false};
+  bool recoveryRangeOnly_{false};
   std::vector<navigation_safety::Polygon> recoveryObservedObstacles_;
   double recoveryBestError_{0.0};
   rclcpp::Subscription<geometry_msgs::msg::PolygonStamped>::SharedPtr recoveryPolygonSubscription_;
@@ -352,7 +361,7 @@ private:
 
   void ResetManeuver();
 
-  void ResetRunControl();
+  void ResetRunControl(bool preserve_corner_context = false);
 
   double UpdatePathPid(double error, double crossTrackError, bool allowIntegral,
                        double yawRate);

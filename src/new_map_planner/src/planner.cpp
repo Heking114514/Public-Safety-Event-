@@ -510,7 +510,8 @@ MapPlanner::plan_targets(const PlanRequest &request, const Pose &start,
     const int count = is_task_node(seed.node)
                           ? 0
                           : (request.ordinary_nodes_since_task_exact
-                                 ? request.ordinary_nodes_since_task
+                                 ? request.ordinary_nodes_since_task +
+                                     (seed.cost > config_.node_capture_distance ? 1 : 0)
                                  : std::max(1, request.ordinary_nodes_since_task));
     if (count < 0 || count >= count_states) {
       continue;

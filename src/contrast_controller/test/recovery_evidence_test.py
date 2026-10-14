@@ -6,7 +6,7 @@ import unittest
 
 PACKAGE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PACKAGE / "scripts"))
-from recovery_evidence import RoadMap, measured_direction_stop_error
+from recovery_evidence import RoadMap, measured_direction_stop_error, fixed_entry_stop_error
 from run_pose_recovery_scenarios import Evidence, scenarios
 
 
@@ -65,6 +65,22 @@ class EvidenceTest(unittest.TestCase):
         rows = [self.row(1.0,-.03), self.row(1.1,0), self.row(1.16,0),
                 self.row(1.22,0), self.row(1.23,.03)]
         self.assertEqual(measured_direction_stop_error(rows), "")
+
+    def test_fixed_entry_rejects_stopping_at_another_point_and_rotating_in_place(self):
+        entry = dict(t=2.0, target_x=1.2, target_y=-.47)
+        rows = [dict(t=t, stamp=t, x=1.2, y=-.47, yaw=-1.5707963267948966,
+                     linear=0.0, angular=0.0, status="POSE_RECOVERY_DIRECTION_STOP")
+                for t in (1.60, 1.72, 1.84, 1.96)]
+        args = (entry, -1.5707963267948966, .003, .010, .080, .22)
+        self.assertEqual(fixed_entry_stop_error(rows, *args), "")
+        stale = [dict(row, t=row["t"]-.30, stamp=row["stamp"]-.30) for row in rows]
+        self.assertTrue(fixed_entry_stop_error(stale, *args))
+        for row in rows:
+            row["y"] = -.44
+        self.assertTrue(fixed_entry_stop_error(rows, *args))
+        for row in rows:
+            row["y"], row["angular"] = -.47, .65
+        self.assertTrue(fixed_entry_stop_error(rows, *args))
 
     def test_second_direction_change_is_checked_after_first_turn_entry(self):
         rows = [self.row(1.0,-.03), self.row(1.1,0), self.row(1.16,0),
