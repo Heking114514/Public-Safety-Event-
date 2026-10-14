@@ -32,6 +32,7 @@ Recovery make_recovery() {
   config.margin=parameters["recovery_margin_m"].as<double>();
   config.max_radius=parameters["recovery_max_radius_m"].as<double>();
   config.exit_distance=parameters["recovery_exit_distance_m"].as<double>();
+  config.forward_adjustment_m=parameters["recovery_forward_adjustment_m"].as<double>();
   config.turn.entry_target_x=parameters["recovery_turn_entry_target_x"].as<double>();
   config.turn.entry_target_y=parameters["recovery_turn_entry_target_y"].as<double>();
   config.turn.entry_speed=parameters["turn_maneuver_entry_speed"].as<double>();
@@ -270,4 +271,54 @@ TEST(RecoveryRoutes, EachFixedTurnHasExactlyTheConfiguredSignedEntry) {
       EXPECT_NEAR(-dx*s+dy*c,sign*recovery.config().turn.entry_target_y,1e-12);
     }
   }
+}
+
+TEST(RecoveryRoutes, ForwardAdjustmentCanMoveTowardObstacleBeforeRetreat) {
+  auto recovery=make_recovery();
+  // 恢复入口附近发生位姿修正，固定入路仍由已锁存道路提供。
+  const Recovery::Pose start{{1.2,-.41},-pi/2};
+  recovery.set_incoming_lane("ROAD_Y3_LEFT",{1.2,-.5});
+  auto config=recovery.config(); config.forward_adjustment_m=0;
+  recovery.load(workspace()+"/src/new_map_planner/config/arena.yaml",
+    {0.125,0.125,0,0,0},config); // 尺寸来源 vehicle_physical.yaml。
+  recovery.set_incoming_lane("ROAD_Y3_LEFT",{1.2,-.5});
+  const auto obstacle=navigation_safety::rectangle_polygon({1.11,-.86,1.29,-.78});
+  EXPECT_TRUE(recovery.candidates(start,obstacle).empty());
+  config.forward_adjustment_m=.08; // 当前 Contrast YAML 的调整上限。
+  recovery.load(workspace()+"/src/new_map_planner/config/arena.yaml",
+    {0.125,0.125,0,0,0},config);
+  recovery.set_incoming_lane("ROAD_Y3_LEFT",{1.2,-.5});
+  const auto candidates=recovery.candidates(start,obstacle);
+  ASSERT_FALSE(candidates.empty());
+  ASSERT_TRUE(recovery.plan(start,candidates.front(),{}));
+  ASSERT_GE(recovery.steps().size(),3U);
+  EXPECT_EQ(recovery.steps()[0].phase,"FORWARD_ADJUSTMENT");
+  EXPECT_GT(recovery.steps()[0].linear,0);
+  EXPECT_LT(recovery.steps()[0].end.position.y,start.position.y);
+  EXPECT_EQ(recovery.steps()[1].kind,Recovery::Step::Kind::STOP);
+  EXPECT_LT(recovery.steps()[2].linear,0);
+  RecoveryReplay replay(recovery,workspace());
+  ASSERT_TRUE(replay.run(start,recovery.steps())) << replay.failure();
+  EXPECT_TRUE(recovery.exit_matches(replay.actual(),candidates.front()));
+}
+
+TEST(RecoveryRoutes, UserGuiBoundaryEntryIsUnsafeEvenAfterForwardAdjustment) {
+  auto recovery=make_recovery();
+  // GUI 停车真值与手放障碍快照：本次入口 y=1.57，车身越过 y=1.6。
+  const Recovery::Pose start{{3.2012432507790223,1.3348632509400973},-1.5942060352318406};
+  const auto candidates=recovery.candidates(start,
+    navigation_safety::rectangle_polygon({3.1,.9330065359477123,3.3,1.0330065359477123}));
+  EXPECT_TRUE(candidates.empty());
+  EXPECT_TRUE(recovery.unsafe_entry_rejected());
+  EXPECT_FALSE(recovery.safe({{{3.2,1.57},-pi/2}}));
+  EXPECT_TRUE(recovery.steps().empty());
+}
+
+TEST(RecoveryRoutes, ForwardAdjustmentCannotPassThroughObstacle) {
+  auto recovery=make_recovery();
+  recovery.set_incoming_lane("ROAD_Y3_LEFT",{1.2,-.5});
+  const auto candidates=recovery.candidates({{1.2,-.41},-pi/2},
+    navigation_safety::rectangle_polygon({1.11,-.56,1.29,-.54}));
+  EXPECT_TRUE(candidates.empty());
+  EXPECT_TRUE(recovery.steps().empty());
 }

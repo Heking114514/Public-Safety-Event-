@@ -55,6 +55,7 @@ void WaypointNavigator::InitPoseRecovery() {
   config.max_expansions = declare_parameter<int>("recovery_max_expansions", 220000);
   declare_parameter<double>("recovery_progress_timeout_s", 2.0);
   declare_parameter<double>("recovery_selection_timeout_s", 30.0);
+  config.forward_adjustment_m = declare_parameter<double>("recovery_forward_adjustment_m", 0.08);
   declare_parameter<double>("recovery_switch_stop_s", 0.22);
   recoveryTurnConfig_ = turnManeuverConfig_;
   recoveryTurnConfig_.turn_angular_speed =

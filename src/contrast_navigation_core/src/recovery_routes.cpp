@@ -218,6 +218,7 @@ PoseRecovery::candidates(const Pose &pose, const navigation_safety::Polygon &obs
   if (!live_obstacles_set_) observed_={obstacle};
   dynamic_=observed_;
   steps_.clear(); anchor_.clear(); blocked_lane_.clear();
+  unsafe_entry_rejected_=false;
   if (obstacle.points.empty()) return {};
   navigation_safety::Point center{};
   for (const auto &p : obstacle.points) { center.x+=p.x; center.y+=p.y; }
@@ -252,6 +253,7 @@ PoseRecovery::candidates(const Pose &pose, const navigation_safety::Polygon &obs
   if (topology!=RoadJunction::T && topology!=RoadJunction::CROSS) return {};
   const std::string junction=topology==RoadJunction::CROSS ? "x_junction" : "t_junction";
   std::vector<mission_control_interfaces::msg::RecoveryCandidate> result;
+  bool unsafe_entry=false;
   for (const auto *exit : exits) {
     if (exit->id==blocked_lane_) continue;
     const auto a=nodes_.at(anchor_), b=nodes_.at(exit->from==anchor_ ? exit->to : exit->from);
@@ -281,7 +283,10 @@ PoseRecovery::candidates(const Pose &pose, const navigation_safety::Polygon &obs
       option.candidate_id=static_cast<uint32_t>(result.size()+1);
       option.borrowed_lane_ids=reverse ? std::vector<std::string>{branch->id,exit->id} :
                                         std::vector<std::string>{exit->id};
-      if (!plan(pose,option,{})) continue;
+      if (!plan(pose,option,{})) {
+        unsafe_entry=unsafe_entry || unsafe_entry_rejected_;
+        continue;
+      }
       const auto end=steps_.back().end;
       option.exit_pose.position.x=end.position.x; option.exit_pose.position.y=end.position.y;
       double cost=0;
@@ -301,10 +306,11 @@ PoseRecovery::candidates(const Pose &pose, const navigation_safety::Polygon &obs
     }
   }
   steps_.clear();
+  unsafe_entry_rejected_=unsafe_entry;
   return result;
 }
 
-bool PoseRecovery::plan(const Pose &start,
+bool PoseRecovery::plan_direct(const Pose &start,
     const mission_control_interfaces::msg::RecoveryCandidate &candidate,
     const std::vector<std::string> &blocked) {
   steps_.clear(); last_expansions_=0;
@@ -364,6 +370,10 @@ bool PoseRecovery::plan(const Pose &start,
   } else if (std::abs(std::abs(wrap(outgoing-heading))-pi/2)>0.01) return false;
   Pose pose=start;
   const Pose turn_point=turn_entry(junction,heading,first_heading);
+  if (!safe({turn_point})) {
+    unsafe_entry_rejected_=true;
+    steps_.clear(); return false;
+  }
   const double backward=(start.position.x-turn_point.position.x)*std::cos(heading)+
                         (start.position.y-turn_point.position.y)*std::sin(heading);
   if (backward < -config_.turn.entry_position_tolerance ||

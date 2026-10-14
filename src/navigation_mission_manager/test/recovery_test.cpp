@@ -80,6 +80,9 @@ struct ManagerRecoveryTestAccess
     m.on_pose_recovery(s);
   }
   static bool active(const MissionManager & m) {return m.pose_recovery_.active;}
+  static bool faulted(const MissionManager & m) {
+    return m.state_ == mission_control_interfaces::msg::MissionState::FAULT;
+  }
   static void message(MissionManager & m,
     const mission_control_interfaces::msg::NavigationRecoveryState & s) {m.on_pose_recovery(s);}
 
@@ -239,4 +242,16 @@ TEST_F(ManagerRecoveryTest, LocalPlanningFailureTriesNextCandidate)
 TEST_F(ManagerRecoveryTest, ExhaustedSpeechRetriesFaultAndCannotConfirmTask)
 {
   nmm::ManagerRecoveryTestAccess::speech_failure(*manager);
+}
+
+TEST_F(ManagerRecoveryTest, FailureBeforeCandidatesEndsBrakingWait) {
+  auto s=nmm::ManagerRecoveryTestAccess::state();
+  nmm::ManagerRecoveryTestAccess::message(*manager,s);
+  EXPECT_FALSE(nmm::ManagerRecoveryTestAccess::faulted(*manager));
+  auto stale=s; stale.phase="failed"; stale.recovery_id++;
+  nmm::ManagerRecoveryTestAccess::message(*manager,stale);
+  EXPECT_FALSE(nmm::ManagerRecoveryTestAccess::faulted(*manager));
+  s.phase="failed"; s.reason="FAULT_POSE_RECOVERY_FIXED_ENTRY_UNSAFE";
+  nmm::ManagerRecoveryTestAccess::message(*manager,s);
+  EXPECT_TRUE(nmm::ManagerRecoveryTestAccess::faulted(*manager));
 }

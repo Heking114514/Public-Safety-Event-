@@ -35,6 +35,7 @@ public:
     TurnManeuverConfig turn;
     double linear_acceleration{0.2}, linear_deceleration{0.3};
     double minimum_linear_speed{0.0};
+    double forward_adjustment_m{0.08};
   };
   void load(const std::string &map_file, navigation_safety::Footprint footprint,
             const Config &config);
@@ -65,6 +66,7 @@ public:
   const std::string &blocked_lane() const { return blocked_lane_; }
   const Config &config() const { return config_; }
   int last_expansions() const { return last_expansions_; }
+  bool unsafe_entry_rejected() const { return unsafe_entry_rejected_; }
 private:
   struct Lane { std::string id, from, to; double width; };
   Config config_;
@@ -87,6 +89,10 @@ private:
   bool append_turn(Pose &pose, navigation_safety::Point junction,
                    double incoming, double outgoing, bool reverse_arrival,
                    const std::string &lane);
+  bool unsafe_entry_rejected_{false};
+  bool plan_direct(const Pose &start,
+    const mission_control_interfaces::msg::RecoveryCandidate &candidate,
+    const std::vector<std::string> &blocked);
   bool braking_safe(Pose pose, double linear, double angular) const;
   Pose turn_entry(navigation_safety::Point junction, double incoming,
                   double outgoing) const;

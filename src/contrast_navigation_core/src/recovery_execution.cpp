@@ -111,7 +111,9 @@ bool WaypointNavigator::RunPoseRecovery() {
     }
     recoveryCandidates_ = poseRecovery_.candidates(RecoveryPose(), poseRecoveryObstacle_);
     if (recoveryCandidates_.empty()) {
-      FailPoseRecovery("FAULT_POSE_RECOVERY_NO_ROAD_EXIT"); return true;
+      FailPoseRecovery(poseRecovery_.unsafe_entry_rejected() ?
+        "FAULT_POSE_RECOVERY_FIXED_ENTRY_UNSAFE" : "FAULT_POSE_RECOVERY_NO_ROAD_EXIT");
+      return true;
     }
     poseRecoveryPhase_ = "candidates";
     recoveryStepStarted_ = t;
