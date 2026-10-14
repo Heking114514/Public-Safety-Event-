@@ -18,11 +18,12 @@
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
   <depend>mission_control_interfaces</depend>
-  <depend>visual_navigation</depend>
+  <depend>contrast_navigation_core</depend>
 
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
+  <exec_depend>visual_navigation</exec_depend>
   <exec_depend>new_map_planner</exec_depend>
   <exec_depend>navigation_mission_manager</exec_depend>
   <exec_depend>python3-yaml</exec_depend>

@@ -19,13 +19,13 @@ find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(mission_control_interfaces REQUIRED)
-find_package(visual_navigation REQUIRED)
+find_package(contrast_navigation_core REQUIRED)
 
 add_executable(contrast_controller
   src/main.cpp
   src/turn_maneuver.cpp)
 target_link_libraries(contrast_controller
-  visual_navigation::waypoint_navigator_core)
+  contrast_navigation_core::contrast_waypoint_navigator_core)
 ament_target_dependencies(
   contrast_controller
   builtin_interfaces
@@ -43,9 +43,10 @@ install(TARGETS contrast_controller
 install(DIRECTORY config launch
   DESTINATION share/${PROJECT_NAME})
 install(FILES README.md CHANGELOG.md AB_REPORT.md OBSTACLE_VALIDATION_REPORT.md
+  POSE_RECOVERY_VALIDATION_REPORT.md
   DESTINATION share/${PROJECT_NAME})
 
-install(PROGRAMS scripts/comparison_mission.py
+install(PROGRAMS scripts/comparison_mission.py scripts/run_pose_recovery_scenarios.py
   DESTINATION lib/${PROJECT_NAME})
 
 if(BUILD_TESTING)
@@ -59,7 +60,7 @@ if(BUILD_TESTING)
     test/turn_maneuver_test.cpp
     src/turn_maneuver.cpp)
   target_link_libraries(turn_maneuver_test
-    visual_navigation::waypoint_navigator_core
+    contrast_navigation_core::contrast_waypoint_navigator_core
     vehicle_loopback_sim::loopback_sim_core
     yaml-cpp)
   ament_target_dependencies(turn_maneuver_test

@@ -282,6 +282,9 @@ std::optional<std::string> MissionManager::infer_blocked_lane_id(const Polygon2d
 }
 void MissionManager::expire_dynamic_obstacles(double now)
 {
+  if (pose_obstacles_latched_) {
+    return;
+  }
   if (!dynamic_obstacles_.empty() && obstacle_memory_expired(
       dynamic_obstacles_updated_at_, now, dynamic_obstacle_retention_s_))
   {

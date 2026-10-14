@@ -64,6 +64,7 @@ WaypointNavigator::ControlFrame WaypointNavigator::BuildControlFrame(
 
 void WaypointNavigator::RunControl() {
   if (MotionHeld()) {
+    poseRecovery_.pause_clock();
     pathProgressSupervisor_.Reset();
     turnProgressSupervisor_.Reset();
     PublishStop();
@@ -72,6 +73,7 @@ void WaypointNavigator::RunControl() {
   }
 
   if (!navigationActive_) {
+    poseRecovery_.pause_clock();
     pathProgressSupervisor_.Reset();
     turnProgressSupervisor_.Reset();
     PublishStop();
@@ -81,6 +83,7 @@ void WaypointNavigator::RunControl() {
   const auto supervision = navigationSupervisor_.Evaluate(
       CurrentNavigationInputs(), std::chrono::steady_clock::now());
   if (supervision.action != visual_navigation::NavigationRuntimeAction::DRIVE) {
+    poseRecovery_.pause_clock();
     pathProgressSupervisor_.Reset();
     turnProgressSupervisor_.Reset();
     PublishStop();
@@ -103,6 +106,8 @@ void WaypointNavigator::RunControl() {
   const bool progressSupervisionAllowed = true;
   if (!supervision.state.empty())
     SetState(supervision.state);
+
+  if (RunPoseRecovery()) return;
 
   const auto currentTime = std::chrono::steady_clock::now();
   const bool obstacleInputFresh =

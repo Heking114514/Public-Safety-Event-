@@ -18,6 +18,7 @@
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
   <depend>mission_control_interfaces</depend>
+  <depend>yaml_cpp_vendor</depend>
 
   <exec_depend>rclpy</exec_depend>
   <exec_depend>python3-tk</exec_depend>

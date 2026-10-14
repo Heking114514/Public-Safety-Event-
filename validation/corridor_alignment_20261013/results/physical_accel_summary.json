@@ -1,0 +1,15 @@
+{
+  "cases": 2701,
+  "passed": 2701,
+  "failed": 0,
+  "max_base_path_m": 0.058573192443709732,
+  "max_inflated_footprint_abs_x_m": 0.11735795462747479,
+  "max_duration_s": 2.1333333333333511,
+  "max_final_heading_deg": 3,
+  "min_clearance_after_margin_m": 0,
+  "actual_linear_acceleration_mps2": 0.25,
+  "actual_linear_deceleration_mps2": 0.80000000000000004,
+  "actual_angular_acceleration_and_deceleration_rps2": 1.8,
+  "plant_update_hz": 600,
+  "command_update_hz": 30
+}

@@ -1,0 +1,7 @@
+uint64 recovery_id
+uint64 obstacle_revision
+uint32 candidate_id
+string[] blocked_lane_ids
+---
+bool success
+string message

@@ -127,6 +127,7 @@ void StagedMission::reset()
   completed_tasks_.clear();
   completed_tunnels_.clear();
   confirmed_lanes_.clear();
+  skipped_roads_.clear();
   started_ = false;
   running_ = false;
   paused_ = false;
@@ -182,7 +183,9 @@ std::vector<std::string> StagedMission::remaining_tunnels() const
 
 std::vector<std::string> StagedMission::remaining_roads() const
 {
-  return set_difference_in_order(layout_.road_lane_ids, confirmed_lanes_);
+  auto excluded = confirmed_lanes_;
+  excluded.insert(skipped_roads_.begin(), skipped_roads_.end());
+  return set_difference_in_order(layout_.road_lane_ids, excluded);
 }
 
 std::string StagedMission::current_stage() const
@@ -280,10 +283,21 @@ std::size_t StagedMission::progress_count() const
   return completed_tasks_.size() + completed_tunnels_.size() + confirmed_lanes_.size();
 }
 
+void StagedMission::skip_blocked_roads(const std::set<std::string> & blocked)
+{
+  for (const auto & lane : layout_.road_lane_ids) {
+    if (blocked.count(lane) != 0U && confirmed_lanes_.count(lane) == 0U) {
+      skipped_roads_.insert(lane);
+    }
+  }
+}
+
 std::string StagedMission::summary() const
 {
+  const std::string skipped = skipped_roads_.empty() ? std::string{} :
+    " | 跳过阻塞普通道路 " + std::to_string(skipped_roads_.size());
   if (finished_) {
-    return "三阶段任务完成";
+    return "三阶段任务完成" + skipped;
   }
   const std::string stage = current_stage();
   if (stage.empty()) {
@@ -293,7 +307,7 @@ std::string StagedMission::summary() const
     (stage == "layer2" ? "2/3 隧道" : "3/3 道路补漏与回程");
   return label + " | 任务 " + std::to_string(remaining_tasks().size()) +
          " 隧道 " + std::to_string(remaining_tunnels().size()) +
-         " 道路 " + std::to_string(remaining_roads().size());
+         " 道路 " + std::to_string(remaining_roads().size()) + skipped;
 }
 
 }  // namespace navigation_mission_manager

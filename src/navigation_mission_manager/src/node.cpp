@@ -125,6 +125,7 @@ void MissionManager::declare_parameters()
   declare_parameter("route_ack_topic", "/waypoint_navigation/route_ack");
   declare_parameter("route_input_topic", "/waypoint_navigation/route_input");
   declare_parameter("motion_hold_service", "/waypoint_navigator/set_motion_hold");
+  declare_parameter("select_recovery_service", "");
   declare_parameter("continue_retreat_service", "/waypoint_navigator/continue_obstacle_retreat");
   declare_parameter(
     "continue_route_retreat_service", "/waypoint_navigator/continue_route_retreat");
@@ -210,6 +211,12 @@ void MissionManager::load_configuration()
 void MissionManager::create_interfaces()
 {
   const auto durable = rclcpp::QoS(1).reliable().transient_local();
+  const auto select_service = get_parameter("select_recovery_service").as_string();
+  pose_recovery_enabled_ = !select_service.empty();
+  if (pose_recovery_enabled_) {
+    select_recovery_client_ = create_client<mission_control_interfaces::srv::SelectRecovery>(
+      select_service);
+  }
   planner_client_ = create_client<new_map_planner::srv::PlanRoute>(
     get_parameter("planner_service").as_string());
   hold_client_ = create_client<mission_control_interfaces::srv::SetMotionHold>(
@@ -313,6 +320,7 @@ void MissionManager::tick()
 {
   const double now = steady_seconds();
   expire_dynamic_obstacles(now);
+  service_pose_recovery();
   if (auto_start_pending_ && ready()) {
     auto_start_pending_ = false;
     start_mission(default_targets_);
@@ -365,6 +373,15 @@ mission_control_interfaces::msg::MissionState MissionManager::state_message() co
   message.state_name = state_name(state_);
   message.stage = mission_->current_stage();
   message.message = detail_;
+  if (!mission_->skipped_roads().empty()) {
+    message.message += " | skipped_blocked_roads=";
+    bool first = true;
+    for (const auto & road : mission_->skipped_roads()) {
+      if (!first) {message.message += ",";}
+      message.message += road;
+      first = false;
+    }
+  }
   message.active_route_id = active_route_.has_value() ? active_route_->route_id : 0U;
   message.autonomous = mission_->running() && !mission_->paused();
   {
