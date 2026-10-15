@@ -685,6 +685,12 @@ private:
 
   void process_tts2_telemetry(const std::string & line)
   {
+    // Legacy speech has no request id and the MCU reports its retained state
+    // as TTS,0,<status>. Those frames are expected in legacy mode and must not
+    // go through the strict TTS2 parser, which correctly rejects id 0.
+    if (speech_protocol_ == "legacy") {
+      return;
+    }
     cup_car_serial::Tts2TelemetryFrame frame;
     if (!cup_car_serial::parse_tts2_telemetry_frame(line, &frame)) {
       if (line.rfind("TTS,", 0U) == 0U) {
