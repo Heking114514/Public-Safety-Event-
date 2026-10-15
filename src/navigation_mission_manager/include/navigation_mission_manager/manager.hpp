@@ -60,7 +60,7 @@ struct VehiclePose
   double linear_speed{0.0};
   double received_at{0.0};
 
-  bool fresh(double timeout_s) const;
+  bool fresh(double timeout_s, double now_seconds) const;
 };
 
 struct ActiveRoute
@@ -95,6 +95,9 @@ public:
 private:
   friend struct ManagerRecoveryTestAccess;
   friend struct ManagerRfidTestAccess;
+  friend struct ManagerClockTestAccess;
+  double steady_seconds() const;
+  rclcpp::Clock::SharedPtr mission_clock_;
   void declare_parameters();
   void load_configuration();
   void create_interfaces();

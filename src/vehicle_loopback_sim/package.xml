@@ -16,6 +16,7 @@
   <depend>navigation_safety</depend>
   <depend>nav_msgs</depend>
   <depend>rclcpp</depend>
+  <depend>rosgraph_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
   <depend>tf2_ros</depend>

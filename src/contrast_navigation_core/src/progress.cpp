@@ -6,7 +6,7 @@ bool WaypointNavigator::SupervisePathProgress(
     bool linearMotionExpected) {
   const auto decision = pathProgressSupervisor_.Evaluate(
       currentWaypointIndex_, measuredProgress, currentX_, currentY_, eligible,
-      std::chrono::steady_clock::now(), commandedLinearVelocity,
+      ControlNow(), commandedLinearVelocity,
       measuredLinearVelocity, measuredLinearVelocityValid,
       linearMotionExpected);
   if (decision.action == visual_navigation::PathProgressAction::RECOVER) {
@@ -40,7 +40,7 @@ bool WaypointNavigator::SuperviseTurnProgress(std::size_t phaseOffset,
   const std::size_t phaseId = currentWaypointIndex_ * 3 + phaseOffset;
   const auto decision = turnProgressSupervisor_.Evaluate(
       phaseId, absoluteYawError, expectedYawRate, eligible,
-      std::chrono::steady_clock::now());
+      ControlNow());
   if (decision.action == visual_navigation::TurnProgressAction::RECOVER) {
     RCLCPP_WARN(get_logger(), "No turn progress at waypoint %zu (recovery %d)",
                 currentWaypointIndex_, decision.recovery_attempt);

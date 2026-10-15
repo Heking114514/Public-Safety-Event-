@@ -1,5 +1,11 @@
 # 变更记录
 
+## 2026-10-15：仿真时间倍率
+
+- 避障闭环和 Contrast 单车入口使用统一 /clock，控制周期、任务计时与真值车辆同步。
+- 新增 simulation_time_scale 启动参数和 GUI 运行中调节；固定 playback_speed=1、control_rate_multiplier=1，避免重复加速。
+- 原实车参数和生产/双车对照时间机制保持不变。
+
 ## 未发布
 
 ### 2026-10-15：RFID 层结束后漏认 L 后方封路

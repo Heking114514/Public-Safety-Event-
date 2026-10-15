@@ -101,6 +101,9 @@ if(BUILD_TESTING)
   target_link_libraries(corner_return_test
     vehicle_loopback_sim::loopback_sim_core yaml-cpp)
   ament_target_dependencies(corner_return_test navigation_safety)
+  ament_add_gtest(control_clock_test test/control_clock_test.cpp)
+  target_include_directories(control_clock_test PRIVATE include)
+  ament_target_dependencies(control_clock_test rclcpp)
   ament_add_gtest(recovery_stop_test test/recovery_stop_test.cpp)
   target_include_directories(recovery_stop_test PRIVATE include)
   ament_add_gtest(recovery_routes_test

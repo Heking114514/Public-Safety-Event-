@@ -41,6 +41,7 @@
 #include "mission_control_interfaces/srv/select_recovery.hpp"
 #include "mission_control_interfaces/srv/start_road_recovery.hpp"
 #include "visual_navigation/control_state.hpp"
+#include "visual_navigation/control_clock.hpp"
 #include "visual_navigation/turn_maneuver.hpp"
 #include "visual_navigation/fusion_health_policy.hpp"
 #include "visual_navigation/navigation_input_cache.hpp"
@@ -131,6 +132,11 @@ public:
   ~WaypointNavigator() override;
 
 private:
+  // 实车使用 steady_clock；仿真中所有控制时间跟随 /clock。
+  std::chrono::steady_clock::time_point ControlNow() const;
+  double ControlSeconds() const;
+  rclcpp::Clock::SharedPtr controlClock_;
+
   using Waypoint = visual_navigation::RouteWaypoint;
 
   enum class ControlStep { DONE, CONTINUE };

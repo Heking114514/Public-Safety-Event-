@@ -2,14 +2,6 @@
 
 #include <cmath>
 
-namespace {
-double SteadySeconds() {
-  return std::chrono::duration<double>(
-             std::chrono::steady_clock::now().time_since_epoch())
-      .count();
-}
-} // namespace
-
 visual_navigation::CornerShuntContext
 WaypointNavigator::BuildCornerShuntContext(const ControlFrame &frame) const {
   std::size_t junction_index = currentWaypointIndex_;
@@ -51,9 +43,9 @@ void WaypointNavigator::RunCornerShunt(const ControlFrame &frame,
   visual_navigation::TurnManeuverInput input;
   input.context = BuildCornerShuntContext(frame);
   if (normalTurnEntryStop_) {
-    if (!RecoveryStopCompleted(SteadySeconds())) {
+    if (!RecoveryStopCompleted(ControlSeconds())) {
       input.motion_allowed = false;
-      turnManeuverController_.update(input, SteadySeconds());
+      turnManeuverController_.update(input, ControlSeconds());
       return;
     }
     normalTurnEntryStop_ = false;
@@ -79,7 +71,7 @@ void WaypointNavigator::RunCornerShunt(const ControlFrame &frame,
   } else {
     lastCornerContextValid_ = false;
   }
-  const auto decision = turnManeuverController_.update(input, SteadySeconds());
+  const auto decision = turnManeuverController_.update(input, ControlSeconds());
   if (decision.phase == visual_navigation::TurnManeuverPhase::CAPTURE)
     normalTurnEntryConfirmed_ = false;
   if (poseRecoveryEnabled_ && !normalTurnEntryConfirmed_ &&
@@ -88,7 +80,7 @@ void WaypointNavigator::RunCornerShunt(const ControlFrame &frame,
       std::abs(decision.command.angular_z) <= 1e-9) {
     normalTurnEntryStop_ = true;
     normalTurnEntryConfirmed_ = true;
-    BeginRecoveryStop(SteadySeconds());
+    BeginRecoveryStop(ControlSeconds());
     SetState("TURN_ENTRY_STOP");
     return;
   }

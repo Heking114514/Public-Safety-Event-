@@ -34,12 +34,11 @@ def test_loopback_launch_defaults_to_formal_waypoint_navigator():
     assert 'name="vehicle_loopback_mission"' not in launch_text
 
 
-def test_loopback_time_contract_requires_explicit_offline_mode_for_acceleration():
+def test_legacy_playback_remains_separate_from_shared_simulation_clock():
     for launch_name in ("vehicle_loopback.launch.py", "planner_control_loopback.launch.py"):
         launch_text = (PACKAGE_ROOT / "launch" / launch_name).read_text()
         assert 'LaunchConfiguration("simulation_mode")' in launch_text
         assert 'default_value="closed_loop"' in launch_text
-        assert "closed_loop requires playback_speed=1.0" in launch_text
         assert '"simulation_mode": ParameterValue(' in launch_text
 
     simulator_text = (PACKAGE_ROOT / "src" / "simulator.cpp").read_text()

@@ -83,7 +83,7 @@ void WaypointNavigator::RunControl() {
   }
 
   const auto supervision = navigationSupervisor_.Evaluate(
-      CurrentNavigationInputs(), std::chrono::steady_clock::now());
+      CurrentNavigationInputs(), ControlNow());
   if (supervision.action != visual_navigation::NavigationRuntimeAction::DRIVE) {
     poseRecovery_.pause_clock();
     PauseActiveTurn();
@@ -118,7 +118,7 @@ void WaypointNavigator::RunControl() {
 
   if (RunPoseRecovery()) return;
 
-  const auto currentTime = std::chrono::steady_clock::now();
+  const auto currentTime = ControlNow();
   const bool obstacleInputFresh =
       frontObstacleReceived_ &&
       std::chrono::duration<double>(currentTime - lastFrontObstacleArrival_)

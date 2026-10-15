@@ -4,13 +4,13 @@ void WaypointNavigator::PublishStop() {
   geometry_msgs::msg::Twist command;
   cmdVelPublisher_->publish(command);
   lastMotionCommand_ = command;
-  lastMotionCommandTime_ = std::chrono::steady_clock::now();
+  lastMotionCommandTime_ = ControlNow();
   motionCommandInitialized_ = true;
 }
 
 void WaypointNavigator::PublishMotionCommand(
     const geometry_msgs::msg::Twist &desired, bool forceZeroLinear) {
-  const auto currentTime = std::chrono::steady_clock::now();
+  const auto currentTime = ControlNow();
   double dt = 1.0 / controlFrequency_;
   if (motionCommandInitialized_) {
     const double measuredDt =

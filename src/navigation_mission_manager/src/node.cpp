@@ -9,6 +9,7 @@
 #include <thread>
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
+#include <rclcpp/create_timer.hpp>
 #include <yaml-cpp/yaml.h>
 
 namespace navigation_mission_manager
@@ -98,20 +99,28 @@ std::optional<double> quaternion_yaw(const geometry_msgs::msg::Quaternion & quat
   return std::atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z));
 }
 
-bool VehiclePose::fresh(double timeout_s) const
+bool VehiclePose::fresh(double timeout_s, double now_seconds) const
 {
-  return steady_seconds() - received_at <= timeout_s;
+  return now_seconds - received_at <= timeout_s;
+}
+
+double MissionManager::steady_seconds() const
+{
+  // 全部任务时长共用节点时钟；实车继续使用单调时钟。
+  return mission_clock_->ros_time_is_active() ? mission_clock_->now().seconds() :
+         navigation_mission_manager::steady_seconds();
 }
 
 MissionManager::MissionManager()
-: Node("navigation_mission_manager")
+: Node("navigation_mission_manager"), mission_clock_(get_clock())
 {
   declare_parameters();
   load_configuration();
   create_interfaces();
   reset_rfid();
   auto_start_pending_ = get_parameter("auto_start").as_bool();
-  timer_ = create_wall_timer(std::chrono::milliseconds(100), [this]() {tick();});
+  timer_ = rclcpp::create_timer(
+    this, get_clock(), rclcpp::Duration::from_seconds(0.1), [this]() {tick();});
   publish_state();
   RCLCPP_INFO(
     get_logger(), "navigation mission manager C++ ready: map_file=%s auto_start=%s targets=%zu",
@@ -364,7 +373,7 @@ bool MissionManager::ready() const
          retreat_client_->service_is_ready() && route_retreat_client_->service_is_ready() &&
          rfid_checkpoint_client_->service_is_ready() &&
          pose_.has_value() &&
-         pose_->fresh(odom_timeout_s_);
+         pose_->fresh(odom_timeout_s_, steady_seconds());
 }
 
 void MissionManager::set_state(uint8_t state, const std::string & detail)

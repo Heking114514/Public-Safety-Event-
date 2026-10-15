@@ -129,6 +129,19 @@ def generate_launch_description():
     target_ids = LaunchConfiguration("target_ids")
     return_home = LaunchConfiguration("return_home")
     plan_request_delay = LaunchConfiguration("plan_request_delay")
+    simulation_time_scale = LaunchConfiguration("simulation_time_scale")
+
+    # 旧生产控制器仍有独立墙钟；本次只为 Contrast 闭环启用统一时钟。
+    simulated = ParameterValue(PythonExpression([
+        "'", controllers, "' == 'contrast'"
+    ]), value_type=bool)
+    clock = Node(
+        package="vehicle_loopback_sim", executable="simulation_clock_node",
+        name="simulation_clock", output="screen",
+        condition=IfCondition(PythonExpression(["'", controllers, "' == 'contrast'"])),
+        parameters=[{"simulation_time_scale": ParameterValue(
+            simulation_time_scale, value_type=float)}],
+    )
 
     planner = Node(
         package="new_map_planner",
@@ -139,6 +152,7 @@ def generate_launch_description():
             {
                 "map_file": ParameterValue(arena_config, value_type=str),
                 "vehicle_file": vehicle_file,
+                "use_sim_time": simulated,
             }
         ],
     )
@@ -170,6 +184,7 @@ def generate_launch_description():
             _controller_topics("contrast"),
             {"recovery_map_file": ParameterValue(arena_config, value_type=str)},
             simulation_parameters,
+            {"use_sim_time": simulated, "control_rate_multiplier": 1.0},
         ],
     )
 
@@ -186,6 +201,8 @@ def generate_launch_description():
         "wheel_track_m": simulator_physical["wheel_track_m"],
         "base_offset_x_m": simulator_physical["base_offset_x_m"],
         "base_offset_y_m": simulator_physical["base_offset_y_m"],
+        "playback_speed": 1.0,
+        "use_sim_time": simulated,
         "obstacle_sensor_x_m": simulator_physical["camera_x_m"],
         "obstacle_sensor_y_m": simulator_physical["camera_y_m"],
     }
@@ -217,6 +234,7 @@ def generate_launch_description():
             mission_parameters,
             {
                 "controllers": ParameterValue(controllers, value_type=str),
+                "use_sim_time": simulated,
                 "external_mission_manager": ParameterValue(
                     LaunchConfiguration("external_mission_manager"), value_type=bool),
                 "arena_config": ParameterValue(arena_config, value_type=str),
@@ -267,6 +285,7 @@ def generate_launch_description():
                         "arena_config": ParameterValue(
                             arena_config, value_type=str
                         ),
+                        "use_sim_time": simulated,
                     },
                 ],
             )
@@ -295,6 +314,10 @@ def generate_launch_description():
                 default_value=str(mission_parameters["request_delay_s"]),
             ),
             DeclareLaunchArgument(
+                "simulation_time_scale", default_value="1.0",
+                description="仿真时间推进倍率；只改变仿真时间，不改变车辆速度",
+            ),
+            DeclareLaunchArgument(
                 "initial_x", default_value=str(sim_parameters["initial_x_m"])
             ),
             DeclareLaunchArgument(
@@ -312,6 +335,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument("production_gui_port", default_value="8765"),
             DeclareLaunchArgument("contrast_gui_port", default_value="8766"),
+            clock,
             planner,
             production_navigator,
             contrast_navigator,

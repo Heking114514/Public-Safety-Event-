@@ -7,10 +7,10 @@ void WaypointNavigator::HandleFrontObstacle(
   if (!poseRecoveryPhase_.empty()) {
     frontObstacleReported_ = message->data;
     frontObstacleReceived_ = true;
-    lastFrontObstacleArrival_ = std::chrono::steady_clock::now();
+    lastFrontObstacleArrival_ = ControlNow();
     return;
   }
-  const auto currentTime = std::chrono::steady_clock::now();
+  const auto currentTime = ControlNow();
   if (!message->data) {
     frontObstacleReported_ = false;
     const bool keepTurnObstacleLatched =
@@ -93,7 +93,7 @@ void WaypointNavigator::HandleFrontObstacleRange(
   }
   frontObstacleRange_ = measuredRange;
   frontObstacleRangeReceived_ = true;
-  lastFrontObstacleRangeArrival_ = std::chrono::steady_clock::now();
+  lastFrontObstacleRangeArrival_ = ControlNow();
   if (pendingFrontObstacle_)
     ClassifyPendingObstacle();
 }
@@ -245,7 +245,7 @@ double WaypointNavigator::DistanceToStoppedTurn() const {
 void WaypointNavigator::ClassifyPendingObstacle() {
   if (!pendingFrontObstacle_)
     return;
-  const auto currentTime = std::chrono::steady_clock::now();
+  const auto currentTime = ControlNow();
   const bool blockedFresh =
       frontObstacleReported_ && frontObstacleReceived_ &&
       std::chrono::duration<double>(currentTime - lastFrontObstacleArrival_)
@@ -432,11 +432,11 @@ void WaypointNavigator::BeginObstacleBrakeConfirmation() {
   obstacleBrakeTelemetryBaseline_ = controlTelemetrySampleCount_;
   obstacleBrakeStoppedTelemetrySamples_ = 0;
   obstacleBrakeConfirmationTimeouts_ = 0;
-  obstacleBrakeController_.begin(std::chrono::steady_clock::now());
+  obstacleBrakeController_.begin(ControlNow());
 }
 
 bool WaypointNavigator::ObstacleBrakeHasCompleted() {
-  const auto currentTime = std::chrono::steady_clock::now();
+  const auto currentTime = ControlNow();
   const double telemetryAge =
       controlTelemetryReceived_
           ? std::chrono::duration<double>(currentTime -
@@ -492,7 +492,7 @@ void WaypointNavigator::RunObstacleRecovery() {
     }
     obstacleBrakeController_.reset();
     obstacleRecoveryController_.confirm_stopped(
-        currentX_, currentY_, std::chrono::steady_clock::now(), currentYaw_);
+        currentX_, currentY_, ControlNow(), currentYaw_);
     ResetPathFeedback();
     SetState(recoveryState("OBSTACLE_REVERSING", "ROUTE_TRANSITION_REVERSING"));
     return;
@@ -506,7 +506,7 @@ void WaypointNavigator::RunObstacleRecovery() {
   if (obstacleRecoveryController_.replaying()) {
     const auto replay = obstacleRecoveryController_.replay_step(
         currentX_, currentY_, currentYaw_, lastMotionCommand_.linear.x,
-        lastMotionCommand_.angular.z, std::chrono::steady_clock::now(),
+        lastMotionCommand_.angular.z, ControlNow(),
         ImuYawRateIsFresh() ? imuYawRate_ : 0.0);
     if (replay.action ==
         visual_navigation::ObstacleRecoveryAction::REPLAN_REQUIRED) {
@@ -562,7 +562,7 @@ void WaypointNavigator::RunObstacleRecovery() {
   }
 
   const auto decision = obstacleRecoveryController_.update_reverse(
-      currentX_, currentY_, std::chrono::steady_clock::now());
+      currentX_, currentY_, ControlNow());
   if (decision.action ==
       visual_navigation::ObstacleRecoveryAction::REPLAN_REQUIRED) {
     navigationActive_ = false;
@@ -636,7 +636,7 @@ void WaypointNavigator::ResetObstacleRecovery(bool preserveExecutedTrace) {
   turnObstacleContextValid_ = false;
   turnObstacleContext_ = {};
   recoveryCandidates_.clear();
-  const auto now = std::chrono::steady_clock::now();
+  const auto now = ControlNow();
   const bool keepBlockedEvent =
       preserveExecutedTrace && frontObstacleReported_ &&
       frontObstacleReceived_ && frontObstacleEventHandled_ &&
