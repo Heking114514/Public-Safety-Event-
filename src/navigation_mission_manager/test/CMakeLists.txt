@@ -5,6 +5,7 @@ target_compile_definitions(mission_manager_core_test PRIVATE
 
 ament_add_gtest(mission_manager_recovery_test
   recovery_test.cpp
+  rfid_test.cpp
   ../src/environment.cpp
   ../src/node.cpp
   ../src/planning.cpp

@@ -94,6 +94,7 @@ public:
 
 private:
   friend struct ManagerRecoveryTestAccess;
+  friend struct ManagerRfidTestAccess;
   void declare_parameters();
   void load_configuration();
   void create_interfaces();
@@ -214,6 +215,7 @@ private:
   void on_current_waypoint(const std_msgs::msg::Int32::SharedPtr message);
   void begin_rfid_post_speech(double now, bool speech_required);
   void finish_rfid_workflow();
+  void refresh_rfid_duplicate_guard();
 
   geometry_msgs::msg::Pose pose_message() const;
   geometry_msgs::msg::Polygon polygon_message(const Polygon2d & polygon) const;
@@ -295,6 +297,13 @@ private:
   std::set<std::size_t> route_checkpoint_authorizations_pending_;
   std::set<std::string> rfid_confirmed_tasks_;
   std::set<int> rfid_announced_;
+  struct CompletedRfidVisit
+  {
+    int card;
+    double x;
+    double y;
+  };
+  std::optional<CompletedRfidVisit> rfid_duplicate_guard_;
   std::optional<int> rfid_pending_card_;
   uint64_t rfid_pending_route_id_{0};
   double rfid_next_hold_retry_at_{0.0};
@@ -322,13 +331,18 @@ private:
   {
     std::string text;
     bool request_hold{true};
+    unsigned int attempts{0};
   };
   std::deque<SpeechItem> speech_queue_;
   std::optional<SpeechItem> speech_active_;
   std::optional<double> speech_release_at_;
   bool speech_pending_{false};
+  uint64_t speech_generation_{0};
+  double speech_next_send_at_{0.0};
 
   double speech_hold_duration_s_{3.0};
+  double speech_min_interval_s_{1.2};
+  double rfid_stop_delay_s_{};
   double rfid_event_cooldown_s_{3.0};
   double rfid_hold_duration_s_{3.0};
   double rfid_stop_duration_s_{1.0};

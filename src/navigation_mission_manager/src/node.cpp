@@ -53,6 +53,15 @@ double camera_x_default()
   return YAML::LoadFile(path)["camera"]["x_m"].as<double>();
 }
 
+double rfid_stop_delay_default()
+{
+  const std::string path =
+    ament_index_cpp::get_package_share_directory("navigation_mission_manager") +
+    "/config/mission_manager.yaml";
+  return YAML::LoadFile(path)["navigation_mission_manager"]["ros__parameters"]
+    ["rfid_stop_delay_s"].as<double>();
+}
+
 }  // namespace
 
 double steady_seconds()
@@ -153,7 +162,12 @@ void MissionManager::declare_parameters()
     "public_continue_retreat_service", "/navigation_mission/continue_obstacle_retreat");
   public_service_timeout_s_ = declare_parameter("public_service_timeout_s", 2.0);
   speech_hold_duration_s_ = declare_parameter("speech_hold_duration_s", 3.0);
+  speech_min_interval_s_ = declare_parameter("speech_min_interval_s", 1.2);
   rfid_event_cooldown_s_ = declare_parameter("rfid_event_cooldown_s", 3.0);
+  rfid_stop_delay_s_ = declare_parameter("rfid_stop_delay_s", rfid_stop_delay_default());
+  if (!std::isfinite(rfid_stop_delay_s_) || rfid_stop_delay_s_ < 0.0) {
+    throw std::invalid_argument("rfid_stop_delay_s must be finite and nonnegative");
+  }
   rfid_hold_duration_s_ = declare_parameter("rfid_hold_duration_s", 3.0);
   rfid_stop_duration_s_ = declare_parameter("rfid_stop_duration_s", 1.0);
   rfid_detection_radius_m_ = declare_parameter("rfid_detection_radius_m", 0.30);
