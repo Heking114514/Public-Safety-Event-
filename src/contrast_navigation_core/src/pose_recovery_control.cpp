@@ -111,6 +111,9 @@ void WaypointNavigator::InitPoseRecovery() {
   cornerReturnConfig_.control_dt = config.control_dt;
   cornerReturnController_.configure(cornerReturnConfig_);
   poseRecovery_.load(path, footprint, config);
+  roadRecoveryService_ = create_service<mission_control_interfaces::srv::StartRoadRecovery>(
+    "~/start_road_recovery", std::bind(&WaypointNavigator::HandleRoadRecovery, this,
+      std::placeholders::_1, std::placeholders::_2));
   recoveryPolygonSubscription_ = create_subscription<geometry_msgs::msg::PolygonStamped>(
     declare_parameter<std::string>("recovery_obstacle_topic", "/perception/dynamic_obstacle"), 10,
     [this](geometry_msgs::msg::PolygonStamped::SharedPtr msg) {
@@ -203,6 +206,7 @@ void WaypointNavigator::BeginPoseRecovery() {
   pendingFrontObstacle_ = false; pendingObstacleAtActiveTurn_ = false;
   if (!poseRecoveryPhase_.empty()) return;
   ++poseRecoveryId_; poseRecoveryRevision_ = 0;
+  recoveryKnownRoad_ = false;
   recoveryNewHazard_ = false;
   recoveryRangeOnly_ = false;
   poseRecoveryObstacle_.points.clear();

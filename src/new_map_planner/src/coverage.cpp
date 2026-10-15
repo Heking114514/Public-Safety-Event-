@@ -62,6 +62,7 @@ PlanResult CoveragePlanner::plan(
                                 }),
                  required.end());
   if (required.size() > 63U) {
+    result.failure_reason = PlanFailureReason::INVALID_REQUEST;
     result.message = "coverage request exceeds the exact search limit of 63";
     return result;
   }
@@ -73,10 +74,12 @@ PlanResult CoveragePlanner::plan(
                             static_cast<int>(index));
     }
   } catch (const std::invalid_argument &exception) {
+    result.failure_reason = PlanFailureReason::INVALID_REQUEST;
     result.message = exception.what();
     return result;
   }
   if (starts.empty()) {
+    result.failure_reason = PlanFailureReason::START_NOT_ON_ROAD;
     result.message = "start pose is not aligned with a collision-free road";
     result.deferred_lane_ids = required;
     return result;
@@ -290,11 +293,13 @@ PlanResult CoveragePlanner::plan(
   }
 
   if (search_limit_reached) {
+    result.failure_reason = PlanFailureReason::COVERAGE_INCOMPLETE;
     result.message = "coverage exact search reached its state limit";
     result.deferred_lane_ids = required;
     return result;
   }
   if (!complete_found && best_seed < 0) {
+    result.failure_reason = PlanFailureReason::NO_FEASIBLE_ROUTE;
     result.message = "no forward-only heading-feasible coverage route exists";
     result.deferred_lane_ids = required;
     return result;
@@ -323,6 +328,7 @@ PlanResult CoveragePlanner::plan(
   }
   for (const Traversal &traversal : result.traversals) {
     if (traversal.reverse) {
+      result.failure_reason = PlanFailureReason::ROUTE_INVALID;
       result.message = "internal error: forward coverage produced reverse segment";
       result.deferred_lane_ids = required;
       return result;
@@ -357,6 +363,7 @@ PlanResult CoveragePlanner::plan(
       }
     }
     if (!result.deferred_target_ids.empty() && !request.allow_partial) {
+      result.failure_reason = PlanFailureReason::COVERAGE_INCOMPLETE;
       result.message = "coverage route does not visit every mission target";
       result.deferred_lane_ids = required;
       return result;
@@ -377,6 +384,8 @@ PlanResult CoveragePlanner::plan(
     result.message = result.complete
                          ? "complete forward-only coverage route validated"
                          : "safe partial forward-only coverage route validated";
+  } else {
+    result.failure_reason = PlanFailureReason::ROUTE_INVALID;
   }
   return result;
 }

@@ -21,6 +21,7 @@
 #include <mission_control_interfaces/msg/motion_hold_state.hpp>
 #include <mission_control_interfaces/msg/navigation_recovery_state.hpp>
 #include <mission_control_interfaces/srv/continue_retreat.hpp>
+#include <mission_control_interfaces/srv/start_road_recovery.hpp>
 #include <mission_control_interfaces/srv/control_mission.hpp>
 #include <mission_control_interfaces/srv/confirm_rfid_checkpoint.hpp>
 #include <mission_control_interfaces/srv/correct_map_position.hpp>
@@ -151,11 +152,15 @@ private:
   void on_pose_recovery(const mission_control_interfaces::msg::NavigationRecoveryState & state);
   void service_pose_recovery();
   void clear_pose_recovery();
+  bool request_road_recovery();
   bool waiting_for_pose_candidates() const
   {
     return pose_recovery_enabled_ && latest_navigation_recovery_.has_value() &&
-      latest_navigation_recovery_->phase == "braking" && active_route_.has_value() &&
-      latest_navigation_recovery_->route_id == active_route_->route_id;
+      latest_navigation_recovery_->phase == "braking" &&
+      ((active_route_.has_value() &&
+      latest_navigation_recovery_->route_id == active_route_->route_id) ||
+      (road_recovery_route_id_ != 0U &&
+      latest_navigation_recovery_->route_id == road_recovery_route_id_));
   }
   void preserve_interrupted_progress();
   void evaluate_recovery_candidate();
@@ -264,6 +269,8 @@ private:
   bool obstacle_recovery_active_{false};
   bool route_transition_recovery_active_{false};
   bool completed_route_retreat_available_{false};
+  uint64_t completed_route_id_{0};
+  uint64_t road_recovery_route_id_{0}, road_recovery_revision_{0};
   bool awaiting_heading_retreat_{false};
   uint8_t ordinary_nodes_since_task_{1};
 
@@ -358,6 +365,7 @@ private:
   bool auto_start_pending_{false};
 
   rclcpp::Client<mission_control_interfaces::srv::SelectRecovery>::SharedPtr select_recovery_client_;
+  rclcpp::Client<mission_control_interfaces::srv::StartRoadRecovery>::SharedPtr road_recovery_client_;
   rclcpp::Client<new_map_planner::srv::PlanRoute>::SharedPtr planner_client_;
   rclcpp::Client<mission_control_interfaces::srv::SetMotionHold>::SharedPtr hold_client_;
   rclcpp::Client<mission_control_interfaces::srv::ContinueRetreat>::SharedPtr retreat_client_;

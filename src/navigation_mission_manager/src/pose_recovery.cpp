@@ -31,6 +31,7 @@ void MissionManager::clear_pose_recovery()
   recovery_selection_pending_ = false;
   recovery_selection_accepted_ = false;
   recovery_handed_off_ = false;
+  road_recovery_route_id_ = road_recovery_revision_ = 0U;
 }
 
 void MissionManager::preserve_interrupted_progress()
@@ -101,8 +102,12 @@ void MissionManager::on_pose_recovery(
     }
     return;
   }
-  if (!pose_recovery_.active && state.phase == "failed" && active_route_.has_value() &&
-    state.route_id == active_route_->route_id && latest_navigation_recovery_.has_value() &&
+  const bool owned_route = (active_route_.has_value() &&
+    state.route_id == active_route_->route_id) ||
+    (road_recovery_route_id_ != 0U && state.route_id == road_recovery_route_id_ &&
+    state.obstacle_revision == road_recovery_revision_);
+  if (!pose_recovery_.active && state.phase == "failed" && owned_route &&
+    latest_navigation_recovery_.has_value() &&
     latest_navigation_recovery_->route_id == state.route_id &&
     latest_navigation_recovery_->recovery_id == state.recovery_id &&
     latest_navigation_recovery_->phase == "braking")
@@ -111,7 +116,7 @@ void MissionManager::on_pose_recovery(
     return;
   }
   if (!pose_recovery_.active && state.phase == "braking") {
-    if (!active_route_.has_value() || state.route_id != active_route_->route_id ||
+    if (!owned_route ||
       pose_recovery_.retired.count({state.route_id, state.recovery_id}) != 0U)
     {
       return;
@@ -134,7 +139,7 @@ void MissionManager::on_pose_recovery(
     // A durable completed/failed sample cannot start a new transaction. A route
     // match excludes stale samples after abort/reset and after normal replanning.
     if (state.phase != "candidates" ||
-      !active_route_.has_value() || state.route_id != active_route_->route_id ||
+      !owned_route ||
       !pose_recovery_.begin(state.route_id, state.recovery_id, state.obstacle_revision))
     {
       return;

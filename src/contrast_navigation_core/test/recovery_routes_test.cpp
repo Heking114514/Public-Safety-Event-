@@ -347,6 +347,39 @@ TEST(RecoveryRoutes, ReturnedCrossEntryUsesOtherExitsInsteadOfUnsafeRearBoundary
   EXPECT_TRUE(recovery.exit_matches(replay.actual(),*west));
 }
 
+TEST(RecoveryRoutes, KnownBlockedCornerAllowsLongRetreatToRearT) {
+  auto recovery=make_recovery();
+  const Recovery::Pose start{{1.239,1.5},pi};
+  // 最新 GUI 的两块实际障碍；前方 L 连通道路已封，不要求再次触发视线检测。
+  const std::vector<navigation_safety::Polygon> obstacles{
+    navigation_safety::rectangle_polygon({1.47,-1.60,1.59,-1.40}),
+    navigation_safety::rectangle_polygon({1.10,1.111,1.30,1.231})};
+  const std::vector<std::string> blocked{"ROAD_X0_Y2","ROAD_Y3_RIGHT"};
+  EXPECT_EQ(recovery.forward_obstacle(start,obstacles,blocked),1);
+  EXPECT_EQ(recovery.forward_obstacle(start,obstacles,{}),-1);
+  EXPECT_EQ(recovery.forward_obstacle(start,{obstacles.front()},blocked),-1);
+  EXPECT_EQ(recovery.forward_obstacle({start.position,0.0},obstacles,blocked),-1);
+  recovery.set_dynamic_obstacles(obstacles);
+  const auto candidates=recovery.candidates(start,obstacles[1]);
+  const auto south=find(candidates,"t_junction_left");
+  ASSERT_NE(south,nullptr);
+  EXPECT_EQ(south->resume_node,"x3_y2");
+  EXPECT_EQ(south->resume_lane,"ROAD_Y2_RIGHT");
+  ASSERT_TRUE(recovery.plan(start,*south,blocked));
+  double reverse=0;
+  for (const auto &step:recovery.steps()) {
+    if (step.phase=="RETREAT_TO_TURN_POINT") reverse+=std::abs(step.linear)*step.duration;
+    if (step.kind==Recovery::Step::Kind::FIXED_TURN) {
+      EXPECT_NEAR(step.junction.x,2.2,1e-9);
+      EXPECT_NEAR(step.junction.y,1.5,1e-9);
+    }
+  }
+  EXPECT_GT(reverse,1.0);
+  RecoveryReplay replay(recovery,workspace());
+  ASSERT_TRUE(replay.run(start,recovery.steps())) << replay.failure();
+  EXPECT_TRUE(recovery.exit_matches(replay.actual(),*south));
+}
+
 TEST(RecoveryRoutes, ForwardAdjustmentStopsAtBodyClearanceRatherThanCameraRange) {
   auto recovery=make_recovery();
   recovery.set_dynamic_obstacles({navigation_safety::rectangle_polygon({1.1,-.86,1.3,-.78})});

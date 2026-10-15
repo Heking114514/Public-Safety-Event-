@@ -95,7 +95,7 @@ bool WaypointNavigator::RunPoseRecovery() {
   if (poseRecoveryPhase_ == "braking") {
     if (!RecoveryStopCompleted(t)) return true;
     // 普通避障停车期间更新初始障碍；转弯特例保留原障碍和原道路。
-    if (!turnObstacleContextValid_) {
+    if (!turnObstacleContextValid_ && !recoveryKnownRoad_) {
       const double age = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - recoveryPolygonTime_).count();
       if (age <= frontObstacleTimeout_ && latestRecoveryPolygon_.polygon.points.size() >= 3) {
@@ -106,7 +106,7 @@ bool WaypointNavigator::RunPoseRecovery() {
         poseRecovery_.set_dynamic_obstacles(recoveryObservedObstacles_);
       }
       poseRecovery_.set_incoming_lane("", {});
-    } else {
+    } else if (turnObstacleContextValid_) {
       const auto &saved = turnObstacleContext_;
       const double entry = turnManeuverConfig_.entry_target_x;
       const Recovery::Pose original{{saved.junction_x + entry * std::cos(saved.geometry_heading),

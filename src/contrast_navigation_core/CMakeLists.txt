@@ -36,6 +36,7 @@ add_library(contrast_waypoint_navigator_core STATIC
   src/recovery_adjust.cpp
   src/pose_recovery_control.cpp
   src/recovery_execution.cpp
+  src/road_recovery.cpp
   src/turn_recovery.cpp
   src/corner_return.cpp
   src/corner_shunt.cpp

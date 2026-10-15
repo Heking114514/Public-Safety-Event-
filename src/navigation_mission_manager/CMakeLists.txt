@@ -38,6 +38,7 @@ add_executable(mission_manager_node
   src/planning.cpp
   src/pose_recovery.cpp
   src/recovery.cpp
+  src/road_recovery.cpp
   src/rfid.cpp
   src/services.cpp)
 target_include_directories(mission_manager_node PRIVATE include)
