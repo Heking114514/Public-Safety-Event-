@@ -71,11 +71,22 @@ bool WaypointNavigator::CheckReverseTurnPlan() const {
     visual_navigation::CornerReturnInput input;
     input.context = context;
     input.context.pose = {actual.position.x, actual.position.y, actual.yaw};
+    const auto phase = controller.phase();
     const auto decision = controller.update(input, t);
     if (decision.result == visual_navigation::TurnManeuverResult::COMPLETED)
       return poseRecovery_.safe({actual});
     if (decision.result != visual_navigation::TurnManeuverResult::RUNNING ||
-        decision.command.linear_x > 1e-9) return false;
+        decision.command.linear_x > 1e-9) {
+      const auto entry = controller.entrance_pose();
+      const double dx = actual.position.x-entry.x, dy = actual.position.y-entry.y;
+      RCLCPP_WARN(get_logger(),
+        "L reverse preflight rejected: phase=%s result=%d t=%.3f pose=(%.6f,%.6f,%.6f) entry_error=(%.6f,%.6f,%.6f)",
+        visual_navigation::CornerReturnStatus(phase), static_cast<int>(decision.result), t,
+        actual.position.x, actual.position.y, actual.yaw,
+        dx*std::cos(entry.yaw)+dy*std::sin(entry.yaw),
+        -dx*std::sin(entry.yaw)+dy*std::cos(entry.yaw), NormalizeAngle(actual.yaw-entry.yaw));
+      return false;
+    }
     if (std::abs(decision.command.linear_x) <= 1e-9 &&
         std::abs(decision.command.angular_z) <= 1e-9) v = w = 0.0;
     else {
@@ -87,9 +98,16 @@ bool WaypointNavigator::CheckReverseTurnPlan() const {
         maxAngularAcceleration_, maxAngularDeceleration_, dt);
     }
     const auto sweep = poseRecovery_.motion_samples(actual, v, w, w, dt);
-    if (!poseRecovery_.safe(sweep)) return false;
+    if (!poseRecovery_.safe(sweep)) {
+      RCLCPP_WARN(get_logger(),
+        "L reverse preflight sweep unsafe: phase=%s t=%.3f pose=(%.6f,%.6f,%.6f) command=(%.4f,%.4f)",
+        visual_navigation::CornerReturnStatus(phase), t, actual.position.x, actual.position.y,
+        actual.yaw, v, w);
+      return false;
+    }
     actual = sweep.back();
   }
+  RCLCPP_WARN(get_logger(), "L reverse preflight exceeded complete action timeout");
   return false;
 }
 

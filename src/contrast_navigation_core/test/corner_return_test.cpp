@@ -78,10 +78,10 @@ struct ArenaGuard {
   navigation_safety::Footprint footprint;
   std::vector<navigation_safety::Rectangle> free;
   std::vector<navigation_safety::Polygon> obstacles;
-  ArenaGuard() {
+  explicit ArenaGuard(double margin=0.0) {
     const auto vehicle=YAML::LoadFile(root()+"/src/vehicle_config/config/vehicle_physical.yaml");
     footprint={vehicle["chassis"]["length_m"].as<double>(),
-      vehicle["chassis"]["width_m"].as<double>(),0,0,0};
+      vehicle["chassis"]["width_m"].as<double>(),0,0,margin};
     const auto arena=YAML::LoadFile(root()+"/src/new_map_planner/config/arena.yaml");
     const double ox=arena["frame"]["map_origin_m"][0].as<double>();
     const double oy=arena["frame"]["map_origin_m"][1].as<double>();
@@ -168,6 +168,49 @@ TEST(CornerReturn, LeftRightReturnToConfiguredEntranceWithRealAxleAndRateLimits)
   }
 }
 
+TEST(CornerReturn, UserBottomLMeasuredExitReturnsToFixedEntrance) {
+  const auto c=config();
+  const auto params=YAML::LoadFile(root()+"/src/contrast_controller/config/contrast_controller.yaml")
+    ["contrast_controller"]["ros__parameters"];
+  ArenaGuard arena(params["recovery_margin_m"].as<double>());
+  // 同一 GUI 的三个实际障碍，验证时与正式恢复保留相同安全边距。
+  for(const auto &box:std::vector<std::vector<double>>{
+      {1.1,-1.0117478514809226,1.3,-.9117478514809226},
+      {1.1,1.1213241552092383,1.3,1.2213241552092384},
+      {4.1,-.7870374356818018,4.3,-.6870374356818018}})
+    arena.obstacles.push_back({{{box[0],box[1]},{box[2],box[1]},
+                                {box[2],box[3]},{box[0],box[3]}}});
+  Controller controller(c);
+  visual_navigation::CornerShuntContext context;
+  // 2026-10-15 GUI 实测停车位姿及路线航向；正式 YAML 物理尺寸和输出限幅。
+  context.junction_x=4.2;context.junction_y=-1.5;
+  context.geometry_heading=6.163065084185959e-05;
+  context.target_heading=pi/2;
+  context.pose={4.188035907078143,-1.3804042360980853,1.5150177610665212};
+  controller.begin(context,0);
+  ASSERT_TRUE(controller.geometry_valid());
+  const auto entry=controller.entrance_pose();
+  visual_navigation::CornerReturnInput input;input.context=context;
+  vehicle_loopback_sim::Twist2d applied;
+  visual_navigation::CornerReturnDecision decision;
+  for(double t=0;t<60;t+=c.control_dt) {
+    decision=controller.update(input,t);
+    if(decision.result!=Result::RUNNING) break;
+    EXPECT_LE(decision.command.linear_x,0);
+    const auto before=input.context.pose;
+    apply(input.context,decision.command,applied,c);
+    ASSERT_TRUE(arena.safe(before,input.context.pose)) << "phase="
+      << visual_navigation::CornerReturnStatus(decision.phase) << " t=" << t
+      << " pose=" << input.context.pose.x << "," << input.context.pose.y;
+  }
+  EXPECT_EQ(decision.result,Result::COMPLETED);
+  const double dx=input.context.pose.x-entry.x,dy=input.context.pose.y-entry.y;
+  EXPECT_LE(std::abs(dx*std::cos(entry.yaw)+dy*std::sin(entry.yaw)),c.turn.entry_position_tolerance);
+  EXPECT_LE(std::abs(-dx*std::sin(entry.yaw)+dy*std::cos(entry.yaw)),c.turn.entry_lateral_tolerance);
+  EXPECT_LE(std::abs(visual_navigation::NormalizeShuntAngle(input.context.pose.yaw-entry.yaw)),
+            c.turn.entry_yaw_tolerance);
+}
+
 TEST(CornerReturn, PauseKeepsGeometryAndStopsClockButStallStillFails) {
   const auto c=config();Controller controller(c);
   visual_navigation::CornerShuntContext context;
@@ -181,6 +224,27 @@ TEST(CornerReturn, PauseKeepsGeometryAndStopsClockButStallStillFails) {
   EXPECT_EQ(controller.update(input,100).phase,Phase::TURN_30);
   EXPECT_EQ(controller.update(input,100+c.control_dt).result,Result::RUNNING);
   EXPECT_EQ(controller.update(input,100+c.turn.no_progress_timeout+.1).result,Result::NEED_REPLAN);
+}
+
+TEST(CornerReturn, AllowedYawCannotHideReturnEntryPositionOvershoot) {
+  const auto c=config();Controller controller(c);
+  visual_navigation::CornerShuntContext context;context.target_heading=pi/2;
+  controller.begin(context,0);context.pose=controller.exit_pose();controller.begin(context,0);
+  visual_navigation::CornerReturnInput input;input.context=context;
+  vehicle_loopback_sim::Twist2d applied;
+  for(double t=0;t<60;t+=c.control_dt) {
+    const auto decision=controller.update(input,t);
+    ASSERT_EQ(decision.result,Result::RUNNING);
+    if(decision.phase==Phase::RETURN_ENTRY) {
+      input.context.pose=controller.entrance_pose();
+      input.context.pose.x-=2*c.turn.entry_position_tolerance;
+      input.context.pose.yaw+=c.turn.entry_yaw_tolerance/2;
+      EXPECT_EQ(controller.update(input,t+c.control_dt).result,Result::NEED_REPLAN);
+      return;
+    }
+    apply(input.context,decision.command,applied,c);
+  }
+  FAIL() << "未执行到原入口返回阶段";
 }
 
 TEST(CornerReturn, MissingPhysicalParametersFailExplicitly) {
