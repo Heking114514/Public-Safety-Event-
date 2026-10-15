@@ -230,6 +230,10 @@ void MissionManager::handle_obstacle_replan()
 
 void MissionManager::handle_plan_rejection(const std::string & message)
 {
+  if (pose_recovery_enabled_) {
+    plan_failed(message);
+    return;
+  }
   if (obstacle_recovery_active_) {
     request_additional_retreat(message);
   } else if (route_transition_recovery_active_) {

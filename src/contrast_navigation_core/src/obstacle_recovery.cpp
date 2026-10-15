@@ -315,6 +315,16 @@ WaypointNavigator::SelectObstacleRecoveryAnchor() const {
 }
 
 bool WaypointNavigator::BeginJunctionRetreat() {
+  if (poseRecoveryEnabled_) {
+    navigationActive_ = false;
+    PublishStop();
+    SetState("FAULT_ROUTE_HEADING");
+    RCLCPP_ERROR(get_logger(),
+                 "Route heading mismatch at (%.3f, %.3f, %.1fdeg); "
+                 "strict recovery forbids retreat without an obstacle",
+                 currentX_, currentY_, currentYaw_ * 180.0 / kPi);
+    return false;
+  }
   routeTransitionRetreat_ = false;
   const bool confirmedJunction =
       lastStoppedTurnIndex_ < currentWaypointIndex_ &&

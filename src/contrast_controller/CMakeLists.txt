@@ -48,6 +48,7 @@ install(FILES README.md CHANGELOG.md AB_REPORT.md OBSTACLE_VALIDATION_REPORT.md
   DESTINATION share/${PROJECT_NAME})
 
 install(PROGRAMS scripts/comparison_mission.py scripts/run_pose_recovery_scenarios.py
+  scripts/handoff_loopback.py
   DESTINATION lib/${PROJECT_NAME})
 install(FILES scripts/recovery_evidence.py DESTINATION lib/${PROJECT_NAME})
 

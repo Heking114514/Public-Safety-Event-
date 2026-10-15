@@ -157,6 +157,74 @@ struct ManagerRecoveryTestAccess
     EXPECT_FALSE(m.pose_recovery_.active);
   }
 
+  static void handoff_response(MissionManager & m, bool success)
+  {
+    auto response = std::make_shared<new_map_planner::srv::PlanRoute::Response>();
+    response->success = success;
+    response->message = "handoff regression";
+    auto & plan = response->plan;
+    plan.plan_id = 78;
+    plan.collision_checked = true;
+    plan.visit_order = {"2"};
+    plan.blocked_lane_ids_used.assign(m.blocked_lane_ids_.begin(), m.blocked_lane_ids_.end());
+    plan.obstacle_revision = m.obstacle_revision_;
+    geometry_msgs::msg::PoseStamped pose;
+    pose.pose = m.next_planning_context_.safe_pose;
+    plan.navigation_path.poses.push_back(pose);
+    pose.pose.position.x = 1.8;
+    pose.pose.position.y = -1.5;
+    plan.navigation_path.poses.push_back(pose);
+    plan.waypoint_supernode_ids = {"", "s2"};
+    std::promise<new_map_planner::srv::PlanRoute::Response::SharedPtr> promise;
+    auto future = promise.get_future().share();
+    promise.set_value(response);
+    m.on_plan_response(m.plan_generation_, m.mission_->plan_spec(),
+      m.next_planning_context_, future);
+  }
+
+  static void handoff_lifecycle(MissionManager & m)
+  {
+    handoff_response(m, false);
+    ASSERT_TRUE(m.recovery_handed_off_);
+    ASSERT_TRUE(m.next_planning_context_.has_safe_pose);
+    EXPECT_DOUBLE_EQ(m.next_planning_context_.safe_pose.position.x, 0.75);
+    handoff_response(m, true);
+    ASSERT_TRUE(m.active_route_.has_value());
+    EXPECT_FALSE(m.next_planning_context_.has_safe_pose);
+    EXPECT_FALSE(m.recovery_handed_off_);
+    EXPECT_FALSE(m.pose_recovery_.active);
+    m.active_route_->acknowledged = true;
+    m.active_route_->motion_seen = true;
+    m.pose_ = VehiclePose{1.8, -1.5, 3.14, 0.0, steady_seconds()};
+    m.rfid_confirmed_tasks_.insert("2");
+    m.handle_goal_reached();
+    EXPECT_EQ(m.mission_->completed_tasks().count("2"), 1U);
+    EXPECT_FALSE(m.active_route_.has_value());
+    EXPECT_TRUE(m.plan_due_at_.has_value());
+    EXPECT_FALSE(m.next_planning_context_.has_safe_pose);
+    EXPECT_DOUBLE_EQ(m.pose_message().position.x, 1.8);
+    EXPECT_DOUBLE_EQ(m.pose_message().position.y, -1.5);
+  }
+
+  static void rejection_after_goal(MissionManager & m)
+  {
+    m.completed_route_retreat_available_ = true;
+    m.handle_plan_rejection("no forward route");
+    EXPECT_FALSE(m.retreat_pending_);
+    EXPECT_FALSE(m.route_transition_recovery_active_);
+    EXPECT_EQ(m.plan_retries_, 1);
+    EXPECT_EQ(m.state_, mission_control_interfaces::msg::MissionState::REPLANNING);
+  }
+
+  static void heading_fault(MissionManager & m)
+  {
+    auto status = std::make_shared<std_msgs::msg::String>();
+    status->data = "FAULT_ROUTE_HEADING";
+    m.on_navigator_status(status);
+    EXPECT_TRUE(faulted(m));
+    EXPECT_FALSE(m.awaiting_heading_retreat_);
+  }
+
   static void selection_retry(MissionManager & m)
   {
     m.recovery_candidates_ = {candidate(1), candidate(2)};
@@ -218,6 +286,20 @@ TEST_F(ManagerRecoveryTest, CompleteUsesMeasuredExitNormalPlanningAndZeroOrdinar
 {
   nmm::ManagerRecoveryTestAccess::latch(*manager);
   nmm::ManagerRecoveryTestAccess::complete(*manager);
+}
+TEST_F(ManagerRecoveryTest, RecoveryExitSurvivesRetryButIsConsumedBeforeNextTaskPlan)
+{
+  nmm::ManagerRecoveryTestAccess::latch(*manager);
+  nmm::ManagerRecoveryTestAccess::complete(*manager);
+  nmm::ManagerRecoveryTestAccess::handoff_lifecycle(*manager);
+}
+TEST_F(ManagerRecoveryTest, StrictPlanRejectionCannotRequestLegacyRetreat)
+{
+  nmm::ManagerRecoveryTestAccess::rejection_after_goal(*manager);
+}
+TEST_F(ManagerRecoveryTest, StrictHeadingFaultEndsInFaultRatherThanWaitingForRetreat)
+{
+  nmm::ManagerRecoveryTestAccess::heading_fault(*manager);
 }
 TEST_F(ManagerRecoveryTest, AbortAndResetRejectDurableStateAndLateServiceResponse)
 {
