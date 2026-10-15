@@ -214,3 +214,66 @@ python3 src/contrast_controller/scripts/handoff_loopback.py --scene continuous_r
 - ROS 证据 `/tmp/contrast_layer2_blockage_20261015_2/`：原隧道规划拒绝，服务接受；实测倒退 1.02829932199584 m，出口节点 x2_y3、道路 TUNNEL_3，经过连续停车与 TURN_60、TURN_DIAGONAL_CREEP、TURN_30；出口隧道规划成功，实际前进 0.20056591949062375 m，全程 42.77 秒，无碰撞保护介入。
 - 复现：`python3 src/contrast_controller/scripts/road_blockage_check.py --domain 229 --output /tmp/contrast_layer2_blockage_check --timeout 150`，先 source ROS 与编译后的工作区。脚本从现场位姿开始并通过公开接口建立已完成路线令牌，未重跑此前 12 个 RFID 或整段总控历史，也未完成四条隧道和第三层。
 - 首次脚本发路线早于融合状态就绪，42 毫秒后触发 `FAULT_FUSION_STATUS_STALE`；补齐融合状态及至少 30 帧里程计的启动等待后重跑通过。该次失败证据保留在 `/tmp/contrast_layer2_blockage_20261015/`。
+
+
+## 2026-10-15：右下 L 角倒转预检查误拒绝
+
+本轮基线 `270f928`，隔离分支 `fix/l-return-entry-convergence-20261015`。
+范围为 L 倒转控制、预检查诊断、回归夹具及中文记录，不修改地图、车体、
+仿真转弯参数或全局任务规则；构建保持单线程、nice 15、ionice idle。
+
+### 原现场与根因
+
+- 用户日志 `contrast_controller_154420_1792066664646.log` 显示正常转弯在
+  `1792067080.9748` 完成，障碍在后续直路上触发；
+  `1792067095.4749` 进入出口固定点停车，`1792067095.7435` 报
+  `FAULT_POSE_RECOVERY_RETURN_TURN_PLAN`。实际倒转尚未开始。
+- 精确停车位姿为 `(4.1880359071,-1.3804042361,1.5150177611)`，
+  路口 `(4.2,-1.5)`，原入路航向 `0.00006163065`。
+- 原倒转控制最后一段采用半个控制周期的角度容差，约 `0.006667 rad`，
+  比既有入口航向容差 `0.080 rad` 严格；出口允许的位置及姿态偏差带入倒转后，
+  为追求该角度继续走弧线，预测终点变成 `(4.12598,-1.49969,0.00439)`，
+  越过原入口约 `4.01633 mm`，超过 `3 mm` 纵向容差。
+  返回入口阶段只允许倒退，无法前进补回，于是预检查拒绝整段动作。
+- 这次不是旧 top-L 用例的 `3.005 mm` 问题，也不是实车已经倒转后碰撞。
+
+### 修改与保护
+
+- 倒转最后一段沿用已有入口航向容差，随后进入原入口入位校验；
+  仍须通过 7 cm 固定入口、3 mm 纵向、10 mm 横向及 0.080 rad 航向检查。
+  保留出口实测停车、倒车特定动作、原入口实测停车、沿原路后退到 T/X 的流程。
+- 不把 NEED_REPLAN 当完成，不扩大位置容差，也不增加原地旋转或 L 处前进掉头。
+  全车扫掠、输出限幅、制动检查及 3 cm 前向障碍净距规则保持有效。
+- 预检查拒绝时记录失败阶段、结果、预测时间、位姿及入口误差；
+  碰撞拒绝另记扫掠阶段与输出指令，便于下一次直接区分原因。
+
+### 验收与边界
+
+- 独立回归使用上述精确位姿、现场三个障碍、正式 YAML 车辆尺寸、输出限幅和
+  `recovery_margin_m`；原实现失败，修复后成功返回原入口。
+  另加反例确保航向在容差内但入口位置越界时仍返回 NEED_REPLAN。
+- 恢复核心实际 32 项通过：6 项 L 返回、19 项道路恢复、7 项停车。
+- 正式 ROS 启动、真实检测及总控交接场景：
+  - `l_user_bottom_after`：使用现场路线起点与三个障碍，出口停车
+    `(4.188040,-1.380393,1.515013)`，与原现场接近；倒转回
+    `(4.131965,-1.496989,0.068143)`，再退到 `(3.2,-1.5)` 的 T，
+    转入 `ROAD_Y1_LEFT`，重接路线后连续实测前进 `0.200733 m`。
+  - `l_bottom_during`：转弯中检测，先完成当前转弯，再停车倒转、退到同一 T，
+    恢复后连续实测前进 `0.200729 m`。
+- 两场景均无 FAULT 或碰撞保护介入；证据在
+  `/tmp/contrast_l_return_20261015_v1/`，包含输入、命令、实测位姿、状态链、
+  完整日志、结果和轨迹图。仿真进程由脚本自动清理。
+- 扩展检查发现 `ContrastTurn.FullLeftAndRightAtLaunchWithRealOutputAndCollision`
+  仍失败；未修改的主工程也复现相同结果。该测试读取生产正常转弯参数
+  `.35/.15`，未加载仿真的 `.40/.40` 覆盖，与本轮 L 返回修复无关。
+  保留失败，不将整包测试宣称全部通过，也不擅改正常转弯配置。
+- 本次只验收卡点恢复和恢复后 20 cm 续行，没有验收默认起点到此处的完整历史，
+  也没有完成三层任务。
+
+复现（输出目录必须尚不存在，ROS 域必须空闲）：
+
+```bash
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ROS_LOCALHOST_ONLY=1 python3 src/contrast_controller/scripts/run_pose_recovery_scenarios.py   --scenario l_user_bottom_after --scenario l_bottom_during   --base-domain 214 --output /tmp/contrast_l_return_check_$(date +%Y%m%d_%H%M%S)   --timeout 180 --startup-timeout 40
+```

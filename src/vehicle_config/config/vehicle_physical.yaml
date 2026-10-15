@@ -11,9 +11,10 @@ chassis:
 differential_drive:
   wheel_radius_m: 0.0302
   wheel_track_m: 0.1466
-  # 2026-10-06 measured cumulative counts for ten wheel revolutions.
-  left_encoder_counts_per_revolution: 368867.22
-  right_encoder_counts_per_revolution: 368883.7667
+  # 2026-10-06 标定值；配套 MC02 ENC 按车体实际左右轮序上报。
+  # 实车左轮对应固件历史逻辑右通道，右轮对应历史逻辑左通道。
+  left_encoder_counts_per_revolution: 368883.7667
+  right_encoder_counts_per_revolution: 368867.22
   # 配套 MC02 正 v 前进、正 w 左转固件：轮子前进时编码器计数增加。
   left_distance_scale: 1.0
   right_distance_scale: 1.0

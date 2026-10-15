@@ -184,7 +184,10 @@ CornerReturnDecision CornerReturnController::update(const CornerReturnInput &inp
   } else {
     // 逆30/60按照实时角度从原正向角速度曲线反向取值：不是第二次正向动作。
     const double remaining=sign*NormalizeShuntAngle(p.yaw-target.yaw);
-    const double tolerance=config_.control_dt*cfg.turn_min_angular_speed/2;
+    // 最后一段沿用固定入口航向容差，再由直行入位收敛位置。
+    // 强行转到半个采样周期会把已允许的出口误差带成入口纵向越界。
+    const double tolerance=phase_==Phase::TURN_60 ? cfg.entry_yaw_tolerance :
+      config_.control_dt*cfg.turn_min_angular_speed/2;
     if(remaining<=tolerance) {
       if(phase_==Phase::TURN_30) return enter(Phase::DIAGONAL_CREEP);
       return enter(Phase::RETURN_ENTRY);

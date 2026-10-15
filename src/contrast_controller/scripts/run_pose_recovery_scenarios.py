@@ -118,6 +118,16 @@ def scenarios():
              junction="x0_y1", during_turn=True, expected_turns=1,
              original_lane="ROAD_X0_Y0", recovery_heading=0.0,
              obstacle_half_size=[.09, .04]),
+        # 2026-10-15 用户卡住现场的路线起点和第三个障碍位置。
+        dict(name="l_user_bottom_after",
+             initial=[4.161918579621634, -1.5000356170181426, 6.163065084185959e-05],
+             obstacle=[4.2, -.7370374356818018], targets=["6"], after_turn=True,
+             junction="x0_y1", expected_turns=1, completed_l=True,
+             original_lane="ROAD_X0_Y0", recovery_heading=0.0,
+             normal_heading=math.pi/2, normal_lane="ROAD_BOTTOM_LEFT",
+             normal_corner="x0_y0", obstacle_half_size=[.10, .05],
+             extra_obstacles=[[1.2, -.9617478514809226, .10, .05],
+                              [1.2, 1.1713241552092384, .10, .05]]),
     ])
     return cases
 
@@ -628,6 +638,14 @@ def worker(config_path):
             obstacle.header.stamp = node.get_clock().now().to_msg()
             obstacle.polygon.points = [Point32(x=float(a), y=float(b), z=0.0) for a, b in polygon]
             evidence.injected_at = evidence.now()
+            for ex, ey, ehx, ehy in case.get("extra_obstacles", []):
+                extra = PolygonStamped()
+                extra.header = obstacle.header
+                extra.polygon.points = [Point32(x=float(a), y=float(b), z=0.0) for a, b in
+                    [(ex-ehx, ey-ehy), (ex+ehx, ey-ehy),
+                     (ex+ehx, ey+ehy), (ex-ehx, ey+ehy)]]
+                obstacle_pub.publish(extra)
+                evidence.add("injected_extra_polygon", message_to_ordereddict(extra))
             obstacle_pub.publish(obstacle)
             evidence.add("injected_polygon", message_to_ordereddict(obstacle))
             deadline, next_log_check = time.monotonic() + config["timeout"], 0.0
