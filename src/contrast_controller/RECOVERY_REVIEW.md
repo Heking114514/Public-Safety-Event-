@@ -203,3 +203,14 @@ python3 src/contrast_controller/scripts/handoff_loopback.py --scene continuous_r
 ```
 
 输出目录必须尚不存在，ROS 域应未被其他仿真占用。该场景只验收连续倒退恢复与后续 20 cm 直行。
+
+## 2026-10-15：RFID 层结束处封路恢复拒绝
+
+- 用户进程保持运行。GUI 与 ROS 状态确认：位姿 `(0.2387637121,0.4998114693,-3.1406251475)`，12 个任务点已完成，阶段为 layer2，状态为 `FAULT:已知封路恢复被拒绝：no confirmed blocked road on the current forward approach`。
+- 封路快照为 `ROAD_X1_Y3`、`ROAD_Y3_LEFT`；两障碍中心为 `(0.2,-0.5)`、`(1.2,-1.1763966069)`。前方拓扑依次为 x2_y4 的 L、起点 launch_junction 的 T、第一块障碍。起点支路是尽头，无法直接前进掉头；另一方向封路，隧道层没有前进路线。
+- 原 `forward_obstacle()` 只检查当前道路和前端点相邻道路，未沿该通道继续查找。总控在 NO_FEASIBLE_ROUTE 后申请恢复，局部检查拒绝，总控回调直接 fault 并驻停。
+- 修正只沿无可用分流的前方通道延伸；可分流 T/X、循环终止，障碍仍须对应已锁存封路。恢复仍退至后方 T/X 的固定入口，停车后执行特定转弯。
+- 精确现场独立车辆积分、无封路、障碍缺失、反方向及前方可分流十字反例通过；恢复核心 30 项通过。
+- ROS 证据 `/tmp/contrast_layer2_blockage_20261015_2/`：原隧道规划拒绝，服务接受；实测倒退 1.02829932199584 m，出口节点 x2_y3、道路 TUNNEL_3，经过连续停车与 TURN_60、TURN_DIAGONAL_CREEP、TURN_30；出口隧道规划成功，实际前进 0.20056591949062375 m，全程 42.77 秒，无碰撞保护介入。
+- 复现：`python3 src/contrast_controller/scripts/road_blockage_check.py --domain 229 --output /tmp/contrast_layer2_blockage_check --timeout 150`，先 source ROS 与编译后的工作区。脚本从现场位姿开始并通过公开接口建立已完成路线令牌，未重跑此前 12 个 RFID 或整段总控历史，也未完成四条隧道和第三层。
+- 首次脚本发路线早于融合状态就绪，42 毫秒后触发 `FAULT_FUSION_STATUS_STALE`；补齐融合状态及至少 30 帧里程计的启动等待后重跑通过。该次失败证据保留在 `/tmp/contrast_layer2_blockage_20261015/`。
