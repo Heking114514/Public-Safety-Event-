@@ -134,7 +134,8 @@ void WaypointNavigator::HandleRetreatRequest(
   auto result = obstacleRecoveryController_.extend_retreat(
       request->minimum_distance_m, currentX_, currentY_, currentYaw_);
   if (result == visual_navigation::RetreatExtensionResult::INVALID_STATE &&
-      state_ == "GOAL_REACHED") {
+      (state_ == "GOAL_REACHED" ||
+       (routeTransition && state_ == "TURN_NEED_REPLAN"))) {
     result = obstacleRecoveryController_.begin_retreat(
         request->minimum_distance_m, currentX_, currentY_, currentYaw_);
   }

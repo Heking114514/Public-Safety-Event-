@@ -25,9 +25,6 @@ void MissionManager::on_navigation_recovery_state(
     message->valid ? "true" : "false", message->reason.c_str(),
     static_cast<unsigned long>(message->route_id),
     message->safe_pose.pose.position.x, message->safe_pose.pose.position.y);
-  if (turn_replan_waiting_for_recovery_ && message->valid) {
-    handle_turn_replan();
-  }
 }
 
 void MissionManager::on_navigator_status(const std_msgs::msg::String::SharedPtr message)
@@ -35,7 +32,7 @@ void MissionManager::on_navigator_status(const std_msgs::msg::String::SharedPtr 
   const std::string status = message->data;
   navigator_status_ = status;
   if (pose_recovery_enabled_ && (pose_recovery_.active || waiting_for_pose_candidates() ||
-    status.rfind("OBSTACLE_", 0U) == 0U || status == "TURN_NEED_REPLAN" ||
+    status.rfind("OBSTACLE_", 0U) == 0U ||
     status.rfind("FAULT_OBSTACLE", 0U) == 0U))
   {
     return;  // Durable pose state owns recovery; status strings cannot start replay.
@@ -74,7 +71,10 @@ void MissionManager::on_navigator_status(const std_msgs::msg::String::SharedPtr 
     return;
   }
   if (status == "ROUTE_TRANSITION_REPLAN_REQUIRED") {
-    if (route_transition_recovery_active_) {
+    if (route_transition_recovery_active_ && (awaiting_retreat_ || retreat_pending_)) {
+      ++retreat_generation_;
+      retreat_pending_ = false;
+      retreat_response_deadline_.reset();
       awaiting_retreat_ = false;
       schedule_plan(true);
     }
@@ -107,13 +107,10 @@ void MissionManager::on_navigator_status(const std_msgs::msg::String::SharedPtr 
     return;
   }
   if (status == "TURN_NEED_REPLAN") {
-    // A turn failure is recovered by the controller's executed-trace replay.
-    // Do not feed the in-turn pose into the planner or start a second recovery
-    // request while the replay is already active.
+    // Explicitly request executed-trace replay once; plan only after completion.
     if (route_transition_recovery_active_ || awaiting_retreat_ || retreat_pending_) {
       return;
     }
-    turn_replan_waiting_for_recovery_ = true;
     handle_turn_replan();
     return;
   }
@@ -146,28 +143,14 @@ void MissionManager::handle_turn_replan()
     return;
   }
   const uint64_t route_id = active_route_->route_id;
-  if (!latest_navigation_recovery_.has_value() ||
-    !latest_navigation_recovery_->valid ||
-    latest_navigation_recovery_->route_id != route_id)
-  {
-    RCLCPP_WARN(
-      get_logger(),
-      "路口恢复使用控制器执行轨迹回放；当前路线尚无有效安全锚点，继续等待");
-    return;
-  }
-
-  // The safe pose is evidence that the controller stopped after a validated
-  // turn command. It is deliberately not used as a planner start pose: the
-  // controller owns the reverse replay and closes the loop against its trace.
+  preserve_interrupted_progress();
   clear_active_route();
-  turn_replan_waiting_for_recovery_ = false;
+  completed_route_retreat_available_ = false;
   route_transition_recovery_active_ = true;
   retreat_extensions_ = 0;
-  // The controller starts replay before publishing TURN_NEED_REPLAN. Do not
-  // issue a second retreat request; wait for ROUTE_TRANSITION_REPLAN_REQUIRED.
-  RCLCPP_INFO(get_logger(),
-    "路口恢复已由控制器接管历史轨迹回放: route=%lu",
+  RCLCPP_INFO(get_logger(), "请求路口失败轨迹恢复: route=%lu",
     static_cast<unsigned long>(route_id));
+  request_additional_retreat("转弯无进展或动作无解，停稳后回退重规划");
 }
 
 std::optional<std::pair<std::string, std::string>>
@@ -268,6 +251,7 @@ void MissionManager::request_additional_retreat(const std::string & planner_mess
   request->minimum_distance_m = retreat_step_m_;
   const uint64_t generation = ++retreat_generation_;
   retreat_pending_ = true;
+  retreat_response_deadline_ = steady_seconds() + public_service_timeout_s_;
   client->async_send_request(
     request,
     [this, generation, planner_message](
@@ -279,7 +263,7 @@ void MissionManager::request_additional_retreat(const std::string & planner_mess
     mission_control_interfaces::msg::MissionState::REPLANNING :
     mission_control_interfaces::msg::MissionState::RECOVERING_OBSTACLE,
     (route_transition_recovery_active_ ?
-    "路线衔接无路，请求沿历史轨迹倒退：" :
+    "请求沿历史轨迹回退：" :
     "当前恢复姿态无路，请求继续倒退：") + planner_message);
 }
 
@@ -292,6 +276,7 @@ void MissionManager::on_retreat_response(
     return;
   }
   retreat_pending_ = false;
+  retreat_response_deadline_.reset();
   mission_control_interfaces::srv::ContinueRetreat::Response::SharedPtr response;
   try {
     response = future.get();
@@ -304,7 +289,7 @@ void MissionManager::on_retreat_response(
       "已执行的安全轨迹耗尽" : response->message;
     fault(
       (route_transition_recovery_active_ ?
-      "路线衔接仍无路且无法继续倒退：" :
+      "历史轨迹回退请求被拒绝：" :
       "绕障规划仍无路且无法继续倒退：") + reason);
     return;
   }
@@ -325,9 +310,9 @@ void MissionManager::clear_obstacle_recovery()
 {
   clear_pose_recovery();
   latest_navigation_recovery_.reset();
-  turn_replan_waiting_for_recovery_ = false;
   ++retreat_generation_;
   retreat_pending_ = false;
+  retreat_response_deadline_.reset();
   awaiting_retreat_ = false;
   awaiting_heading_retreat_ = false;
   obstacle_recovery_active_ = false;

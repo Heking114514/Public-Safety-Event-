@@ -1,4 +1,6 @@
+#include <chrono>
 #include <future>
+#include <thread>
 #include <memory>
 
 #include <gtest/gtest.h>
@@ -70,6 +72,65 @@ struct ManagerRecoveryTestAccess
     c.resume_lane = "ROAD_TOP_LEFT";
     c.motion_cost = static_cast<double>(id);
     return c;
+  }
+
+  static void turn_status(MissionManager & m, const std::string & status)
+  {
+    auto message = std::make_shared<std_msgs::msg::String>();
+    message->data = status;
+    m.on_navigator_status(message);
+  }
+  static void turn_client(MissionManager & m, bool pose_enabled)
+  {
+    m.pose_recovery_enabled_ = pose_enabled;
+    m.route_retreat_client_ = m.create_client<mission_control_interfaces::srv::ContinueRetreat>(
+      "/manager_test/turn_retreat");
+  }
+  static bool service_ready(MissionManager & m)
+  {
+    return m.route_retreat_client_->service_is_ready();
+  }
+  static bool pending(const MissionManager & m) {return m.retreat_pending_;}
+  static bool awaiting(const MissionManager & m) {return m.awaiting_retreat_;}
+  static bool planning(const MissionManager & m) {return m.plan_due_at_.has_value();}
+  static bool faulted(const MissionManager & m)
+  {
+    return m.state_ == mission_control_interfaces::msg::MissionState::FAULT;
+  }
+  static void expire_request(MissionManager & m)
+  {
+    m.retreat_response_deadline_ = steady_seconds() - 1.0;
+    m.tick();
+  }
+  static uint64_t mock_pending(MissionManager & m)
+  {
+    m.route_transition_recovery_active_ = true;
+    m.retreat_pending_ = true;
+    m.retreat_response_deadline_ = steady_seconds() + m.public_service_timeout_s_;
+    return ++m.retreat_generation_;
+  }
+  static void response(MissionManager & m, uint64_t generation, bool accepted)
+  {
+    auto reply = std::make_shared<mission_control_interfaces::srv::ContinueRetreat::Response>();
+    reply->accepted = accepted;
+    reply->trace_exhausted = !accepted;
+    std::promise<mission_control_interfaces::srv::ContinueRetreat::Response::SharedPtr> promise;
+    auto future = promise.get_future().share();
+    promise.set_value(reply);
+    m.on_retreat_response(generation, "转弯失败", future);
+  }
+  static void abort(MissionManager & m) {m.abort_mission();}
+
+  static void check_turn_progress(MissionManager & m)
+  {
+    EXPECT_FALSE(m.active_route_.has_value());
+    EXPECT_TRUE(m.route_transition_recovery_active_);
+    EXPECT_EQ(m.mission_->confirmed_lanes().count("ROAD_TOP_LEFT"), 1U);
+    EXPECT_EQ(m.mission_->confirmed_lanes().count("ROAD_TOP_RIGHT"), 0U);
+    EXPECT_EQ(m.mission_->completed_tasks().count("1"), 1U);
+    EXPECT_EQ(m.mission_->completed_tasks().count("2"), 0U);
+    EXPECT_TRUE(m.dynamic_obstacles_.empty());
+    EXPECT_TRUE(m.blocked_lane_ids_.empty());
   }
 
   static void latch(MissionManager & m)
@@ -216,4 +277,93 @@ TEST_F(ManagerRecoveryTest, LocalPlanningFailureTriesNextCandidate)
 {
   nmm::ManagerRecoveryTestAccess::latch(*manager);
   nmm::ManagerRecoveryTestAccess::selection_retry(*manager);
+}
+
+// 使用真实 ROS 服务，检验无锚点时总控确实发出一次请求。
+TEST_F(ManagerRecoveryTest, TurnFailureRequestsReplayWithEitherPoseRecoverySetting)
+{
+  for (const bool enabled : {false, true}) {
+    auto m = std::make_shared<nmm::MissionManager>();
+    nmm::ManagerRecoveryTestAccess::prepare(*m);
+    nmm::ManagerRecoveryTestAccess::turn_client(*m, enabled);
+    auto server = std::make_shared<rclcpp::Node>("turn_retreat_test");
+    int calls = 0;
+    auto service = server->create_service<mission_control_interfaces::srv::ContinueRetreat>(
+      "/manager_test/turn_retreat",
+      [&calls](const mission_control_interfaces::srv::ContinueRetreat::Request::SharedPtr req,
+        mission_control_interfaces::srv::ContinueRetreat::Response::SharedPtr res) {
+        ++calls;
+        EXPECT_GT(req->minimum_distance_m, 0.0);
+        res->accepted = true;
+      });
+    rclcpp::executors::SingleThreadedExecutor executor;
+    executor.add_node(m);
+    executor.add_node(server);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (!nmm::ManagerRecoveryTestAccess::service_ready(*m) &&
+      std::chrono::steady_clock::now() < deadline)
+    {
+      executor.spin_some();
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    ASSERT_TRUE(nmm::ManagerRecoveryTestAccess::service_ready(*m));
+    nmm::ManagerRecoveryTestAccess::turn_status(*m, "TURN_NEED_REPLAN");
+    nmm::ManagerRecoveryTestAccess::turn_status(*m, "TURN_NEED_REPLAN");
+    nmm::ManagerRecoveryTestAccess::check_turn_progress(*m);
+    EXPECT_FALSE(nmm::ManagerRecoveryTestAccess::planning(*m));
+    while (nmm::ManagerRecoveryTestAccess::pending(*m) &&
+      std::chrono::steady_clock::now() < deadline)
+    {
+      executor.spin_some();
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    ASSERT_TRUE(nmm::ManagerRecoveryTestAccess::awaiting(*m));
+    EXPECT_EQ(calls, 1);
+    nmm::ManagerRecoveryTestAccess::turn_status(*m, "ROUTE_TRANSITION_REPLAYING");
+    EXPECT_FALSE(nmm::ManagerRecoveryTestAccess::planning(*m));
+    nmm::ManagerRecoveryTestAccess::turn_status(*m, "ROUTE_TRANSITION_REPLAN_REQUIRED");
+    EXPECT_TRUE(nmm::ManagerRecoveryTestAccess::planning(*m));
+    EXPECT_FALSE(nmm::ManagerRecoveryTestAccess::awaiting(*m));
+  }
+}
+
+TEST_F(ManagerRecoveryTest, TurnReplayUnavailableFailsInsteadOfWaitingForAnchor)
+{
+  nmm::ManagerRecoveryTestAccess::turn_client(*manager, true);
+  nmm::ManagerRecoveryTestAccess::turn_status(*manager, "TURN_NEED_REPLAN");
+  EXPECT_TRUE(nmm::ManagerRecoveryTestAccess::faulted(*manager));
+  EXPECT_FALSE(nmm::ManagerRecoveryTestAccess::planning(*manager));
+}
+
+TEST_F(ManagerRecoveryTest, TurnReplayRejectOrTimeoutFailsWithoutReplanning)
+{
+  auto generation = nmm::ManagerRecoveryTestAccess::mock_pending(*manager);
+  nmm::ManagerRecoveryTestAccess::response(*manager, generation, false);
+  EXPECT_TRUE(nmm::ManagerRecoveryTestAccess::faulted(*manager));
+  EXPECT_FALSE(nmm::ManagerRecoveryTestAccess::planning(*manager));
+
+  nmm::ManagerRecoveryTestAccess::prepare(*manager);
+  generation = nmm::ManagerRecoveryTestAccess::mock_pending(*manager);
+  nmm::ManagerRecoveryTestAccess::expire_request(*manager);
+  EXPECT_TRUE(nmm::ManagerRecoveryTestAccess::faulted(*manager));
+  nmm::ManagerRecoveryTestAccess::response(*manager, generation, true);
+  EXPECT_TRUE(nmm::ManagerRecoveryTestAccess::faulted(*manager));
+  EXPECT_FALSE(nmm::ManagerRecoveryTestAccess::awaiting(*manager));
+}
+
+TEST_F(ManagerRecoveryTest, CompletedReplayAndAbortIgnoreLateServiceResponse)
+{
+  auto generation = nmm::ManagerRecoveryTestAccess::mock_pending(*manager);
+  nmm::ManagerRecoveryTestAccess::turn_status(*manager, "ROUTE_TRANSITION_REPLAN_REQUIRED");
+  EXPECT_TRUE(nmm::ManagerRecoveryTestAccess::planning(*manager));
+  nmm::ManagerRecoveryTestAccess::response(*manager, generation, true);
+  EXPECT_FALSE(nmm::ManagerRecoveryTestAccess::awaiting(*manager));
+
+  generation = nmm::ManagerRecoveryTestAccess::mock_pending(*manager);
+  nmm::ManagerRecoveryTestAccess::abort(*manager);
+  nmm::ManagerRecoveryTestAccess::response(*manager, generation, true);
+  nmm::ManagerRecoveryTestAccess::turn_status(*manager, "TURN_NEED_REPLAN");
+  nmm::ManagerRecoveryTestAccess::turn_status(*manager, "ROUTE_TRANSITION_REPLAN_REQUIRED");
+  EXPECT_FALSE(nmm::ManagerRecoveryTestAccess::awaiting(*manager));
+  EXPECT_FALSE(nmm::ManagerRecoveryTestAccess::planning(*manager));
 }

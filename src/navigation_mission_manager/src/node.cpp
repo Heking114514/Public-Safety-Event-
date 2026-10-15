@@ -322,6 +322,11 @@ void MissionManager::tick()
   const double now = steady_seconds();
   expire_dynamic_obstacles(now);
   service_pose_recovery();
+  if (retreat_pending_ && retreat_response_deadline_.has_value() &&
+    now >= *retreat_response_deadline_)
+  {
+    fault("控制器轨迹回退服务响应超时");
+  }
   if (auto_start_pending_ && ready()) {
     auto_start_pending_ = false;
     start_mission(default_targets_);

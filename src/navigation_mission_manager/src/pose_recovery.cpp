@@ -166,7 +166,6 @@ void MissionManager::on_pose_recovery(
     ++retreat_generation_;
     retreat_pending_ = awaiting_retreat_ = awaiting_heading_retreat_ = false;
     obstacle_recovery_active_ = route_transition_recovery_active_ = false;
-    turn_replan_waiting_for_recovery_ = false;
     completed_route_retreat_available_ = false;
     next_planning_context_ = PlanningContext{};
     clear_active_route();

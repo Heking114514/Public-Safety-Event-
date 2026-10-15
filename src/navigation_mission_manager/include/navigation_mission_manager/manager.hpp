@@ -246,7 +246,6 @@ private:
   PlanningContext next_planning_context_{};
   std::optional<mission_control_interfaces::msg::NavigationRecoveryState>
     latest_navigation_recovery_;
-  bool turn_replan_waiting_for_recovery_{false};
   bool pose_recovery_enabled_{false};
   RecoverySession pose_recovery_;
   std::vector<mission_control_interfaces::msg::RecoveryCandidate> recovery_candidates_;
@@ -261,6 +260,7 @@ private:
 
   bool retreat_pending_{false};
   uint64_t retreat_generation_{0};
+  std::optional<double> retreat_response_deadline_;
   int retreat_extensions_{0};
   bool awaiting_retreat_{false};
   bool obstacle_recovery_active_{false};
