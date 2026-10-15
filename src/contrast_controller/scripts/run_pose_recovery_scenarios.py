@@ -86,6 +86,13 @@ def scenarios():
              obstacle=[1.2, -.90], targets=["2"], after_turn=False,
              junction="x1_y3", during_turn=True, expected_turns=None,
              original_lane="ROAD_X1_Y2"),
+        # 用户回环第二次遇障：朝北进入十字路口、转东遇障后退回原入口。
+        dict(name="cross_return_other_exit", initial=[2.2, -.80, math.pi/2],
+             obstacle=[2.524, -.5], targets=["4"], after_turn=False,
+             junction="x1_y2", during_turn=True, expected_turns=1,
+             reuse_returned_entry=True,
+             expected_template="x_junction_left", original_lane="ROAD_Y2_LEFT",
+             obstacle_half_size=[.06, .10]),
         dict(name="south_offcenter", initial=[1.215, -.66, -math.pi/2],
              obstacle=[1.2, -1.02], targets=["2"], after_turn=False,
              junction="x1_y3", expected_turns=1),
@@ -290,6 +297,9 @@ class Evidence:
                     "POSE_RECOVERY_TURN_APPROACH_ENTRY",
                     "POSE_RECOVERY_TURN_60",
                     "POSE_RECOVERY_TURN_30"]
+        if self.case.get("reuse_returned_entry"):
+            # 已倒转回同一路口入口；后续仍独立检查 7 cm 到位及连续停车。
+            required[0] = "POSE_RECOVERY_ORIGINAL_LANE_STOP"
         cursor = -1
         for name in required:
             try:
@@ -297,8 +307,8 @@ class Evidence:
             except ValueError:
                 return "missing recovery phase order: " + name
         reverse = [row for row in self.odom
-                   if row["status"] == required[0] and row["linear"] < -.005]
-        if not reverse:
+                   if row["status"] == "POSE_RECOVERY_RETREAT_TO_TURN_POINT" and row["linear"] < -.005]
+        if not reverse and not self.case.get("reuse_returned_entry"):
             return "no measured reverse motion to legal turn point"
         stopped = [row for row in self.odom
                    if row["status"] == "POSE_RECOVERY_DIRECTION_STOP" and
@@ -325,6 +335,10 @@ class Evidence:
             return "selected recovery lane has no published candidate"
         if selected["resume_lane"] != self.complete_lane:
             return "reported actual exit lane differs from selected candidate"
+        if self.case.get("reuse_returned_entry") and (
+                selected["resume_node"] != self.case["junction"] or
+                not self.case.get("during_turn")):
+            return "返回入口复用必须仍是原先发生转弯的路口"
         if self.road_map is None or self.complete_pose is None:
             return "missing independent map/exit pose evidence"
         for index, entry in enumerate(self.turn_entries):

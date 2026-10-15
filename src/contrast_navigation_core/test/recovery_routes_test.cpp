@@ -322,6 +322,31 @@ TEST(RecoveryRoutes, UserGuiBoundaryEntryIsUnsafeEvenAfterForwardAdjustment) {
   EXPECT_TRUE(recovery.steps().empty());
 }
 
+TEST(RecoveryRoutes, ReturnedCrossEntryUsesOtherExitsInsteadOfUnsafeRearBoundaryT) {
+  auto recovery=make_recovery();
+  // 用户第二次避障：十字路口转东遇障、倒转回朝北的原入口。
+  const Recovery::Pose start{{2.193,-.569},1.568};
+  const auto east_obstacle=navigation_safety::rectangle_polygon({2.464,-.60,2.584,-.40});
+  const auto previous_obstacle=navigation_safety::rectangle_polygon({2.579,-1.60,2.699,-1.40});
+  recovery.set_dynamic_obstacles({previous_obstacle,east_obstacle});
+  recovery.set_incoming_lane("ROAD_Y2_LEFT",{2.2,-.5});
+  const auto candidates=recovery.candidates(start,east_obstacle);
+  const auto west=find(candidates,"x_junction_left");
+  ASSERT_NE(west,nullptr);
+  EXPECT_EQ(west->resume_node,"x1_y2");
+  EXPECT_EQ(west->resume_lane,"ROAD_X1_Y2");
+  ASSERT_TRUE(recovery.plan(start,*west,{"ROAD_X0_Y1","ROAD_X1_Y1"}));
+  for(const auto &step:recovery.steps()) {
+    if(step.kind==Recovery::Step::Kind::FIXED_TURN) {
+      EXPECT_NEAR(step.junction.x,2.2,1e-9);
+      EXPECT_NEAR(step.junction.y,-.5,1e-9);
+    }
+  }
+  RecoveryReplay replay(recovery,workspace());
+  ASSERT_TRUE(replay.run(start,recovery.steps())) << replay.failure();
+  EXPECT_TRUE(recovery.exit_matches(replay.actual(),*west));
+}
+
 TEST(RecoveryRoutes, ForwardAdjustmentStopsAtBodyClearanceRatherThanCameraRange) {
   auto recovery=make_recovery();
   recovery.set_dynamic_obstacles({navigation_safety::rectangle_polygon({1.1,-.86,1.3,-.78})});

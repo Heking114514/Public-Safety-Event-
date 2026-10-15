@@ -238,11 +238,25 @@ PoseRecovery::candidates(const Pose &pose, const navigation_safety::Polygon &obs
   const std::string incoming=incoming_override_.empty() ? lane_at_pose(pose) : incoming_override_;
   auto lane=std::find_if(lanes_.begin(),lanes_.end(),[&](const Lane &l){return l.id==incoming;});
   if (lane == lanes_.end()) return {};
-  // A turn interrupted at a corner returns to its original road first. Its
-  // recovery junction is still the endpoint behind the live road heading.
+  // Normally recover at the endpoint behind the live road heading. A returned
+  // turn entry can instead reuse its own physical T/X junction below.
   const auto from=nodes_.at(lane->from), to=nodes_.at(lane->to);
   anchor_=((to.x-from.x)*std::cos(pose.yaw)+(to.y-from.y)*std::sin(pose.yaw)>0) ?
     lane->from : lane->to;
+  // A stopped inverse turn has returned to the saved entry of this junction.
+  // At T/X junctions that entry can serve another exit immediately. A physical
+  // L corner still has to retreat along the original road to a rear T/X.
+  if (!incoming_override_.empty()) {
+    for (const auto &node : nodes_) {
+      if ((node.first==lane->from || node.first==lane->to) &&
+          length(node.second,junction_override_)<1e-6 &&
+          (junction_type(node.first)==RoadJunction::T ||
+           junction_type(node.first)==RoadJunction::CROSS)) {
+        anchor_=node.first;
+        break;
+      }
+    }
+  }
   double incoming_heading=std::atan2(
     nodes_.at(lane->from==anchor_ ? lane->to : lane->from).y-nodes_.at(anchor_).y,
     nodes_.at(lane->from==anchor_ ? lane->to : lane->from).x-nodes_.at(anchor_).x);
