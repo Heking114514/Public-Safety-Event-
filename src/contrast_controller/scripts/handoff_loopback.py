@@ -21,6 +21,8 @@ def main():
     parser.add_argument("--domain", type=int, default=226)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--timeout", type=float, default=450)
+    parser.add_argument("--scene", choices=["handoff", "cross_return"], default="handoff",
+                        help="cross_return 复现用户 GUI 的边界 T、十字转弯连续遇障")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
     os.environ["ROS_DOMAIN_ID"] = str(args.domain)
@@ -44,6 +46,7 @@ def main():
     subscriptions = []
     process = None
     started = time.monotonic()
+    continuation_start = None
 
     def event(kind, **data):
         row = dict(t=round(time.monotonic()-started, 3), kind=kind, **data)
@@ -51,12 +54,22 @@ def main():
         print(json.dumps(row, ensure_ascii=False), flush=True)
 
     def on_odom(msg):
-        nonlocal pose
+        nonlocal pose, continuation_start
         p, q = msg.pose.pose.position, msg.pose.pose.orientation
         yaw = math.atan2(2*(q.w*q.z+q.x*q.y), 1-2*(q.y*q.y+q.z*q.z))
         pose = [p.x, p.y, yaw]
         odom.append(dict(t=time.monotonic()-started, pose=pose, status=status,
                          linear=msg.twist.twist.linear.x, angular=msg.twist.twist.angular.z))
+        if args.scene == "cross_return" and len(recoveries) >= 2:
+            if status == "FOLLOWING" and msg.twist.twist.linear.x > .005 and abs(msg.twist.twist.angular.z) < .1:
+                if continuation_start is None:
+                    continuation_start = pose[:2]
+                distance = math.hypot(p.x-continuation_start[0], p.y-continuation_start[1])
+                if distance >= .20:
+                    result.update(passed=True, reason="默认任务连续两次避障后实测前进超过 20 cm",
+                                  continuation_m=distance)
+            else:
+                continuation_start = None
 
     def on_status(msg):
         nonlocal status, after_goal
@@ -85,7 +98,7 @@ def main():
               after_two_recoveries_goal=after_goal)
         if error > .08:
             result.update(passed=False, reason="激活路线起点与实测位姿相差超过 8 cm")
-        elif after_goal:
+        elif after_goal and args.scene == "handoff":
             result.update(passed=True, reason="两次避障后任务点再规划使用实时位置",
                           next_route_error_m=error)
 
@@ -127,6 +140,14 @@ def main():
                 if pose is None or publisher.get_subscription_count() == 0:
                     continue
                 x, y, yaw = pose
+                if args.scene == "cross_return":
+                    if injected == 0 and status == "FOLLOWING" and 2.15 < x < 2.30 and abs(y+1.5) < .03 and abs(yaw) < .1:
+                        inject(2.639, -1.5, .06, .10)
+                        injected = 1
+                    elif injected == 1 and recoveries and status == "FOLLOWING" and abs(x-2.2) < .03 and -1.2 < y < -.8:
+                        inject(2.524, -.5, .06, .10)
+                        injected = 2
+                    continue
                 if injected == 0 and status == "FOLLOWING" and .5 < x < .9 and abs(y+.5) < .03:
                     inject(1.2, -1.007, .10, .05)
                     injected = 1
@@ -134,7 +155,7 @@ def main():
                     inject(1.778, 1.5, .05, .10)
                     injected = 2
         if not result:
-            result.update(passed=False, reason="超时，尚未完成两次恢复后的任务点规划")
+            result.update(passed=False, reason="超时，尚未完成场景的两次恢复和后续行驶")
     except (Exception, KeyboardInterrupt) as error:
         result.update(passed=False, reason=str(error) or "中断")
     finally:
@@ -142,7 +163,7 @@ def main():
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
-        result.update(recovery_count=len(recoveries), injected=injected,
+        result.update(scene=args.scene, recovery_count=len(recoveries), injected=injected,
                       after_two_recoveries_goal=after_goal, elapsed_s=time.monotonic()-started)
         log = (args.output/"launch.log").read_text(errors="replace")
         if "collision guard blocked" in log:
