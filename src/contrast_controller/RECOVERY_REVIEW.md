@@ -173,3 +173,33 @@ python3 src/contrast_controller/scripts/handoff_loopback.py \
 
 该验收要求第三次恢复中测得至少 0.95 m 的实际倒车，恢复后继续正常行驶，
 且至少提交一条隧道完成进度；不只检查恢复状态变为 complete。
+
+
+## 2026-10-15 负 y 双封路连续倒退
+
+用户最新允许此场景连续后退。基线为 9d9ff17，保留最新 RFID 实现，在 fix/continuous-retreat-20261015 隔离修改。预算为恢复核心、定向回归、场景及记录约 5–8 文件，不改车辆尺寸、地图、正常转弯或安全参数。
+
+现场来自 GUI 日志 python3_30190_1792053890915.log：障碍中心 (1.2,-0.975)、(2.2,-0.985)，横向宽 0.20 m、沿路深 0.10 m，封闭 ROAD_Y3_LEFT 与 ROAD_Y2_LEFT。原车位 (1.239,-1.500,180°) 后方 x=2.2 的 T 出口不可用；旧实现只生成这个路口候选，导致总控过滤后 FAULT。
+
+修复后沿同一直路枚举后方 T/X，并记录途中占用道路。总控原封路过滤保留，选择动作重新检查完整封路集合及障碍多边形。L 不会被作为 T 使用，也不会直接前进转回宣告恢复。新候选可以连续倒退越过最近路口，到 x=3.2 的 T 恢复。
+
+验证使用正式 obstacle_validation.launch.py、默认起点、原 YAML、真实车身与碰撞保护，独立 ROS 域 228，单组仿真。第一处检测因时序在普通转弯完成后触发，第一次出口与旧日志不同；随后仍到达原负 y 故障位姿并触发同一双封路条件。第三次恢复：
+
+- 起点 (1.2393047,-1.4999828,3.1415495)，未再次要求视觉看见已确认障碍。
+- 连续倒退 2.027898341 m，越过 x=2.2 的 T，入口停稳 (3.2672,-1.5000)，7 cm 入口纵向误差 2.8 mm。
+- 在真实 T (3.2,-1.5) 执行原特定 60°/30° 转弯，进入 ROAD_Y1_LEFT；实际出口约 (3.203,-1.322,90.7°)。
+- 总控使用实际出口重接路线，实测继续直行 0.200427968 m；全过程没有 FAULT 或 collision guard blocked。
+
+证据目录 /tmp/contrast_continuous_retreat_20261015/，包含 result.json、events.json、odom.json、launch.log；场景 continuous_retreat，运行 522.923 秒，3 次恢复，2 个障碍。场景验收结束时 completed_tunnels=0，因此只说明本次连续后退恢复及路线交接通过，不说明全部 RFID、隧道或三层任务完成。仿真已自动清理。
+
+最后补正保存 T/X 入口后的沿原入路继续退行，29 项核心测试通过（18 路由、7 停车、4 L 返回）。真实 ROS 运行覆盖本次负 y 连续倒退主分支；保存入口退行补正由独立定向回归覆盖。所有编译单线程、nice 15、ionice idle。
+
+复现：
+
+```bash
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+python3 src/contrast_controller/scripts/handoff_loopback.py --scene continuous_retreat --domain 228 --output /tmp/contrast_continuous_retreat_new --timeout 560
+```
+
+输出目录必须尚不存在，ROS 域应未被其他仿真占用。该场景只验收连续倒退恢复与后续 20 cm 直行。

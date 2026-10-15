@@ -251,28 +251,10 @@ bool PoseRecovery::append_turn(Pose &pose, navigation_safety::Point junction,
   return true;
 }
 
-std::vector<mission_control_interfaces::msg::RecoveryCandidate>
-PoseRecovery::candidates(const Pose &pose, const navigation_safety::Polygon &obstacle) {
-  if (!live_obstacles_set_) observed_={obstacle};
-  dynamic_=observed_;
-  steps_.clear(); anchor_.clear(); blocked_lane_.clear();
-  unsafe_entry_rejected_=false;
-  if (obstacle.points.empty()) return {};
-  navigation_safety::Point center{};
-  for (const auto &p : obstacle.points) { center.x+=p.x; center.y+=p.y; }
-  center.x/=obstacle.points.size(); center.y/=obstacle.points.size();
-  double best=std::numeric_limits<double>::infinity();
-  for (const auto &lane : lanes_) {
-    const auto a=nodes_.at(lane.from), b=nodes_.at(lane.to);
-    const double d=length(a,b);
-    const double t=std::clamp(((center.x-a.x)*(b.x-a.x)+(center.y-a.y)*(b.y-a.y))/(d*d),0.0,1.0);
-    const double error=length(center,{a.x+t*(b.x-a.x),a.y+t*(b.y-a.y)});
-    if (error < best) { best=error; blocked_lane_=lane.id; }
-  }
-  if (best > 0.12) return {};
-  const std::string incoming=incoming_override_.empty() ? lane_at_pose(pose) : incoming_override_;
+void PoseRecovery::collect_retreat_anchors(const Pose &pose, const std::string &incoming) {
+  retreat_anchors_.clear();
   auto lane=std::find_if(lanes_.begin(),lanes_.end(),[&](const Lane &l){return l.id==incoming;});
-  if (lane == lanes_.end()) return {};
+  if (lane==lanes_.end()) return;
   // Normally recover at the endpoint behind the live road heading. A returned
   // turn entry can instead reuse its own physical T/X junction below.
   const auto from=nodes_.at(lane->from), to=nodes_.at(lane->to);
@@ -292,69 +274,119 @@ PoseRecovery::candidates(const Pose &pose, const navigation_safety::Polygon &obs
       }
     }
   }
-  double incoming_heading=std::atan2(
-    nodes_.at(lane->from==anchor_ ? lane->to : lane->from).y-nodes_.at(anchor_).y,
-    nodes_.at(lane->from==anchor_ ? lane->to : lane->from).x-nodes_.at(anchor_).x);
-  if (std::abs(wrap(pose.yaw-incoming_heading))>pi/2)
-    incoming_heading=wrap(incoming_heading+pi);
-  std::vector<const Lane *> exits;
-  for (const auto &l : lanes_) {
-    if (l.from==anchor_ || l.to==anchor_) exits.push_back(&l);
+  double heading=std::atan2(to.y-from.y,to.x-from.x);
+  if (std::cos(heading-pose.yaw)<0) heading=wrap(heading+pi);
+  std::string road=incoming;
+  std::vector<std::string> crossed;
+  // 沿车尾方向逐段查找；只穿直通道路，L 仍交给专用倒转流程。
+  for (std::size_t count=0; count<nodes_.size(); ++count) {
+    const auto type=junction_type(anchor_);
+    if (type!=RoadJunction::T && type!=RoadJunction::CROSS && type!=RoadJunction::STRAIGHT) break;
+    if (type!=RoadJunction::STRAIGHT)
+      retreat_anchors_.push_back({anchor_,road,heading,crossed});
+    const Lane *rear=nullptr;
+    for (const auto &next:lanes_) {
+      if (next.from!=anchor_ && next.to!=anchor_) continue;
+      const auto a=nodes_.at(anchor_),b=nodes_.at(next.from==anchor_ ? next.to : next.from);
+      if (std::abs(wrap(std::atan2(b.y-a.y,b.x-a.x)-heading-pi))<.01) {
+        rear=&next; break;
+      }
+    }
+    if (!rear) break;
+    crossed.push_back(rear->id);
+    road=rear->id;
+    anchor_=rear->from==anchor_ ? rear->to : rear->from;
   }
-  const auto topology=junction_type(anchor_);
-  if (topology!=RoadJunction::T && topology!=RoadJunction::CROSS) return {};
-  const std::string junction=topology==RoadJunction::CROSS ? "x_junction" : "t_junction";
+}
+
+std::vector<mission_control_interfaces::msg::RecoveryCandidate>
+PoseRecovery::candidates(const Pose &pose, const navigation_safety::Polygon &obstacle) {
+  if (!live_obstacles_set_) observed_={obstacle};
+  dynamic_=observed_;
+  steps_.clear(); anchor_.clear(); blocked_lane_.clear(); retreat_anchors_.clear();
+  unsafe_entry_rejected_=false;
+  if (obstacle.points.empty()) return {};
+  navigation_safety::Point center{};
+  for (const auto &p : obstacle.points) { center.x+=p.x; center.y+=p.y; }
+  center.x/=obstacle.points.size(); center.y/=obstacle.points.size();
+  double best=std::numeric_limits<double>::infinity();
+  for (const auto &lane : lanes_) {
+    const auto a=nodes_.at(lane.from), b=nodes_.at(lane.to);
+    const double d=length(a,b);
+    const double t=std::clamp(((center.x-a.x)*(b.x-a.x)+(center.y-a.y)*(b.y-a.y))/(d*d),0.0,1.0);
+    const double error=length(center,{a.x+t*(b.x-a.x),a.y+t*(b.y-a.y)});
+    if (error < best) { best=error; blocked_lane_=lane.id; }
+  }
+  if (best > 0.12) return {};
+  const std::string incoming=incoming_override_.empty() ? lane_at_pose(pose) : incoming_override_;
+  auto lane=std::find_if(lanes_.begin(),lanes_.end(),[&](const Lane &l){return l.id==incoming;});
+  if (lane == lanes_.end()) return {};
+  collect_retreat_anchors(pose,incoming);
   std::vector<mission_control_interfaces::msg::RecoveryCandidate> result;
   bool unsafe_entry=false;
-  for (const auto *exit : exits) {
-    if (exit->id==blocked_lane_) continue;
-    const auto a=nodes_.at(anchor_), b=nodes_.at(exit->from==anchor_ ? exit->to : exit->from);
-    const double h=std::atan2(b.y-a.y,b.x-a.x), delta=wrap(h-incoming_heading);
-    const bool reverse=std::abs(std::abs(delta)-pi)<0.01;
-    if (!reverse && std::abs(std::abs(delta)-pi/2)>0.01) continue;
-    mission_control_interfaces::msg::RecoveryCandidate candidate;
-    candidate.candidate_id=static_cast<uint32_t>(result.size()+1);
-    candidate.template_id=junction+(reverse ? "_reverse" : (delta>0 ? "_left" : "_right"));
-    candidate.resume_node=anchor_; candidate.resume_lane=exit->id; candidate.resume_heading=h;
-    candidate.borrowed_lane_ids={exit->id};
-    candidate.exit_pose.position.x=a.x+config_.exit_distance*std::cos(h);
-    candidate.exit_pose.position.y=a.y+config_.exit_distance*std::sin(h);
-    candidate.exit_pose.orientation.z=std::sin(h/2); candidate.exit_pose.orientation.w=std::cos(h/2);
-    std::vector<const Lane *> branches;
-    if (reverse) {
-      for (const auto *branch : exits) {
-        if (branch->id==blocked_lane_ || branch->id==incoming || branch==exit) continue;
-        const auto p=nodes_.at(branch->from==anchor_ ? branch->to : branch->from);
-        const double bh=std::atan2(p.y-a.y,p.x-a.x);
-        if (std::abs(std::abs(wrap(bh-incoming_heading))-pi/2)<0.01)
-          branches.push_back(branch);
-      }
-    } else branches.push_back(exit);
-    for (const auto *branch : branches) {
-      auto option=candidate;
-      option.candidate_id=static_cast<uint32_t>(result.size()+1);
-      option.borrowed_lane_ids=reverse ? std::vector<std::string>{branch->id,exit->id} :
-                                        std::vector<std::string>{exit->id};
-      if (!plan(pose,option,{})) {
-        unsafe_entry=unsafe_entry || unsafe_entry_rejected_;
-        continue;
-      }
-      const auto end=steps_.back().end;
-      option.exit_pose.position.x=end.position.x; option.exit_pose.position.y=end.position.y;
-      double cost=0;
-      for (const auto &step : steps_) cost+=std::abs(step.linear)*step.duration;
-      option.motion_cost=cost;
-      if (!reverse) {
-        // The first retreat can use the through road on the other side of the junction.
-        for (const auto *opposite : exits) {
-          const auto p=nodes_.at(opposite->from==anchor_ ? opposite->to : opposite->from);
-          const double oh=std::atan2(p.y-a.y,p.x-a.x);
-          if (std::abs(std::abs(wrap(oh-incoming_heading))-pi)<0.01 &&
-              opposite->id!=exit->id && opposite->id!=blocked_lane_)
-            option.borrowed_lane_ids.push_back(opposite->id);
+  for (const auto &retreat:retreat_anchors_) {
+    anchor_=retreat.node;
+    const double incoming_heading=retreat.heading;
+    std::vector<const Lane *> exits;
+    for (const auto &l : lanes_) {
+      if (l.from==anchor_ || l.to==anchor_) exits.push_back(&l);
+    }
+    const auto topology=junction_type(anchor_);
+    if (topology!=RoadJunction::T && topology!=RoadJunction::CROSS) continue;
+    const std::string junction=topology==RoadJunction::CROSS ? "x_junction" : "t_junction";
+    for (const auto *exit : exits) {
+      if (exit->id==blocked_lane_) continue;
+      const auto a=nodes_.at(anchor_), b=nodes_.at(exit->from==anchor_ ? exit->to : exit->from);
+      const double h=std::atan2(b.y-a.y,b.x-a.x), delta=wrap(h-incoming_heading);
+      const bool reverse=std::abs(std::abs(delta)-pi)<0.01;
+      if (!reverse && std::abs(std::abs(delta)-pi/2)>0.01) continue;
+      mission_control_interfaces::msg::RecoveryCandidate candidate;
+      candidate.candidate_id=static_cast<uint32_t>(result.size()+1);
+      candidate.template_id=junction+(reverse ? "_reverse" : (delta>0 ? "_left" : "_right"));
+      candidate.resume_node=anchor_; candidate.resume_lane=exit->id; candidate.resume_heading=h;
+      candidate.borrowed_lane_ids={exit->id};
+      candidate.exit_pose.position.x=a.x+config_.exit_distance*std::cos(h);
+      candidate.exit_pose.position.y=a.y+config_.exit_distance*std::sin(h);
+      candidate.exit_pose.orientation.z=std::sin(h/2); candidate.exit_pose.orientation.w=std::cos(h/2);
+      std::vector<const Lane *> branches;
+      if (reverse) {
+        for (const auto *branch : exits) {
+          if (branch->id==blocked_lane_ || branch->id==retreat.incoming || branch==exit) continue;
+          const auto p=nodes_.at(branch->from==anchor_ ? branch->to : branch->from);
+          const double bh=std::atan2(p.y-a.y,p.x-a.x);
+          if (std::abs(std::abs(wrap(bh-incoming_heading))-pi/2)<0.01)
+            branches.push_back(branch);
         }
+      } else branches.push_back(exit);
+      for (const auto *branch : branches) {
+        auto option=candidate;
+        option.candidate_id=static_cast<uint32_t>(result.size()+1);
+        option.borrowed_lane_ids=reverse ? std::vector<std::string>{branch->id,exit->id} :
+                                          std::vector<std::string>{exit->id};
+        if (!plan(pose,option,{})) {
+          unsafe_entry=unsafe_entry || unsafe_entry_rejected_;
+          continue;
+        }
+        const auto end=steps_.back().end;
+        option.exit_pose.position.x=end.position.x; option.exit_pose.position.y=end.position.y;
+        double cost=0;
+        for (const auto &step : steps_) cost+=std::abs(step.linear)*step.duration;
+        option.motion_cost=cost;
+        if (!reverse) {
+          // The first retreat can use the through road on the other side of the junction.
+          for (const auto *opposite : exits) {
+            const auto p=nodes_.at(opposite->from==anchor_ ? opposite->to : opposite->from);
+            const double oh=std::atan2(p.y-a.y,p.x-a.x);
+            if (std::abs(std::abs(wrap(oh-incoming_heading))-pi)<0.01 &&
+                opposite->id!=exit->id && opposite->id!=blocked_lane_)
+              option.borrowed_lane_ids.push_back(opposite->id);
+          }
+        }
+        for (const auto &road:retreat.crossed_lanes)
+          if (std::find(option.borrowed_lane_ids.begin(),option.borrowed_lane_ids.end(),road)==
+              option.borrowed_lane_ids.end()) option.borrowed_lane_ids.push_back(road);
+        result.push_back(option);
       }
-      result.push_back(option);
     }
   }
   steps_.clear();
@@ -369,9 +401,14 @@ bool PoseRecovery::plan_direct(const Pose &start,
   const auto forbidden=[&](const std::string &id) {
     return std::find(blocked.begin(),blocked.end(),id)!=blocked.end();
   };
-  if (candidate.resume_node!=anchor_ || nodes_.find(anchor_)==nodes_.end() ||
+  const auto retreat=std::find_if(retreat_anchors_.begin(),retreat_anchors_.end(),
+    [&](const RetreatAnchor &item) { return item.node==candidate.resume_node; });
+  if (retreat==retreat_anchors_.end()) return false;
+  anchor_=retreat->node;
+  if (nodes_.find(anchor_)==nodes_.end() ||
       forbidden(candidate.resume_lane) ||
-      std::any_of(candidate.borrowed_lane_ids.begin(),candidate.borrowed_lane_ids.end(),forbidden)) return false;
+      std::any_of(candidate.borrowed_lane_ids.begin(),candidate.borrowed_lane_ids.end(),forbidden) ||
+      std::any_of(retreat->crossed_lanes.begin(),retreat->crossed_lanes.end(),forbidden)) return false;
   const auto topology=junction_type(anchor_);
   if (topology!=RoadJunction::T && topology!=RoadJunction::CROSS) return false;
   dynamic_=observed_;
@@ -390,12 +427,8 @@ bool PoseRecovery::plan_direct(const Pose &start,
   }
   if (!safe({start})) return false;
   const auto junction=nodes_.at(anchor_);
-  const std::string incoming=incoming_override_.empty() ? lane_at_pose(start) : incoming_override_;
-  const auto lane=std::find_if(lanes_.begin(),lanes_.end(),[&](const Lane &l){return l.id==incoming;});
-  if (lane==lanes_.end()) return false;
-  const auto other=nodes_.at(lane->from==anchor_ ? lane->to : lane->from);
-  double heading=std::atan2(other.y-junction.y,other.x-junction.x);
-  if (std::abs(wrap(start.yaw-heading))>pi/2) heading=wrap(heading+pi);
+  const std::string incoming=retreat->incoming;
+  const double heading=retreat->heading;
   if (std::abs(wrap(start.yaw-heading))>0.25) return false;
   const auto exit=std::find_if(lanes_.begin(),lanes_.end(),[&](const Lane &l) {
     return l.id==candidate.resume_lane && (l.from==anchor_ || l.to==anchor_);
@@ -408,8 +441,8 @@ bool PoseRecovery::plan_direct(const Pose &start,
   double first_heading=outgoing;
   std::string first_lane=candidate.resume_lane;
   if (reverse) {
-    if (candidate.borrowed_lane_ids.size()!=2 ||
-        candidate.borrowed_lane_ids.back()!=candidate.resume_lane ||
+    if (candidate.borrowed_lane_ids.size()<2 ||
+        candidate.borrowed_lane_ids[1]!=candidate.resume_lane ||
         candidate.borrowed_lane_ids.front()==candidate.resume_lane) return false;
     first_lane=candidate.borrowed_lane_ids.front();
     const auto branch=std::find_if(lanes_.begin(),lanes_.end(),[&](const Lane &l) {

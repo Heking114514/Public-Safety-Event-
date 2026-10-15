@@ -84,6 +84,13 @@ private:
   std::vector<navigation_safety::Polygon> observed_;
   bool live_obstacles_set_{false};
   std::string anchor_, blocked_lane_;
+  struct RetreatAnchor {
+    std::string node, incoming;
+    double heading;
+    std::vector<std::string> crossed_lanes;
+  };
+  std::vector<RetreatAnchor> retreat_anchors_;
+  void collect_retreat_anchors(const Pose &pose, const std::string &incoming);
   std::string incoming_override_;
   navigation_safety::Point junction_override_{};
   std::vector<Step> steps_;

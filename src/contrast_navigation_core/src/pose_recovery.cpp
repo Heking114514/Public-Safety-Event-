@@ -29,6 +29,7 @@ void PoseRecovery::load(const std::string &path, navigation_safety::Footprint fo
   free_.clear(); static_.clear(); lanes_.clear(); nodes_.clear();
   observed_.clear(); dynamic_.clear(); live_obstacles_set_=false;
   incoming_override_.clear();
+  retreat_anchors_.clear();
   for (const auto &r : root["arena"]["free_regions"]) {
     auto a = transform(r[0].as<double>(), r[1].as<double>());
     auto b = transform(r[2].as<double>(), r[3].as<double>());
