@@ -194,6 +194,9 @@ def run_case(name, start_x, direction, pause=False):
                 turn_x = next(x for state, x, _, _ in probe.states if state == "TURN_60")
                 maximum = max(row[0] for row in probe.rows)
                 reverse = min(row[3] for row in probe.rows)
+                straight_peak = max((row[3] for row in probe.rows if row[5] == "FOLLOWING"), default=0.0)
+                if name == "ordinary":
+                    assert straight_peak >= 0.09, ("直行未达到0.1m/s目标", straight_peak)
                 if start_x == 0.:
                     assert abs(stop_x - .11) < .006, ("出门停车位置", stop_x)
                     assert abs(turn_x - .11) < .012, ("出门入弯位置", turn_x)
@@ -204,7 +207,7 @@ def run_case(name, start_x, direction, pause=False):
                     assert abs(turn_x - (start_x + .13)) < .012, ("普通路口入口改变", turn_x)
                     assert reverse < -.01, ("普通路口未保持原倒车入口调整", reverse)
                 return dict(name=name, first_stop_x=stop_x, turn_60_x=turn_x,
-                            maximum_x=maximum, minimum_v=reverse, paused=paused,
+                            maximum_x=maximum, minimum_v=reverse, straight_peak=straight_peak, paused=paused,
                             states=[state for state, *_ in probe.states])
             except Exception:
                 log.flush()

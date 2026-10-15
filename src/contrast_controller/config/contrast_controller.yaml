@@ -1,5 +1,8 @@
 contrast_controller:
   ros__parameters:
+    # 仅普通前进巡线提速；其他动作仍受原 max_linear_speed=0.05 限制。
+    default_speed: 0.10
+    max_path_linear_speed: 0.10
     # 仅出门首次转弯固定在距地图起点 11 cm 处；其他路口不受影响。
     launch_departure_enabled: true
     # 柔性纠偏：航向/横向偏差越大，转向上限越高、前进越慢。

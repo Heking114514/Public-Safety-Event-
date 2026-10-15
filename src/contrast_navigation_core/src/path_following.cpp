@@ -109,7 +109,6 @@ void WaypointNavigator::RunPath(const ControlFrame &frame) {
   const double crossTrackError =
       std::cos(frame.path_heading) * (currentY_ - pathSegmentStartY_) -
       std::sin(frame.path_heading) * (currentX_ - pathSegmentStartX_);
-  const double requestedSpeed = std::min(frame.target.speed, maxLinearSpeed_);
   double signedPathCurvature = 0.0;
   if (currentWaypointIndex_ + 1 < waypoints_.size()) {
     const Waypoint &next = waypoints_[currentWaypointIndex_ + 1];
@@ -128,6 +127,10 @@ void WaypointNavigator::RunPath(const ControlFrame &frame) {
   signedPathCurvature = visual_navigation::ContinuousTrackingCurvature(
       signedPathCurvature, frame.waypoint_requires_stop);
   const double pathCurvature = std::abs(signedPathCurvature);
+  const bool forwardCruise = !reverseSegmentActive_ && !frame.launch_departure &&
+                             pathCurvature <= 1.0e-6;
+  const double requestedSpeed = std::min(
+      frame.target.speed, forwardCruise ? maxPathLinearSpeed_ : maxLinearSpeed_);
   const double unscaledTrackingSpeed = visual_navigation::CurvatureSpeedLimit(
       visual_navigation::CrossTrackSpeedLimit(
           requestedSpeed, std::abs(crossTrackError), crossTrackSlowdownStart_,
@@ -372,7 +375,7 @@ void WaypointNavigator::RunPath(const ControlFrame &frame) {
           !brakingApproach)) {
     return;
   }
-  PublishMotionCommand(command, aligningPath);
+  PublishMotionCommand(command, aligningPath, forwardCruise && !aligningPath);
   if (aligningPath)
     SetState(visual_navigation::phase_status(controlState_.phase()));
   else

@@ -56,6 +56,8 @@ WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
       std::max(0.0, declare_parameter<double>("default_speed", 0.05));
   maxLinearSpeed_ =
       std::max(0.0, declare_parameter<double>("max_linear_speed", 0.05));
+  maxPathLinearSpeed_ = std::max(
+      0.0, declare_parameter<double>("max_path_linear_speed", maxLinearSpeed_));
   minLinearCommandSpeed_ = std::min(
       maxLinearSpeed_, std::max(0.0, declare_parameter<double>(
                                       "min_linear_command_speed", 0.035)));

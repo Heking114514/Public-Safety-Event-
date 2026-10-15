@@ -354,7 +354,8 @@ private:
   void PublishStop();
 
   void PublishMotionCommand(const geometry_msgs::msg::Twist &desired,
-                            bool forceZeroLinear = false);
+                            bool forceZeroLinear = false,
+                            bool forwardPath = false);
 
   void PublishCurrentWaypoint();
 
@@ -399,6 +400,7 @@ private:
   double trackingPointOffsetY_{std::numeric_limits<double>::quiet_NaN()};
   double defaultSpeed_{0.10};
   double maxLinearSpeed_{0.10};
+  double maxPathLinearSpeed_{0.0};
   double minLinearCommandSpeed_{0.035};
   double maxAngularSpeed_{0.75};
   double maxPathAngularSpeed_{0.65};

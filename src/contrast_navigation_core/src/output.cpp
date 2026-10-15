@@ -9,7 +9,8 @@ void WaypointNavigator::PublishStop() {
 }
 
 void WaypointNavigator::PublishMotionCommand(
-    const geometry_msgs::msg::Twist &desired, bool forceZeroLinear) {
+    const geometry_msgs::msg::Twist &desired, bool forceZeroLinear,
+    bool forwardPath) {
   const auto currentTime = std::chrono::steady_clock::now();
   double dt = 1.0 / controlFrequency_;
   if (motionCommandInitialized_) {
@@ -21,15 +22,16 @@ void WaypointNavigator::PublishMotionCommand(
   }
 
   geometry_msgs::msg::Twist limited = desired;
+  const double positiveLimit = forwardPath ? maxPathLinearSpeed_ : maxLinearSpeed_;
   const double targetLinear =
-      std::clamp(desired.linear.x, -maxLinearSpeed_, maxLinearSpeed_);
+      std::clamp(desired.linear.x, -maxLinearSpeed_, positiveLimit);
   limited.linear.x =
       forceZeroLinear ? 0.0
                       : visual_navigation::LimitRate(
                             targetLinear, lastMotionCommand_.linear.x,
                             maxLinearAcceleration_, maxLinearDeceleration_, dt);
-  limited.linear.x =
-      std::clamp(limited.linear.x, -maxLinearSpeed_, maxLinearSpeed_);
+  // Limit the target before ramping, so leaving a faster straight segment
+  // decelerates smoothly to the original maneuver/scan speed.
   if (!forceZeroLinear && std::abs(targetLinear) > 1.0e-9 &&
       std::abs(limited.linear.x) < minLinearCommandSpeed_) {
     limited.linear.x = std::copysign(minLinearCommandSpeed_, targetLinear);
