@@ -126,7 +126,43 @@ int PoseRecovery::forward_obstacle(const Pose &pose,
           (center.y-pose.position.y)*std::sin(pose.yaw)>=0)
       return static_cast<int>(i);
   }
-  return -1;
+  // 沿没有可用岔路的前进通道检查封路：L、直路可以延伸，尽头支路
+  // 无法在禁止原地掉头的条件下恢复前进，不能作为绕行出口。
+  // 遇到真正可分流的 T/X 即停止，不能用任意远处障碍授权倒车。
+  std::string node=ahead, previous=incoming;
+  std::vector<std::string> visited{incoming};
+  while (true) {
+    std::vector<const Lane *> exits;
+    for (const auto &lane:lanes_) {
+      if (lane.id==previous || (lane.from!=node && lane.to!=node)) continue;
+      const auto other=lane.from==node ? lane.to : lane.from;
+      if (junction_type(other)==RoadJunction::DEAD_END) continue;
+      exits.push_back(&lane);
+    }
+    if (exits.size()!=1) return -1;
+    const auto &next=*exits.front();
+    if (std::find(visited.begin(),visited.end(),next.id)!=visited.end()) return -1;
+    if (std::find(blocked.begin(),blocked.end(),next.id)!=blocked.end()) {
+      const auto p=nodes_.at(next.from), q=nodes_.at(next.to);
+      const double d=length(p,q);
+      for (std::size_t i=0;i<obstacles.size();++i) {
+        if (obstacles[i].points.size()<3) continue;
+        navigation_safety::Point center{};
+        for (const auto &point:obstacles[i].points) {
+          center.x+=point.x; center.y+=point.y;
+        }
+        center.x/=obstacles[i].points.size(); center.y/=obstacles[i].points.size();
+        const double t=std::clamp(((center.x-p.x)*(q.x-p.x)+
+          (center.y-p.y)*(q.y-p.y))/(d*d),0.,1.);
+        if (length(center,{p.x+t*(q.x-p.x),p.y+t*(q.y-p.y)})<0.12)
+          return static_cast<int>(i);
+      }
+      return -1;
+    }
+    visited.push_back(next.id);
+    previous=next.id;
+    node=next.from==node ? next.to : next.from;
+  }
 }
 
 bool PoseRecovery::exit_matches(const Pose &pose,

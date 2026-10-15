@@ -383,6 +383,39 @@ TEST(RecoveryRoutes, KnownBlockedCornerAllowsLongRetreatToRearT) {
   EXPECT_TRUE(recovery.exit_matches(replay.actual(),*south));
 }
 
+TEST(RecoveryRoutes, LayerTwoEntryRecognizesBlockageBeyondLAndLaunchSpur) {
+  auto recovery=make_recovery();
+  // 2026-10-15 GUI 故障真值：12 个 RFID 已完成，进入隧道层。
+  const Recovery::Pose start{{.23876371210204264,.49981146930033304},-3.140625147480947};
+  const std::vector<navigation_safety::Polygon> obstacles{
+    navigation_safety::rectangle_polygon({.1,-.55,.3,-.45}),
+    navigation_safety::rectangle_polygon({1.1,-1.2263966068711274,1.3,-1.1263966068711273})};
+  const std::vector<std::string> blocked{"ROAD_X1_Y3","ROAD_Y3_LEFT"};
+  ASSERT_EQ(recovery.forward_obstacle(start,obstacles,blocked),0);
+  EXPECT_EQ(recovery.forward_obstacle(start,obstacles,{}),-1);
+  EXPECT_EQ(recovery.forward_obstacle(start,{obstacles[1]},blocked),-1);
+  EXPECT_EQ(recovery.forward_obstacle({start.position,0},obstacles,blocked),-1);
+  // 前方十字存在可用岔路，不能借用该远处障碍授权长倒车。
+  EXPECT_EQ(recovery.forward_obstacle({{2.4,.5},pi},obstacles,blocked),-1);
+  recovery.set_dynamic_obstacles(obstacles);
+  const auto candidates=recovery.candidates(start,obstacles[0]);
+  ASSERT_FALSE(candidates.empty());
+  bool executable=false;
+  for (const auto &candidate:candidates) {
+    if (!recovery.plan(start,candidate,blocked)) continue;
+    // 应退回 x=1.2 的 T/X 固定入口，不能在当前 L 直接前进掉头。
+    ASSERT_FALSE(recovery.steps().empty());
+    EXPECT_LT(recovery.steps().front().linear,0);
+    RecoveryReplay replay(recovery,workspace());
+    ASSERT_TRUE(replay.run(start,recovery.steps())) << replay.failure();
+    EXPECT_GT(replay.reverse_distance(),.8);
+    EXPECT_TRUE(recovery.exit_matches(replay.actual(),candidate));
+    executable=true;
+    break;
+  }
+  EXPECT_TRUE(executable);
+}
+
 TEST(RecoveryRoutes, ForwardAdjustmentStopsAtBodyClearanceRatherThanCameraRange) {
   auto recovery=make_recovery();
   recovery.set_dynamic_obstacles({navigation_safety::rectangle_polygon({1.1,-.86,1.3,-.78})});
