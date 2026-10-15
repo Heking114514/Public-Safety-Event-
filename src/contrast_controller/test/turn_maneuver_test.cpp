@@ -275,3 +275,54 @@ TEST(ContrastTurn, EntryOvershootCannotReverseForever) {
   EXPECT_EQ(decision.result, Result::NEED_REPLAN);
   EXPECT_DOUBLE_EQ(decision.command.linear_x, 0.0);
 }
+
+TEST(ContrastTurn, PausedFixedActionKeepsCapturedTurnAndExcludesWallTime) {
+  // 参数全部来自现有正常转弯 YAML；这里只验证暂停语义，不假定该参数
+  // 能在地图上完成安全转弯，更不以此替代真实转弯场景验收。
+  const auto config = TestConfig();
+  for (int gate = 0; gate < 3; ++gate) {
+    visual_navigation::TurnManeuverController controller(config);
+    auto input = Input(config.entry_target_x, config.entry_target_y, 0.0);
+    controller.begin(0.0);
+    controller.update(input, 0.0);
+    controller.update(input, kStep);
+    const auto entered = controller.update(input, 2 * kStep);
+    ASSERT_EQ(entered.phase, Phase::TURN_60);
+    input.context.pose.yaw = 0.1;
+    if (gate == 0) input.motion_allowed = false;
+    if (gate == 1) input.localization_valid = false;
+    if (gate == 2) input.obstacle_blocked = true;
+    const auto paused = controller.update(input, 3 * kStep);
+    ASSERT_EQ(paused.phase, Phase::PAUSED);
+    EXPECT_DOUBLE_EQ(paused.command.linear_x, 0.0);
+    EXPECT_DOUBLE_EQ(paused.command.angular_z, 0.0);
+    EXPECT_TRUE(controller.active());
+    const double resumed_at = 100.0 * config.phase_timeout;
+    const auto still_paused = controller.update(input, resumed_at - kStep);
+    EXPECT_EQ(still_paused.phase, Phase::PAUSED);
+    EXPECT_EQ(still_paused.result, Result::RUNNING);
+
+    // 暂停期间收到另一组上下文不能覆盖首次捕获的原路口和转向。
+    input.context.geometry_heading = kPi;
+    input.context.target_heading = -kPi / 2.0;
+    input.motion_allowed = input.localization_valid = true;
+    input.obstacle_blocked = false;
+    const auto resumed = controller.update(input, resumed_at);
+    ASSERT_EQ(resumed.phase, Phase::TURN_60);
+    EXPECT_EQ(resumed.result, Result::RUNNING);
+    EXPECT_DOUBLE_EQ(resumed.command.linear_x, 0.0);
+    EXPECT_DOUBLE_EQ(resumed.command.angular_z, 0.0);
+    const auto running = controller.update(input, resumed_at + kStep);
+    EXPECT_EQ(running.phase, Phase::TURN_60);
+    EXPECT_EQ(running.result, Result::RUNNING);
+    EXPECT_GT(running.command.linear_x, 0.0);
+    EXPECT_GT(running.command.angular_z, 0.0);
+
+    // 恢复后仍应监督真实运动进度，暂停不能永久禁用超时。
+    const auto stalled = controller.update(
+        input, resumed_at + config.no_progress_timeout + kStep);
+    EXPECT_EQ(stalled.result, Result::NEED_REPLAN);
+    EXPECT_DOUBLE_EQ(stalled.command.linear_x, 0.0);
+    EXPECT_DOUBLE_EQ(stalled.command.angular_z, 0.0);
+  }
+}

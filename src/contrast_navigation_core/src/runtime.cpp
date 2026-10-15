@@ -193,7 +193,7 @@ bool WaypointNavigator::ActivateNavigation(std::string &result,
       pathProgressSupervisor_.Reset();
       turnProgressSupervisor_.Reset();
       pathSegmentInitialized_ = false;
-      ResetRunControl();
+      ResetRunControl(preserveExecutedTrace);
       const bool actuator_wait =
           inputs.actuator_required && !ActuatorHealthIsValid(inputs);
       const std::string deferred_state =
@@ -222,7 +222,7 @@ bool WaypointNavigator::ActivateNavigation(std::string &result,
   pathProgressSupervisor_.Reset();
   turnProgressSupervisor_.Reset();
   pathSegmentInitialized_ = false;
-  ResetRunControl();
+  ResetRunControl(preserveExecutedTrace);
   SetState(MotionHeld() ? "HELD_FOR_MISSION" : "WAITING_FOR_LOCALIZATION");
   result = "Waypoint navigation started";
   return true;
@@ -271,13 +271,16 @@ void WaypointNavigator::HandleSetMotionHold(
     motionHolds_[source] = reason;
     if (!wasHeld) {
       poseRecovery_.pause_clock();
+      PauseActiveTurn();
       motionHoldStartedAt_ = now();
       motionHoldStartInitialized_ = true;
       pathProgressSupervisor_.Reset();
       turnProgressSupervisor_.Reset();
-      pathSegmentInitialized_ = false;
-      controlState_.clear_goal();
-      ResetManeuver();
+      if (poseRecoveryPhase_.empty() && !turnManeuverController_.active()) {
+        pathSegmentInitialized_ = false;
+        controlState_.clear_goal();
+        ResetManeuver();
+      }
     }
     PublishStop();
     SetState("HELD_FOR_MISSION");
@@ -292,10 +295,12 @@ void WaypointNavigator::HandleSetMotionHold(
       }
       motionHoldStartInitialized_ = false;
       navigationSupervisor_.ResetLocalizationHistory();
-      pathSegmentInitialized_ = false;
-      resumePathFromCurrentPose_ = true;
-      controlState_.clear_goal();
-      ResetManeuver();
+      if (poseRecoveryPhase_.empty() && !turnManeuverController_.active()) {
+        pathSegmentInitialized_ = false;
+        resumePathFromCurrentPose_ = true;
+        controlState_.clear_goal();
+        ResetManeuver();
+      }
       SetState(navigationActive_ ? "RESUME_PENDING_LOCALIZATION" : "IDLE");
     }
     response->message = sourceWasActive

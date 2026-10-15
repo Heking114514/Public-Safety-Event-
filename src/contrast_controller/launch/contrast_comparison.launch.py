@@ -100,6 +100,9 @@ def generate_launch_description():
         production_config, "waypoint_navigator"
     )
     contrast_parameters = _ros_parameters(contrast_config, "contrast_controller")
+    simulation_parameters = _ros_parameters(
+        contrast_share / "config" / "simulation_turn.yaml", "contrast_controller"
+    )
     sim_parameters = _ros_parameters(loopback_config, "vehicle_loopback_sim")
     gui_parameters = _ros_parameters(loopback_config, "vehicle_loopback_gui")
     mission_parameters = _ros_parameters(loopback_config, "vehicle_loopback_mission")
@@ -166,6 +169,7 @@ def generate_launch_description():
             navigation_physical,
             _controller_topics("contrast"),
             {"recovery_map_file": ParameterValue(arena_config, value_type=str)},
+            simulation_parameters,
         ],
     )
 

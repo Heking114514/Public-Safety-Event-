@@ -193,7 +193,7 @@ void WaypointNavigator::HandleRouteInput(
       currentWaypointIndex_ = 0;
       pathSegmentInitialized_ = false;
       resumePathFromCurrentPose_ = true;
-      ResetRunControl();
+      ResetRunControl(preserveExecutedTrace);
       ResetObstacleRecovery(preserveExecutedTrace);
     }
 
@@ -227,7 +227,7 @@ void WaypointNavigator::HandleRouteInput(
   turnProgressSupervisor_.Reset();
   pathSegmentInitialized_ = false;
   resumePathFromCurrentPose_ = false;
-  ResetRunControl();
+  ResetRunControl(preserveExecutedTrace);
   ResetObstacleRecovery(preserveExecutedTrace);
   PublishStop();
 

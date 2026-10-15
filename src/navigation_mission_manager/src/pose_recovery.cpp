@@ -101,6 +101,15 @@ void MissionManager::on_pose_recovery(
     }
     return;
   }
+  if (!pose_recovery_.active && state.phase == "failed" && active_route_.has_value() &&
+    state.route_id == active_route_->route_id && latest_navigation_recovery_.has_value() &&
+    latest_navigation_recovery_->route_id == state.route_id &&
+    latest_navigation_recovery_->recovery_id == state.recovery_id &&
+    latest_navigation_recovery_->phase == "braking")
+  {
+    fault("恢复候选生成失败并安全停车：" + state.reason);
+    return;
+  }
   if (!pose_recovery_.active && state.phase == "braking") {
     if (!active_route_.has_value() || state.route_id != active_route_->route_id ||
       pose_recovery_.retired.count({state.route_id, state.recovery_id}) != 0U)

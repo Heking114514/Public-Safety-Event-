@@ -65,6 +65,7 @@ WaypointNavigator::ControlFrame WaypointNavigator::BuildControlFrame(
 void WaypointNavigator::RunControl() {
   if (MotionHeld()) {
     poseRecovery_.pause_clock();
+    PauseActiveTurn();
     pathProgressSupervisor_.Reset();
     turnProgressSupervisor_.Reset();
     PublishStop();
@@ -74,6 +75,7 @@ void WaypointNavigator::RunControl() {
 
   if (!navigationActive_) {
     poseRecovery_.pause_clock();
+    PauseActiveTurn();
     pathProgressSupervisor_.Reset();
     turnProgressSupervisor_.Reset();
     PublishStop();
@@ -84,14 +86,21 @@ void WaypointNavigator::RunControl() {
       CurrentNavigationInputs(), std::chrono::steady_clock::now());
   if (supervision.action != visual_navigation::NavigationRuntimeAction::DRIVE) {
     poseRecovery_.pause_clock();
+    PauseActiveTurn();
     pathProgressSupervisor_.Reset();
     turnProgressSupervisor_.Reset();
     PublishStop();
-    if (supervision.reset_path_control)
+    const bool retainedRecovery = !poseRecoveryPhase_.empty();
+    if (supervision.reset_path_control && !retainedRecovery &&
+        !turnManeuverController_.active())
       ResetManeuver();
     if (supervision.action ==
         visual_navigation::NavigationRuntimeAction::STOP_AND_LATCH) {
-      navigationActive_ = false;
+      // A temporary loss of localization must not discard the captured turn
+      // or a recovery action. The supervisor keeps commands at zero until
+      // its input gates permit continuation.
+      if (!retainedRecovery && !turnManeuverController_.active())
+        navigationActive_ = false;
       if (pendingFrontObstacle_ || !obstacleRecoveryController_.idle()) {
         pendingFrontObstacle_ = false;
         obstacleBrakeController_.reset();

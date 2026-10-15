@@ -34,7 +34,9 @@ void MissionManager::start_mission(const std::vector<std::string> & targets)
   completed_route_retreat_available_ = false;
   next_planning_context_ = PlanningContext{};
   completed_stages_ = 0;
-  ordinary_nodes_since_task_ = 1;
+  // 精确计数表示已经经过的普通节点；新任务尚未经过任何节点。
+  // 前方起点/路口由规划器的接入段和道路扩展各计一次。
+  ordinary_nodes_since_task_ = pose_recovery_enabled_ ? 0 : 1;
   plan_retries_ = 0;
   no_progress_routes_ = 0;
   request_hold("operator", false, "new mission started");
@@ -162,8 +164,8 @@ void MissionManager::request_plan()
     "required_lanes=%zu completed_lanes=%zu obstacles=%zu replanning=%s "
     "route_active=%s retreat=%s start_mode=%u recovery_anchor=%s "
     "incoming_lane=%s reverse_departure=%s",
-    spec.mode.c_str(), pose_->x, pose_->y,
-    pose_->yaw * 180.0 / 3.141592653589793,
+    spec.mode.c_str(), request->start.position.x, request->start.position.y,
+    *quaternion_yaw(request->start.orientation) * 180.0 / 3.141592653589793,
     spec.target_ids.size(), spec.required_lane_ids.size(),
     spec.completed_lane_ids.size(), dynamic_obstacles_.size(),
     replanning_ ? "true" : "false", active_route_.has_value() ? "true" : "false",
@@ -286,6 +288,9 @@ void MissionManager::on_plan_response(
   rfid_confirmed_waypoints_.clear();
   route_checkpoint_authorizations_pending_.clear();
   current_waypoint_index_ = 0;
+  // The measured recovery exit belongs only to this accepted handoff route.
+  // Keep it through failed requests, but later routes must start at live odometry.
+  next_planning_context_ = PlanningContext{};
   clear_obstacle_recovery();
   completed_route_retreat_available_ = false;
   active_route_ = ActiveRoute{plan.plan_id, spec, plan, false, false};

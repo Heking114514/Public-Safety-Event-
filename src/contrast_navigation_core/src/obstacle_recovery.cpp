@@ -47,8 +47,11 @@ void WaypointNavigator::HandleFrontObstacle(
   const bool forwardMotionActive = lastMotionCommand_.linear.x > 1.0e-4;
   const bool forwardFollowerActive =
       state_ == "FOLLOWING" || state_ == "BRAKING_APPROACH";
+  const bool normalTurnActive = turnManeuverController_.active() &&
+                               stoppedAtPlannedTurn_ &&
+                               !stoppedTurnReverseArrival_;
   if (frontObstacleEventHandled_ || !navigationActive_ || MotionHeld() ||
-      (!forwardMotionActive && !forwardFollowerActive) ||
+      (!forwardMotionActive && !forwardFollowerActive && !normalTurnActive) ||
       pendingFrontObstacle_ || !obstacleRecoveryController_.idle()) {
     return;
   }
@@ -57,8 +60,8 @@ void WaypointNavigator::HandleFrontObstacle(
   // Classification may subsequently identify a normal wall beyond a turn.
   pendingFrontObstacle_ = true;
   frontObstacleEventHandled_ = true;
-  pendingObstacleAtActiveTurn_ = EarlyPlannedTurnActive();
-  pendingObstacleTurnDistance_ = pendingObstacleAtActiveTurn_
+  pendingObstacleAtActiveTurn_ = normalTurnActive;
+  pendingObstacleTurnDistance_ = EarlyPlannedTurnActive()
                                      ? DistanceToStoppedTurn() +
                                            vehicleFrontOffset_ +
                                            expectedObstacleTolerance_
@@ -119,6 +122,10 @@ void WaypointNavigator::HandleRetreatRequest(
     bool routeTransition) {
   response->accepted = false;
   response->trace_exhausted = false;
+  if (poseRecoveryEnabled_) {
+    response->message = "strict recovery only accepts obstacle-authorized road templates";
+    return;
+  }
   response->remaining_breadcrumbs = static_cast<std::uint32_t>(
       obstacleRecoveryController_.remaining_breadcrumbs_before_anchor());
   if (!request || !std::isfinite(request->minimum_distance_m) ||
@@ -308,6 +315,16 @@ WaypointNavigator::SelectObstacleRecoveryAnchor() const {
 }
 
 bool WaypointNavigator::BeginJunctionRetreat() {
+  if (poseRecoveryEnabled_) {
+    navigationActive_ = false;
+    PublishStop();
+    SetState("FAULT_ROUTE_HEADING");
+    RCLCPP_ERROR(get_logger(),
+                 "Route heading mismatch at (%.3f, %.3f, %.1fdeg); "
+                 "strict recovery forbids retreat without an obstacle",
+                 currentX_, currentY_, currentYaw_ * 180.0 / kPi);
+    return false;
+  }
   routeTransitionRetreat_ = false;
   const bool confirmedJunction =
       lastStoppedTurnIndex_ < currentWaypointIndex_ &&
@@ -609,7 +626,15 @@ void WaypointNavigator::RunObstacleRecovery() {
 }
 
 void WaypointNavigator::ResetObstacleRecovery(bool preserveExecutedTrace) {
+  if (!preserveExecutedTrace) {
+    lastCornerContextValid_ = false;
+    lastCornerContext_ = {};
+    lastCornerExitLane_.clear();
+  }
   poseRecoveryPhase_.clear();
+  cornerReturnController_.reset();
+  turnObstacleContextValid_ = false;
+  turnObstacleContext_ = {};
   recoveryCandidates_.clear();
   const auto now = std::chrono::steady_clock::now();
   const bool keepBlockedEvent =

@@ -61,6 +61,32 @@ TEST(Config, OfficialMapHasExplicitTopology) {
   EXPECT_EQ(config.rfid_supernodes.size(), 12U);
 }
 
+TEST(Planner, RecoveryPrefixCountsFirstOrdinaryNodeForTargetsAndCoverage) {
+  const auto config = OfficialConfig();
+  new_map_planner::MapPlanner planner(config);
+  for (const auto &mode : {"targets", "coverage"}) {
+    new_map_planner::PlanRequest request;
+    request.start_map = {{1.4,-.5},new_map_planner::kPi};
+    request.mode = mode;
+    request.target_ids = {"2"};
+    request.required_lane_ids = {"ROAD_Y3_LEFT"};
+    request.return_home = false;
+    request.ordinary_nodes_since_task_exact = true;
+    request.ordinary_nodes_since_task = 2;
+    EXPECT_FALSE(planner.plan(request).success) << mode;
+    request.ordinary_nodes_since_task = 1;
+    const auto allowed = planner.plan(request);
+    EXPECT_TRUE(allowed.success) << mode << ": " << allowed.message;
+  }
+  new_map_planner::PlanRequest at_node;
+  at_node.start_map = {{1.2,-.5},-new_map_planner::kPi/2};
+  at_node.target_ids = {"2"};
+  at_node.return_home = false;
+  at_node.ordinary_nodes_since_task_exact = true;
+  at_node.ordinary_nodes_since_task = 2;
+  EXPECT_TRUE(planner.plan(at_node).success);  // 当前已计数节点不能再重复加一。
+}
+
 TEST(Transform, LaunchPoseIsMapOrigin) {
   const auto config = OfficialConfig();
   const new_map_planner::Pose map_pose{{0.0, 0.0}, 0.0};
@@ -74,6 +100,26 @@ TEST(Transform, LaunchPoseIsMapOrigin) {
   EXPECT_NEAR(round_trip.position.x, 0.0, 1.0e-9);
   EXPECT_NEAR(round_trip.position.y, 0.0, 1.0e-9);
   EXPECT_NEAR(round_trip.yaw, 0.0, 1.0e-9);
+}
+
+TEST(Planner, FreshMissionBehindLaunchHasNoPreviouslyPassedOrdinaryNode) {
+  const auto config = OfficialConfig();
+  new_map_planner::MapPlanner planner(config);
+  auto request = HomeRequest("layer1");
+  request.start_map = {{-.02, 0.0}, 0.0};  // loopback YAML 的默认初始位姿。
+  request.return_home = false;
+  request.allow_partial = true;
+  request.ordinary_nodes_since_task_exact = true;
+  request.ordinary_nodes_since_task = 1;
+  EXPECT_FALSE(planner.plan(request).success);  // 复现旧总控虚增一次计数。
+  request.ordinary_nodes_since_task = 0;
+  const auto result = planner.plan(request);
+  ASSERT_TRUE(result.success) << result.message;
+  ASSERT_FALSE(result.visit_order.empty());
+  EXPECT_EQ(result.visit_order.front(), "1");
+  EXPECT_NEAR(result.navigation_path.front().position.x, -.02, 1e-9);
+  EXPECT_TRUE(result.collision_checked);
+  for (const auto &traversal : result.traversals) EXPECT_FALSE(traversal.reverse);
 }
 
 TEST(Planner, ExactTwelveTargetRouteIsExecutableAndReturnsHome) {
@@ -184,6 +230,78 @@ TEST(Planner, LayerOneTargetsNextPendingTaskInOrder) {
   ASSERT_EQ(result.visit_order.size(), 1U);
   EXPECT_EQ(result.visit_order.front(), "1");
   EXPECT_EQ(result.ordinary_nodes_since_task, 0);
+}
+
+TEST(PlannerCount, RecoveryPrefixCountsFirstOrdinaryNodeInBothSearches) {
+  const auto config = OfficialConfig();
+  new_map_planner::MapPlanner planner(config);
+  for (const std::string mode : {"targets", "coverage"}) {
+    SCOPED_TRACE(mode);
+    new_map_planner::PlanRequest request;
+    request.mode = mode;
+    request.return_home = false;
+    request.target_ids = {"11"};
+    request.required_lane_ids = {"ROAD_Y3_RIGHT"};
+    request.ordinary_nodes_since_task_exact = true;
+    request.ordinary_nodes_since_task = 0;
+    // 正式地图受限走廊：恢复出口后连续 x1_y2、x1_y3、x2_y3
+    // 三个普通节点，才会到 x3_y3 RFID，必须拒绝该路线。
+    const std::vector<std::string> allowed = {
+        "ROAD_X1_Y1", "ROAD_X1_Y2", "TUNNEL_3", "ROAD_Y3_RIGHT"};
+    for (const auto &lane : config.lanes) {
+      if (std::find(allowed.begin(), allowed.end(), lane.id) == allowed.end()) {
+        request.blocked_lane_ids.push_back(lane.id);
+      }
+    }
+    request.start_map = new_map_planner::ArenaToMap(
+        {{1.1, 1.3}, 0.5 * new_map_planner::kPi}, config.transform);
+    const auto result = planner.plan(request);
+    EXPECT_FALSE(result.success) << result.message;
+    // 只剩 x1_y3、x2_y3 两个普通节点时可以前进到 RFID。
+    request.start_map = new_map_planner::ArenaToMap(
+        {{1.1, 2.3}, 0.5 * new_map_planner::kPi}, config.transform);
+    const auto legal = planner.plan(request);
+    ASSERT_TRUE(legal.success) << legal.message;
+    EXPECT_TRUE(legal.complete);
+    EXPECT_EQ(legal.ordinary_nodes_since_task, 0);
+    // 若恢复后的已有普通节点计数为 1，相同 prefix 会导致三个，仍应拒绝。
+    request.ordinary_nodes_since_task = 1;
+    EXPECT_FALSE(planner.plan(request).success);
+  }
+}
+
+TEST(PlannerCount, CurrentOrdinaryNodeIsNotCountedTwiceInBothSearches) {
+  const auto config = OfficialConfig();
+  new_map_planner::MapPlanner planner(config);
+  for (const std::string mode : {"targets", "coverage"}) {
+    SCOPED_TRACE(mode);
+    new_map_planner::PlanRequest request;
+    request.mode = mode;
+    request.return_home = false;
+    request.target_ids = {"11"};
+    request.required_lane_ids = {"ROAD_Y3_RIGHT"};
+    request.ordinary_nodes_since_task_exact = true;
+    request.ordinary_nodes_since_task = 1;
+    const std::vector<std::string> allowed = {"TUNNEL_3", "ROAD_Y3_RIGHT"};
+    for (const auto &lane : config.lanes) {
+      if (std::find(allowed.begin(), allowed.end(), lane.id) == allowed.end()) {
+        request.blocked_lane_ids.push_back(lane.id);
+      }
+    }
+    // 当前 x1_y3 已计为第一个普通节点；再过 x2_y3，然后到 RFID 合法。
+    for (const double offset : {0.0, config.node_capture_distance * 0.5}) {
+      request.start_map = new_map_planner::ArenaToMap(
+          {{1.1 - offset, 3.1}, 0.0}, config.transform);
+      const auto result = planner.plan(request);
+      ASSERT_TRUE(result.success) << result.message;
+      EXPECT_TRUE(result.complete);
+      EXPECT_EQ(result.ordinary_nodes_since_task, 0);
+    }
+    // 捕获范围外仍是尚未经过的前方节点，须增加一次普通节点计数。
+    request.start_map = new_map_planner::ArenaToMap(
+        {{1.1 - config.node_capture_distance * 2.0, 3.1}, 0.0}, config.transform);
+    EXPECT_FALSE(planner.plan(request).success);
+  }
 }
 
 TEST(Maneuver, LaunchJunctionHasBothValidatedExits) {
