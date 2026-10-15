@@ -41,7 +41,17 @@ RFID,time_ms,card_sequence,status,protocol_status,tag_type,sak,number,uid_hex\r\
 - `roll`、`pitch`、`yaw` 来自 `/imu/rpy`（`geometry_msgs/msg/Vector3Stamped`），单位 rad。
 - RFID 有效新读卡事件只发布到 `/cup_car_serial/rfid_number` 和 UID 话题。任务去重、
   驻停时间、播报文本和恢复行驶由 `navigation_mission_manager` 负责。串口节点的
-  `/cup_car_serial/speak_text` service 只执行 UTF-8 到 GBK 转码和串口发送。
+  `/cup_car_serial/speak_text` service 将 UTF-8 转为 GBK，默认 `speech_protocol=legacy`，
+  与原版相同，只发送一次 `TTS,<GBK文本>\r\n`，不要求升级 MCU。
+  旧协议没有接收或播放完成反馈；上位机按每字 800 ms 加 1500 ms、每 GBK 字节额外 10 ms
+  估算占用后返回成功，供任务队列排队使用。成功不能确认 MCU 收到或扬声器真实播放完成。
+  输入限制为 1..128 UTF-8 字节，转码后最多 128 GBK 字节；拒绝控制字节、NUL 和 `<`/`>`。
+  只有明确已部署支持 TTS2 的固件时，才使用启动参数 `speech_protocol:=tts2`。
+  此模式发送 `TTS2,<非零uint32编号>,<GBK文本>\r\n`，等待 `TTS,<编号>,<状态>\r\n`。
+  `QUEUED`、`PLAYING` 不结束请求，仅匹配编号的 `ESTIMATED_DONE` 返回成功，仍是 MCU 时间估算。
+  未获接收反馈时首秒内每 200 ms 重发同一编号，接收后停止重发；总超时 120 秒。
+  `BUSY`、`INVALID`、`ERROR`、断连或超时返回失败，已有待完成请求时新请求立即失败。
+  两种模式等待期间周期速度与传感器反馈继续工作；旧固件不能识别 `TTS2`，会无声并超时。
 - 编码器输出类型为 `std_msgs/msg/Int32MultiArray`，`data` 固定为
   `[sample_time_ms, sample_sequence, left_total_ticks, right_total_ticks]`。
   节点兼容旧固件的 `ENC,left_total,right_total`，其前两项补零。
@@ -179,3 +189,9 @@ ros2 service call /cup_car_serial/speak_text \
 
 如果超过 `0.4 s` 没有收到新速度，节点会向串口发送零速度。`/imu/rpy` 超过
 `rpy_timeout_s`（默认 0.4 s）未更新时，节点暂停发送 RPY 帧。下位机仍应实现独立通信看门狗，并切换到允许接收导航速度的工作模式。
+
+## 2026-10-15 RFID 同步说明
+
+RFID 帧解析、有效编号校验和事件去重与 DM2325 对齐；只有卡存在且编号有效、编号位于 1–12 才发布卡号。读到 UID 但编号为 0 时不会放行任务。赛方确认的数据位置为 0 扇区第二行第一字节，即全局块 1、字节 0，十六进制 01–0C 对应 1–12；该读取由下位机负责，本次不改变固件。
+
+语音服务同步 DM2325 的异步占用估算和可选 TTS2 流程，默认仍为兼容旧固件的 legacy；等待期间继续发送速度并接收传感器。语音方法拆至内部 `src/speech_handlers.hpp`，保持单文件长度约束。
