@@ -33,6 +33,7 @@ navigation_mission_manager:
     public_continue_retreat_service: /navigation_mission/continue_obstacle_retreat
     public_service_timeout_s: 2.0
     speech_hold_duration_s: 3.0
+    speech_min_interval_s: 1.2
 
     auto_start: false
     target_ids: "1,2,3,4,5,6,7,8,9,10,11,12"
@@ -59,6 +60,7 @@ navigation_mission_manager:
     report_server_timeout_s: 5.0
     max_report_retries: 2
     rfid_event_cooldown_s: 3.0
+    rfid_stop_delay_s: 0.25  # 首次读卡后继续运行，再申请驻停；重复卡不延长。
     rfid_hold_duration_s: 1.0
     rfid_stop_duration_s: 1.0
     rfid_detection_radius_m: 0.30

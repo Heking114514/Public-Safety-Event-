@@ -46,6 +46,7 @@ void MissionManager::reset_rfid()
   route_checkpoint_authorizations_pending_.clear();
   rfid_confirmed_tasks_.clear();
   rfid_announced_.clear();
+  rfid_duplicate_guard_.reset();
   rfid_pending_card_.reset();
   rfid_pending_route_id_ = 0U;
   rfid_next_hold_retry_at_ = 0.0;
@@ -66,6 +67,8 @@ void MissionManager::reset_rfid()
   rfid_speech_attempts_ = 0;
   rfid_next_speech_at_ = 0.0;
   speech_queue_.clear();
+  ++speech_generation_;
+  speech_next_send_at_ = 0.0;
   speech_active_.reset();
   speech_release_at_.reset();
   speech_pending_ = false;
@@ -82,8 +85,8 @@ void MissionManager::enqueue_speech_text(const std::string & input, bool request
   const auto first = text.find_first_not_of(" \t");
   const auto last = text.find_last_not_of(" \t");
   text = first == std::string::npos ? std::string{} : text.substr(first, last - first + 1U);
-  if (text.empty() || text.size() > 128U || text.find('\n') != std::string::npos ||
-    text.find('\r') != std::string::npos)
+  if (text.empty() || text.size() > 128U || text.find('\0') != std::string::npos ||
+    text.find('\n') != std::string::npos || text.find('\r') != std::string::npos)
   {
     return;
   }
@@ -118,38 +121,50 @@ void MissionManager::service_speech_text(double now_seconds)
       return;
     }
   }
-  if (!speech_pending_ && !speech_release_at_.has_value() &&
-    speaker_client_->service_is_ready())
+  if (!speech_pending_ && !rfid_active_.has_value() && !rfid_pending_card_.has_value() &&
+    !speech_release_at_.has_value() &&
+    now_seconds >= speech_next_send_at_ && speaker_client_->service_is_ready())
   {
     auto request = std::make_shared<mission_control_interfaces::srv::SpeakText::Request>();
     request->text = speech_active_->text;
     speech_pending_ = true;
-    if (speech_active_->request_hold) {
-      speech_release_at_ = now_seconds + speech_hold_duration_s_;
-    }
+    ++speech_active_->attempts;
+    const uint64_t generation = ++speech_generation_;
     const bool request_hold = speech_active_->request_hold;
     speaker_client_->async_send_request(
       request,
-      [this, request_hold](
+      [this, request_hold, generation](
         rclcpp::Client<mission_control_interfaces::srv::SpeakText>::SharedFuture future) {
+        if (generation != speech_generation_ || !speech_active_.has_value()) {
+          return;
+        }
+        speech_pending_ = false;
+        bool success = false;
         try {
           const auto response = future.get();
-          if (!response->success) {
+          success = response->success;
+          if (!success) {
             RCLCPP_ERROR(
               get_logger(), "mission speech failed: %s", response->message.c_str());
           }
-          if (!request_hold) {
-            speech_active_.reset();
-            speech_release_at_.reset();
-            speech_pending_ = false;
-          }
         } catch (const std::exception & error) {
           RCLCPP_ERROR(get_logger(), "mission speech service failed: %s", error.what());
-          if (!request_hold) {
-            speech_active_.reset();
-            speech_release_at_.reset();
-            speech_pending_ = false;
-          }
+        }
+        speech_next_send_at_ = steady_seconds() + speech_min_interval_s_;
+        if (!success && speech_active_->attempts < 3U) {
+          return;
+        }
+        if (!success && request_hold) {
+          speech_active_.reset();
+          speech_queue_.clear();
+          fault("mission speech failed after three attempts; vehicle remains stopped");
+          return;
+        }
+        if (request_hold) {
+          speech_release_at_ = steady_seconds() + speech_hold_duration_s_;
+        } else {
+          speech_active_.reset();
+          speech_release_at_.reset();
         }
       });
   } else if (speech_release_at_.has_value() && now_seconds >= *speech_release_at_) {
@@ -163,27 +178,36 @@ void MissionManager::service_speech_text(double now_seconds)
 void MissionManager::on_rfid_number(const std_msgs::msg::Int32::SharedPtr message)
 {
   const int number = message->data;
-  if (!mission_->running() || mission_->paused() || !active_route_.has_value() ||
-    !active_route_->acknowledged || rfid_active_.has_value() || rfid_pending_card_.has_value())
+  // Mission and route checks belong after the motion hold and stationary
+  // confirmation. Even an idle or restarted manager must stop on a card.
+  if (rfid_active_.has_value() || rfid_pending_card_.has_value())
   {
+    return;
+  }
+
+  refresh_rfid_duplicate_guard();
+  if (rfid_duplicate_guard_.has_value() && rfid_duplicate_guard_->card == number &&
+    pose_.has_value() && pose_->fresh(odom_timeout_s_) &&
+    std::isfinite(pose_->x) && std::isfinite(pose_->y))
+  {
+    RCLCPP_DEBUG(get_logger(), "Ignoring repeated RFID card %d near completed checkpoint", number);
     return;
   }
 
   const double now_seconds = steady_seconds();
   rfid_pending_card_ = number;
-  rfid_pending_route_id_ = active_route_->route_id;
-  rfid_phase_ = "waiting_hold";
-  rfid_next_hold_retry_at_ = now_seconds;
+  rfid_pending_route_id_ = active_route_.has_value() ? active_route_->route_id : 0U;
+  rfid_phase_ = "delaying_stop";
+  rfid_next_hold_retry_at_ = now_seconds + rfid_stop_delay_s_;
   rfid_release_at_.reset();
   rfid_correction_stable_since_.reset();
   rfid_stationary_since_.reset();
   rfid_correction_deadline_ = 0.0;
-  request_hold(
-    "rfid", true,
-    "RFID candidate received; stopping before card and position validation");
-  publish_text("rfid_stop_requested:card=" + std::to_string(number));
+  publish_text("rfid_stop_delayed:card=" + std::to_string(number) +
+    ",delay_s=" + std::to_string(rfid_stop_delay_s_));
   RCLCPP_INFO(
-    get_logger(), "RFID candidate received: card=%d; motion hold requested before validation", number);
+    get_logger(), "RFID candidate received: card=%d; motion hold scheduled in %.3f s before validation",
+    number, rfid_stop_delay_s_);
 }
 
 void MissionManager::reject_pending_rfid(const std::string & reason)
@@ -197,7 +221,14 @@ void MissionManager::reject_pending_rfid(const std::string & reason)
     number, reason.c_str());
   publish_text(
     "rfid_rejected:card=" + std::to_string(number) + ",reason=" + reason);
-  request_hold("rfid", false, "RFID candidate rejected: " + reason);
+  if (reason == "mission_or_route_not_ready") {
+    // Keep the RFID hold until an explicit mission start/reset clears it.
+    // Releasing it here could resume an old route after a manager restart.
+    fault("RFID card " + std::to_string(number) +
+      " detected, but mission or route is not ready; vehicle remains stopped");
+  } else {
+    request_hold("rfid", false, "RFID candidate rejected: " + reason);
+  }
   rfid_pending_card_.reset();
   rfid_pending_route_id_ = 0U;
   rfid_next_hold_retry_at_ = 0.0;
@@ -302,10 +333,37 @@ void MissionManager::on_current_waypoint(const std_msgs::msg::Int32::SharedPtr m
   current_waypoint_index_ = message->data;
 }
 
+void MissionManager::refresh_rfid_duplicate_guard()
+{
+  if (!rfid_duplicate_guard_.has_value() || !pose_.has_value() ||
+    !pose_->fresh(odom_timeout_s_) || !std::isfinite(pose_->x) || !std::isfinite(pose_->y))
+  {
+    return;
+  }
+  if (std::hypot(pose_->x - rfid_duplicate_guard_->x, pose_->y - rfid_duplicate_guard_->y) >
+    rfid_detection_radius_m_)
+  {
+    rfid_duplicate_guard_.reset();
+  }
+}
+
 void MissionManager::service_rfid(double now_seconds)
 {
+  refresh_rfid_duplicate_guard();
   service_speech_text(now_seconds);
   if (rfid_pending_card_.has_value()) {
+    if (rfid_phase_ == "delaying_stop") {
+      if (now_seconds < rfid_next_hold_retry_at_) {
+        return;
+      }
+      rfid_phase_ = "waiting_hold";
+      request_hold(
+        "rfid", true,
+        "RFID stop delay elapsed; stopping before validation");
+      rfid_next_hold_retry_at_ = now_seconds + 0.5;
+      publish_text("rfid_stop_requested:card=" + std::to_string(*rfid_pending_card_));
+      return;
+    }
     bool held = false;
     {
       std::lock_guard<std::mutex> lock(hold_state_mutex_);
@@ -485,7 +543,7 @@ void MissionManager::service_rfid(double now_seconds)
 void MissionManager::send_rfid_speech(double now_seconds)
 {
   if (!rfid_active_.has_value() || rfid_active_card_ <= 0 || rfid_speech_pending_ ||
-    !speaker_client_->service_is_ready() || now_seconds < rfid_next_speech_at_)
+    speech_pending_ || !speaker_client_->service_is_ready() || now_seconds < rfid_next_speech_at_)
   {
     return;
   }
@@ -496,9 +554,12 @@ void MissionManager::send_rfid_speech(double now_seconds)
   rfid_speech_pending_ = true;
   speaker_client_->async_send_request(
     request,
-    [this, number](
+    [this, number, generation = speech_generation_](
       rclcpp::Client<mission_control_interfaces::srv::SpeakText>::SharedFuture future)
     {
+      if (generation != speech_generation_) {
+        return;
+      }
       on_rfid_speech(number, future);
     });
 }
@@ -526,8 +587,7 @@ void MissionManager::on_rfid_speech(
     const std::string detail = response ? response->message : "service exception";
     RCLCPP_ERROR(
       get_logger(), "RFID %d announcement failed: %s", number, detail.c_str());
-    fault("RFID announcement failed after retries at " + rfid_active_supernode_ +
-      ": " + detail);
+    begin_rfid_post_speech(steady_seconds(), true);
   } else {
     rfid_next_speech_at_ = steady_seconds() + 0.2;
   }
@@ -651,6 +711,16 @@ void MissionManager::finish_rfid_workflow()
     rfid_confirmed_tasks_.insert(std::to_string(*rfid_active_));
   }
   rfid_confirmed_waypoints_.insert(rfid_active_waypoint_index_);
+  if (rfid_active_.has_value() && active_route_.has_value() &&
+    active_route_->route_id == rfid_active_route_id_ &&
+    rfid_active_waypoint_index_ < active_route_->plan.navigation_path.poses.size())
+  {
+    const auto & point =
+      active_route_->plan.navigation_path.poses[rfid_active_waypoint_index_].pose.position;
+    if (std::isfinite(point.x) && std::isfinite(point.y)) {
+      rfid_duplicate_guard_ = CompletedRfidVisit{rfid_active_card_, point.x, point.y};
+    }
+  }
   request_hold("rfid", false, "RFID patrol stop completed");
   rfid_active_.reset();
   rfid_active_card_ = 0;

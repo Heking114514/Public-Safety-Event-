@@ -23,6 +23,7 @@
 #include "mission_control_interfaces/msg/control_telemetry.hpp"
 #include "mission_control_interfaces/srv/speak_text.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "rmw/types.h"
 #include "sensor_msgs/msg/imu.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/int32.hpp"
@@ -33,6 +34,7 @@
 #include "cup_car_serial/mcu_clock_mapper.hpp"
 #include "cup_car_serial/protocol.hpp"
 #include "cup_car_serial/rfid_event_deduplicator.hpp"
+#include "cup_car_serial/tts2_protocol.hpp"
 
 namespace
 {
@@ -51,25 +53,9 @@ constexpr uint32_t kBmi088StartupBiasSamples = 600U;
 constexpr uint8_t kRfidStatusCardPresent = 0x02U;
 constexpr uint8_t kRfidStatusNumberValid = 0x20U;
 
-std::string utf8_to_gbk(const std::string & text)
-{
-  iconv_t converter = iconv_open("GBK", "UTF-8");
-  if (converter == reinterpret_cast<iconv_t>(-1)) {
-    throw std::runtime_error("iconv does not support UTF-8 to GBK conversion");
-  }
-  std::vector<char> output(text.size() * 2U + 16U);
-  char * input_data = const_cast<char *>(text.data());
-  size_t input_size = text.size();
-  char * output_data = output.data();
-  size_t output_size = output.size();
-  const size_t result = iconv(
-    converter, &input_data, &input_size, &output_data, &output_size);
-  iconv_close(converter);
-  if (result == static_cast<size_t>(-1) || input_size != 0U) {
-    throw std::runtime_error("speech text cannot be encoded as GBK");
-  }
-  return std::string(output.data(), static_cast<size_t>(output_data - output.data()));
-}
+uint32_t make_tts2_id_seed();
+
+std::string utf8_to_gbk(const std::string & text);
 
 std::string describe_bmi088_attitude_status(
   const cup_car_serial::Bmi088AttitudeFrame & frame)
@@ -256,6 +242,10 @@ public:
       "rfid_uid_topic", "/cup_car_serial/rfid_uid");
     speak_text_service_ = declare_parameter<std::string>(
       "speak_text_service", "/cup_car_serial/speak_text");
+    speech_protocol_ = declare_parameter<std::string>("speech_protocol", "legacy");
+    if (speech_protocol_ != "legacy" && speech_protocol_ != "tts2") {
+      throw std::invalid_argument("speech_protocol must be legacy or tts2");
+    }
     bmi088_raw_imu_topic_ = declare_parameter<std::string>(
       "bmi088_raw_imu_topic", "/cup_car_serial/bmi088_raw_imu");
     bmi088_attitude_topic_ = declare_parameter<std::string>(
@@ -324,7 +314,7 @@ public:
       speak_text_service_,
       std::bind(
         &CmdVelSerialNode::handle_speak_text, this,
-        std::placeholders::_1, std::placeholders::_2));
+        std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 
     subscription_ = create_subscription<geometry_msgs::msg::Twist>(
       topic_, rclcpp::QoS(10),
@@ -359,6 +349,18 @@ public:
   }
 
 private:
+  struct PendingSpeech
+  {
+    std::shared_ptr<rmw_request_id_t> request_header;
+    rclcpp::Service<mission_control_interfaces::srv::SpeakText>::SharedPtr service;
+    std::unique_ptr<cup_car_serial::Tts2RequestTracker> tracker;
+    std::string frame;
+    bool legacy{false};
+    bool transmitted{false};
+    std::chrono::milliseconds legacy_occupation{0};
+    std::chrono::steady_clock::time_point legacy_done_at{};
+  };
+
   void connect()
   {
     last_connect_attempt_ = std::chrono::steady_clock::now();
@@ -398,6 +400,9 @@ private:
 
   void set_connected(bool connected)
   {
+    if (!connected) {
+      fail_pending_speech("controller serial port disconnected before estimated speech completion");
+    }
     if (connection_state_published_ && connected == last_connection_state_) {
       return;
     }
@@ -477,6 +482,7 @@ private:
         std_msgs::msg::String message;
         message.data = line;
         receivePublisher_->publish(message);
+        process_tts2_telemetry(line);
         publish_encoder_frame(line);
         publish_bmi088_imu_frame(line);
         publish_bmi088_attitude_frame(line);
@@ -555,33 +561,13 @@ private:
   }
 
   void handle_speak_text(
-    const mission_control_interfaces::srv::SpeakText::Request::SharedPtr request,
-    mission_control_interfaces::srv::SpeakText::Response::SharedPtr response)
-  {
-    if (request->text.empty() || request->text.size() > 128U ||
-      request->text.find_first_of("\r\n") != std::string::npos)
-    {
-      response->success = false;
-      response->message = "speech text must contain 1 to 128 characters without newlines";
-      return;
-    }
-    std::lock_guard<std::mutex> lock(serial_mutex_);
-    if (!serial_connected_) {
-      response->success = false;
-      response->message = "controller serial port is disconnected";
-      return;
-    }
-    try {
-      const std::string frame = "TTS," + utf8_to_gbk(request->text) + "\r\n";
-      serial_.write_all(frame);
-      response->success = true;
-      response->message = "speech text sent to controller";
-      RCLCPP_INFO(get_logger(), "Sent mission speech text to MCU: %s", request->text.c_str());
-    } catch (const std::exception & error) {
-      response->success = false;
-      response->message = error.what();
-    }
-  }
+    const rclcpp::Service<mission_control_interfaces::srv::SpeakText>::SharedPtr service,
+    const std::shared_ptr<rmw_request_id_t> request_header,
+    const mission_control_interfaces::srv::SpeakText::Request::SharedPtr request);
+  void transmit_pending_speech();
+  void process_tts2_telemetry(const std::string & line);
+  void finish_pending_speech(bool success, const std::string & message);
+  void fail_pending_speech(const std::string & message);
 
   void publish_bmi088_imu_frame(const std::string & line)
   {
@@ -908,6 +894,7 @@ private:
         serial_.write_all(std::string(rpy_frame, rpy_frame_length));
       }
       receive_feedback();
+      transmit_pending_speech();
     } catch (const std::exception & error) {
       RCLCPP_ERROR(get_logger(), "Serial communication failed: %s", error.what());
       serial_.close();
@@ -926,6 +913,7 @@ private:
   std::string rfid_number_topic_;
   std::string rfid_uid_topic_;
   std::string speak_text_service_;
+  std::string speech_protocol_;
   std::string bmi088_raw_imu_topic_;
   std::string bmi088_attitude_topic_;
   std::string bmi088_frame_id_;
@@ -939,6 +927,8 @@ private:
   cup_car_serial::ActuatorTrackingDecision latestTrackingDecision_{};
   std::string lastTrackingStatus_;
   SerialPort serial_;
+  cup_car_serial::Tts2IdGenerator tts2IdGenerator_{make_tts2_id_seed()};
+  std::unique_ptr<PendingSpeech> pendingSpeech_;
   std::mutex serial_mutex_;
   bool serial_connected_{false};
   bool connection_state_published_{false};
@@ -985,6 +975,8 @@ private:
   rclcpp::TimerBase::SharedPtr timer_;
   rclcpp::TimerBase::SharedPtr connectionHeartbeatTimer_;
 };
+
+#include "speech_handlers.hpp"
 
 int main(int argc, char * argv[])
 {

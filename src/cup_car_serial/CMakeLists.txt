@@ -18,7 +18,8 @@ find_package(std_msgs REQUIRED)
 
 add_library(cup_car_serial_protocol
   src/mcu_clock_mapper.cpp
-  src/protocol.cpp)
+  src/protocol.cpp
+  src/tts2_protocol.cpp)
 target_include_directories(cup_car_serial_protocol PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
@@ -67,6 +68,8 @@ if(BUILD_TESTING)
   target_include_directories(actuator_tracking_monitor_test PRIVATE include)
   ament_add_gtest(rfid_event_test test/rfid_event_test.cpp)
   target_include_directories(rfid_event_test PRIVATE include)
+  ament_add_gtest(tts2_protocol_test test/tts2_protocol_test.cpp)
+  target_link_libraries(tts2_protocol_test cup_car_serial_protocol)
 endif()
 
 ament_package()

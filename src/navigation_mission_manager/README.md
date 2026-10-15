@@ -80,11 +80,20 @@ waypoint_navigator -> /cmd_vel_nav
 
 串口桥只发布 `/cup_car_serial/rfid_number`。导航器到达超节点后沿来向以 `0.035 m/s` 低速
 扫描，最多越过地图节点 `0.20 m` 并停等读卡；里程计本身不能确认节点、推进路线或触发转弯。
-读到卡后任务总控申请 `navigation_mission_manager/rfid` 驻停，等待驻停生效，向
+读到卡号后任务总控等待 `rfid_stop_delay_s`（生产 YAML 为 `0.25 s`），再申请 `navigation_mission_manager/rfid` 驻停；等待期间
+重复读卡不重新计时。任务是否运行、是否暂停或路线是否 ACK 不作为停车前置条件。
+等待驻停生效、车速降低且位置稳定后，再校验卡号、
+任务状态、路线号和预期点位。任务或路线未就绪时进入 `FAULT` 并保持驻停，需显式重新启动或
+复位任务后恢复；不会释放驻停让旧路线继续执行。校验通过后向
 `/fused_odometry/correct_map_position` 请求校正，并等待融合位姿进入目标点 `0.025 m` 范围且
-稳定 `0.20 s`。非播报点驻停 `1 s`，播报点沿用播报和原有驻停时间。最后总控通过导航器
+稳定 `0.20 s`。非播报点驻停 `1 s`，播报点沿用播报和原有驻停时间。RFID 播报重试耗尽后不把卡记为已播报，继续既有驻停与放行流程。最后总控通过导航器
 `/waypoint_navigator/confirm_rfid_checkpoint` 服务放行指定路线号、航点序号和超节点 ID。
-卡号重复按当前物理点去重，因此相同卡号可在不同物理超节点再次使用。
+物理超节点用于定位和路线确认，卡号不绑定地图点：播报模板 `{number}` 使用本次实际读取
+的卡号，例如同一物理点换卡后读到 12 播报“十二”，读到 11 播报“十一”。
+完成 RFID 放行后，在已完成点的 `rfid_detection_radius_m` 范围内（默认 `0.30 m`），
+同卡号重复事件不再触发延迟停车；此状态保留到下一条路线。新鲜定位确认离开该范围后解除
+屏蔽，再次返回或在其他物理点读到同卡号可重新停车。不同卡号正常处理；定位缺失或过期时
+仍按读卡停车流程处理。显式任务启动/复位会清除屏蔽。
 规划器的 `visit_order` 只描述预计访问顺序，不再直接作为任务点完成凭据。
 实车默认使用 `task_confirmation_mode: rfid`，因此只有真实 RFID 事件可以确认任务点。
 loopback 显式使用 `task_confirmation_mode: route`，在路线已 ACK、实际执行并收到
@@ -92,7 +101,12 @@ loopback 显式使用 `task_confirmation_mode: route`，在路线已 ACK、实�
 
 其他节点可以向 `/navigation_mission/speech_text` 发布 `std_msgs/String`。总控会排队文本，
 申请 `navigation_mission_manager/speech` 驻停，调用 `/cup_car_serial/speak_text` 下发给
-下位机，播报完成后驻停 3 秒再释放；RFID 播报使用同一个下发链路。
+下位机。串口节点默认使用兼容已部署旧固件的 `TTS,<GBK文本>`，按文本长度估算占用；只有
+明确配置 `speech_protocol:=tts2` 且 MCU 支持 TTS2 时，才等待匹配编号的 `ESTIMATED_DONE`。
+当前语音模块未提供已知的播放结束反馈，默认由上位机估算占用时间；TTS2 模式由 MCU 估算。
+两种模式都不能确认扬声器真实播放完成。
+普通驻停播报在服务成功后再等待 `speech_hold_duration_s`（默认 3 秒）释放，失败最多尝试三次。
+相邻队列项还保留 `speech_min_interval_s`（默认 `1.2 s`）间隔；RFID 使用同一服务链路与自己的驻停参数。
 
 总控直接订阅视觉识别模块的 `/insight` 和 `/safe` 两个 `std_msgs/String` 话题。`/insight`
 中的 `targets` 按原顺序转换为“发现N号刀具”或“发现N号嫌疑人”，进入同一条播报队列；

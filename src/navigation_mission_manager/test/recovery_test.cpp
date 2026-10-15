@@ -316,10 +316,11 @@ struct ManagerRecoveryTestAccess
     response->message = "test speaker failure";
     promise.set_value(response);
     m.on_rfid_speech(1,future);
-    EXPECT_EQ(m.state_, mission_control_interfaces::msg::MissionState::FAULT);
+    EXPECT_NE(m.state_, mission_control_interfaces::msg::MissionState::FAULT);
     EXPECT_EQ(m.rfid_announced_.count(1),0U);
     EXPECT_EQ(m.mission_->completed_tasks().count("1"),0U);
-    EXPECT_NE(m.rfid_phase_,"post_speech");
+    EXPECT_EQ(m.rfid_phase_,"post_speech");
+    EXPECT_TRUE(m.rfid_release_at_.has_value());
   }
 };
 }  // namespace navigation_mission_manager
@@ -411,7 +412,7 @@ TEST_F(ManagerRecoveryTest, LocalPlanningFailureTriesNextCandidate)
   nmm::ManagerRecoveryTestAccess::latch(*manager);
   nmm::ManagerRecoveryTestAccess::selection_retry(*manager);
 }
-TEST_F(ManagerRecoveryTest, ExhaustedSpeechRetriesFaultAndCannotConfirmTask)
+TEST_F(ManagerRecoveryTest, ExhaustedSpeechRetriesContinueStopWithoutConfirmingTask)
 {
   nmm::ManagerRecoveryTestAccess::speech_failure(*manager);
 }
