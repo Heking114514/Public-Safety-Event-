@@ -21,8 +21,8 @@ def main():
     parser.add_argument("--domain", type=int, default=226)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--timeout", type=float, default=450)
-    parser.add_argument("--scene", choices=["handoff", "cross_return", "known_blockage"], default="handoff",
-                        help="cross_return 复现十字连续遇障；known_blockage 复现已知封路后的跨阶段长倒车")
+    parser.add_argument("--scene", choices=["handoff", "cross_return", "known_blockage", "continuous_retreat"], default="handoff",
+                        help="cross_return 复现十字连续遇障；known_blockage 复现已知封路后的跨阶段长倒车；continuous_retreat 复现负 y 双封路连续后退")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
     os.environ["ROS_DOMAIN_ID"] = str(args.domain)
@@ -67,7 +67,7 @@ def main():
         if known_recovery and status == "POSE_RECOVERY_RETREAT_TO_TURN_POINT" and msg.twist.twist.linear.x < -.005 and previous_pose:
             known_reverse_m += math.hypot(p.x-previous_pose[0], p.y-previous_pose[1])
         if ((args.scene == "cross_return" and len(recoveries) >= 2) or
-                (args.scene == "known_blockage" and known_recovery and len(recoveries) >= 3)):
+                (args.scene in {"known_blockage", "continuous_retreat"} and known_recovery and len(recoveries) >= 3)):
             if status == "FOLLOWING" and msg.twist.twist.linear.x > .005 and abs(msg.twist.twist.angular.z) < .1:
                 if continuation_start is None:
                     continuation_start = pose[:2]
@@ -153,6 +153,14 @@ def main():
                 if pose is None or publisher.get_subscription_count() == 0:
                     continue
                 x, y, yaw = pose
+                if args.scene == "continuous_retreat":
+                    if injected == 0 and status == "FOLLOWING" and .5 < x < .9 and abs(y+.5) < .03:
+                        inject(1.2, -.975, .10, .05)
+                        injected = 1
+                    elif injected == 1 and recoveries:
+                        inject(2.2, -.985, .10, .05)
+                        injected = 2
+                    continue
                 if args.scene == "known_blockage":
                     if injected == 0 and status == "FOLLOWING" and abs(x-1.2) < .03 and -1.3 < y < -.9 and abs(yaw+math.pi/2) < .1:
                         inject(1.530, -1.5, .06, .10)
@@ -189,19 +197,22 @@ def main():
         log = (args.output/"launch.log").read_text(errors="replace")
         if "collision guard blocked" in log:
             result.update(passed=False, reason="仿真碰撞保护介入")
-        if args.scene == "known_blockage":
+        if args.scene in {"known_blockage", "continuous_retreat"}:
             result["known_reverse_m"] = known_reverse_m
         if args.scene == "known_blockage" and result.get("passed") and known_reverse_m < .95:
             result.update(passed=False, reason="未测得从截图位置退至后方 T 路口的长倒车")
+        if args.scene == "continuous_retreat" and result.get("passed") and known_reverse_m < 2.0:
+            result.update(passed=False, reason="未测得越过不可用后方 T 的连续两米倒车")
         requests = re.findall(r"发送规划请求:.*start=\(([^)]+)\)", log)
         result["manager_request_starts"] = requests
         planner_starts = re.findall(r"plan request:.*start_map=\(([^)]+)\)", log)
         result["planner_request_starts"] = planner_starts
-        if after_goal and planner_starts and pose is not None:
+        if after_goal and planner_starts and requests:
             actual_start = [float(value) for value in planner_starts[-1].split(",")[:2]]
-            error = math.hypot(actual_start[0]-pose[0], actual_start[1]-pose[1])
-            result["post_goal_request_error_m"] = error
-            result["post_goal_request_uses_live_position"] = error < .01
+            requested_start = [float(value) for value in requests[-1].split(",")[:2]]
+            error = math.hypot(actual_start[0]-requested_start[0], actual_start[1]-requested_start[1])
+            result["request_start_matches_planner"] = error < .002
+            result["request_start_error_m"] = error
         for name, data in [("events",events), ("odom",odom), ("result",result)]:
             (args.output/(name+".json")).write_text(json.dumps(data, ensure_ascii=False, indent=2)+"\n")
         print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)

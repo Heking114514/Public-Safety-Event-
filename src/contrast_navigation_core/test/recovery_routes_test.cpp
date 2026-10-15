@@ -283,7 +283,10 @@ TEST(RecoveryRoutes, ForwardAdjustmentCanMoveTowardObstacleBeforeRetreat) {
     {0.125,0.125,0,0,0},config); // 尺寸来源 vehicle_physical.yaml。
   recovery.set_incoming_lane("ROAD_Y3_LEFT",{1.2,-.5});
   const auto obstacle=navigation_safety::rectangle_polygon({1.11,-.86,1.29,-.78});
-  EXPECT_TRUE(recovery.candidates(start,obstacle).empty());
+  const auto distant=recovery.candidates(start,obstacle);
+  EXPECT_TRUE(std::none_of(distant.begin(),distant.end(),[](const Candidate &c) {
+    return c.resume_node=="x1_y3";
+  }));
   config.forward_obstacle_clearance_m=.03; // 用户要求的车身外廓净距。
   recovery.load(workspace()+"/src/new_map_planner/config/arena.yaml",
     {0.125,0.125,0,0,0},config);
@@ -399,8 +402,18 @@ TEST(RecoveryRoutes, ClearanceLimitRejectsOtherwiseCollisionFreeAdjustment) {
   recovery.set_incoming_lane("ROAD_Y3_LEFT",{1.2,-.5});
   const auto candidates=recovery.candidates({{1.2,-.31},-pi/2},
     navigation_safety::rectangle_polygon({1.11,-.54,1.29,-.52}));
-  EXPECT_TRUE(candidates.empty());
-  EXPECT_TRUE(recovery.steps().empty());
+  EXPECT_TRUE(std::none_of(candidates.begin(),candidates.end(),[](const Candidate &c) {
+    return c.resume_node=="x1_y3";
+  }));
+  // 更后方候选可以直接倒退，但不得向障碍前移。
+  for (const auto &candidate:candidates) {
+    const Recovery::Pose start{{1.2,-.31},-pi/2};
+    ASSERT_TRUE(recovery.plan(start,candidate,{}));
+    for (const auto &step:recovery.steps()) EXPECT_NE(step.phase,"FORWARD_ADJUSTMENT");
+    RecoveryReplay replay(recovery,workspace());
+    ASSERT_TRUE(replay.run(start,recovery.steps())) << replay.failure();
+  }
+
 }
 
 TEST(RecoveryRoutes, ForwardAdjustmentCannotPassThroughObstacle) {
@@ -408,6 +421,73 @@ TEST(RecoveryRoutes, ForwardAdjustmentCannotPassThroughObstacle) {
   recovery.set_incoming_lane("ROAD_Y3_LEFT",{1.2,-.5});
   const auto candidates=recovery.candidates({{1.2,-.41},-pi/2},
     navigation_safety::rectangle_polygon({1.11,-.56,1.29,-.54}));
-  EXPECT_TRUE(candidates.empty());
+  EXPECT_TRUE(std::none_of(candidates.begin(),candidates.end(),[](const Candidate &c) {
+    return c.resume_node=="x1_y3";
+  }));
+  // 更后方候选可以直接倒退，但不得向障碍前移。
+  for (const auto &candidate:candidates) {
+    const Recovery::Pose start{{1.2,-.41},-pi/2};
+    ASSERT_TRUE(recovery.plan(start,candidate,{}));
+    for (const auto &step:recovery.steps()) EXPECT_NE(step.phase,"FORWARD_ADJUSTMENT");
+    RecoveryReplay replay(recovery,workspace());
+    ASSERT_TRUE(replay.run(start,recovery.steps())) << replay.failure();
+  }
+
+}
+
+TEST(RecoveryRoutes, UserNegativeYContinuesPastBlockedRearT) {
+  auto recovery=make_recovery();
+  const Recovery::Pose start{{1.239,-1.5},pi};
+  // 2026-10-15 17:04 GUI 实际双障碍：宽20cm、深10cm。
+  const std::vector<navigation_safety::Polygon> obstacles{
+    navigation_safety::rectangle_polygon({1.10,-1.025,1.30,-.925}),
+    navigation_safety::rectangle_polygon({2.10,-1.035,2.30,-.935})};
+  const std::vector<std::string> blocked{"ROAD_Y3_LEFT","ROAD_Y2_LEFT"};
+  recovery.set_dynamic_obstacles(obstacles);
+  const auto candidates=recovery.candidates(start,obstacles.front());
+  const auto far=std::find_if(candidates.begin(),candidates.end(),[](const Candidate &c) {
+    return c.resume_node=="x0_y1" && c.resume_lane=="ROAD_Y1_LEFT";
+  });
+  ASSERT_NE(far,candidates.end());
+  EXPECT_NE(std::find(far->borrowed_lane_ids.begin(),far->borrowed_lane_ids.end(),
+    "ROAD_X0_Y1"),far->borrowed_lane_ids.end());
+  for (const auto &lane:far->borrowed_lane_ids)
+    EXPECT_EQ(std::find(blocked.begin(),blocked.end(),lane),blocked.end());
+  ASSERT_TRUE(recovery.plan(start,*far,blocked));
+  ASSERT_FALSE(recovery.steps().empty());
+  const auto &retreat=recovery.steps().front();
+  EXPECT_EQ(retreat.phase,"RETREAT_TO_TURN_POINT");
+  EXPECT_LT(retreat.linear,0);
+  EXPECT_NEAR(retreat.target.position.x,3.27,1e-9);
+  EXPECT_NEAR(retreat.target.position.y,-1.5,1e-9);
+  EXPECT_GT(retreat.end.position.x-retreat.start.position.x,2.0);
+  // 真实封路快照下的独立车辆积分，连续越过 x=2.2 的不可用 T。
+  ASSERT_TRUE(recovery.plan(start,*far,blocked));
+  RecoveryReplay replay(recovery,workspace());
+  ASSERT_TRUE(replay.run(start,recovery.steps())) << replay.failure();
+  EXPECT_GT(replay.reverse_distance(),2.0);
+  EXPECT_TRUE(recovery.exit_matches(replay.actual(),*far));
+  auto behind_blocked=blocked; behind_blocked.push_back("ROAD_X0_Y1");
+  EXPECT_FALSE(recovery.plan(start,*far,behind_blocked));
+  EXPECT_TRUE(recovery.steps().empty());
+  const auto rear_obstacle=navigation_safety::rectangle_polygon({2.65,-1.60,2.75,-1.40});
+  recovery.set_dynamic_obstacles({obstacles[0],obstacles[1],rear_obstacle});
+  EXPECT_FALSE(recovery.plan(start,*far,blocked));
+  EXPECT_TRUE(recovery.steps().empty());
+}
+
+TEST(RecoveryRoutes, ReturnedCrossCanContinueBehindItsSavedIncomingRoad) {
+  auto recovery=make_recovery();
+  const Recovery::Pose start{{2.193,-.569},1.568};
+  recovery.set_incoming_lane("ROAD_Y2_LEFT",{2.2,-.5});
+  const auto candidates=recovery.candidates(start,
+    navigation_safety::rectangle_polygon({2.464,-.60,2.584,-.40}));
+  // 返回十字入口后，允许沿保存的入路继续倒退至后方边界 T。
+  // 原 7 cm 固定入口在此越界，所以检查枚举已到达，动作仍必须拒绝。
+  Candidate rear;
+  rear.resume_node="x0_y2"; rear.resume_lane="ROAD_X0_Y1";
+  rear.resume_heading=0; rear.borrowed_lane_ids={"ROAD_X0_Y1","ROAD_Y2_LEFT"};
+  EXPECT_FALSE(recovery.plan(start,rear,{}));
+  EXPECT_TRUE(recovery.unsafe_entry_rejected());
   EXPECT_TRUE(recovery.steps().empty());
 }
