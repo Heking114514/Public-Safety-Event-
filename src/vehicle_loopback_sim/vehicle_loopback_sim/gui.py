@@ -19,8 +19,9 @@ from nav_msgs.msg import OccupancyGrid, Odometry, Path as NavPath
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rclpy.clock import Clock, ClockType
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from std_msgs.msg import Empty, Int32, String
+from std_msgs.msg import Empty, Float64, Int32, String
 from vehicle_config import load_vehicle_physical_config
 
 from .arena_layout import (
@@ -188,9 +189,21 @@ class VehicleLoopbackGui(Node):
             str(self.get_parameter("clear_manual_obstacles_topic").value),
             default_qos,
         )
+        self._simulation_time_scale_publisher = self.create_publisher(
+            Float64,
+            str(self.get_parameter("simulation_time_scale_topic").value),
+            default_qos,
+        )
 
+        self._scale_ack = threading.Condition()
+        self._applied_scale = None
+        self.create_subscription(
+            Float64, str(self.get_parameter("simulation_time_scale_state_topic").value),
+            self._handle_simulation_time_scale, durable_qos,
+        )
         publish_rate_hz = max(1.0, float(self.get_parameter("publish_rate_hz").value))
-        self.create_timer(1.0 / publish_rate_hz, self._publish_live_state)
+        self.create_timer(1.0 / publish_rate_hz, self._publish_live_state,
+                          clock=Clock(clock_type=ClockType.STEADY_TIME))
 
         host = str(self.get_parameter("host").value)
         port = int(self.get_parameter("port").value)
@@ -232,6 +245,8 @@ class VehicleLoopbackGui(Node):
             "mission_status_topic": "/vehicle_loopback_sim/mission_status",
             "manual_obstacle_topic": "/vehicle_loopback_sim/manual_obstacle",
             "clear_manual_obstacles_topic": "/vehicle_loopback_sim/clear_obstacles",
+            "simulation_time_scale_topic": "/simulation/time_scale",
+            "simulation_time_scale_state_topic": "/simulation/time_scale_state",
             "manual_obstacle_width_m": 0.20,
             "manual_obstacle_depth_m": 0.10,
             "obstacle_detection_trigger_range_m": 0.25,
@@ -312,6 +327,7 @@ class VehicleLoopbackGui(Node):
             "navigation_path": {"frame_id": "", "poses": []},
             "arena_path": {"frame_id": "", "poses": []},
             "manual_obstacles": [],
+            "simulation_time_scale": None,
             "map": None,
         }
 
@@ -357,6 +373,23 @@ class VehicleLoopbackGui(Node):
         self._clear_manual_obstacles_publisher.publish(Empty())
         self.get_logger().info("manual obstacles cleared from GUI")
         return {"manual_obstacles": []}
+
+    def _handle_simulation_time_scale(self, message: Float64) -> None:
+        with self._scale_ack:
+            self._applied_scale = message.data
+            self._state.update({"simulation_time_scale": message.data})
+            self._scale_ack.notify_all()
+
+    def _set_simulation_time_scale(self, value: float) -> dict[str, Any]:
+        if not math.isfinite(value) or value < 0.1 or value > 10.0:
+            raise ValueError("simulation time scale must be between 0.1 and 10.0")
+        with self._scale_ack:
+            self._simulation_time_scale_publisher.publish(Float64(data=value))
+            applied = self._scale_ack.wait_for(
+                lambda: self._applied_scale == value, timeout=2.0)
+        if not applied:
+            raise TimeoutError("统一仿真时钟未确认倍率；请使用 Contrast 避障仿真入口")
+        return {"simulation_time_scale": value}
 
     def _make_server(self, host: str, port: int) -> ThreadingHTTPServer:
         index_path = (
@@ -410,6 +443,18 @@ class VehicleLoopbackGui(Node):
                     return
                 if self.path == "/manual_obstacles/clear":
                     updates = owner._clear_manual_obstacles()
+                    self._send_json(HTTPStatus.OK, {"state": updates})
+                    return
+                if self.path == "/simulation_time_scale":
+                    try:
+                        payload = self._read_json()
+                        updates = owner._set_simulation_time_scale(float(payload["value"]))
+                    except (KeyError, TypeError, ValueError) as error:
+                        self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                        return
+                    except TimeoutError as error:
+                        self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(error)})
+                        return
                     self._send_json(HTTPStatus.OK, {"state": updates})
                     return
                 self.send_error(HTTPStatus.NOT_FOUND)

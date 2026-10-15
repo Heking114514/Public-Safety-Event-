@@ -513,7 +513,8 @@ def worker(config_path):
         if not hasattr(NavigationRecoveryState(), "phase"):
             raise RuntimeError("installed NavigationRecoveryState lacks phase; rebuild/source workspace")
         rclpy.init()
-        node = rclpy.create_node("pose_recovery_scenario_probe")
+        node = rclpy.create_node("pose_recovery_scenario_probe",
+            parameter_overrides=[rclpy.parameter.Parameter("use_sim_time", value=True)])
         occupied_until = time.monotonic() + 1.5
         while time.monotonic() < occupied_until and not interrupted:
             rclpy.spin_once(node, timeout_sec=.05)
@@ -567,7 +568,8 @@ def worker(config_path):
         obstacle_pub = node.create_publisher(PolygonStamped, ROOT + "/obstacle/manual", 10)
         client = node.create_client(ControlMission, "/navigation_mission/control")
         launch_args = ["ros2", "launch", "contrast_controller", "obstacle_validation.launch.py",
-                       "auto_start:=false", "gui:=false", "target_ids:=" + ",".join(case["targets"])]
+                       "auto_start:=false", "gui:=false", "target_ids:=" + ",".join(case["targets"]),
+                       "simulation_time_scale:=" + str(config.get("simulation_time_scale", 1.0))]
         if config.get("planner_config"):
             launch_args.append("planner_config:=" + config["planner_config"])
         dump(directory / "launch_command.json", launch_args)
@@ -764,6 +766,8 @@ def main():
     parser.add_argument("--base-domain", type=int, default=170, help="one distinct domain per scenario; refuses occupied domains")
     parser.add_argument("--timeout", type=float, default=180, help="maximum seconds per approach and per obstacle recovery")
     parser.add_argument("--startup-timeout", type=float, default=45)
+    parser.add_argument("--simulation-time-scale", type=float, default=1.0,
+                        help="shared /clock time scale; vehicle speed parameters stay unchanged")
     parser.add_argument("--planner-config", type=Path, help="optional existing arena config; default scenarios require matching map geometry")
     parser.add_argument("--scenario", "--only", action="append", choices=[c["name"] for c in scenarios()], help="select scenarios; direction cases fail unless their expected template actually executes")
     parser.add_argument("--require-forward-adjustment", action="store_true",
@@ -784,6 +788,8 @@ def main():
         parser.error("domain range must lie within 0..232")
     if min(args.timeout, args.startup_timeout) <= 0:
         parser.error("timeouts must be positive")
+    if not math.isfinite(args.simulation_time_scale) or not .1 <= args.simulation_time_scale <= 10:
+        parser.error("simulation time scale must be within 0.1..10")
     workspace = args.workspace.resolve()
     for setup in [Path("/opt/ros/humble/setup.bash"), workspace / "install/setup.bash"]:
         if not setup.is_file():
@@ -800,6 +806,7 @@ def main():
             directory.mkdir()
             config = dict(case=case, directory=str(directory), domain_id=args.base_domain + index,
                           timeout=args.timeout, startup_timeout=args.startup_timeout,
+                          simulation_time_scale=args.simulation_time_scale,
                           planner_config=str(planner_config.resolve()),
                           controller_config=str(workspace / "src/contrast_controller/config/contrast_controller.yaml"),
                           require_forward_adjustment=args.require_forward_adjustment)

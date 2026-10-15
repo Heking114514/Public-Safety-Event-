@@ -7,7 +7,8 @@ bool MissionManager::request_road_recovery()
   if (!pose_recovery_enabled_ || !mission_->running() || mission_->paused() ||
     active_route_.has_value() || !completed_route_retreat_available_ ||
     completed_route_id_ == 0U || blocked_lane_ids_.empty() || dynamic_obstacles_.empty() ||
-    road_recovery_route_id_ != 0U || !pose_.has_value() || !pose_->fresh(odom_timeout_s_))
+    road_recovery_route_id_ != 0U || !pose_.has_value() ||
+    !pose_->fresh(odom_timeout_s_, steady_seconds()))
   {
     return false;
   }

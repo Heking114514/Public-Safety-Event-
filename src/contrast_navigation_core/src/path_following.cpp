@@ -76,7 +76,7 @@ void WaypointNavigator::RunPath(const ControlFrame &frame) {
   double controlDt = 1.0 / controlFrequency_;
   if (motionCommandInitialized_) {
     const double measuredDt = std::chrono::duration<double>(
-        std::chrono::steady_clock::now() - lastMotionCommandTime_).count();
+        ControlNow() - lastMotionCommandTime_).count();
     if (measuredDt > 0.0 && measuredDt <= 0.2)
       controlDt = measuredDt;
   }
@@ -106,9 +106,7 @@ void WaypointNavigator::RunPath(const ControlFrame &frame) {
     if (turnManeuverController_.enabled_for(plannedTurnError)) {
       controlState_.begin_corner_shunt(currentX_, currentY_);
       turnManeuverController_.begin(
-          std::chrono::duration<double>(
-              std::chrono::steady_clock::now().time_since_epoch())
-              .count());
+          ControlSeconds());
     } else {
       controlState_.begin_path_alignment(currentX_, currentY_);
     }
@@ -171,7 +169,7 @@ void WaypointNavigator::RunPath(const ControlFrame &frame) {
           std::max(std::abs(frame.control_yaw_rate),
                    std::abs(lastMotionCommand_.angular.z));
       const double telemetryAge = controlTelemetryReceived_
-          ? std::chrono::duration<double>(std::chrono::steady_clock::now() -
+          ? std::chrono::duration<double>(ControlNow() -
                                           lastControlTelemetryArrival_).count()
           : std::numeric_limits<double>::infinity();
       const bool translationStopped = visual_navigation::TurnTranslationHasStopped(
@@ -184,7 +182,7 @@ void WaypointNavigator::RunPath(const ControlFrame &frame) {
         SetState(visual_navigation::phase_status(controlState_.phase()));
         return;
       }
-      if (!turnSettleController_.update(std::chrono::steady_clock::now(),
+      if (!turnSettleController_.update(ControlNow(),
                                         turnActivity, turnSettleYawRate_,
                                         turnSettleDwell_)) {
         SetState(visual_navigation::phase_status(controlState_.phase()));

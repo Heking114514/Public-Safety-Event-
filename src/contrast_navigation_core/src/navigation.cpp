@@ -74,17 +74,17 @@ void WaypointNavigator::BeginWaypointBraking() {
   waypointBrakeRecoveryAttempts_ = 0;
   waypointBrakeStoppedTelemetrySamples_ = 0;
   waypointBrakeRecovering_ = false;
-  waypointBrakeController_.begin(std::chrono::steady_clock::now());
+  waypointBrakeController_.begin(ControlNow());
 }
 
 void WaypointNavigator::UpdateObservedLinearSpeed() {
   pathTrackingController_.update_observed_speed(
-      currentX_, currentY_, std::chrono::steady_clock::now(),
+      currentX_, currentY_, ControlNow(),
       stopMotionWindow_);
 }
 
 bool WaypointNavigator::WaypointBrakeHasCompleted() {
-  const auto currentTime = std::chrono::steady_clock::now();
+  const auto currentTime = ControlNow();
   const double telemetryAge =
       controlTelemetryReceived_
           ? std::chrono::duration<double>(currentTime -
@@ -172,5 +172,5 @@ double WaypointNavigator::UpdatePathPid(double error, double crossTrackError,
                                         bool allowIntegral, double yawRate) {
   return pathTrackingController_.update_pid(error, crossTrackError,
                                             allowIntegral, yawRate,
-                                            std::chrono::steady_clock::now());
+                                            ControlNow());
 }

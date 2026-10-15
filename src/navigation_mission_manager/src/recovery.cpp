@@ -173,7 +173,7 @@ void MissionManager::handle_turn_replan()
 std::optional<std::pair<std::string, std::string>>
 MissionManager::turn_recovery_context() const
 {
-  if (!pose_.has_value() || !pose_->fresh(odom_timeout_s_) ||
+  if (!pose_.has_value() || !pose_->fresh(odom_timeout_s_, steady_seconds()) ||
     !active_route_.has_value())
   {
     return std::nullopt;

@@ -254,6 +254,13 @@
       </section>
 
       <section class="section">
+        <h2>仿真时间</h2>
+        <div class="metric"><span>推进倍率</span><span id="simulation-time-scale">等待时钟</span></div>
+        <input id="simulation-time-scale-input" type="range" min="0.1" max="10" step="0.1" value="1" disabled>
+        <small>只加快仿真时间，车辆速度参数不变</small>
+      </section>
+
+      <section class="section">
         <h2>图例</h2>
         <div class="legend">
           <div class="legend-item" style="color: var(--route)"><span class="swatch"></span><span>导航路径</span></div>
@@ -296,6 +303,8 @@
       pathCount: document.getElementById("path-count"),
       plannerCount: document.getElementById("planner-count"),
       obstacleCount: document.getElementById("obstacle-count"),
+      simulationTimeScale: document.getElementById("simulation-time-scale"),
+      simulationTimeScaleInput: document.getElementById("simulation-time-scale-input"),
       mapInfo: document.getElementById("map-info"),
       targetWheels: document.getElementById("target-wheels"),
       measuredWheels: document.getElementById("measured-wheels"),
@@ -707,6 +716,11 @@
         `${fmt(last.x_m, 2)},${fmt(last.y_m, 2)})`;
     }
 
+    let scaleEditing = false;
+    let scalePending = false;
+    let scaleDebounce;
+    let requestedScale = null;
+
     function updateMetrics() {
       const displayName = state.display_name || "Loopback Navigation GUI";
       els.displayName.textContent = displayName;
@@ -726,6 +740,12 @@
       els.pathCount.textContent = pathSummary(state.waypoint_path);
       els.plannerCount.textContent = pathSummary(state.navigation_path);
       els.obstacleCount.textContent = `${state.manual_obstacles?.length || 0}`;
+      const scaleValue = state.simulation_time_scale;
+      els.simulationTimeScale.textContent = Number.isFinite(scaleValue) ? `${scaleValue.toFixed(1)}x` : "--";
+      els.simulationTimeScaleInput.disabled = !Number.isFinite(scaleValue);
+      if (!scaleEditing && !scalePending && Number.isFinite(scaleValue)) {
+        els.simulationTimeScaleInput.value = scaleValue;
+      }
       els.mapInfo.textContent = state.arena_layout
         ? `${fmt(state.arena_layout.width_m, 1)} x ${fmt(state.arena_layout.height_m, 1)} m`
         : (state.map ? `${state.map.width} x ${state.map.height}, ${fmt(state.map.resolution_m, 3)} m` : "--");
@@ -794,6 +814,32 @@
     document.getElementById("clear-obstacles").addEventListener("click", () => {
       postJson("/manual_obstacles/clear").catch(console.error);
     });
+    async function sendScale() {
+      if (scalePending || requestedScale === null) return;
+      const value = requestedScale;
+      requestedScale = null;
+      scalePending = true;
+      try {
+        await postJson("/simulation_time_scale", { value });
+      } catch (error) {
+        els.simulationTimeScale.textContent = error.message;
+      } finally {
+        scalePending = false;
+        if (requestedScale !== null) sendScale();
+      }
+    }
+    els.simulationTimeScaleInput.addEventListener("pointerdown", () => { scaleEditing = true; });
+    els.simulationTimeScaleInput.addEventListener("input", () => {
+      requestedScale = Number(els.simulationTimeScaleInput.value);
+      clearTimeout(scaleDebounce);
+      scaleDebounce = setTimeout(sendScale, 120);
+    });
+    els.simulationTimeScaleInput.addEventListener("change", () => {
+      scaleEditing = false;
+      clearTimeout(scaleDebounce);
+      sendScale();
+    });
+    els.simulationTimeScaleInput.addEventListener("pointercancel", () => { scaleEditing = false; });
 
     let drag = null;
     canvas.addEventListener("pointerdown", (event) => {

@@ -1,12 +1,5 @@
 #include "visual_navigation/waypoint_navigator.hpp"
 
-namespace {
-double wall_seconds() {
-  return std::chrono::duration<double>(
-    std::chrono::steady_clock::now().time_since_epoch()).count();
-}
-}
-
 visual_navigation::PoseRecovery::Pose WaypointNavigator::RecoveryPose() const {
   const double c = std::cos(currentYaw_), s = std::sin(currentYaw_);
   return {{currentX_ - c * trackingPointOffsetX_ + s * trackingPointOffsetY_,
@@ -32,7 +25,7 @@ void WaypointNavigator::BeginRecoveryStop(double t) {
 bool WaypointNavigator::RecoveryStopCompleted(double t) {
   PublishStop();
   const double age = std::chrono::duration<double>(
-    std::chrono::steady_clock::now() - lastControlTelemetryArrival_).count();
+    ControlNow() - lastControlTelemetryArrival_).count();
   const bool fresh = controlTelemetryReceived_ && age <= controlTelemetryTimeout_ &&
     ImuYawRateIsFresh();
   const auto result = recoveryStopGuard_.update(t, controlTelemetrySampleCount_, fresh,
@@ -48,7 +41,7 @@ bool WaypointNavigator::RecoveryStopCompleted(double t) {
 }
 
 bool WaypointNavigator::RecoveryCommandSafe(const geometry_msgs::msg::Twist &command) const {
-  const auto wall = std::chrono::steady_clock::now();
+  const auto wall = ControlNow();
   double dt = 1.0 / controlFrequency_;
   if (motionCommandInitialized_) {
     const double measured = std::chrono::duration<double>(wall - lastMotionCommandTime_).count();
@@ -91,13 +84,13 @@ bool WaypointNavigator::RunPoseRecovery() {
     PublishStop(); return true;
   }
   if (RunTurnObstacleRecovery()) return true;
-  const double t = poseRecovery_.active_seconds(wall_seconds());
+  const double t = poseRecovery_.active_seconds(ControlSeconds());
   if (poseRecoveryPhase_ == "braking") {
     if (!RecoveryStopCompleted(t)) return true;
     // 普通避障停车期间更新初始障碍；转弯特例保留原障碍和原道路。
     if (!turnObstacleContextValid_ && !recoveryKnownRoad_) {
       const double age = std::chrono::duration<double>(
-        std::chrono::steady_clock::now() - recoveryPolygonTime_).count();
+        ControlNow() - recoveryPolygonTime_).count();
       if (age <= frontObstacleTimeout_ && latestRecoveryPolygon_.polygon.points.size() >= 3) {
         poseRecoveryObstacle_.points.clear();
         for (const auto &p : latestRecoveryPolygon_.polygon.points)

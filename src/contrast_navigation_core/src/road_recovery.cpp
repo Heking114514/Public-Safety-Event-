@@ -45,8 +45,7 @@ void WaypointNavigator::HandleRoadRecovery(
   ++poseRecoveryId_;
   completedRoadRecoveryRoute_=0;
   poseRecoveryRevision_=request->obstacle_revision;
-  const double wall=std::chrono::duration<double>(
-    std::chrono::steady_clock::now().time_since_epoch()).count();
+  const double wall=ControlSeconds();
   poseRecovery_.reset_clock(wall);
   navigationActive_=true;
   if (BeginTurnObstacleRecovery()) {

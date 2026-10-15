@@ -27,7 +27,7 @@ WaypointNavigator::RunBrake(const ControlFrame &frame) {
     if (waypointBrakeController_.timed_out()) {
       ++waypointBrakeRecoveryAttempts_;
       waypointBrakeRecovering_ = true;
-      waypointBrakeController_.begin(std::chrono::steady_clock::now());
+      waypointBrakeController_.begin(ControlNow());
       SetState("RECOVERING_WAYPOINT_BRAKE");
     } else {
       SetState(waypointBrakeRecovering_

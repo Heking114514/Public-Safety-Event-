@@ -3,19 +3,12 @@
 #include <algorithm>
 #include <cmath>
 
-namespace {
-double TurnWallSeconds() {
-  return std::chrono::duration<double>(
-             std::chrono::steady_clock::now().time_since_epoch()).count();
-}
-} // namespace
-
 void WaypointNavigator::PauseActiveTurn() {
   if (!turnManeuverController_.active()) return;
   visual_navigation::TurnManeuverInput input;
   input.motion_allowed = false;
   input.context.pose = {currentX_, currentY_, currentYaw_};
-  turnManeuverController_.update(input, TurnWallSeconds());
+  turnManeuverController_.update(input, ControlSeconds());
 }
 
 bool WaypointNavigator::BeginTurnObstacleRecovery() {
@@ -124,7 +117,7 @@ void WaypointNavigator::FinishTurnObstacleRecovery() {
   stoppedTurnReverseArrival_ = false;
   controlState_.interrupt_maneuver();
   poseRecoveryPhase_ = "braking";
-  BeginRecoveryStop(poseRecovery_.active_seconds(TurnWallSeconds()));
+  BeginRecoveryStop(poseRecovery_.active_seconds(ControlSeconds()));
   PublishStop();
   SetState("POSE_RECOVERY_ORIGINAL_LANE_STOP");
   PublishPoseRecovery("braking");
@@ -136,7 +129,7 @@ bool WaypointNavigator::RunTurnObstacleRecovery() {
     poseRecoveryPhase_ == "post_turn_stop" || poseRecoveryPhase_ == "reverse_turn" ||
     poseRecoveryPhase_ == "return_stop";
   if (!owned) return false;
-  const double t = poseRecovery_.active_seconds(TurnWallSeconds());
+  const double t = poseRecovery_.active_seconds(ControlSeconds());
   const auto context = [this]() {
     auto saved = turnObstacleContext_;
     const auto p = RecoveryPose();
@@ -181,7 +174,7 @@ bool WaypointNavigator::RunTurnObstacleRecovery() {
       }
     }
     visual_navigation::TurnManeuverInput input; input.context = context();
-    const auto decision = turnManeuverController_.update(input, TurnWallSeconds());
+    const auto decision = turnManeuverController_.update(input, ControlSeconds());
     if (!normalTurnEntryConfirmed_ &&
         decision.phase == visual_navigation::TurnManeuverPhase::TURN_60 &&
         std::abs(decision.command.linear_x) <= 1e-9 &&

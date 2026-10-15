@@ -17,6 +17,7 @@ find_package(mission_control_interfaces REQUIRED)
 find_package(navigation_safety REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rosgraph_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
@@ -50,6 +51,9 @@ ament_target_dependencies(vehicle_loopback_sim_node
   std_msgs
   tf2_ros)
 
+add_executable(simulation_clock_node src/simulation_clock.cpp)
+ament_target_dependencies(simulation_clock_node rclcpp rosgraph_msgs std_msgs)
+
 add_executable(loopback_route_controller src/controller.cpp)
 target_include_directories(loopback_route_controller PRIVATE include)
 target_link_libraries(loopback_route_controller loopback_sim_core)
@@ -58,7 +62,7 @@ ament_target_dependencies(loopback_route_controller
 
 ament_python_install_package(vehicle_loopback_sim)
 
-install(TARGETS loopback_sim_core vehicle_loopback_sim_node loopback_route_controller
+install(TARGETS loopback_sim_core vehicle_loopback_sim_node loopback_route_controller simulation_clock_node
   EXPORT loopback_sim_coreTargets
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib

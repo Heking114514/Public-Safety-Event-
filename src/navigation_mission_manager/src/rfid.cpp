@@ -187,7 +187,7 @@ void MissionManager::on_rfid_number(const std_msgs::msg::Int32::SharedPtr messag
 
   refresh_rfid_duplicate_guard();
   if (rfid_duplicate_guard_.has_value() && rfid_duplicate_guard_->card == number &&
-    pose_.has_value() && pose_->fresh(odom_timeout_s_) &&
+    pose_.has_value() && pose_->fresh(odom_timeout_s_, steady_seconds()) &&
     std::isfinite(pose_->x) && std::isfinite(pose_->y))
   {
     RCLCPP_DEBUG(get_logger(), "Ignoring repeated RFID card %d near completed checkpoint", number);
@@ -301,7 +301,9 @@ void MissionManager::validate_pending_rfid(double now_seconds)
 std::optional<std::pair<std::size_t, std::string>>
 MissionManager::expected_rfid_checkpoint() const
 {
-  if (!pose_.has_value() || !pose_->fresh(odom_timeout_s_) || !active_route_.has_value()) {
+  if (!pose_.has_value() || !pose_->fresh(odom_timeout_s_, steady_seconds()) ||
+    !active_route_.has_value())
+  {
     return std::nullopt;
   }
   const auto & plan = active_route_->plan;
@@ -336,7 +338,8 @@ void MissionManager::on_current_waypoint(const std_msgs::msg::Int32::SharedPtr m
 void MissionManager::refresh_rfid_duplicate_guard()
 {
   if (!rfid_duplicate_guard_.has_value() || !pose_.has_value() ||
-    !pose_->fresh(odom_timeout_s_) || !std::isfinite(pose_->x) || !std::isfinite(pose_->y))
+    !pose_->fresh(odom_timeout_s_, steady_seconds()) || !std::isfinite(pose_->x) ||
+    !std::isfinite(pose_->y))
   {
     return;
   }
@@ -378,7 +381,7 @@ void MissionManager::service_rfid(double now_seconds)
       }
       return;
     }
-    if (!pose_.has_value() || !pose_->fresh(odom_timeout_s_)) {
+    if (!pose_.has_value() || !pose_->fresh(odom_timeout_s_, steady_seconds())) {
       rfid_stationary_since_.reset();
       return;
     }
@@ -422,7 +425,7 @@ void MissionManager::service_rfid(double now_seconds)
     if (!held) {
       return;
     }
-    if (!pose_.has_value() || !pose_->fresh(odom_timeout_s_)) {
+    if (!pose_.has_value() || !pose_->fresh(odom_timeout_s_, steady_seconds())) {
       rfid_stationary_since_.reset();
       return;
     }
@@ -493,7 +496,7 @@ void MissionManager::service_rfid(double now_seconds)
     }
     const auto & task_id = mission_->layout().supernode_task_ids.at(rfid_active_supernode_);
     const auto target = mission_->layout().task_positions.at(task_id);
-    const bool converged = pose_.has_value() && pose_->fresh(odom_timeout_s_) &&
+    const bool converged = pose_.has_value() && pose_->fresh(odom_timeout_s_, steady_seconds()) &&
       std::hypot(pose_->x - target.first, pose_->y - target.second) <=
       rfid_correction_tolerance_m_;
     if (!converged) {

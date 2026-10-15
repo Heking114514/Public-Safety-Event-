@@ -1,5 +1,13 @@
 #include "visual_navigation/waypoint_navigator.hpp"
 
+std::chrono::steady_clock::time_point WaypointNavigator::ControlNow() const {
+  return visual_navigation::ControlTime(*controlClock_);
+}
+
+double WaypointNavigator::ControlSeconds() const {
+  return std::chrono::duration<double>(ControlNow().time_since_epoch()).count();
+}
+
 void WaypointNavigator::HandleOdometry(
     const nav_msgs::msg::Odometry::SharedPtr message) {
   if (!message) {
@@ -108,7 +116,7 @@ void WaypointNavigator::HandleControlTelemetry(
   targetRightWheelSpeed_ = message->target_right_velocity_mps;
   lastControlTelemetrySequence_ = message->sample_sequence;
   lastControlTelemetryMcuTime_ = message->mcu_time_ms;
-  lastControlTelemetryArrival_ = std::chrono::steady_clock::now();
+  lastControlTelemetryArrival_ = ControlNow();
   controlTelemetryReceived_ = true;
   ++controlTelemetrySampleCount_;
   if (controlState_.in(visual_navigation::ControlPhase::BRAKE)) {

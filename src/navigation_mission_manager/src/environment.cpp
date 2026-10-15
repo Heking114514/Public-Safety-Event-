@@ -144,7 +144,7 @@ void MissionManager::on_safe(const std_msgs::msg::String::SharedPtr message)
 
 void MissionManager::record_visual_obstacle(double distance)
 {
-  if (!pose_.has_value() || !pose_->fresh(odom_timeout_s_)) {
+  if (!pose_.has_value() || !pose_->fresh(odom_timeout_s_, steady_seconds())) {
     RCLCPP_WARN_THROTTLE(
       get_logger(), *get_clock(), 2000,
       "Visual obstacle received without a fresh map/base_link pose");

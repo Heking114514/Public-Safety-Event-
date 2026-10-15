@@ -3,10 +3,6 @@
 #include <stdexcept>
 
 namespace {
-double recovery_seconds() {
-  return std::chrono::duration<double>(
-    std::chrono::steady_clock::now().time_since_epoch()).count();
-}
 bool same_obstacle(const navigation_safety::Polygon &a,
                    const navigation_safety::Polygon &b) {
   if (a.points.size() != b.points.size()) return false;
@@ -124,7 +120,7 @@ void WaypointNavigator::InitPoseRecovery() {
         polygon.points.push_back({p.x, p.y});
       }
       latestRecoveryPolygon_ = *msg;
-      recoveryPolygonTime_ = std::chrono::steady_clock::now();
+      recoveryPolygonTime_ = ControlNow();
       if (recoveryRangeOnly_ && !poseRecoveryPhase_.empty() &&
           poseRecoveryPhase_ != "motion" && poseRecoveryPhase_ != "candidates") {
         recoveryRangeOnly_ = false;
@@ -167,7 +163,7 @@ void WaypointNavigator::InitPoseRecovery() {
       recoveryTurnManeuverStarted_ = false;
       recoveryTurnController_.reset();
       poseRecoveryPhase_ = "motion";
-      BeginRecoveryStop(poseRecovery_.active_seconds(recovery_seconds()));
+      BeginRecoveryStop(poseRecovery_.active_seconds(ControlSeconds()));
       SetState("POSE_RECOVERY_DIRECTION_STOP");
       PublishPoseRecovery("motion");
       res->success = true;
@@ -210,7 +206,7 @@ void WaypointNavigator::BeginPoseRecovery() {
   recoveryNewHazard_ = false;
   recoveryRangeOnly_ = false;
   poseRecoveryObstacle_.points.clear();
-  const auto wall = std::chrono::steady_clock::now();
+  const auto wall = ControlNow();
   const double polygon_age = std::chrono::duration<double>(wall - recoveryPolygonTime_).count();
   const double range_age = std::chrono::duration<double>(wall - lastFrontObstacleRangeArrival_).count();
   if (polygon_age < frontObstacleTimeout_ && latestRecoveryPolygon_.polygon.points.size() >= 3) {
@@ -227,7 +223,7 @@ void WaypointNavigator::BeginPoseRecovery() {
   }
   recoveryObservedObstacles_ = {poseRecoveryObstacle_};
   poseRecovery_.set_dynamic_obstacles(recoveryObservedObstacles_);
-  poseRecovery_.reset_clock(recovery_seconds());
+  poseRecovery_.reset_clock(ControlSeconds());
   recoveryTurnManeuverStarted_ = false;
   recoveryTurnController_.reset();
   turnObstacleContextValid_ = false;

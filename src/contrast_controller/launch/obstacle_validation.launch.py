@@ -24,6 +24,7 @@ def generate_launch_description():
         DeclareLaunchArgument("target_ids", default_value="1,2,3,4,5,6,7,8,9,10,11,12"),
         DeclareLaunchArgument("auto_start", default_value="true"),
         DeclareLaunchArgument("gui", default_value="true"),
+        DeclareLaunchArgument("simulation_time_scale", default_value="1.0"),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(str(contrast / "launch/contrast_comparison.launch.py")),
             launch_arguments={
@@ -33,12 +34,14 @@ def generate_launch_description():
                 "plan_on_start": "false",
                 "obstacle_detection": "true",
                 "gui": LaunchConfiguration("gui"),
+                "simulation_time_scale": LaunchConfiguration("simulation_time_scale"),
             }.items()),
         Node(
             package="navigation_mission_manager", executable="mission_manager_node",
             name="navigation_mission_manager", output="screen",
             parameters=[str(manager / "config/mission_manager.yaml"), {
                 "map_file": ParameterValue(arena, value_type=str),
+                "use_sim_time": True,
                 "auto_start": ParameterValue(LaunchConfiguration("auto_start"), value_type=bool),
                 "target_ids": ParameterValue(LaunchConfiguration("target_ids"), value_type=str),
                 "task_confirmation_mode": "route",
