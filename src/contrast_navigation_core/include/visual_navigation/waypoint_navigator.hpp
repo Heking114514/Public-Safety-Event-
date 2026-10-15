@@ -39,6 +39,7 @@
 #include "visual_navigation/corner_return.hpp"
 #include "geometry_msgs/msg/polygon_stamped.hpp"
 #include "mission_control_interfaces/srv/select_recovery.hpp"
+#include "mission_control_interfaces/srv/start_road_recovery.hpp"
 #include "visual_navigation/control_state.hpp"
 #include "visual_navigation/turn_maneuver.hpp"
 #include "visual_navigation/fusion_health_policy.hpp"
@@ -237,6 +238,9 @@ private:
 
   void InitPoseRecovery();
   void BeginPoseRecovery();
+  void HandleRoadRecovery(
+    const mission_control_interfaces::srv::StartRoadRecovery::Request::SharedPtr request,
+    mission_control_interfaces::srv::StartRoadRecovery::Response::SharedPtr response);
   bool RunPoseRecovery();
   void PublishPoseRecovery(const std::string &phase);
   void FailPoseRecovery(const std::string &reason);
@@ -279,10 +283,13 @@ private:
   int recoveryMotionDirection_{0};
   bool recoveryNewHazard_{false};
   bool recoveryRangeOnly_{false};
+  bool recoveryKnownRoad_{false};
+  uint64_t completedRoadRecoveryRoute_{0};
   std::vector<navigation_safety::Polygon> recoveryObservedObstacles_;
   double recoveryBestError_{0.0};
   rclcpp::Subscription<geometry_msgs::msg::PolygonStamped>::SharedPtr recoveryPolygonSubscription_;
   rclcpp::Service<mission_control_interfaces::srv::SelectRecovery>::SharedPtr selectRecoveryService_;
+  rclcpp::Service<mission_control_interfaces::srv::StartRoadRecovery>::SharedPtr roadRecoveryService_;
 
   void RunControl();
 

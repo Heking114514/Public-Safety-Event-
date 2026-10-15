@@ -52,6 +52,9 @@ public:
   bool exit_matches(const Pose &pose,
     const mission_control_interfaces::msg::RecoveryCandidate &candidate) const;
   std::string lane_at_pose(const Pose &pose) const;
+  int forward_obstacle(const Pose &pose,
+    const std::vector<navigation_safety::Polygon> &obstacles,
+    const std::vector<std::string> &blocked) const;
   RoadJunction junction_type(const std::string &node) const;
   RoadJunction junction_at(navigation_safety::Point point) const;
   void set_incoming_lane(const std::string &lane,

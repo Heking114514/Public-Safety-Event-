@@ -21,8 +21,8 @@ def main():
     parser.add_argument("--domain", type=int, default=226)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--timeout", type=float, default=450)
-    parser.add_argument("--scene", choices=["handoff", "cross_return"], default="handoff",
-                        help="cross_return 复现用户 GUI 的边界 T、十字转弯连续遇障")
+    parser.add_argument("--scene", choices=["handoff", "cross_return", "known_blockage"], default="handoff",
+                        help="cross_return 复现十字连续遇障；known_blockage 复现已知封路后的跨阶段长倒车")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
     os.environ["ROS_DOMAIN_ID"] = str(args.domain)
@@ -47,6 +47,9 @@ def main():
     process = None
     started = time.monotonic()
     continuation_start = None
+    known_recovery = False
+    known_reverse_m = 0.0
+    completed_tunnels = 0
 
     def event(kind, **data):
         row = dict(t=round(time.monotonic()-started, 3), kind=kind, **data)
@@ -54,20 +57,25 @@ def main():
         print(json.dumps(row, ensure_ascii=False), flush=True)
 
     def on_odom(msg):
-        nonlocal pose, continuation_start
+        nonlocal pose, continuation_start, known_reverse_m
         p, q = msg.pose.pose.position, msg.pose.pose.orientation
         yaw = math.atan2(2*(q.w*q.z+q.x*q.y), 1-2*(q.y*q.y+q.z*q.z))
+        previous_pose = pose
         pose = [p.x, p.y, yaw]
         odom.append(dict(t=time.monotonic()-started, pose=pose, status=status,
                          linear=msg.twist.twist.linear.x, angular=msg.twist.twist.angular.z))
-        if args.scene == "cross_return" and len(recoveries) >= 2:
+        if known_recovery and status == "POSE_RECOVERY_RETREAT_TO_TURN_POINT" and msg.twist.twist.linear.x < -.005 and previous_pose:
+            known_reverse_m += math.hypot(p.x-previous_pose[0], p.y-previous_pose[1])
+        if ((args.scene == "cross_return" and len(recoveries) >= 2) or
+                (args.scene == "known_blockage" and known_recovery and len(recoveries) >= 3)):
             if status == "FOLLOWING" and msg.twist.twist.linear.x > .005 and abs(msg.twist.twist.angular.z) < .1:
                 if continuation_start is None:
                     continuation_start = pose[:2]
                 distance = math.hypot(p.x-continuation_start[0], p.y-continuation_start[1])
-                if distance >= .20:
-                    result.update(passed=True, reason="默认任务连续两次避障后实测前进超过 20 cm",
-                                  continuation_m=distance)
+                if distance >= .20 and (args.scene != "known_blockage" or completed_tunnels > 0):
+                    result.update(passed=True, reason="避障及路线交接后实测前进超过 20 cm",
+                                  continuation_m=distance, known_reverse_m=known_reverse_m,
+                                  completed_tunnels=completed_tunnels)
             else:
                 continuation_start = None
 
@@ -103,6 +111,11 @@ def main():
                           next_route_error_m=error)
 
     def on_mission(msg):
+        nonlocal known_recovery, completed_tunnels
+        completed_tunnels = len(msg.completed_tunnel_ids)
+        if "已知障碍导致前进无路" in msg.message:
+            known_recovery = True
+            event("known_recovery", stage=msg.stage, pose=pose)
         if msg.state == MissionState.FAULT:
             event("mission_fault", message=msg.message, pose=pose)
             result.update(passed=False, reason=msg.message)
@@ -140,6 +153,14 @@ def main():
                 if pose is None or publisher.get_subscription_count() == 0:
                     continue
                 x, y, yaw = pose
+                if args.scene == "known_blockage":
+                    if injected == 0 and status == "FOLLOWING" and abs(x-1.2) < .03 and -1.3 < y < -.9 and abs(yaw+math.pi/2) < .1:
+                        inject(1.530, -1.5, .06, .10)
+                        injected = 1
+                    elif injected == 1 and recoveries and status == "FOLLOWING" and abs(x-1.2) < .03 and .5 < y < .8 and abs(yaw-math.pi/2) < .1:
+                        inject(1.2, 1.171, .10, .06)
+                        injected = 2
+                    continue
                 if args.scene == "cross_return":
                     if injected == 0 and status == "FOLLOWING" and 2.15 < x < 2.30 and abs(y+1.5) < .03 and abs(yaw) < .1:
                         inject(2.639, -1.5, .06, .10)
@@ -168,6 +189,10 @@ def main():
         log = (args.output/"launch.log").read_text(errors="replace")
         if "collision guard blocked" in log:
             result.update(passed=False, reason="仿真碰撞保护介入")
+        if args.scene == "known_blockage":
+            result["known_reverse_m"] = known_reverse_m
+        if args.scene == "known_blockage" and result.get("passed") and known_reverse_m < .95:
+            result.update(passed=False, reason="未测得从截图位置退至后方 T 路口的长倒车")
         requests = re.findall(r"发送规划请求:.*start=\(([^)]+)\)", log)
         result["manager_request_starts"] = requests
         planner_starts = re.findall(r"plan request:.*start_map=\(([^)]+)\)", log)

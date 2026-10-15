@@ -1,0 +1,9 @@
+# 已完成路线后的前进规划无解；携带仍然有效的真实障碍快照。
+uint64 route_id
+uint64 obstacle_revision
+geometry_msgs/Polygon[] obstacles
+string[] blocked_lane_ids
+---
+bool accepted
+uint64 recovery_id
+string message

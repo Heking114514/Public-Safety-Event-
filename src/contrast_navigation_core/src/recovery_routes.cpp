@@ -94,6 +94,41 @@ std::string PoseRecovery::lane_at_pose(const Pose &pose) const {
   return result;
 }
 
+int PoseRecovery::forward_obstacle(const Pose &pose,
+    const std::vector<navigation_safety::Polygon> &obstacles,
+    const std::vector<std::string> &blocked) const {
+  const auto incoming=lane_at_pose(pose);
+  const auto road=std::find_if(lanes_.begin(),lanes_.end(),[&](const Lane &lane) {
+    return lane.id==incoming;
+  });
+  if (road==lanes_.end()) return -1;
+  const auto a=nodes_.at(road->from), b=nodes_.at(road->to);
+  const auto ahead=(b.x-a.x)*std::cos(pose.yaw)+(b.y-a.y)*std::sin(pose.yaw)>0 ?
+    road->to : road->from;
+  for (std::size_t i=0;i<obstacles.size();++i) {
+    if (obstacles[i].points.size()<3) continue;
+    navigation_safety::Point center{};
+    for (const auto &p:obstacles[i].points) { center.x+=p.x; center.y+=p.y; }
+    center.x/=obstacles[i].points.size(); center.y/=obstacles[i].points.size();
+    double best=0.12;
+    const Lane *matched=nullptr;
+    for (const auto &lane:lanes_) {
+      const auto p=nodes_.at(lane.from), q=nodes_.at(lane.to);
+      const double d=length(p,q);
+      const double t=std::clamp(((center.x-p.x)*(q.x-p.x)+
+        (center.y-p.y)*(q.y-p.y))/(d*d),0.,1.);
+      const double error=length(center,{p.x+t*(q.x-p.x),p.y+t*(q.y-p.y)});
+      if (error<best) { best=error; matched=&lane; }
+    }
+    if (matched && std::find(blocked.begin(),blocked.end(),matched->id)!=blocked.end() &&
+        (matched->id==incoming || matched->from==ahead || matched->to==ahead) &&
+        (center.x-pose.position.x)*std::cos(pose.yaw)+
+          (center.y-pose.position.y)*std::sin(pose.yaw)>=0)
+      return static_cast<int>(i);
+  }
+  return -1;
+}
+
 bool PoseRecovery::exit_matches(const Pose &pose,
     const mission_control_interfaces::msg::RecoveryCandidate &candidate) const {
   const auto it=std::find_if(lanes_.begin(),lanes_.end(),[&](const Lane &lane) {

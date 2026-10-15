@@ -10,6 +10,7 @@ ament_add_gtest(mission_manager_recovery_test
   ../src/planning.cpp
   ../src/pose_recovery.cpp
   ../src/recovery.cpp
+  ../src/road_recovery.cpp
   ../src/rfid.cpp
   ../src/services.cpp)
 target_link_libraries(mission_manager_recovery_test mission_manager_core yaml-cpp)

@@ -819,6 +819,27 @@ TEST(Diagnostics, FailureNamesAreStable) {
                "NO_FEASIBLE_ROUTE");
 }
 
+TEST(Planner, KnownBlockedLayer2DeadEndHasExplicitFailure) {
+  new_map_planner::MapPlanner planner(OfficialConfig());
+  new_map_planner::PlanRequest request;
+  // 用户完整回环日志：12 个任务已完成，面向西到达上方 L，前方南出口被封。
+  request.start_map = {{1.238, 1.5}, new_map_planner::kPi};
+  request.mode = "layer2";
+  request.required_lane_ids = {"TUNNEL_1", "TUNNEL_2", "TUNNEL_3", "TUNNEL_4"};
+  request.allow_partial = true;
+  request.return_home = false;
+  request.ordinary_nodes_since_task_exact = true;
+  request.ordinary_nodes_since_task = 0;
+  request.blocked_lane_ids = {"ROAD_X0_Y2", "ROAD_Y3_RIGHT"};
+  request.dynamic_obstacles_map = {
+    {{{1.47,-1.60},{1.59,-1.60},{1.59,-1.40},{1.47,-1.40}}},
+    {{{1.10,1.111},{1.30,1.111},{1.30,1.231},{1.10,1.231}}}};
+  const auto result = planner.plan(request);
+  EXPECT_FALSE(result.success);
+  EXPECT_EQ(result.failure_reason, new_map_planner::PlanFailureReason::NO_FEASIBLE_ROUTE)
+      << result.message;
+}
+
 TEST(Planner, DynamicBlockageDefersOnlyUnreachableCoverage) {
   const auto config = OfficialConfig();
   new_map_planner::MapPlanner planner(config);

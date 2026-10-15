@@ -227,6 +227,9 @@ void MissionManager::on_plan_response(
       "规划服务返回失败: status=%s message=%s planning_time=%.1fms retries=%d",
       response->plan.status.c_str(), response->message.c_str(),
       response->planning_time_ms, plan_retries_);
+    if (response->plan.status == "NO_FEASIBLE_ROUTE" && request_road_recovery()) {
+      return;
+    }
     handle_plan_rejection("规划失败：" + response->message);
     return;
   }
@@ -367,6 +370,7 @@ void MissionManager::handle_goal_reached()
   ordinary_nodes_since_task_ = route.plan.ordinary_nodes_since_task;
   clear_active_route();
   completed_route_retreat_available_ = true;
+  completed_route_id_ = route.route_id;
   const std::string current_stage = mission_->current_stage();
   if (mission_->finished()) {
     ++completed_stages_;

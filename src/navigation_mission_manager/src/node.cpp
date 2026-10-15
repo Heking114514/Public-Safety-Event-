@@ -216,6 +216,8 @@ void MissionManager::create_interfaces()
   if (pose_recovery_enabled_) {
     select_recovery_client_ = create_client<mission_control_interfaces::srv::SelectRecovery>(
       select_service);
+    road_recovery_client_ = create_client<mission_control_interfaces::srv::StartRoadRecovery>(
+      select_service.substr(0, select_service.find_last_of('/')) + "/start_road_recovery");
   }
   planner_client_ = create_client<new_map_planner::srv::PlanRoute>(
     get_parameter("planner_service").as_string());

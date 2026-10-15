@@ -1,6 +1,7 @@
 #include "visual_navigation/waypoint_navigator.hpp"
 
 void WaypointNavigator::CompleteNavigation() {
+  completedRoadRecoveryRoute_ = activeRouteId_;
   navigationActive_ = false;
   pathSegmentInitialized_ = false;
   pathProgressSupervisor_.Reset();
