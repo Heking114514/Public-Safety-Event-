@@ -32,6 +32,7 @@ class SpeechSerialPtyTest(unittest.TestCase):
         executable = os.path.join(
             get_package_prefix("cup_car_serial"), "lib", "cup_car_serial", "cmd_vel_serial_node"
         )
+        executable = os.environ.get("SPEECH_TEST_EXECUTABLE", executable)
         command = [executable, "--ros-args", "-p", "device:=" + os.ttyname(self.slave),
                    "-p", "control_telemetry_timeout_s:=60.0", "-p", "speak_text_service:=" + service]
         if protocol is not None:
@@ -81,22 +82,43 @@ class SpeechSerialPtyTest(unittest.TestCase):
         self.pump(0.7)
         expected = b"TTS," + "一".encode("gbk") + b"\r\n"
         self.assertEqual([line for line in self.frames if line.startswith(b"TTS")], [expected])
-        self.assertFalse(future.done())
+        self.assertTrue(future.done())
+        self.assertTrue(future.result().success)
+        self.assertIn("queued", future.result().message)
+        self.assertIn("no MCU acknowledgement", future.result().message)
         self.assertGreaterEqual(self.velocity_count(), 5)
-        other = self.speak()
+        other = self.speak("二")
         self.pump(0.1)
         self.assertTrue(other.done())
-        self.assertFalse(other.result().success)
-        # The old MCU sends no status frames. Completion must not require one.
+        self.assertTrue(other.result().success)
+        self.assertEqual([line for line in self.frames if line.startswith(b"TTS")], [expected])
+        # 无 MCU 回执也立即返回；占用计时仅控制后台 FIFO 的发送次序。
         self.pump(2.0)
         self.assertTrue(future.done())
         self.assertTrue(future.result().success)
         self.assertIn("no MCU acknowledgement", future.result().message)
-        self.assertEqual([line for line in self.frames if line.startswith(b"TTS")], [expected])
-        next_future = self.speak("二")
+        self.assertEqual([line for line in self.frames if line.startswith(b"TTS")],
+                         [expected, b"TTS," + "二".encode("gbk") + b"\r\n"])
+        self.assertIsNone(self.process.poll())
+        next_future = self.speak("三")
         self.pump(0.15)
         self.assertIn(b"TTS," + "二".encode("gbk") + b"\r\n", self.frames)
-        self.assertFalse(next_future.done())
+        self.assertTrue(next_future.done())
+        self.assertTrue(next_future.result().success)
+        self.assertNotIn(b"TTS," + "三".encode("gbk") + b"\r\n", self.frames)
+
+    def test_long_legacy_text_and_busy_queue_return_without_waiting_for_playback(self):
+        self.start_serial()
+        future = self.speak("这是一段用于验证长文本不会延长小车驻停时间的播报")
+        self.pump(0.3)
+        self.assertTrue(future.done())
+        self.assertTrue(future.result().success)
+        queued = self.speak("到达一号巡逻点")
+        self.pump(0.3)
+        self.assertTrue(queued.done())
+        self.assertTrue(queued.result().success)
+        self.assertEqual(len([line for line in self.frames if line.startswith(b"TTS,")]), 1)
+        self.assertGreaterEqual(self.velocity_count(), 5)
 
     def test_explicit_tts2_retries_and_waits_for_matching_status(self):
         self.start_serial("tts2")

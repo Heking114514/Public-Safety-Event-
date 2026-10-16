@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -929,6 +930,7 @@ private:
   SerialPort serial_;
   cup_car_serial::Tts2IdGenerator tts2IdGenerator_{make_tts2_id_seed()};
   std::unique_ptr<PendingSpeech> pendingSpeech_;
+  std::deque<std::unique_ptr<PendingSpeech>> legacySpeechQueue_;
   std::mutex serial_mutex_;
   bool serial_connected_{false};
   bool connection_state_published_{false};

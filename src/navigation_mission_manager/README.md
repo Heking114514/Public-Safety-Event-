@@ -101,7 +101,9 @@ loopback 显式使用 `task_confirmation_mode: route`，在路线已 ACK、实�
 
 其他节点可以向 `/navigation_mission/speech_text` 发布 `std_msgs/String`。总控会排队文本，
 申请 `navigation_mission_manager/speech` 驻停，调用 `/cup_car_serial/speak_text` 下发给
-下位机。串口节点默认使用兼容已部署旧固件的 `TTS,<GBK文本>`，按文本长度估算占用；只有
+下位机。串口节点默认使用兼容已部署旧固件的 `TTS,<GBK文本>`，文本入队即回复成功，
+按字数估算的占用时间只用于后台发送间隔，不阻塞小车。RFID 仍先停车、验证并校正定位，
+播报入队后按 `rfid_hold_duration_s` 固定驻停；普通播报按 `speech_hold_duration_s` 固定驻停。只有
 明确配置 `speech_protocol:=tts2` 且 MCU 支持 TTS2 时，才等待匹配编号的 `ESTIMATED_DONE`。
 当前语音模块未提供已知的播放结束反馈，默认由上位机估算占用时间；TTS2 模式由 MCU 估算。
 两种模式都不能确认扬声器真实播放完成。
