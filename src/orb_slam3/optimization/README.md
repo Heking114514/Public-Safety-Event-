@@ -120,7 +120,7 @@ python3 scripts/prepare_orbslam3_benchmark.py /path/to/bag --export-rgb /path/to
 
 ```bash
 NAVIGATION_RECORDING_CONFIG="$PWD/config/navigation_recording_slam_benchmark.yaml" \
-  scripts/start_visual_navigation.sh
+  scripts/start_final_navigation.sh
 ```
 
 后续正式 A/B 使用相同红外帧、标定、CLAHE、800 特征/6 层和优化参数，报告

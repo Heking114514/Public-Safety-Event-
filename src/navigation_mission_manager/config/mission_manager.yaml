@@ -8,9 +8,9 @@ navigation_mission_manager:
     current_waypoint_topic: /waypoint_navigation/current_waypoint
     route_ack_topic: /waypoint_navigation/route_ack
     route_input_topic: /waypoint_navigation/route_input
-    motion_hold_service: /waypoint_navigator/set_motion_hold
-    continue_retreat_service: /waypoint_navigator/continue_obstacle_retreat
-    continue_route_retreat_service: /waypoint_navigator/continue_route_retreat
+    motion_hold_service: /final_navigation/set_motion_hold
+    continue_retreat_service: /final_navigation/continue_obstacle_retreat
+    continue_route_retreat_service: /final_navigation/continue_route_retreat
     motion_hold_state_topic: /waypoint_navigation/motion_hold_state
     front_obstacle_topic: /obstacle/front_blocked
     front_range_topic: /obstacle/front_range
@@ -25,7 +25,7 @@ navigation_mission_manager:
     task_confirmation_mode: rfid
     speak_text_service: /cup_car_serial/speak_text
     correct_map_position_service: /fused_odometry/correct_map_position
-    confirm_rfid_checkpoint_service: /waypoint_navigator/confirm_rfid_checkpoint
+    confirm_rfid_checkpoint_service: /final_navigation/confirm_rfid_checkpoint
     speech_text_topic: /navigation_mission/speech_text
     insight_topic: /insight
     safe_topic: /safe

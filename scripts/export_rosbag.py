@@ -50,7 +50,7 @@ class ExportError(RuntimeError):
 
 
 # Recording volumes, in the same preference order used by
-# scripts/start_visual_navigation.sh. Labels come from the NTFS volume labels.
+# scripts/start_final_navigation.sh. Labels come from the NTFS volume labels.
 VOLUMES = (
     ("E", Path("/media/hjh/E")),
     ("Data", Path("/media/hjh/Data")),

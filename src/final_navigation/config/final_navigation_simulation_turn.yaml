@@ -1,0 +1,10 @@
+final_navigation:
+  ros__parameters:
+    # 仅供 loopback 避障测试，复用已验证的恢复转弯几何。
+    # 两段转弯保持固定角速度，避免降速扩大半径而碰到路口内侧。
+    turn_maneuver_entry_target_x: -0.070
+    turn_maneuver_entry_target_y: 0.0
+    turn_maneuver_entry_tolerance: 0.003
+    turn_maneuver_angular_speed: 0.40
+    turn_maneuver_min_angular_speed: 0.40
+    turn_maneuver_creep_distance: 0.005

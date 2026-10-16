@@ -8,7 +8,7 @@ if __name__ == "__main__":
     editor = (
         Path(__file__).resolve().parent
         / "src"
-        / "visual_navigation"
+        / "final_navigation"
         / "scripts"
         / "route_editor.py"
     )

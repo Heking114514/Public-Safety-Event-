@@ -50,7 +50,7 @@ TEST_F(ControlClockTest, RecoveryStopDwellIsMeasuredInSimulationSeconds) {
   enable_simulation();
   set_time(10000000000LL);
   visual_navigation::RecoveryStopGuard guard;
-  // 阈值来自 contrast_controller.yaml，样本数为测试夹具显式指定。
+  // 阈值来自 final_navigation.yaml，样本数为测试夹具显式指定。
   guard.configure(0.002, 0.03, 0.22, 2.0, 3);
   guard.begin(seconds(), 100);
   using Result = visual_navigation::RecoveryStopGuard::Result;

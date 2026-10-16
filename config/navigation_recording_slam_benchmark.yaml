@@ -1,6 +1,6 @@
 # Opt-in recording profile for replaying the actual D455 stereo SLAM input.
 # Usage: NAVIGATION_RECORDING_CONFIG=config/navigation_recording_slam_benchmark.yaml
-#        scripts/start_visual_navigation.sh [usual navigation arguments]
+#        scripts/start_final_navigation.sh [usual navigation arguments]
 navigation_recording:
   retain_bags: 3
   topics:

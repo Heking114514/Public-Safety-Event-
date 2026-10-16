@@ -51,10 +51,10 @@ class IdealController(Node):
         self._ack_pub = self.create_publisher(UInt64, self.get_parameter("route_ack_topic").value, durable)
         self._waypoint_pub = self.create_publisher(Int32, self.get_parameter("current_waypoint_topic").value, durable)
         self._path_pub = self.create_publisher(Path, self.get_parameter("waypoint_path_topic").value, durable)
-        self.create_service(SetMotionHold, "/waypoint_navigator/set_motion_hold", self._on_hold)
-        self.create_service(ContinueRetreat, "/waypoint_navigator/continue_obstacle_retreat", self._on_retreat)
-        self.create_service(ContinueRetreat, "/waypoint_navigator/continue_route_retreat", self._on_retreat)
-        self.create_service(ConfirmRfidCheckpoint, "/waypoint_navigator/confirm_rfid_checkpoint", self._on_rfid)
+        self.create_service(SetMotionHold, "/final_navigation/set_motion_hold", self._on_hold)
+        self.create_service(ContinueRetreat, "/final_navigation/continue_obstacle_retreat", self._on_retreat)
+        self.create_service(ContinueRetreat, "/final_navigation/continue_route_retreat", self._on_retreat)
+        self.create_service(ConfirmRfidCheckpoint, "/final_navigation/confirm_rfid_checkpoint", self._on_rfid)
         self.create_subscription(Path, self.get_parameter("route_input_topic").value,
                                  self._on_path, rclpy.qos.qos_profile_system_default)
         sensor_qos = QoSProfile(depth=5, reliability=ReliabilityPolicy.BEST_EFFORT,

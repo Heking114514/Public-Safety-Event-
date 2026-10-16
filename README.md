@@ -2,10 +2,10 @@
 
 本工作空间支持三种导航模式，另有一种不经过导航规划器的手动速度模式：
 
-1. **手动路点 / CSV 导航**：用户预先编辑 CSV 路点文件，或使用图形编辑器手动标点；`visual_navigation` 只负责跟随收到的路线，不执行 A*、动态避障或局部路径搜索。
-2. **新分层自动规划（推荐）**：`navigation_mission_manager` 负责比赛状态与自主重规划，`new_map_planner` 负责道路图搜索和车身几何验证，再把路线交给 `visual_navigation` 执行。
+1. **手动路点 / CSV 导航**：用户预先编辑 CSV 路点文件，或使用图形编辑器手动标点；`final_navigation` 只负责跟随收到的路线，不执行 A*、动态避障或局部路径搜索。
+2. **新分层自动规划（推荐）**：`navigation_mission_manager` 负责比赛状态与自主重规划，`new_map_planner` 负责道路图搜索和车身几何验证，再把路线交给 `final_navigation` 执行。
 3. **统一自动规划**：`new_map_planner` 与 `navigation_mission_manager` 负责正式实车任务。
-4. **手动速度控制**：不启动 `waypoint_navigator`，键盘或其他节点直接向 `/cmd_vel_nav` 发布速度；这不是导航模式。
+4. **手动速度控制**：不启动 `final_navigation`，键盘或其他节点直接向 `/cmd_vel_nav` 发布速度；这不是导航模式。
 
 两种导航模式和手动速度模式最终都使用标准 ROS 2 速度消息：
 
@@ -50,13 +50,13 @@ source install/setup.bash
 检查功能包：
 
 ```bash
-ros2 pkg list | grep -E 'orbslam3|visual_navigation|cup_car_serial|realsense2_camera'
+ros2 pkg list | grep -E 'orbslam3|final_navigation|cup_car_serial|realsense2_camera'
 ```
 
-实车统一使用 `start_visual_navigation.sh`。不加参数时进入规划模式：脚本启动视觉、融合、导航和串口链路，等待规划 GUI 发布动态路线，并自动录制本次 rosbag：
+实车统一使用 `start_final_navigation.sh`。不加参数时进入规划模式：脚本启动视觉、融合、导航和串口链路，等待规划 GUI 发布动态路线，并自动录制本次 rosbag：
 
 ```bash
-./scripts/start_visual_navigation.sh
+./scripts/start_final_navigation.sh
 ```
 
 另开终端启动新规划后端、自主任务节点和实车 UI：
@@ -77,21 +77,21 @@ ROS 2 DDS 域，默认值为 `10`。调试时可以临时执行 `ROS_DOMAIN_ID=9
 固定 CSV 自动运行时，先检查并编辑 `scripts/waypoints.csv`，再使用：
 
 ```bash
-./scripts/start_visual_navigation.sh --autostart
+./scripts/start_final_navigation.sh --autostart
 ```
 
 `--autostart` 是唯一会在节点就绪后自动请求行驶的主启动模式，不要同时打开规划 GUI 或路线编辑器。无参数规划模式必须由 GUI 明确点击启动。常用调试选项：
 
 ```bash
-./scripts/start_visual_navigation.sh --no-serial
-./scripts/start_visual_navigation.sh --visualization
-./scripts/start_visual_navigation.sh --serial-device /dev/ttyACM0
+./scripts/start_final_navigation.sh --no-serial
+./scripts/start_final_navigation.sh --visualization
+./scripts/start_final_navigation.sh --serial-device /dev/ttyACM0
 ```
 
 查看全部选项：
 
 ```bash
-./scripts/start_visual_navigation.sh --help
+./scripts/start_final_navigation.sh --help
 ```
 
 ---
@@ -106,7 +106,7 @@ D455 图像和 IMU
   → /odometry/visual_raw、/tracking_state
   → 里程计融合
   → /odometry/local_map
-  → waypoint_navigator
+  → final_navigation
   → /cmd_vel_nav
   → 下位机桥接节点
   → 小车底盘
@@ -173,7 +173,7 @@ scripts/waypoints.csv
 然后只运行统一脚本：
 
 ```bash
-./scripts/start_visual_navigation.sh --autostart
+./scripts/start_final_navigation.sh --autostart
 ```
 
 脚本把该 CSV 的规范化绝对路径传给导航节点并设置 `autostart=true`。路线文件及其 SHA-256 会写入本次 `run_manifest.json`；相机、融合、执行器健康条件未通过时仍保持零速度。该模式与无参数规划模式一样自动录包。
@@ -181,7 +181,7 @@ scripts/waypoints.csv
 下面的包级 Launch 仅供开发调试，不是实车统一入口，也不会自动录制 rosbag：
 
 ```bash
-ros2 launch visual_navigation visual_navigation_serial_bringup.launch.py \
+ros2 launch final_navigation final_navigation_serial_bringup.launch.py \
   route_file:=/absolute/path/to/route.csv \
   route_frame:=map \
   cmd_vel_topic:=/cmd_vel_nav \
@@ -193,11 +193,11 @@ ros2 launch visual_navigation visual_navigation_serial_bringup.launch.py \
 需要临时手动标点时，可在无参数主脚本运行期间另开路线编辑器：
 
 ```bash
-ros2 launch visual_navigation route_editor.launch.py
+ros2 launch final_navigation route_editor.launch.py
 ```
 
 在网格上手动添加航点并点击“发布并启用路线”。编辑器直接发布动态 `Path`，导航节点会自动
-激活该路线，不需要再调用 `/waypoint_navigator/start`；这种方式不会生成或读取 CSV。
+激活该路线，不需要再调用 `/final_navigation/start`；这种方式不会生成或读取 CSV。
 
 ### 3.3 检查串口设备
 
@@ -329,7 +329,7 @@ source /opt/ros/humble/setup.bash
 source install/setup.bash
 
 ros2 service call \
-  /waypoint_navigator/start \
+  /final_navigation/start \
   std_srvs/srv/Trigger '{}'
 ```
 
@@ -402,20 +402,20 @@ ros2 service call /navigation_mission/set_motion_hold \
 停止任务并保持当前航点：
 
 ```bash
-ros2 service call /waypoint_navigator/stop std_srvs/srv/Trigger '{}'
+ros2 service call /final_navigation/stop std_srvs/srv/Trigger '{}'
 ```
 
 停车并回到第 0 个航点：
 
 ```bash
-ros2 service call /waypoint_navigator/reset std_srvs/srv/Trigger '{}'
+ros2 service call /final_navigation/reset std_srvs/srv/Trigger '{}'
 ```
 
 停止后 `/cmd_vel_nav` 应持续输出零速度。
 
 完全关闭程序：
 
-1. 调用 `/waypoint_navigator/stop`。
+1. 调用 `/final_navigation/stop`。
 2. 回到 launch 终端。
 3. 按 `Ctrl+C`。
 
@@ -436,7 +436,7 @@ Publisher count: 1
 Subscription count: 1
 ```
 
-- 发布者：`/waypoint_navigator`
+- 发布者：`/final_navigation`
 - 订阅者：`/cmd_vel_serial_node`
 
 串口发送格式为：
@@ -464,7 +464,7 @@ linear.x,angular.z\r\n
 `146.6 mm` 运动学轮距是单独参数，与整车外廓不混用。图纸本身没有
 任务编号，配置中的 12 个编号点是项目现有的道路中心访问点。
 
-自动规划模式不读取 `route_file`，也不需要调用 `/waypoint_navigator/start`。
+自动规划模式不读取 `route_file`，也不需要调用 `/final_navigation/start`。
 `navigation_mission_manager` 是正式任务状态的唯一拥有者：它读取最新融合位姿，维护
 剩余任务、已确认道路和动态障碍，再向 `/new_map_planner/plan` 发起规划。
 道路图负责全局顺序，状态包含路口与到达航向；独立几何层验证完整车身直行包络和
@@ -494,10 +494,10 @@ cd /path/to/your/workspace
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 
-./scripts/start_visual_navigation.sh
+./scripts/start_final_navigation.sh
 ```
 
-该终端会启动 D455、ORB-SLAM3、融合定位、`waypoint_navigator` 和
+该终端会启动 D455、ORB-SLAM3、融合定位、`final_navigation` 和
 `cup_car_serial`，并等待 `/waypoint_navigation/route_input`。此模式不加载 CSV。
 
 ### 终端 2：启动自主任务、规划器和操作台
@@ -542,7 +542,7 @@ ros2 service call /navigation_mission/control \
 
 # 附加模式：手动速度控制
 
-手动模式不读取航点，不启动 `/waypoint_navigator`。人工控制节点直接发布 `/cmd_vel_nav`。
+手动模式不读取航点，不启动 `/final_navigation`。人工控制节点直接发布 `/cmd_vel_nav`。
 
 ```text
 键盘或 ros2 topic pub
@@ -556,7 +556,7 @@ ros2 service call /navigation_mission/control \
 如果完整航点程序正在运行，先停止任务：
 
 ```bash
-ros2 service call /waypoint_navigator/stop std_srvs/srv/Trigger '{}'
+ros2 service call /final_navigation/stop std_srvs/srv/Trigger '{}'
 ```
 
 然后回到 launch 终端按 `Ctrl+C`，并确认：
@@ -568,7 +568,7 @@ ros2 node list
 手动模式下不应存在：
 
 ```text
-/waypoint_navigator
+/final_navigation
 ```
 
 这是为了防止导航节点发布的零速度覆盖人工命令。
@@ -643,7 +643,7 @@ Subscription count: 0
 
 ### 使用 Python 模拟导航节点测试串口
 
-不要启动 `/waypoint_navigator`。终端 1 持续模拟导航速度：
+不要启动 `/final_navigation`。终端 1 持续模拟导航速度：
 
 ```bash
 cd /path/to/your/workspace
@@ -820,7 +820,7 @@ Publisher count: 1
 2. 关闭人工发布。
 3. 停止航点任务。
 4. 关闭完整航点 launch。
-5. 确认 `/waypoint_navigator` 消失后再开始手动控制。
+5. 确认 `/final_navigation` 消失后再开始手动控制。
 
 多个发布者会让下位机收到交错的零速度和非零速度，可能导致抖动或失控。
 
@@ -830,7 +830,7 @@ Publisher count: 1
 
 ### 15.0 rosbag 回放诊断数据
 
-`scripts/start_visual_navigation.sh` 默认先增量构建 ORB-SLAM3 和本次启动所需 ROS 包，构建成功后才停止旧节点和操作相机。`--no-build` 只接受源码指纹一致、当前启动模式所需产物均可验证且哈希匹配上次成功构建的结果，否则直接退出；根目录两份导航 YAML 也属于运行源码指纹，修改后需要重新执行一次默认构建入口。
+`scripts/start_final_navigation.sh` 默认先增量构建 ORB-SLAM3 和本次启动所需 ROS 包，构建成功后才停止旧节点和操作相机。`--no-build` 只接受源码指纹一致、当前启动模式所需产物均可验证且哈希匹配上次成功构建的结果，否则直接退出；根目录两份导航 YAML 也属于运行源码指纹，修改后需要重新执行一次默认构建入口。
 
 规划 GUI 和 `--autostart` CSV 两种实车模式都会无条件录包。每次运行先保存在独立的 `navigation_runs/<run-id>/bag`；结束时严格只保留 `config/navigation_recording.yaml` 中 `retain_bags` 指定数量的最新实际 bag，默认是 3 份。较旧运行只删除 `bag/`，`run_manifest.json` 和参数快照仍保留。`latest_navigation_run` 始终指向最近一次运行；`latest_navigation_bag` 只会原子指向最近一次完整或正常中断且已生成元数据、并且仍在保留范围中的 bag。若连续失败使旧有效 bag 退出保留范围，该兼容链接会移除，最近一次原始记录仍可从 `latest_navigation_run/bag` 检查。
 
@@ -885,7 +885,7 @@ ros2 bag play latest_navigation_bag
 
 ### 15.3 手动速度控制
 
-- [ ] `/waypoint_navigator` 没有运行。
+- [ ] `/final_navigation` 没有运行。
 - [ ] `/cmd_vel_nav` 只有一个人工控制发布者。
 - [ ] 下位机桥接节点订阅 `/cmd_vel_nav`。
 - [ ] 正负线速度对应前进和后退。
@@ -945,16 +945,16 @@ ros2 topic info /cmd_vel_nav --verbose
 
 ```bash
 # 先检查 scripts/waypoints.csv
-./scripts/start_visual_navigation.sh --autostart
+./scripts/start_final_navigation.sh --autostart
 
-ros2 service call /waypoint_navigator/stop std_srvs/srv/Trigger '{}'
+ros2 service call /final_navigation/stop std_srvs/srv/Trigger '{}'
 ```
 
 ### 自动规划导航
 
 ```bash
 # 终端 1：视觉、融合、导航和串口
-./scripts/start_visual_navigation.sh
+./scripts/start_final_navigation.sh
 
 # 终端 2：自主任务节点、规划后端和操作台
 ./scripts/start_new_map_planner.sh

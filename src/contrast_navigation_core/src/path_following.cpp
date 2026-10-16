@@ -34,7 +34,6 @@ void WaypointNavigator::RunPath(const ControlFrame &frame) {
   const double crossTrackError =
       std::cos(frame.path_heading) * (currentY_ - pathSegmentStartY_) -
       std::sin(frame.path_heading) * (currentX_ - pathSegmentStartX_);
-  const double requestedSpeed = std::min(frame.target.speed, maxLinearSpeed_);
   double signedPathCurvature = 0.0;
   if (currentWaypointIndex_ + 1 < waypoints_.size()) {
     const Waypoint &next = waypoints_[currentWaypointIndex_ + 1];
@@ -53,6 +52,14 @@ void WaypointNavigator::RunPath(const ControlFrame &frame) {
   signedPathCurvature = visual_navigation::ContinuousTrackingCurvature(
       signedPathCurvature, frame.waypoint_requires_stop);
   const double pathCurvature = std::abs(signedPathCurvature);
+  // 终点需要停车不限制整段巡航速度；接近终点仍由下方制动逻辑限速。
+  // 倒车继续沿用原有速度，不启用前进长直线提速。
+  const bool longStraight = !reverseSegmentActive_ &&
+                            frame.path_length >= straightLineMinLength_ &&
+                            pathCurvature <= 0.05;
+  const double requestedSpeed = longStraight
+      ? straightLineSpeed_
+      : std::min(frame.target.speed, maxLinearSpeed_);
   const double unscaledTrackingSpeed = visual_navigation::CurvatureSpeedLimit(
       visual_navigation::CrossTrackSpeedLimit(
           requestedSpeed, std::abs(crossTrackError), crossTrackSlowdownStart_,
@@ -80,8 +87,11 @@ void WaypointNavigator::RunPath(const ControlFrame &frame) {
     if (measuredDt > 0.0 && measuredDt <= 0.2)
       controlDt = measuredDt;
   }
+  const double accelerationLimit = longStraight
+      ? straightLineAcceleration_
+      : maxLinearAcceleration_;
   const double trackingSpeed = std::abs(visual_navigation::LimitRate(
-      limitedLinearSpeed, lastMotionCommand_.linear.x, maxLinearAcceleration_,
+      limitedLinearSpeed, lastMotionCommand_.linear.x, accelerationLimit,
       maxLinearDeceleration_, controlDt));
   const double pathError = visual_navigation::StanleyPathError(
       headingError, crossTrackError, crossTrackGain_, trackingSpeed,
@@ -265,7 +275,7 @@ void WaypointNavigator::RunPath(const ControlFrame &frame) {
           !brakingApproach)) {
     return;
   }
-  PublishMotionCommand(command, aligningPath);
+  PublishMotionCommand(command, aligningPath, longStraight);
   if (aligningPath)
     SetState(visual_navigation::phase_status(controlState_.phase()));
   else

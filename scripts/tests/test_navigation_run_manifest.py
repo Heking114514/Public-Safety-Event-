@@ -247,7 +247,7 @@ class NavigationRunManifestTest(unittest.TestCase):
         )
         self.helper(
             "record-parameter", "--run-dir", run,
-            "--node", "/waypoint_navigator", "--status", "failed",
+            "--node", "/final_navigation", "--status", "failed",
             "--error", "timeout",
         )
         self.helper(
@@ -267,7 +267,7 @@ class NavigationRunManifestTest(unittest.TestCase):
         manifest = json.loads((run / "run_manifest.json").read_text())
         self.assertEqual("success", manifest["parameters"]["/fused_ekf"]["status"])
         self.assertTrue(manifest["parameters"]["/fused_ekf"]["sha256"])
-        self.assertEqual("failed", manifest["parameters"]["/waypoint_navigator"]["status"])
+        self.assertEqual("failed", manifest["parameters"]["/final_navigation"]["status"])
         self.assertEqual("skipped", manifest["parameters"]["/imu_rpy_filter"]["status"])
         self.assertFalse(manifest["parameter_snapshots_complete"])
         self.assertEqual("failed", manifest["status"])

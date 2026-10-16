@@ -23,10 +23,10 @@ std::string workspace() {
 Recovery make_recovery() {
   const auto root=workspace();
   const auto vehicle=YAML::LoadFile(root+"/src/vehicle_config/config/vehicle_physical.yaml");
-  const auto parameters=YAML::LoadFile(root+"/src/contrast_controller/config/contrast_controller.yaml")
-    ["contrast_controller"]["ros__parameters"];
-  const auto output=YAML::LoadFile(root+"/src/visual_navigation/config/waypoint_navigation.yaml")
-    ["waypoint_navigator"]["ros__parameters"];
+  const auto parameters=YAML::LoadFile(root+"/src/final_navigation/config/final_navigation.yaml")
+    ["final_navigation"]["ros__parameters"];
+  const auto output=YAML::LoadFile(root+"/src/final_navigation/config/final_navigation.yaml")
+    ["final_navigation"]["ros__parameters"];
   Recovery::Config config;
   config.speed=parameters["recovery_linear_speed"].as<double>();
   config.margin=parameters["recovery_margin_m"].as<double>();

@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- 导航启动脚本按运行账号选择录包目录：`hjh` 保留 `/media/hjh/E`、`/media/hjh/Data` 外接盘顺序，其他主机账号使用自己的 `$HOME/rosbag_recording`。
 - 新增 `scripts/export_camera_video.py`，直接读解压后的 sqlite 导出相机视频，不依赖已于 `b0b90c2` 删除的 `vision_correction`；兼容 Ctrl-C 中断录制导致的 zstd 尾部截断，默认按录制帧率实时播放。
 
 - 将 RFID 停车、去重、任务确认和播报链路对齐 `dm2325`，保留当前道路恢复功能；读卡后继续运行时间从 YAML 读取并保持用户指定的 `0.25 s`，不调整速度。

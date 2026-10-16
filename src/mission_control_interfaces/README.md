@@ -29,13 +29,13 @@
 /navigation_mission/continue_obstacle_retreat
 ```
 
-以下服务由 `visual_navigation/waypoint_navigator` 实现，供总控内部调用：
+以下服务由 `final_navigation` 实现，供总控内部调用：
 
 ```text
-/waypoint_navigator/set_motion_hold
-/waypoint_navigator/continue_obstacle_retreat
-/waypoint_navigator/continue_route_retreat
-/waypoint_navigator/confirm_rfid_checkpoint
+/final_navigation/set_motion_hold
+/final_navigation/continue_obstacle_retreat
+/final_navigation/continue_route_retreat
+/final_navigation/confirm_rfid_checkpoint
 ```
 
 一个来源只能释放自己的驻停请求；所有来源均释放后，路线导航才会恢复。

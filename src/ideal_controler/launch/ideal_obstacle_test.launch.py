@@ -15,8 +15,6 @@ def generate_launch_description():
         launch_arguments={
             "gui": LaunchConfiguration("gui"),
             "autostart": "true",
-            "use_waypoint_navigator": "false",
-            "use_debug_controller": "false",
             "simulate_obstacle_recognition": "true",
             "enforce_static_collision": "false",
         }.items(),

@@ -5,17 +5,19 @@ import xml.etree.ElementTree as ET
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_loopback_launch_defaults_to_formal_waypoint_navigator():
+def test_loopback_launch_defaults_to_formal_final_navigation():
     launch_text = (
         PACKAGE_ROOT / "launch" / "planner_control_loopback.launch.py"
     ).read_text()
 
-    assert (
-        '"use_waypoint_navigator",\n                default_value="true"' in launch_text
-    )
-    assert (
-        '"use_debug_controller",\n                default_value="false"' in launch_text
-    )
+    assert '"final_navigation_serial_bringup.launch.py"' in launch_text
+    assert 'PythonLaunchDescriptionSource(final_navigation_launch)' in launch_text
+    assert '"enable_serial": "false"' in launch_text
+    assert "condition=IfCondition(use_final_navigation)" not in launch_text
+    assert "condition=IfCondition(use_debug_controller)" not in launch_text
+    assert "use_final_navigation" not in launch_text
+    assert "use_debug_controller" not in launch_text
+    assert "loopback_route_controller" not in launch_text
     assert 'default_value="layer1,layer2,layer3"' in launch_text
     assert 'default_value="1,2,3,4,5,6,7,8,9,10,11,12"' in launch_text
     assert 'DeclareLaunchArgument("return_home", default_value="true")' in launch_text
@@ -56,7 +58,7 @@ def test_loopback_package_declares_formal_navigation_dependency():
         element.text for element in package_xml.getroot().findall("exec_depend")
     }
 
-    assert "visual_navigation" in dependencies
+    assert "final_navigation" in dependencies
     assert "new_map_planner" in dependencies
     assert "navigation_mission_manager" in dependencies
     assert "arena_path_planner" not in dependencies
@@ -86,16 +88,8 @@ def test_gui_labels_reference_route_separately_from_actual_trail():
     assert '"stamp_ns"' in gui
 
 
-def test_comparison_launch_runs_isolated_new_and_legacy_controllers():
-    launch_text = (
-        PACKAGE_ROOT / "launch" / "controller_comparison.launch.py"
-    ).read_text()
-
-    assert 'executable="waypoint_navigator"' in launch_text
-    assert 'executable="waypoint_navigator_legacy"' in launch_text
-    assert 'namespace="comparison/new"' in launch_text
-    assert 'namespace="comparison/old"' in launch_text
-    assert 'DeclareLaunchArgument("new_gui_port", default_value="8765")' in launch_text
-    assert 'DeclareLaunchArgument("old_gui_port", default_value="8766")' in launch_text
-    assert '"navigator_status_topics"' in launch_text
-    assert 'package="new_map_planner"' in launch_text
+def test_comparison_launch_uses_final_navigation_only():
+    launch_text = (PACKAGE_ROOT / "launch" / "controller_comparison.launch.py").read_text()
+    assert 'get_package_share_directory("vehicle_loopback_sim")' in launch_text
+    assert 'final_navigation_comparison.launch.py' in launch_text
+    assert 'waypoint_navigator_legacy' not in launch_text

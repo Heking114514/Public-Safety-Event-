@@ -3,7 +3,7 @@
 <package format="3">
   <name>contrast_navigation_core</name>
   <version>0.1.0</version>
-  <description>独立的 Contrast 航点导航控制核心，避免复用 visual_navigation 的实现。</description>
+  <description>为 final_navigation 提供 Contrast 航点导航控制核心。</description>
   <maintainer email="maintainer@example.com">maintainer</maintainer>
   <license>MIT</license>
 
@@ -21,7 +21,6 @@
   <depend>yaml_cpp_vendor</depend>
 
   <test_depend>ament_cmake_gtest</test_depend>
-  <test_depend>vehicle_loopback_sim</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

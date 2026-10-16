@@ -108,7 +108,7 @@ PLANNER_ARTIFACTS=(
   "planner_node=${WORKSPACE_ROOT}/install/new_map_planner/lib/new_map_planner/new_map_planner_node"
   "planner_ui=${WORKSPACE_ROOT}/install/new_map_planner/lib/new_map_planner/new_map_planner_ui"
   "mission_manager=${WORKSPACE_ROOT}/install/navigation_mission_manager/lib/navigation_mission_manager/mission_manager_node"
-  "waypoint_navigator=${WORKSPACE_ROOT}/install/visual_navigation/lib/visual_navigation/waypoint_navigator"
+  "final_navigation=${WORKSPACE_ROOT}/install/final_navigation/lib/final_navigation/final_navigation"
   "mission_typesupport=${WORKSPACE_ROOT}/install/mission_control_interfaces/lib/libmission_control_interfaces__rosidl_typesupport_cpp.so"
   "planner_launch=${WORKSPACE_ROOT}/install/navigation_mission_manager/share/navigation_mission_manager/launch/mission_navigation.launch.py"
   "planner_map=${WORKSPACE_ROOT}/install/new_map_planner/share/new_map_planner/config/arena.yaml"
@@ -134,7 +134,7 @@ else
   (
     cd "${WORKSPACE_ROOT}"
     "${COLCON_COMMAND}" build --symlink-install --packages-select \
-      vehicle_config mission_control_interfaces visual_navigation new_map_planner \
+      vehicle_config mission_control_interfaces navigation_safety contrast_navigation_core final_navigation new_map_planner \
       navigation_mission_manager
   )
   SOURCE_FINGERPRINT_AFTER="$(${BUILD_MANIFEST_HELPER} fingerprint --workspace "${WORKSPACE_ROOT}")" ||

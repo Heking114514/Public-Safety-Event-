@@ -82,7 +82,7 @@ ROS 适配层
 终端 1 启动相机、融合、导航控制、串口和 rosbag：
 
 ```bash
-./scripts/start_visual_navigation.sh
+./scripts/start_final_navigation.sh
 ```
 
 终端 2 启动自主任务节点、新规划器和实车 UI：

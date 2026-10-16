@@ -9,7 +9,8 @@ void WaypointNavigator::PublishStop() {
 }
 
 void WaypointNavigator::PublishMotionCommand(
-    const geometry_msgs::msg::Twist &desired, bool forceZeroLinear) {
+    const geometry_msgs::msg::Twist &desired, bool forceZeroLinear,
+    bool allowStraightLineSpeed) {
   const auto currentTime = ControlNow();
   double dt = 1.0 / controlFrequency_;
   if (motionCommandInitialized_) {
@@ -21,16 +22,23 @@ void WaypointNavigator::PublishMotionCommand(
   }
 
   geometry_msgs::msg::Twist limited = desired;
+  const double linearLimit = allowStraightLineSpeed
+      ? std::max(maxLinearSpeed_, straightLineSpeed_)
+      : maxLinearSpeed_;
+  const double accelerationLimit = allowStraightLineSpeed
+      ? straightLineAcceleration_
+      : maxLinearAcceleration_;
   const double targetLinear =
-      std::clamp(desired.linear.x, -maxLinearSpeed_, maxLinearSpeed_);
+      std::clamp(desired.linear.x, -linearLimit, linearLimit);
   limited.linear.x =
       forceZeroLinear ? 0.0
                       : visual_navigation::LimitRate(
                             targetLinear, lastMotionCommand_.linear.x,
-                            maxLinearAcceleration_, maxLinearDeceleration_, dt);
+                            accelerationLimit, maxLinearDeceleration_, dt);
   limited.linear.x =
-      std::clamp(limited.linear.x, -maxLinearSpeed_, maxLinearSpeed_);
-  if (!forceZeroLinear && std::abs(targetLinear) > 1.0e-9 &&
+      std::clamp(limited.linear.x, -linearLimit, linearLimit);
+  if (!allowStraightLineSpeed && !forceZeroLinear &&
+      std::abs(targetLinear) > 1.0e-9 &&
       std::abs(limited.linear.x) < minLinearCommandSpeed_) {
     limited.linear.x = std::copysign(minLinearCommandSpeed_, targetLinear);
   } else if (std::abs(targetLinear) <= 1.0e-9 &&

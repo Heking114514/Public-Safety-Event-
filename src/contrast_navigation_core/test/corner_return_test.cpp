@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 #include "navigation_safety/checker.hpp"
-#include "vehicle_loopback_sim/motion.hpp"
+#include "motion_fixture.hpp"
 #include "visual_navigation/corner_return.hpp"
 #include "visual_navigation/rate_limiter.hpp"
 
@@ -21,10 +21,10 @@ std::string root() {
 }
 visual_navigation::CornerReturnConfig config(bool normal=false) {
   const auto v=YAML::LoadFile(root()+"/src/vehicle_config/config/vehicle_physical.yaml");
-  const auto p=YAML::LoadFile(root()+"/src/contrast_controller/config/contrast_controller.yaml")
-    ["contrast_controller"]["ros__parameters"];
-  const auto o=YAML::LoadFile(root()+"/src/visual_navigation/config/waypoint_navigation.yaml")
-    ["waypoint_navigator"]["ros__parameters"];
+  const auto p=YAML::LoadFile(root()+"/src/final_navigation/config/final_navigation.yaml")
+    ["final_navigation"]["ros__parameters"];
+  const auto o=YAML::LoadFile(root()+"/src/final_navigation/config/final_navigation.yaml")
+    ["final_navigation"]["ros__parameters"];
   visual_navigation::CornerReturnConfig c;
   c.base_offset_x=v["differential_drive"]["base_link_offset_x_m"].as<double>();
   c.base_offset_y=v["differential_drive"]["base_link_offset_y_m"].as<double>();
@@ -58,7 +58,7 @@ visual_navigation::CornerReturnConfig config(bool normal=false) {
 }
 void apply(visual_navigation::CornerShuntContext &context,
            visual_navigation::CornerShuntTwist desired,
-           vehicle_loopback_sim::Twist2d &applied,
+           test_motion::Twist2d &applied,
            const visual_navigation::CornerReturnConfig &c) {
   if(std::abs(desired.linear_x)<1e-9 && std::abs(desired.angular_z)<1e-9) applied={};
   else {
@@ -69,7 +69,7 @@ void apply(visual_navigation::CornerShuntContext &context,
     applied.angular_z=visual_navigation::LimitRate(desired.angular_z,applied.angular_z,
       c.angular_acceleration,c.angular_deceleration,c.control_dt);
   }
-  const auto p=vehicle_loopback_sim::integrate_base_link(
+  const auto p=test_motion::integrate_base_link(
     {context.pose.x,context.pose.y,context.pose.yaw},applied,c.control_dt,
     c.base_offset_x,c.base_offset_y);
   context.pose={p.x,p.y,p.yaw};context.applied_twist={applied.linear_x,applied.angular_z};
@@ -130,7 +130,7 @@ TEST(CornerReturn, LeftRightReturnToConfiguredEntranceWithRealAxleAndRateLimits)
     forward.begin(0);
     visual_navigation::TurnManeuverInput forward_input;
     forward_input.context=context;forward_input.context.pose=entrance;
-    vehicle_loopback_sim::Twist2d forward_applied;
+    test_motion::Twist2d forward_applied;
     visual_navigation::TurnManeuverDecision forward_decision;
     for(double t=0;t<60;t+=c.control_dt) {
       forward_decision=forward.update(forward_input,t);
@@ -144,7 +144,7 @@ TEST(CornerReturn, LeftRightReturnToConfiguredEntranceWithRealAxleAndRateLimits)
     EXPECT_NEAR(forward_input.context.pose.y,controller.exit_pose().y,1e-9);
     context=forward_input.context;
     visual_navigation::CornerReturnInput input;input.context=context;
-    vehicle_loopback_sim::Twist2d applied;
+    test_motion::Twist2d applied;
     std::vector<Phase> phases;
     visual_navigation::CornerReturnDecision decision;
     for(double t=0;t<60;t+=c.control_dt) {
@@ -170,8 +170,8 @@ TEST(CornerReturn, LeftRightReturnToConfiguredEntranceWithRealAxleAndRateLimits)
 
 TEST(CornerReturn, UserBottomLMeasuredExitReturnsToFixedEntrance) {
   const auto c=config();
-  const auto params=YAML::LoadFile(root()+"/src/contrast_controller/config/contrast_controller.yaml")
-    ["contrast_controller"]["ros__parameters"];
+  const auto params=YAML::LoadFile(root()+"/src/final_navigation/config/final_navigation.yaml")
+    ["final_navigation"]["ros__parameters"];
   ArenaGuard arena(params["recovery_margin_m"].as<double>());
   // 同一 GUI 的三个实际障碍，验证时与正式恢复保留相同安全边距。
   for(const auto &box:std::vector<std::vector<double>>{
@@ -191,7 +191,7 @@ TEST(CornerReturn, UserBottomLMeasuredExitReturnsToFixedEntrance) {
   ASSERT_TRUE(controller.geometry_valid());
   const auto entry=controller.entrance_pose();
   visual_navigation::CornerReturnInput input;input.context=context;
-  vehicle_loopback_sim::Twist2d applied;
+  test_motion::Twist2d applied;
   visual_navigation::CornerReturnDecision decision;
   for(double t=0;t<60;t+=c.control_dt) {
     decision=controller.update(input,t);
@@ -231,7 +231,7 @@ TEST(CornerReturn, AllowedYawCannotHideReturnEntryPositionOvershoot) {
   visual_navigation::CornerShuntContext context;context.target_heading=pi/2;
   controller.begin(context,0);context.pose=controller.exit_pose();controller.begin(context,0);
   visual_navigation::CornerReturnInput input;input.context=context;
-  vehicle_loopback_sim::Twist2d applied;
+  test_motion::Twist2d applied;
   for(double t=0;t<60;t+=c.control_dt) {
     const auto decision=controller.update(input,t);
     ASSERT_EQ(decision.result,Result::RUNNING);

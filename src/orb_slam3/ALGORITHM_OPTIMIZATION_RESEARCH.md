@@ -8,7 +8,7 @@
 
 当前仓库有两个容易混淆的事实：
 
-- `scripts/start_visual_navigation.sh:100` 在加载配置之后将默认相机配置覆盖为 `848x480x15`，并选择 RK3588 YAML。该 YAML 为 800 特征、6 层、imageScale=1。`config/navigation_startup.yaml` 虽写有 30 FPS，但不能仅据此认定实际运行是 30 FPS。
+- `scripts/start_final_navigation.sh:100` 在加载配置之后将默认相机配置覆盖为 `848x480x15`，并选择 RK3588 YAML。该 YAML 为 800 特征、6 层、imageScale=1。`config/navigation_startup.yaml` 虽写有 30 FPS，但不能仅据此认定实际运行是 30 FPS。
 - `config/navigation_startup.yaml` 中 `use_slam_imu: false`，launch 将此参数传给节点。因此名为 stereo-inertial 的启动链也可能实际运行纯双目；应以运行诊断中的 `sensor_mode` 和生效配置为准。
 
 性能对比必须先固定明确的基线，不能将既有降帧/减特征配置的效果算作算法优化。此次调研没有修改这些配置或算法源文件。

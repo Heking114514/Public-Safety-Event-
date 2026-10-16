@@ -4,7 +4,7 @@
 #include <cmath>
 #include <string>
 #include <vector>
-#include "vehicle_loopback_sim/motion.hpp"
+#include "motion_fixture.hpp"
 #include "visual_navigation/pose_recovery.hpp"
 #include "visual_navigation/rate_limiter.hpp"
 #include "visual_navigation/recovery_stop.hpp"
@@ -15,10 +15,10 @@ class RecoveryReplay {
 public:
   explicit RecoveryReplay(visual_navigation::PoseRecovery &recovery,const std::string &root)
     : recovery_(recovery),config_(recovery.config()) {
-    const auto output=YAML::LoadFile(root+"/src/visual_navigation/config/waypoint_navigation.yaml")
-      ["waypoint_navigator"]["ros__parameters"];
-    const auto params=YAML::LoadFile(root+"/src/contrast_controller/config/contrast_controller.yaml")
-      ["contrast_controller"]["ros__parameters"];
+    const auto output=YAML::LoadFile(root+"/src/final_navigation/config/final_navigation.yaml")
+      ["final_navigation"]["ros__parameters"];
+    const auto params=YAML::LoadFile(root+"/src/final_navigation/config/final_navigation.yaml")
+      ["final_navigation"]["ros__parameters"];
     const auto physical=YAML::LoadFile(root+"/src/vehicle_config/config/vehicle_physical.yaml");
     track_=physical["differential_drive"]["wheel_track_m"].as<double>();
     max_linear_=output["max_linear_speed"].as<double>();
@@ -57,7 +57,7 @@ public:
 
 private:
   using Step=visual_navigation::PoseRecovery::Step;
-  bool command(vehicle_loopback_sim::Twist2d desired) {
+  bool command(test_motion::Twist2d desired) {
     const double dt=config_.control_dt;
     if(std::abs(desired.linear_x)<1e-9 && std::abs(desired.angular_z)<1e-9) twist_={};
     else {
@@ -75,7 +75,7 @@ private:
     std::vector<visual_navigation::PoseRecovery::Pose> sweep{actual()};
     for(int sample=0;sample<4;++sample) {
       const auto previous=actual_;
-      actual_=vehicle_loopback_sim::integrate_base_link(actual_,twist_,dt/4,
+      actual_=test_motion::integrate_base_link(actual_,twist_,dt/4,
         config_.base_offset_x,config_.base_offset_y);
       if(twist_.linear_x<0)
         reverse_distance_+=std::hypot(actual_.x-previous.x,actual_.y-previous.y);
@@ -92,7 +92,7 @@ private:
     stop_.begin(now_,sample_);
     for(unsigned attempt=0;attempt<300;++attempt) {
       if(!command({})) return false;
-      const auto wheels=vehicle_loopback_sim::wheel_speeds(twist_,track_);
+      const auto wheels=test_motion::wheel_speeds(twist_,track_);
       const auto result=stop_.update(now_,sample_,true,wheels.first,wheels.second,
         wheels.first,wheels.second,twist_.angular_z);
       if(result==visual_navigation::RecoveryStopGuard::Result::STOPPED) return true;
@@ -105,7 +105,7 @@ private:
     while(now_-started<=step.duration+config_.turn.phase_timeout) {
       const double along=(step.target.position.x-actual_.x)*c+(step.target.position.y-actual_.y)*s;
       const double lateral=-(actual_.x-step.road_origin.x)*s+(actual_.y-step.road_origin.y)*c;
-      const double yaw=vehicle_loopback_sim::normalize_angle(step.target.yaw-actual_.yaw);
+      const double yaw=test_motion::normalize_angle(step.target.yaw-actual_.yaw);
       if(std::abs(along)<=config_.turn.entry_position_tolerance &&
          std::abs(lateral)<=config_.turn.entry_lateral_tolerance &&
          std::abs(yaw)<=config_.turn.entry_yaw_tolerance) return true;
@@ -157,8 +157,8 @@ private:
   visual_navigation::PoseRecovery &recovery_;
   visual_navigation::PoseRecovery::Config config_;
   visual_navigation::RecoveryStopGuard stop_;
-  vehicle_loopback_sim::Pose2d actual_;
-  vehicle_loopback_sim::Twist2d twist_;
+  test_motion::Pose2d actual_;
+  test_motion::Twist2d twist_;
   double track_{0},max_linear_{0},max_angular_{0},now_{0};
   double reverse_distance_{0.0};
   bool adjusting_{false};

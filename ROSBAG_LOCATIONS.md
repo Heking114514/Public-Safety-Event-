@@ -12,7 +12,7 @@ rosbag 不在仓库里，在**外接 NTFS 硬盘**上，路径是
 | `/media/hjh/E` | `E` / `/dev/nvme1n1p2` | 854G | **启动脚本首选**，新录制写这里 |
 | `/media/hjh/Data` | `Data` / `/dev/nvme0n1p4` | 654G | 备用，历史 run 和离线分析产物 |
 
-`scripts/start_visual_navigation.sh` 按 **E → Data** 的顺序挑第一个可写的，选中后新录制就写到它的 `rosbag_recording/` 下。也可以用 `NAVIGATION_RUNS_ROOT` 直接指定。
+`scripts/start_final_navigation.sh` 按 **E → Data** 的顺序挑第一个可写的，选中后新录制就写到它的 `rosbag_recording/` 下。也可以用 `NAVIGATION_RUNS_ROOT` 直接指定。
 
 ## 目录结构
 

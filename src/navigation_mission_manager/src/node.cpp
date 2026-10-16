@@ -142,11 +142,11 @@ void MissionManager::declare_parameters()
   declare_parameter("current_waypoint_topic", "/waypoint_navigation/current_waypoint");
   declare_parameter("route_ack_topic", "/waypoint_navigation/route_ack");
   declare_parameter("route_input_topic", "/waypoint_navigation/route_input");
-  declare_parameter("motion_hold_service", "/waypoint_navigator/set_motion_hold");
+  declare_parameter("motion_hold_service", "/final_navigation/set_motion_hold");
   declare_parameter("select_recovery_service", "");
-  declare_parameter("continue_retreat_service", "/waypoint_navigator/continue_obstacle_retreat");
+  declare_parameter("continue_retreat_service", "/final_navigation/continue_obstacle_retreat");
   declare_parameter(
-    "continue_route_retreat_service", "/waypoint_navigator/continue_route_retreat");
+    "continue_route_retreat_service", "/final_navigation/continue_route_retreat");
   declare_parameter("motion_hold_state_topic", "/waypoint_navigation/motion_hold_state");
   declare_parameter("front_obstacle_topic", "/obstacle/front_blocked");
   declare_parameter("front_range_topic", "/obstacle/front_range");
@@ -162,7 +162,7 @@ void MissionManager::declare_parameters()
   declare_parameter("speak_text_service", "/cup_car_serial/speak_text");
   declare_parameter("correct_map_position_service", "/fused_odometry/correct_map_position");
   declare_parameter(
-    "confirm_rfid_checkpoint_service", "/waypoint_navigator/confirm_rfid_checkpoint");
+    "confirm_rfid_checkpoint_service", "/final_navigation/confirm_rfid_checkpoint");
   declare_parameter("speech_text_topic", "/navigation_mission/speech_text");
   declare_parameter("insight_topic", "/insight");
   declare_parameter("safe_topic", "/safe");

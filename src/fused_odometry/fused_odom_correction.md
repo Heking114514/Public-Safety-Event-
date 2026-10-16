@@ -167,7 +167,7 @@
 
 ### 配套接口修改（功能包外，仅一处白名单）
 
-`src/visual_navigation/config/waypoint_navigation.yaml` 的 `allowed_fusion_states` 必须加入：
+`src/final_navigation/config/final_navigation.yaml` 的 `allowed_fusion_states` 必须加入：
 
 ```yaml
 - "DEGRADED_DEAD_RECKONING"

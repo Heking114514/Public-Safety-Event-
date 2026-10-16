@@ -15,10 +15,10 @@ def generate_launch_description():
     arena_config = str(
         Path(get_package_share_directory("new_map_planner")) / "config" / "arena.yaml"
     )
-    waypoint_launch = str(
-        Path(get_package_share_directory("visual_navigation"))
+    final_navigation_launch = str(
+        Path(get_package_share_directory("final_navigation"))
         / "launch"
-        / "waypoint_navigation.launch.py"
+        / "final_navigation_serial_bringup.launch.py"
     )
     loopback_parameters = str(
         Path(get_package_share_directory("vehicle_loopback_sim"))
@@ -43,8 +43,6 @@ def generate_launch_description():
     gui_port = LaunchConfiguration("gui_port")
     plan_on_start = LaunchConfiguration("plan_on_start")
     target_ids = LaunchConfiguration("target_ids")
-    use_debug_controller = LaunchConfiguration("use_debug_controller")
-    use_waypoint_navigator = LaunchConfiguration("use_waypoint_navigator")
     simulate_obstacle_recognition = LaunchConfiguration(
         "simulate_obstacle_recognition"
     )
@@ -62,36 +60,17 @@ def generate_launch_description():
     )
 
     navigator = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(waypoint_launch),
-        condition=IfCondition(use_waypoint_navigator),
+        PythonLaunchDescriptionSource(final_navigation_launch),
         launch_arguments={
             "route_file": route_file,
             "route_frame": "map",
             "odom_topic": "/odometry/fused",
             "fusion_status_topic": "/odometry/fusion_status",
             "cmd_vel_topic": "/cmd_vel_nav",
+            "enable_serial": "false",
             "autostart": autostart,
             "control_rate_multiplier": playback_speed,
         }.items(),
-    )
-
-    debug_controller = Node(
-        package="vehicle_loopback_sim",
-        executable="loopback_route_controller",
-        name="loopback_route_controller",
-        output="screen",
-        condition=IfCondition(use_debug_controller),
-        parameters=[
-            loopback_parameters_file,
-            {
-                "route_input_topic": "/waypoint_navigation/route_input",
-                "odom_topic": "/odometry/fused",
-                "cmd_vel_topic": "/cmd_vel_nav",
-                "path_topic": "/waypoint_path",
-                "status_topic": "/waypoint_navigation/status",
-                "current_waypoint_topic": "/waypoint_navigation/current_waypoint",
-            },
-        ],
     )
 
     loopback = Node(
@@ -163,7 +142,7 @@ def generate_launch_description():
                 "navigator_status_topic": "/waypoint_navigation/status",
                 "route_ack_topic": "/waypoint_navigation/route_ack",
                 "task_confirmation_mode": "route",
-                "motion_hold_service": "/waypoint_navigator/set_motion_hold",
+                "motion_hold_service": "/final_navigation/set_motion_hold",
                 "motion_hold_state_topic": (
                     "/waypoint_navigation/motion_hold_state"
                 ),
@@ -239,16 +218,6 @@ def generate_launch_description():
             DeclareLaunchArgument("allow_partial", default_value="true"),
             DeclareLaunchArgument("plan_request_delay", default_value="1.0"),
             DeclareLaunchArgument(
-                "use_debug_controller",
-                default_value="false",
-                description="Use the debug-only loopback route controller",
-            ),
-            DeclareLaunchArgument(
-                "use_waypoint_navigator",
-                default_value="true",
-                description="Use the formal visual_navigation waypoint navigator",
-            ),
-            DeclareLaunchArgument(
                 "simulate_obstacle_recognition",
                 default_value="false",
                 description=(
@@ -272,7 +241,6 @@ def generate_launch_description():
             ),
             loopback,
             planner,
-            debug_controller,
             navigator,
             gui_node,
             mission,

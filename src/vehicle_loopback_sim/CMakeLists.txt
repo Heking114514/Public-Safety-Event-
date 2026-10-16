@@ -26,8 +26,7 @@ find_package(yaml-cpp REQUIRED)
 
 add_library(loopback_sim_core
   src/motion.cpp
-  src/obstacle.cpp
-  src/route_control.cpp)
+  src/obstacle.cpp)
 target_include_directories(loopback_sim_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
@@ -54,15 +53,9 @@ ament_target_dependencies(vehicle_loopback_sim_node
 add_executable(simulation_clock_node src/simulation_clock.cpp)
 ament_target_dependencies(simulation_clock_node rclcpp rosgraph_msgs std_msgs)
 
-add_executable(loopback_route_controller src/controller.cpp)
-target_include_directories(loopback_route_controller PRIVATE include)
-target_link_libraries(loopback_route_controller loopback_sim_core)
-ament_target_dependencies(loopback_route_controller
-  geometry_msgs nav_msgs rclcpp std_msgs)
-
 ament_python_install_package(vehicle_loopback_sim)
 
-install(TARGETS loopback_sim_core vehicle_loopback_sim_node loopback_route_controller simulation_clock_node
+install(TARGETS loopback_sim_core vehicle_loopback_sim_node simulation_clock_node
   EXPORT loopback_sim_coreTargets
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
@@ -74,6 +67,11 @@ install(DIRECTORY vehicle_loopback_sim/web/ DESTINATION share/${PROJECT_NAME}/we
 install(FILES README.md CHANGELOG.md DESTINATION share/${PROJECT_NAME})
 install(PROGRAMS
   scripts/loopback_mission_node
+  scripts/final_navigation_mission_node
+  scripts/handoff_loopback.py
+  scripts/recovery_evidence.py
+  scripts/road_blockage_check.py
+  scripts/run_pose_recovery_scenarios.py
   scripts/vehicle_loopback_gui_node
   DESTINATION lib/${PROJECT_NAME})
 

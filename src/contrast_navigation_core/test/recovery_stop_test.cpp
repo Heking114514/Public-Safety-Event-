@@ -8,7 +8,7 @@ using Guard=visual_navigation::RecoveryStopGuard;
 using Result=Guard::Result;
 Guard guard() {
   Guard value;
-  // 测试阈值来自 contrast_controller.yaml；连续样本数由本测试显式指定。
+  // 测试阈值来自 final_navigation.yaml；连续样本数由本测试显式指定。
   value.configure(0.002,0.03,0.22,2.0,3);
   value.begin(10.0,100);
   return value;

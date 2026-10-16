@@ -1,7 +1,7 @@
 #include "visual_navigation/waypoint_navigator.hpp"
 
 WaypointNavigator::WaypointNavigator()
-    : Node("waypoint_navigator"), controlClock_(get_clock()) {
+    : Node("final_navigation"), controlClock_(get_clock()) {
   routeFile_ = declare_parameter<std::string>("route_file", "");
   routeFrame_ = declare_parameter<std::string>("route_frame", "map");
   odomChildFrame_ =
@@ -57,6 +57,12 @@ WaypointNavigator::WaypointNavigator()
       std::max(0.0, declare_parameter<double>("default_speed", 0.05));
   maxLinearSpeed_ =
       std::max(0.0, declare_parameter<double>("max_linear_speed", 0.05));
+  straightLineSpeed_ = std::max(
+      maxLinearSpeed_, declare_parameter<double>("straight_line_speed", 0.08));
+  straightLineMinLength_ = std::max(
+      0.05, declare_parameter<double>("straight_line_min_length_m", 0.50));
+  straightLineAcceleration_ = std::max(
+      0.01, declare_parameter<double>("straight_line_acceleration", 0.10));
   minLinearCommandSpeed_ = std::min(
       maxLinearSpeed_, std::max(0.0, declare_parameter<double>(
                                       "min_linear_command_speed", 0.035)));

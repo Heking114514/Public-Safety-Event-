@@ -4,7 +4,6 @@
 
 #include "vehicle_loopback_sim/motion.hpp"
 #include "vehicle_loopback_sim/obstacle.hpp"
-#include "vehicle_loopback_sim/route_control.hpp"
 
 namespace loopback = vehicle_loopback_sim;
 
@@ -60,29 +59,4 @@ TEST(Obstacle, StableGateRequiresContinuousDetection)
   const auto detection = gate.update(loopback::ObstacleDetection{3, 0.36, 0.5}, 12.0);
   ASSERT_TRUE(detection.has_value());
   EXPECT_EQ(detection->obstacle_index, 3U);
-}
-
-TEST(RouteControl, ProjectsRemainingDistanceAndLeftCrossTrack)
-{
-  const loopback::RoutePose start{0.0, 0.0, 0.0, false};
-  const loopback::RoutePose target{1.0, 0.0, 0.0, false};
-  const loopback::RoutePose pose{0.25, 0.10, 0.0, false};
-  const auto projection = loopback::project(start, target, pose);
-  EXPECT_TRUE(projection.valid);
-  EXPECT_NEAR(projection.remaining, 0.75, 1.0e-12);
-  EXPECT_NEAR(projection.cross_track, 0.10, 1.0e-12);
-}
-
-TEST(RouteControl, ParsesTurnJunctionMarker)
-{
-  nav_msgs::msg::Path path;
-  geometry_msgs::msg::PoseStamped pose;
-  pose.pose.position.x = 1.0;
-  pose.pose.position.y = 2.0;
-  pose.pose.position.z = 1.0e-3;
-  pose.pose.orientation.w = 1.0;
-  path.poses.push_back(pose);
-  const auto route = loopback::parse_path(path);
-  ASSERT_EQ(route.size(), 1U);
-  EXPECT_TRUE(route.front().turn_junction);
 }
