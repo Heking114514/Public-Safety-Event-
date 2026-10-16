@@ -49,13 +49,6 @@ void WaypointNavigator::RunCornerShunt(const ControlFrame &frame,
       return;
     }
     normalTurnEntryStop_ = false;
-    if (!visual_navigation::FixedTurnEntryMatches(input.context, turnManeuverConfig_)) {
-      navigationActive_ = false;
-      PublishStop();
-      turnManeuverController_.reset();
-      SetState("FAULT_TURN_ENTRY_STOP_POSE");
-      return;
-    }
     RCLCPP_INFO(get_logger(), "Normal fixed entry stopped: actual=(%.4f,%.4f,%.4f)",
       input.context.pose.x,input.context.pose.y,input.context.pose.yaw);
   }

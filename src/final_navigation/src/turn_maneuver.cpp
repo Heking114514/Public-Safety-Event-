@@ -23,9 +23,7 @@ bool ConfigValid(const TurnManeuverConfig &config) {
                            config.turn_angular_speed,
                            config.turn_min_angular_speed,
                            config.creep_linear_speed,
-                           config.entry_position_tolerance,
                            config.turn_linear_speed,
-                           config.entry_lateral_tolerance,
                            config.entry_yaw_tolerance,
                            config.phase_timeout,
                            config.no_progress_timeout,
@@ -34,8 +32,7 @@ bool ConfigValid(const TurnManeuverConfig &config) {
                            config.creep_distance,
                            config.entry_heading_gain,
                            config.entry_lateral_gain,
-                           config.entry_max_angular_speed,
-                           config.exit_lateral_tolerance};
+                           config.entry_max_angular_speed};
   for (double value : values) {
     if (!std::isfinite(value))
       return false;
@@ -45,15 +42,12 @@ bool ConfigValid(const TurnManeuverConfig &config) {
          config.turn_linear_speed >= config.creep_linear_speed &&
          config.turn_min_angular_speed > 0.0 &&
          config.turn_angular_speed >= config.turn_min_angular_speed &&
-         config.entry_position_tolerance > 0.0 &&
-         config.entry_lateral_tolerance > 0.0 &&
          config.entry_yaw_tolerance > 0.0 && config.phase_timeout > 0.0 &&
          config.no_progress_timeout > 0.0 &&
          config.min_position_progress > 0.0 && config.min_yaw_progress > 0.0 &&
          config.creep_distance > 0.0 && config.entry_heading_gain > 0.0 &&
          config.entry_lateral_gain >= 0.0 &&
-         config.entry_max_angular_speed > 0.0 &&
-         config.exit_lateral_tolerance > 0.0;
+         config.entry_max_angular_speed > 0.0;
 }
 
 double TurnAngularCommand(double error, double angle,
@@ -264,16 +258,13 @@ TurnManeuverController::update(const TurnManeuverInput &input, double now_s) {
     const double x_error = config_.entry_target_x - local.x;
     const double y_error = direction * config_.entry_target_y - local.y;
     const double yaw_error = NormalizeShuntAngle(-local.yaw);
-    if (std::abs(x_error) <= config_.entry_position_tolerance &&
-        std::abs(y_error) <= config_.entry_lateral_tolerance &&
-        std::abs(yaw_error) <= config_.entry_yaw_tolerance)
-      return enter_phase(TurnManeuverPhase::TURN_60);
-
     // A fixed-direction capture avoids reversing every tick around the target.
     const double drive_direction =
         config_.entry_target_x >= local_pose(captured_.pose).x ? 1.0 : -1.0;
-    if (drive_direction * x_error < -config_.entry_position_tolerance ||
-        motion_failed())
+    // 到达或跨过入口即完成入位，不再以横向、航向或位置容差拦截。
+    if (drive_direction * x_error <= 0.0)
+      return enter_phase(TurnManeuverPhase::TURN_60);
+    if (motion_failed())
       return terminal(phase_, TurnManeuverResult::NEED_REPLAN);
     command.linear_x = drive_direction * config_.turn_linear_speed;
     command.angular_z = Clamp(
@@ -304,8 +295,7 @@ TurnManeuverController::update(const TurnManeuverInput &input, double now_s) {
     if (distance >= config_.creep_distance &&
         std::abs(yaw_error) <= config_.entry_yaw_tolerance)
       return enter_phase(TurnManeuverPhase::TURN_30);
-    if (distance > config_.creep_distance + config_.entry_position_tolerance ||
-        motion_failed())
+    if (motion_failed())
       return terminal(phase_, TurnManeuverResult::NEED_REPLAN);
     command.linear_x = config_.turn_linear_speed;
     command.angular_z =
@@ -318,8 +308,6 @@ TurnManeuverController::update(const TurnManeuverInput &input, double now_s) {
     const double yaw_error =
         NormalizeShuntAngle(direction * kPi / 2.0 - local.yaw);
     if (std::abs(yaw_error) <= config_.entry_yaw_tolerance) {
-      if (std::abs(local.x) > config_.exit_lateral_tolerance)
-        return terminal(phase_, TurnManeuverResult::NEED_REPLAN);
       return terminal(TurnManeuverPhase::COMPLETE,
                       TurnManeuverResult::COMPLETED);
     }

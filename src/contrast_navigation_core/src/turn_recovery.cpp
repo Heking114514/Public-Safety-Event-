@@ -169,9 +169,6 @@ bool WaypointNavigator::RunTurnObstacleRecovery() {
       PauseActiveTurn();
       if (!RecoveryStopCompleted(t)) return true;
       normalTurnEntryStop_ = false;
-      if (!visual_navigation::FixedTurnEntryMatches(context(), turnManeuverConfig_)) {
-        FailPoseRecovery("FAULT_POSE_RECOVERY_CURRENT_ENTRY_POSE"); return true;
-      }
     }
     visual_navigation::TurnManeuverInput input; input.context = context();
     const auto decision = turnManeuverController_.update(input, ControlSeconds());

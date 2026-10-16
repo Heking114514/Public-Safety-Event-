@@ -39,17 +39,6 @@ struct TurnManeuverConfig {
   double entry_max_angular_speed{0.15};
   double exit_lateral_tolerance{0.045};
 };
-inline bool FixedTurnEntryMatches(const CornerShuntContext &context,
-                                  const TurnManeuverConfig &config) {
-  const double c = std::cos(context.geometry_heading);
-  const double s = std::sin(context.geometry_heading);
-  const double sign = NormalizeShuntAngle(context.target_heading-context.geometry_heading) > 0 ? 1.0 : -1.0;
-  const double dx = context.pose.x-context.junction_x;
-  const double dy = context.pose.y-context.junction_y;
-  return std::abs(dx*c+dy*s-config.entry_target_x) <= config.entry_position_tolerance &&
-    std::abs(-dx*s+dy*c-sign*config.entry_target_y) <= config.entry_lateral_tolerance &&
-    std::abs(NormalizeShuntAngle(context.pose.yaw-context.geometry_heading)) <= config.entry_yaw_tolerance;
-}
 struct TurnManeuverInput { CornerShuntContext context; bool motion_allowed{true}; bool localization_valid{true}; bool obstacle_blocked{false}; bool cancel{false}; };
 struct TurnManeuverDecision {
   TurnManeuverPhase phase{TurnManeuverPhase::IDLE}; CornerShuntTwist command; TurnManeuverResult result{TurnManeuverResult::RUNNING};
