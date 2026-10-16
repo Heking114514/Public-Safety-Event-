@@ -288,18 +288,83 @@ TEST(ContrastTurn, TranslationCannotMaskMissingYawProgress) {
   EXPECT_EQ(decision.result, Result::NEED_REPLAN);
 }
 
-TEST(ContrastTurn, EntryOvershootCannotReverseForever) {
+TEST(ContrastTurn, EntryCrossingAdvancesDespiteLateralAndHeadingError) {
   const auto config = TestConfig();
-  visual_navigation::TurnManeuverController controller(config);
-  auto input = Input(-0.04, 0.04, 0.0);
-  controller.begin(0.0);
-  controller.update(input, 0.0);
-  controller.update(input, kStep);
-  input.context.pose.x =
-      config.entry_target_x - 2 * config.entry_position_tolerance;
-  const auto decision = controller.update(input, 2 * kStep);
-  EXPECT_EQ(decision.result, Result::NEED_REPLAN);
-  EXPECT_DOUBLE_EQ(decision.command.linear_x, 0.0);
+  for (double drive_direction : {-1.0, 1.0}) {
+    visual_navigation::TurnManeuverController controller(config);
+    // 测试夹具：横向偏差 4 厘米，航向也超出原入口验收阈值。
+    auto input = Input(config.entry_target_x - drive_direction * 0.03,
+                       config.entry_target_y + 0.04,
+                       2.0 * config.entry_yaw_tolerance);
+    controller.begin(0.0);
+    controller.update(input, 0.0);
+    controller.update(input, kStep);
+    const auto approaching = controller.update(input, 2 * kStep);
+    ASSERT_EQ(approaching.phase, Phase::APPROACH_ENTRY);
+    ASSERT_EQ(approaching.result, Result::RUNNING);
+    EXPECT_GT(drive_direction * approaching.command.linear_x, 0.0);
+    input.context.pose.x =
+        config.entry_target_x + drive_direction * 2 * config.entry_position_tolerance;
+    const auto entered = controller.update(input, 3 * kStep);
+    EXPECT_EQ(entered.phase, Phase::TURN_60);
+    EXPECT_EQ(entered.result, Result::RUNNING);
+    EXPECT_DOUBLE_EQ(entered.command.linear_x, 0.0);
+    EXPECT_DOUBLE_EQ(entered.command.angular_z, 0.0);
+  }
+}
+
+TEST(ContrastTurn, ReachedTurnAngleCompletesDespiteExitLateralError) {
+  const auto config = TestConfig();
+  for (double direction : {-1.0, 1.0}) {
+    visual_navigation::TurnManeuverController controller(config);
+    auto input = Input(config.entry_target_x,
+                       direction * config.entry_target_y, 0.0, direction);
+    controller.begin(0.0);
+    controller.update(input, 0.0);
+    controller.update(input, kStep);
+    ASSERT_EQ(controller.update(input, 2 * kStep).phase, Phase::TURN_60);
+    input.context.pose.yaw = direction * kPi / 3.0;
+    ASSERT_EQ(controller.update(input, 3 * kStep).phase, Phase::DIAGONAL_CREEP);
+    input.context.pose.x += std::cos(input.context.pose.yaw) * config.creep_distance * 1.1;
+    input.context.pose.y += std::sin(input.context.pose.yaw) * config.creep_distance * 1.1;
+    ASSERT_EQ(controller.update(input, 4 * kStep).phase, Phase::TURN_30);
+    input.context.pose.x = 2 * config.exit_lateral_tolerance;
+    input.context.pose.yaw = direction * kPi / 2.0;
+    const auto completed = controller.update(input, 5 * kStep);
+    EXPECT_EQ(completed.phase, Phase::COMPLETE);
+    EXPECT_EQ(completed.result, Result::COMPLETED);
+    EXPECT_DOUBLE_EQ(completed.command.linear_x, 0.0);
+    EXPECT_DOUBLE_EQ(completed.command.angular_z, 0.0);
+    EXPECT_FALSE(controller.active());
+  }
+}
+
+TEST(ContrastTurn, CreepDistanceOverrunWaitsForHeadingInsteadOfRejectingPose) {
+  const auto config = TestConfig();
+  for (double direction : {-1.0, 1.0}) {
+    visual_navigation::TurnManeuverController controller(config);
+    auto input = Input(config.entry_target_x,
+                       direction * config.entry_target_y, 0.0, direction);
+    controller.begin(0.0);
+    controller.update(input, 0.0);
+    controller.update(input, kStep);
+    ASSERT_EQ(controller.update(input, 2 * kStep).phase, Phase::TURN_60);
+    input.context.pose.yaw = direction * kPi / 3.0;
+    ASSERT_EQ(controller.update(input, 3 * kStep).phase, Phase::DIAGONAL_CREEP);
+    const double distance = config.creep_distance + 3 * config.entry_position_tolerance;
+    input.context.pose.x += std::cos(input.context.pose.yaw) * distance;
+    input.context.pose.y += std::sin(input.context.pose.yaw) * distance;
+    input.context.pose.yaw += direction * 2 * config.entry_yaw_tolerance;
+    const auto correcting = controller.update(input, 4 * kStep);
+    EXPECT_EQ(correcting.phase, Phase::DIAGONAL_CREEP);
+    EXPECT_EQ(correcting.result, Result::RUNNING);
+    EXPECT_GT(correcting.command.linear_x, 0.0);
+    EXPECT_LT(direction * correcting.command.angular_z, 0.0);
+    input.context.pose.yaw = direction * kPi / 3.0;
+    const auto entered = controller.update(input, 5 * kStep);
+    EXPECT_EQ(entered.phase, Phase::TURN_30);
+    EXPECT_EQ(entered.result, Result::RUNNING);
+  }
 }
 
 TEST(ContrastTurn, PausedFixedActionKeepsCapturedTurnAndExcludesWallTime) {
