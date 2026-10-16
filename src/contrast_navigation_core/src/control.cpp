@@ -64,6 +64,7 @@ WaypointNavigator::ControlFrame WaypointNavigator::BuildControlFrame(
 
 void WaypointNavigator::RunControl() {
   if (MotionHeld()) {
+    launchStopArmed_ = false;
     poseRecovery_.pause_clock();
     PauseActiveTurn();
     pathProgressSupervisor_.Reset();
@@ -74,6 +75,7 @@ void WaypointNavigator::RunControl() {
   }
 
   if (!navigationActive_) {
+    launchStopArmed_ = false;
     poseRecovery_.pause_clock();
     PauseActiveTurn();
     pathProgressSupervisor_.Reset();
@@ -85,6 +87,7 @@ void WaypointNavigator::RunControl() {
   const auto supervision = navigationSupervisor_.Evaluate(
       CurrentNavigationInputs(), ControlNow());
   if (supervision.action != visual_navigation::NavigationRuntimeAction::DRIVE) {
+    launchStopArmed_ = false;
     poseRecovery_.pause_clock();
     PauseActiveTurn();
     pathProgressSupervisor_.Reset();
@@ -157,6 +160,8 @@ void WaypointNavigator::RunControl() {
   }
 
   RecordExecutedPose();
+
+  if (RunLaunchSequence()) return;
 
   if (controlState_.waiting() && RunWait() == ControlStep::DONE)
     return;

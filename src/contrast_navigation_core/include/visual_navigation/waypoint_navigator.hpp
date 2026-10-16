@@ -36,6 +36,7 @@
 #include "std_srvs/srv/trigger.hpp"
 #include "visual_navigation/pose_recovery.hpp"
 #include "visual_navigation/recovery_stop.hpp"
+#include "visual_navigation/launch_sequence.hpp"
 #include "visual_navigation/corner_return.hpp"
 #include "geometry_msgs/msg/polygon_stamped.hpp"
 #include "mission_control_interfaces/srv/select_recovery.hpp"
@@ -298,6 +299,17 @@ private:
   rclcpp::Service<mission_control_interfaces::srv::StartRoadRecovery>::SharedPtr roadRecoveryService_;
 
   void RunControl();
+  void InitLaunchSequence();
+  bool RunLaunchSequence();
+  bool launchSequenceEnabled_{false};
+  std::vector<double> launchOrigin_;
+  double launchProbeDistance_{0.0}, launchPositionTolerance_{0.0};
+  double launchOriginTolerance_{0.0}, launchPhaseTimeout_{0.0}, launchSpeed_{0.0};
+  uint64_t launchRouteId_{0};
+  std::size_t launchTurnIndex_{0};
+  visual_navigation::LaunchSequence launchSequence_;
+  visual_navigation::RecoveryStopGuard launchStopGuard_;
+  bool launchStopArmed_{false};
 
   ControlFrame BuildControlFrame(
       const visual_navigation::FusionHealthDecision &fusion_health,

@@ -41,6 +41,7 @@ add_library(contrast_waypoint_navigator_core STATIC
   src/corner_return.cpp
   src/corner_shunt.cpp
   src/control.cpp
+  src/launch_sequence.cpp
   src/maneuvers.cpp
   src/path_following.cpp
   src/progress.cpp
@@ -92,6 +93,11 @@ ament_export_dependencies(
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(launch_sequence_test
+    test/launch_sequence_test.cpp ../final_navigation/src/turn_maneuver.cpp)
+  target_include_directories(launch_sequence_test PRIVATE include)
+  target_link_libraries(launch_sequence_test yaml-cpp)
+  target_compile_features(launch_sequence_test PRIVATE cxx_std_17)
   ament_add_gtest(corner_return_test
     test/corner_return_test.cpp src/corner_return.cpp
     ../final_navigation/src/turn_maneuver.cpp)

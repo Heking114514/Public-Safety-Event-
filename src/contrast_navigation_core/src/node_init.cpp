@@ -668,6 +668,7 @@ WaypointNavigator::WaypointNavigator()
                     std::placeholders::_1, std::placeholders::_2));
 
   InitPoseRecovery();
+  InitLaunchSequence();
 
   routeLoaded_ = LoadRoute(routeFile_);
   if (routeLoaded_) {
