@@ -24,7 +24,7 @@ final_navigation:
     # 仅从出发原点接入首个路口时执行；入弯点由原路口与转弯入口偏移派生。
     launch_sequence_enabled: true
     launch_origin: [0.0, 0.0, 0.0]
-    launch_probe_distance_m: 0.05
+    launch_probe_distance_m: 0.15
     launch_position_tolerance_m: 0.003
     launch_origin_tolerance_m: 0.02
     launch_phase_timeout_s: 10.0

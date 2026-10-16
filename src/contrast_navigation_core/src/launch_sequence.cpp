@@ -60,7 +60,9 @@ bool WaypointNavigator::RunLaunchSequence() {
       if (std::abs(std::abs(NormalizeAngle(next-launchOrigin_[2]))-kPi/2) >
             turnManeuverConfig_.entry_yaw_tolerance) return false;
       const double entry=c*dx+s*dy+turnManeuverConfig_.entry_target_x;
-      if (entry <= launchProbeDistance_ || entry >= c*dx+s*dy) return false;
+      // 首次前出可以越过入弯点，返回原点后再单独前进入位；前出仍不越过路口。
+      if (entry <= 0.0 || entry >= c*dx+s*dy || launchProbeDistance_ >= c*dx+s*dy)
+        return false;
       launchTurnIndex_=i;
       launchSequence_.begin({launchOrigin_[0],launchOrigin_[1],launchOrigin_[2]},
         launchProbeDistance_,entry,launchPositionTolerance_,launchPhaseTimeout_);

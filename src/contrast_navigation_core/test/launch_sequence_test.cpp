@@ -79,6 +79,7 @@ TEST(LaunchSequence, FeedbackRoundTripStopsAtEntryAndStartsRealTurnWithoutRevers
   Fixture f;
   auto pose = f.origin;
   std::vector<Phase> phases{f.sequence.phase()};
+  double forward_x = 0.0;
   double return_x = 1.0;
   for (int tick = 0; f.sequence.active() && tick < 3000; ++tick) {
     const auto before = f.sequence.phase();
@@ -97,6 +98,7 @@ TEST(LaunchSequence, FeedbackRoundTripStopsAtEntryAndStartsRealTurnWithoutRevers
     f.sequence.update(pose, f.sequence.stopping(), kStep);
     if (before != f.sequence.phase()) {
       phases.push_back(f.sequence.phase());
+      if (f.sequence.phase() == Phase::FORWARD_STOP) forward_x = pose.x;
       if (f.sequence.phase() == Phase::ORIGIN_STOP) return_x = pose.x;
     }
   }
@@ -104,6 +106,8 @@ TEST(LaunchSequence, FeedbackRoundTripStopsAtEntryAndStartsRealTurnWithoutRevers
   EXPECT_EQ(phases, (std::vector<Phase>{Phase::INITIAL_STOP, Phase::FORWARD,
     Phase::FORWARD_STOP, Phase::RETURN, Phase::ORIGIN_STOP, Phase::ENTRY,
     Phase::ENTRY_STOP, Phase::COMPLETE}));
+  EXPECT_NEAR(forward_x, f.origin.x + 0.15, f.tolerance);
+  EXPECT_GT(forward_x, f.origin.x + f.entry);
   EXPECT_NEAR(return_x, f.origin.x, f.tolerance);
   EXPECT_NEAR(pose.x, f.origin.x + 0.12, f.tolerance);
 
