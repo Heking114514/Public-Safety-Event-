@@ -167,7 +167,8 @@ private:
     message.plan_id = static_cast<uint64_t>(stamp.nanoseconds());
     message.map_id = planner_->config().map_id;
     message.status = result.recovery_only ? "TURN_RECOVERY" :
-      (result.complete ? "COMPLETE" : "PARTIAL");
+      (!result.status.empty() ? result.status :
+       (result.complete ? "COMPLETE" : "PARTIAL"));
     message.arena_path = MakePath(result.arena_path, "arena", stamp, result);
     message.navigation_path =
         MakePath(result.navigation_path, "map", stamp, result);

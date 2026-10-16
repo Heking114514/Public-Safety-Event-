@@ -31,6 +31,10 @@ public:
                   bool allow_tunnel_connectors) const;
 
 private:
+  PlanResult plan_mission(const PlanRequest &request, const Pose &start,
+                          const std::vector<Polygon> &obstacles,
+                          const std::vector<CoverageStart> &starts) const;
+
   const PlannerConfig &config_;
   const RoadGraph &graph_;
   const CollisionChecker &collision_;

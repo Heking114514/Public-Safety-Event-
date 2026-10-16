@@ -47,8 +47,14 @@ void ValidateLaneClass(const PlanRequest &request, const PlannerConfig &config,
 ResolvedPlanRequest ResolvePlanRequest(const PlanRequest &request,
                                        const PlannerConfig &config) {
   ResolvedPlanRequest resolved{request, true};
-  if (request.mode == "targets" || request.mode == "coverage" ||
-      request.mode == "mission") {
+  if (request.mode == "mission") {
+    // Unified cruise missions resolve their own RFID and tunnel objectives;
+    // never expand this mode into the legacy default road-coverage list.
+    resolved.request.required_lane_ids.clear();
+    resolved.request.target_ids.clear();
+    return resolved;
+  }
+  if (request.mode == "targets" || request.mode == "coverage") {
     return resolved;
   }
   if (request.mode == "layer1") {

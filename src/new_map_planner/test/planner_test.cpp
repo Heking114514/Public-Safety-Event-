@@ -49,6 +49,52 @@ ArenaRectangleInMap(const new_map_planner::PlannerConfig &config,
   return polygon;
 }
 
+void ExpectForwardOnlyMissionRoute(const new_map_planner::PlanResult &result,
+                                   const new_map_planner::MapPlanner &planner) {
+  int previous_heading = -1;
+  for (std::size_t index = 0; index < result.traversals.size(); ++index) {
+    const auto &traversal = result.traversals[index];
+    EXPECT_FALSE(traversal.reverse) << "traversal=" << index;
+    if (traversal.directed_lane < 0) {
+      continue;
+    }
+    const int heading =
+        planner.road_graph().directed_lane(traversal.directed_lane).heading;
+    if (previous_heading >= 0) {
+      EXPECT_NE((heading - previous_heading + new_map_planner::kHeadingCount) %
+                    new_map_planner::kHeadingCount,
+                2)
+          << "traversal=" << index;
+    }
+    previous_heading = heading;
+  }
+
+  for (std::size_t index = 0; index < result.maneuvers.size(); ++index) {
+    const auto &maneuver = result.maneuvers[index];
+    EXPECT_NE(maneuver.type, new_map_planner::ManeuverType::REVERSE)
+        << "maneuver=" << index;
+    const double yaw_delta = std::abs(new_map_planner::NormalizeAngle(
+        maneuver.end.yaw - maneuver.start.yaw));
+    EXPECT_GT(new_map_planner::kPi - yaw_delta, 1.0e-6)
+        << "maneuver=" << index;
+  }
+  for (std::size_t index = 1; index < result.navigation_path.size(); ++index) {
+    const double yaw_delta = std::abs(new_map_planner::NormalizeAngle(
+        result.navigation_path[index].yaw -
+        result.navigation_path[index - 1].yaw));
+    EXPECT_GT(new_map_planner::kPi - yaw_delta, 1.0e-6)
+        << "path step=" << index;
+  }
+}
+
+void ExpectVisitedTargets(const new_map_planner::PlanResult &result,
+                          std::vector<std::string> expected) {
+  auto actual = result.visit_order;
+  std::sort(actual.begin(), actual.end());
+  std::sort(expected.begin(), expected.end());
+  EXPECT_EQ(actual, expected);
+}
+
 } // namespace
 
 TEST(Config, OfficialMapHasExplicitTopology) {
@@ -152,6 +198,86 @@ TEST(Planner, ExactTwelveTargetRouteIsExecutableAndReturnsHome) {
   }
 }
 
+TEST(PlannerMission, CompletesAllRfidAndTunnelsThenReturnsHome) {
+  const auto config = OfficialConfig();
+  new_map_planner::MapPlanner planner(config);
+  const auto result = planner.plan(HomeRequest("mission"));
+
+  ASSERT_TRUE(result.success) << result.message;
+  EXPECT_TRUE(result.complete);
+  EXPECT_EQ(result.status, "SUCCESS");
+  EXPECT_TRUE(result.deferred_target_ids.empty());
+  EXPECT_TRUE(result.deferred_lane_ids.empty());
+  EXPECT_EQ(result.visit_order.size(), 12U);
+  ExpectVisitedTargets(result, config.default_targets);
+  for (const auto &lane : config.lanes) {
+    if (lane.tunnel) {
+      EXPECT_NE(std::find(result.covered_lane_ids.begin(),
+                          result.covered_lane_ids.end(), lane.id),
+                result.covered_lane_ids.end())
+          << lane.id;
+    }
+  }
+  ASSERT_FALSE(result.navigation_path.empty());
+  EXPECT_NEAR(result.navigation_path.front().position.x, 0.0, 1.0e-6);
+  EXPECT_NEAR(result.navigation_path.front().position.y, 0.0, 1.0e-6);
+  EXPECT_NEAR(result.navigation_path.back().position.x, 0.0, 1.0e-6);
+  EXPECT_NEAR(result.navigation_path.back().position.y, 0.0, 1.0e-6);
+  ExpectForwardOnlyMissionRoute(result, planner);
+}
+
+TEST(PlannerMission, ClassicBlockedLanesDeferTunnelTwoAndReturnForward) {
+  const auto config = OfficialConfig();
+  new_map_planner::MapPlanner planner(config);
+  auto request = HomeRequest("mission");
+  request.blocked_lane_ids = {
+      planner.road_graph().green_pair_to_lane_id(7, 8),
+      planner.road_graph().green_pair_to_lane_id(6, 10),
+      planner.road_graph().green_pair_to_lane_id(5, 6)};
+
+  const auto result = planner.plan(request);
+
+  ASSERT_TRUE(result.success) << result.message;
+  EXPECT_FALSE(result.complete);
+  EXPECT_EQ(result.status, "PARTIAL_SUCCESS");
+  EXPECT_TRUE(result.deferred_target_ids.empty());
+  EXPECT_EQ(result.visit_order.size(), 12U);
+  ExpectVisitedTargets(result, config.default_targets);
+  EXPECT_NE(std::find(result.deferred_lane_ids.begin(),
+                      result.deferred_lane_ids.end(), "TUNNEL_2"),
+            result.deferred_lane_ids.end());
+  ASSERT_FALSE(result.navigation_path.empty());
+  EXPECT_NEAR(result.navigation_path.back().position.x, 0.0, 1.0e-6);
+  EXPECT_NEAR(result.navigation_path.back().position.y, 0.0, 1.0e-6);
+  ExpectForwardOnlyMissionRoute(result, planner);
+}
+
+TEST(PlannerMission, CornerBlockDefersOnlyItsRfidGoal) {
+  const auto config = OfficialConfig();
+  new_map_planner::MapPlanner planner(config);
+  auto request = HomeRequest("mission");
+  request.blocked_lane_ids = {
+      planner.road_graph().green_pair_to_lane_id(1, 2)};
+
+  const auto result = planner.plan(request);
+
+  ASSERT_TRUE(result.success) << result.message;
+  EXPECT_FALSE(result.complete);
+  EXPECT_EQ(result.status, "PARTIAL_SUCCESS");
+  ASSERT_EQ(result.deferred_target_ids.size(), 1U);
+  EXPECT_EQ(result.deferred_target_ids.front(), "2");
+  EXPECT_EQ(result.visit_order.size(), 11U);
+  auto expected_targets = config.default_targets;
+  expected_targets.erase(std::remove(expected_targets.begin(),
+                                      expected_targets.end(), "2"),
+                         expected_targets.end());
+  ExpectVisitedTargets(result, expected_targets);
+  ASSERT_FALSE(result.navigation_path.empty());
+  EXPECT_NEAR(result.navigation_path.back().position.x, 0.0, 1.0e-6);
+  EXPECT_NEAR(result.navigation_path.back().position.y, 0.0, 1.0e-6);
+  ExpectForwardOnlyMissionRoute(result, planner);
+}
+
 TEST(Planner, RouteStartingAtJunctionCarriesExplicitTurnAuthorization) {
   const auto config = OfficialConfig();
   new_map_planner::MapPlanner planner(config);
@@ -174,7 +300,7 @@ TEST(Planner, RouteStartingAtJunctionCarriesExplicitTurnAuthorization) {
   EXPECT_TRUE(result.maneuvers.front().collision_checked);
 }
 
-TEST(PlannerRecovery, RequiresExplicitContext) {
+TEST(PlannerRecovery, TurnRecoveryRequestIsRejected) {
   const auto config = OfficialConfig();
   new_map_planner::MapPlanner planner(config);
   new_map_planner::PlanRequest request;
@@ -186,11 +312,11 @@ TEST(PlannerRecovery, RequiresExplicitContext) {
 
   EXPECT_FALSE(result.success);
   EXPECT_EQ(result.failure_reason,
-            new_map_planner::PlanFailureReason::RECOVERY_CONTEXT_INVALID);
+            new_map_planner::PlanFailureReason::RECOVERY_CONTROLLER_OWNED);
   EXPECT_TRUE(result.recovery_only);
 }
 
-TEST(PlannerRecovery, RetreatsAlongExplicitIncomingLane) {
+TEST(PlannerRecovery, ReverseRetreatIsDisabled) {
   const auto config = OfficialConfig();
   new_map_planner::MapPlanner planner(config);
   new_map_planner::PlanRequest request;
@@ -203,17 +329,12 @@ TEST(PlannerRecovery, RetreatsAlongExplicitIncomingLane) {
 
   const auto result = planner.plan(request);
 
-  ASSERT_TRUE(result.success) << result.message;
+  EXPECT_FALSE(result.success);
   EXPECT_TRUE(result.recovery_only);
-  ASSERT_EQ(result.traversals.size(), 1U);
-  EXPECT_TRUE(result.traversals.front().reverse);
-  EXPECT_NEAR(result.traversals.front().end.x, 1.1, 1.0e-9);
-  EXPECT_NEAR(result.traversals.front().end.y, 2.1, 1.0e-9);
-  ASSERT_FALSE(result.maneuvers.empty());
-  EXPECT_EQ(result.maneuvers.front().type,
-            new_map_planner::ManeuverType::REVERSE);
-  EXPECT_TRUE(result.visit_order.empty());
-  EXPECT_TRUE(result.covered_lane_ids.empty());
+  EXPECT_EQ(result.failure_reason,
+            new_map_planner::PlanFailureReason::RECOVERY_CONTROLLER_OWNED);
+  EXPECT_TRUE(result.traversals.empty());
+  EXPECT_TRUE(result.maneuvers.empty());
 }
 
 TEST(Planner, LayerOneTargetsNextPendingTaskInOrder) {
@@ -627,7 +748,7 @@ TEST(Planner, BlockedForwardAnchorHasStableFailureReason) {
             new_map_planner::PlanFailureReason::START_FORWARD_BLOCKED);
 }
 
-TEST(Planner, ReverseOnlyAnchorRequestsRecoveryInsteadOfPlanningReverse) {
+TEST(Planner, ReverseOnlyAnchorIsRejectedWithoutReversePlan) {
   const auto config = OfficialConfig();
   new_map_planner::MapPlanner planner(config);
   auto request = HomeRequest("targets");
@@ -638,7 +759,7 @@ TEST(Planner, ReverseOnlyAnchorRequestsRecoveryInsteadOfPlanningReverse) {
 
   EXPECT_FALSE(result.success);
   EXPECT_EQ(result.failure_reason,
-            new_map_planner::PlanFailureReason::START_REQUIRES_REVERSE);
+            new_map_planner::PlanFailureReason::START_HEADING_MISMATCH);
   EXPECT_TRUE(result.traversals.empty());
 }
 

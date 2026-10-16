@@ -193,6 +193,9 @@ const char *PlanFailureName(PlanFailureReason reason);
 struct PlanResult {
   bool success{false};
   bool complete{false};
+  // Optional public status override used by planners that can safely return a
+  // useful route while deferring unreachable mission goals.
+  std::string status;
   bool collision_checked{false};
   bool validate_geometry{false};
   PlanFailureReason failure_reason{PlanFailureReason::NONE};
