@@ -172,8 +172,8 @@ relocalization jumps and are not odometry-fusion pose inputs.
 
 ## Frames
 
-共享物理配置将 `camera_link` 放在车体中心前方 0.055 m、横向中轴线上、上方 0.121 m：
-`base_link -> camera_link = (0.055, 0.0, 0.121)`。
+共享物理配置将 `camera_link` 放在车体中心前方 0.055 m、向左偏 0.005 m、上方 0.121 m：
+`base_link -> camera_link = (0.055, 0.005, 0.121)`。
 The wheel axle midpoint is
 measured 0.030 m behind that center, so wheel odometry converts
 the axle pose to `base_link` with `base_offset_x_m: 0.030`. ORB, wheel odometry

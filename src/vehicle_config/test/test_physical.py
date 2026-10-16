@@ -83,7 +83,7 @@ def test_measured_camera_mount_uses_ros_body_axes():
     physical = load_vehicle_physical_config(CENTRAL_CONFIG)
 
     assert physical.camera_x_m == 0.055
-    assert physical.camera_y_m == 0.0
+    assert physical.camera_y_m == 0.005
     assert physical.camera_z_m == 0.121
 
 
