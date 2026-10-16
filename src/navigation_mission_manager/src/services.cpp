@@ -28,10 +28,27 @@ void MissionManager::on_control(
 {
   try {
     switch (request->command) {
-      case mission_control_interfaces::srv::ControlMission::Request::START:
+      case mission_control_interfaces::srv::ControlMission::Request::START: {
+        const auto & roads = mission_->layout().road_lane_ids;
+        for (const auto & lane : request->blocked_lane_ids) {
+          if (lane == "LAUNCH" || lane == "ROAD_TOP_LEFT" || lane == "ROAD_TOP_RIGHT" ||
+            std::find(roads.begin(), roads.end(), lane) == roads.end())
+          {
+            throw std::runtime_error("不允许封闭保护区、隧道或未知道路: " + lane);
+          }
+        }
         start_mission(request->target_ids.empty() ? default_targets_ : request->target_ids);
-        response->message = "自主任务已启动";
+        // start_mission clears the previous snapshot and schedules planning for
+        // the next timer tick. Install the requested static snapshot before it runs.
+        manual_blocked_lane_ids_ = std::set<std::string>(
+          request->blocked_lane_ids.begin(), request->blocked_lane_ids.end());
+        blocked_lane_ids_.insert(manual_blocked_lane_ids_.begin(), manual_blocked_lane_ids_.end());
+        if (!request->blocked_lane_ids.empty()) {
+          ++obstacle_revision_;
+        }
+        response->message = "统一巡航任务已启动";
         break;
+      }
       case mission_control_interfaces::srv::ControlMission::Request::PAUSE:
         if (!mission_->running()) {
           throw std::runtime_error("没有正在运行的任务");
@@ -65,6 +82,7 @@ void MissionManager::on_control(
         break;
       case mission_control_interfaces::srv::ControlMission::Request::RESET:
         reset_mission();
+        manual_blocked_lane_ids_.clear();
         response->message = "任务状态已复位";
         break;
       default:

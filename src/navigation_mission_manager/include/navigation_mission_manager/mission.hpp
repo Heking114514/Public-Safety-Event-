@@ -39,7 +39,7 @@ struct MissionLayout
 class StagedMission
 {
 public:
-  explicit StagedMission(MissionLayout layout);
+  explicit StagedMission(MissionLayout layout, bool unified = false);
 
   void reset();
   void start(const std::vector<std::string> & task_ids = {});
@@ -75,6 +75,8 @@ public:
 
 private:
   MissionLayout layout_;
+  bool unified_{false};
+  bool partial_{false};
   std::vector<std::string> requested_tasks_;
   std::set<std::string> completed_tasks_;
   std::set<std::string> completed_tunnels_;

@@ -170,6 +170,10 @@ class PlannerRosClient(Node):
         request.target_ids = list(spec.target_ids)
         request.required_lane_ids = list(spec.required_lane_ids)
         request.completed_lane_ids = list(spec.completed_lane_ids)
+        request.blocked_lane_ids = list(spec.blocked_lane_ids)
+        # A manually selected obstacle set is a new immutable snapshot.  The
+        # mission manager uses this revision to reject stale route plans.
+        request.obstacle_revision = 1 if spec.blocked_lane_ids else 0
         request.dynamic_obstacles = [
             Polygon(points=[Point32(x=float(x), y=float(y)) for x, y in polygon])
             for polygon in dynamic_obstacles
@@ -180,7 +184,9 @@ class PlannerRosClient(Node):
         self.plan_future = self.plan_client.call_async(request)
         self.plan_future.add_done_callback(self._finish_plan)
 
-    def request_mission(self, command: int, target_ids: list[str]) -> None:
+    def request_mission(
+        self, command: int, target_ids: list[str], blocked_lane_ids: list[str] | None = None
+    ) -> None:
         if self.mission_future is not None:
             raise RuntimeError("任务命令正在处理")
         if not self.mission_ready():
@@ -188,6 +194,7 @@ class PlannerRosClient(Node):
         request = ControlMission.Request()
         request.command = int(command)
         request.target_ids = list(target_ids)
+        request.blocked_lane_ids = list(blocked_lane_ids or [])
         self.mission_future = self.mission_client.call_async(request)
         self.mission_future.add_done_callback(self._finish_mission)
 

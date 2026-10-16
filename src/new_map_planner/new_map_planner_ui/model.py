@@ -17,6 +17,10 @@ class PlanSelection:
     completed_lane_ids: tuple[str, ...] = ()
     return_home: bool = True
     allow_partial: bool = False
+    # Physical lane IDs selected by the operator before navigation.  A lane
+    # is blocked in both directions; the planner still keeps its end nodes
+    # available for turns.
+    blocked_lane_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

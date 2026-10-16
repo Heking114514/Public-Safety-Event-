@@ -6,6 +6,8 @@ uint8 RESET=5
 
 uint8 command
 string[] target_ids
+# Static physical road closures supplied when starting a mission.
+string[] blocked_lane_ids
 ---
 bool accepted
 string message

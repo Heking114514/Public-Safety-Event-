@@ -3,6 +3,7 @@ from __future__ import annotations
 import queue
 import signal
 import time
+import math
 import tkinter as tk
 from pathlib import Path
 from typing import Any, Optional
@@ -26,6 +27,7 @@ from .view import PlannerView
 
 
 MODE_NAMES = {
+    "统一巡航": "mission",
     "第一阶段": "staged",
     "第二阶段": "staged",
     "第三阶段": "staged",
@@ -46,7 +48,7 @@ class PlannerApplication:
         self.runtime = RosRuntime(self.events)
         self.node = self.runtime.node
 
-        self.mode_var = tk.StringVar(value="第一阶段")
+        self.mode_var = tk.StringVar(value="统一巡航")
         self.status_var = tk.StringVar(value="等待融合里程计与规划服务")
         self.odom_var = tk.StringVar(value="ODOM: WAIT")
         self.planner_var = tk.StringVar(value="PLANNER: WAIT")
@@ -55,7 +57,7 @@ class PlannerApplication:
         self.stage_var = tk.StringVar(value="三阶段任务未开始")
         self.metric_var = tk.StringVar(value="尚未规划")
         self.hold_var = tk.StringVar(value="驻停")
-        self.obstacle_var = tk.StringVar(value="动态障碍 0")
+        self.obstacle_var = tk.StringVar(value="障碍边 0 / 3")
 
         self.selected_targets = set(map(str, config["tasks"].keys()))
         self.completed_lanes: set[str] = set()
@@ -83,6 +85,7 @@ class PlannerApplication:
         self.front_blocked_at: Optional[float] = None
         self.pending_obstacle: Optional[list[tuple[float, float]]] = None
         self.dynamic_obstacles: list[list[tuple[float, float]]] = []
+        self.blocked_lane_ids: set[str] = set()
 
         self.view = PlannerView(root, self)
         self.mode_changed()
@@ -94,10 +97,64 @@ class PlannerApplication:
     def target_selection_changed(self) -> None:
         self.selected_targets = set(self.view.selected_task_ids())
 
+    def lane_clicked(self, x: float, y: float) -> None:
+        """Toggle the nearest physical road selected as a known obstacle.
+
+        The map stores one canonical lane for each physical edge, so clicking
+        either direction selects the same ID.  Keep the competition limit of
+        three configured obstacles and reject clicks while a route is active.
+        """
+        if self.active_plan_id is not None:
+            self.status_var.set("路线执行中，障碍配置已锁定")
+            return
+        nearest = self._nearest_lane(x, y)
+        if nearest is None:
+            self.status_var.set("请点击绿色道路设置障碍")
+            return
+        if nearest in self.blocked_lane_ids:
+            self.blocked_lane_ids.remove(nearest)
+        elif len(self.blocked_lane_ids) >= 3:
+            self.status_var.set("最多只能设置 3 条障碍边")
+            return
+        else:
+            self.blocked_lane_ids.add(nearest)
+        self.obstacle_var.set(
+            f"障碍边 {len(self.blocked_lane_ids)} / 3"
+            + (f"，传感器障碍 {len(self.dynamic_obstacles)}" if self.dynamic_obstacles else "")
+        )
+        self.status_var.set(
+            "已选择障碍边：" + "、".join(sorted(self.blocked_lane_ids))
+            if self.blocked_lane_ids
+            else "已清除手动障碍边"
+        )
+        self.view.draw()
+
+    def _nearest_lane(self, x: float, y: float) -> Optional[str]:
+        best_id: Optional[str] = None
+        best_distance = float("inf")
+        for lane in self.config["lanes"]:
+            if lane.get("tunnel") or lane["id"] in {"LAUNCH", "ROAD_TOP_LEFT", "ROAD_TOP_RIGHT"}:
+                continue
+            begin = self.config["nodes"][lane["from"]]
+            end = self.config["nodes"][lane["to"]]
+            ax, ay = float(begin[0]), float(begin[1])
+            bx, by = float(end[0]), float(end[1])
+            dx, dy = bx - ax, by - ay
+            length2 = dx * dx + dy * dy
+            if length2 <= 1.0e-12:
+                continue
+            t = max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / length2))
+            distance = math.hypot(x - (ax + t * dx), y - (ay + t * dy))
+            if distance < best_distance:
+                best_distance = distance
+                best_id = str(lane["id"])
+        return best_id if best_distance <= 0.16 else None
+
     def mode_changed(self) -> None:
         # The phase selector mirrors the mission manager. It does not submit a
         # separate route or let the UI skip a phase.
-        self._set_stage_selector(self.mission_state.stage if self.mission_state else "")
+        if self._selected_mode() == "staged":
+            self._set_stage_selector(self.mission_state.stage if self.mission_state else "")
         self.view.set_targets_enabled(False)
         self._update_stage_display()
 
@@ -114,6 +171,7 @@ class PlannerApplication:
                     target_ids=tuple(sorted(self.selected_targets, key=int)),
                     return_home=False,
                     allow_partial=True,
+                    blocked_lane_ids=tuple(sorted(self.blocked_lane_ids)),
                 ),
                 activate=False,
             )
@@ -123,7 +181,7 @@ class PlannerApplication:
             self._send_plan(spec, activate=False)
 
     def navigate(self) -> None:
-        if self._selected_mode() == "staged":
+        if self._selected_mode() in {"staged", "mission"}:
             state = self.mission_state.state if self.mission_state is not None else None
             command = (
                 ControlMission.Request.RESUME
@@ -132,7 +190,8 @@ class PlannerApplication:
             )
             try:
                 self.node.request_mission(
-                    command, sorted(self.selected_targets, key=int)
+                    command, sorted(self.selected_targets, key=int),
+                    sorted(self.blocked_lane_ids),
                 )
                 self.status_var.set("任务命令已发送")
             except RuntimeError as exception:
@@ -154,6 +213,7 @@ class PlannerApplication:
             completed_lane_ids=tuple(sorted(self.completed_lanes)),
             return_home=True,
             allow_partial=mode != "targets",
+            blocked_lane_ids=tuple(sorted(self.blocked_lane_ids)),
         )
 
     def _send_plan(self, spec: PlanSelection, activate: bool) -> None:
@@ -180,7 +240,7 @@ class PlannerApplication:
         self._refresh_controls()
 
     def toggle_hold(self) -> None:
-        if self._selected_mode() == "staged":
+        if self._selected_mode() in {"staged", "mission"}:
             state = self.mission_state.state if self.mission_state is not None else None
             command = (
                 ControlMission.Request.RESUME
@@ -264,8 +324,9 @@ class PlannerApplication:
 
     def _handle_mission_state(self, state: MissionState) -> None:
         self.mission_state = state
-        self._set_stage_selector(state.stage)
-        stage_label = STAGE_LABELS.get(str(state.stage), "未开始")
+        if self._selected_mode() == "staged":
+            self._set_stage_selector(state.stage)
+        stage_label = "统一巡航" if state.stage == "mission" else STAGE_LABELS.get(str(state.stage), "未开始")
         self.stage_var.set(
             f"{stage_label} | 任务 {state.remaining_tasks} "
             f"隧道 {state.remaining_tunnels} 道路 {state.remaining_roads}"
@@ -276,7 +337,7 @@ class PlannerApplication:
             if state.state in {MissionState.PAUSED, MissionState.FAULT}
             else "暂停巡视"
         )
-        if self._selected_mode() == "staged":
+        if self._selected_mode() in {"staged", "mission"}:
             self.status_var.set(f"{state.state_name}: {state.message}")
 
     def _show_plan(self, plan: Any) -> None:
@@ -287,7 +348,7 @@ class PlannerApplication:
         self.view.draw()
 
     def _handle_front_blocked(self, blocked: bool, received_at: float) -> None:
-        if self._selected_mode() == "staged":
+        if self._selected_mode() in {"staged", "mission"}:
             return
         rising_edge = blocked and not self.front_blocked
         self.front_blocked = blocked
@@ -323,8 +384,9 @@ class PlannerApplication:
             self.status_var.set("路线执行中，不能清除障碍地图")
             return
         self.dynamic_obstacles.clear()
+        self.blocked_lane_ids.clear()
         self.pending_obstacle = None
-        self.obstacle_var.set("动态障碍 0")
+        self.obstacle_var.set("障碍边 0 / 3")
         self.status_var.set("已清除动态障碍地图")
         self.view.draw()
 
@@ -360,7 +422,10 @@ class PlannerApplication:
             self.status_var.set(f"路线未激活：{response.message}")
         else:
             prefix = "第一阶段预览完成" if spec and spec.mode == "layer1" else "预览完成"
-            self.status_var.set(f"{prefix}：{response.message}")
+            deferred = list(self.plan.deferred_target_ids)
+            tunnels = list(self.plan.deferred_lane_ids)
+            details = f"；延期 RFID：{', '.join(deferred) or '无'}；延期道路：{', '.join(tunnels) or '无'}"
+            self.status_var.set(f"{prefix}：{response.message}{details}")
 
     def _handle_navigation_status(self, status: str) -> None:
         previous = self.navigation_status
@@ -380,7 +445,10 @@ class PlannerApplication:
             )
             self.pending_obstacle = None
             self.front_blocked_at = None
-            self.obstacle_var.set(f"动态障碍 {len(self.dynamic_obstacles)}")
+            self.obstacle_var.set(
+                f"障碍边 {len(self.blocked_lane_ids)} / 3"
+                + f"，传感器障碍 {len(self.dynamic_obstacles)}"
+            )
             self.view.draw()
         if status == "GOAL_REACHED" and self.active_plan is not None:
             if self.acknowledged_plan_id != self.active_plan_id:
@@ -408,12 +476,12 @@ class PlannerApplication:
         self.ack_var.set("ACK: --")
 
     def _update_stage_display(self) -> None:
-        if self._selected_mode() == "staged":
+        if self._selected_mode() in {"staged", "mission"}:
             if self.mission_state is None:
                 self.stage_var.set("等待自主任务节点")
             else:
                 self.stage_var.set(
-                    f"{STAGE_LABELS.get(str(self.mission_state.stage), '未开始')} | "
+                    f"{'统一巡航' if self.mission_state.stage == 'mission' else STAGE_LABELS.get(str(self.mission_state.stage), '未开始')} | "
                     f"任务 {self.mission_state.remaining_tasks} "
                     f"隧道 {self.mission_state.remaining_tunnels} "
                     f"道路 {self.mission_state.remaining_roads}"
@@ -427,7 +495,7 @@ class PlannerApplication:
         direct_busy = self.node.planning or self.active_plan_id is not None
         self.odom_var.set("ODOM: READY" if odom_ready else "ODOM: WAIT")
         self.planner_var.set("PLANNER: READY" if planner_ready else "PLANNER: WAIT")
-        staged_mode = self._selected_mode() == "staged"
+        staged_mode = self._selected_mode() in {"staged", "mission"}
         mission_state = self.mission_state.state if self.mission_state else None
         mission_owns_navigation = mission_state not in {
             None,
@@ -460,7 +528,7 @@ class PlannerApplication:
             "继续巡视"
             if staged_mode
             and mission_state in {MissionState.PAUSED, MissionState.FAULT}
-            else "开始三阶段巡视"
+            else "开始统一巡航"
             if staged_mode
             else "下发并导航"
         )
@@ -479,7 +547,9 @@ class PlannerApplication:
             else self.node.hold_ready()
         )
         self.view.set_clear_obstacles_enabled(
-            not staged_mode and not direct_busy and bool(self.dynamic_obstacles)
+            not staged_mode
+            and not direct_busy
+            and bool(self.dynamic_obstacles or self.blocked_lane_ids)
         )
 
     def _poll(self) -> None:

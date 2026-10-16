@@ -8,6 +8,7 @@ WORKSPACE_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 ROS_DISTRO_NAME="${ROS_DISTRO:-humble}"
 ROS_SETUP="${NAVIGATION_ROS_SETUP:-${ROS_SETUP:-/opt/ros/${ROS_DISTRO_NAME}/setup.bash}}"
 ORB_ROOT="${WORKSPACE_ROOT}/src/orb_slam3/ORB_SLAM3"
+PANGOLIN_ROOT="${WORKSPACE_ROOT}/src/orb_slam3/Pangolin"
 DEPS_ROOT="${NAVIGATION_DEPS_ROOT:-${WORKSPACE_ROOT}/src/orb_slam3/deps}"
 RUN_MANIFEST_HELPER="${SCRIPT_DIR}/navigation_run_manifest.py"
 NAVIGATION_BAGS_HELPER="${SCRIPT_DIR}/navigation_bags.py"
@@ -544,6 +545,45 @@ prepare_cmake_build_dir() {
   fi
 }
 
+resolve_pangolin() {
+  PANGOLIN_CMAKE_DIR="${DEPS_ROOT}/lib/cmake/Pangolin"
+  PANGOLIN_CORE_LIBRARY="${DEPS_ROOT}/lib/libpango_core.so"
+  local prefix
+  for prefix in "${DEPS_ROOT}" "${NAVIGATION_PANGOLIN_PREFIX:-/usr/local}"; do
+    if [[ -f "${prefix}/lib/cmake/Pangolin/PangolinConfig.cmake" &&
+          -f "${prefix}/lib/libpango_core.so" ]]; then
+      PANGOLIN_CMAKE_DIR="${prefix}/lib/cmake/Pangolin"
+      PANGOLIN_CORE_LIBRARY="${prefix}/lib/libpango_core.so"
+      return 0
+    fi
+  done
+}
+
+build_pangolin() {
+  if [[ -f "${PANGOLIN_CMAKE_DIR}/PangolinConfig.cmake" &&
+        -f "${PANGOLIN_CORE_LIBRARY}" ]]; then
+    log "Using Pangolin: ${PANGOLIN_CORE_LIBRARY}"
+    return 0
+  fi
+
+  local build_dir="${WORKSPACE_ROOT}/build/pangolin"
+  log "Building and installing missing Pangolin"
+  prepare_cmake_build_dir "${PANGOLIN_ROOT}" "${build_dir}"
+  "${CMAKE_COMMAND}" -S "${PANGOLIN_ROOT}" -B "${build_dir}" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX="${DEPS_ROOT}" \
+    -DCMAKE_INSTALL_LIBDIR=lib \
+    -DBUILD_TOOLS=OFF \
+    -DBUILD_EXAMPLES=OFF \
+    -DBUILD_TESTS=OFF \
+    -DBUILD_PANGOLIN_PYTHON=OFF \
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+  "${CMAKE_COMMAND}" --build "${build_dir}" --parallel "${BUILD_JOBS}"
+  "${CMAKE_COMMAND}" --install "${build_dir}"
+  [[ -f "${PANGOLIN_CMAKE_DIR}/PangolinConfig.cmake" &&
+     -f "${PANGOLIN_CORE_LIBRARY}" ]] || fail "Pangolin installation is incomplete: ${DEPS_ROOT}"
+}
+
 build_orb_slam3() {
   local dbow_build="${ORB_ROOT}/Thirdparty/DBoW2/build"
   local g2o_build="${ORB_ROOT}/Thirdparty/g2o/build"
@@ -574,7 +614,7 @@ build_orb_slam3() {
   "${CMAKE_COMMAND}" -S "${ORB_ROOT}" -B "${orb_build}" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-    -DPangolin_DIR="${DEPS_ROOT}/lib/cmake/Pangolin"
+    -DPangolin_DIR="${PANGOLIN_CMAKE_DIR}"
   "${CMAKE_COMMAND}" --build "${orb_build}" --parallel "${BUILD_JOBS}" --target ORB_SLAM3
 }
 
@@ -613,7 +653,7 @@ build_ros_packages() {
     --packages-select orbslam3 \
     --cmake-args \
       -DSophus_DIR="${DEPS_ROOT}/share/sophus/cmake" \
-      -DPangolin_DIR="${DEPS_ROOT}/lib/cmake/Pangolin"
+      -DPangolin_DIR="${PANGOLIN_CMAKE_DIR}"
   CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS}" "${COLCON_COMMAND}" build --symlink-install \
     --executor sequential \
     --packages-ignore ORB_SLAM3 pangolin \
@@ -626,7 +666,7 @@ runtime_artifacts() {
     "orb_vocabulary=${WORKSPACE_ROOT}/install/orbslam3/share/orbslam3/vocabulary/ORBvoc.txt"
     "dbow2=${ORB_ROOT}/Thirdparty/DBoW2/lib/libDBoW2.so"
     "g2o=${ORB_ROOT}/Thirdparty/g2o/lib/libg2o.so"
-    "pangolin_core=${DEPS_ROOT}/lib/libpango_core.so"
+    "pangolin_core=${PANGOLIN_CORE_LIBRARY}"
     "stereo_inertial=${WORKSPACE_ROOT}/install/orbslam3/lib/orbslam3/stereo-inertial"
     "fusion_gate=${WORKSPACE_ROOT}/install/fused_odometry/lib/fused_odometry/fusion_gate_node"
     "map_odom_correction=${WORKSPACE_ROOT}/install/fused_odometry/lib/fused_odometry/map_odom_correction_node"
@@ -748,6 +788,7 @@ acquire_navigation_run_lock() {
   fail "another navigation startup still owns ${RUNS_ROOT}/.navigation.lock after old-process cleanup"
 }
 
+resolve_pangolin
 runtime_artifacts
 log "Waiting for exclusive workspace build access"
 acquire_workspace_build_lock || fail "could not acquire the workspace build lock"
@@ -768,6 +809,7 @@ if [[ "${BUILD_IF_NEEDED}" == "true" ]]; then
     SOURCE_FINGERPRINT="${SOURCE_FINGERPRINT_BEFORE}"
   else
     log "Source or build artifacts changed; running incremental build"
+    build_pangolin
     build_orb_slam3
     build_ros_packages
     SOURCE_FINGERPRINT_AFTER="$(${RUN_MANIFEST_HELPER} fingerprint --workspace "${WORKSPACE_ROOT}")" ||
@@ -820,7 +862,7 @@ set +u
 source "${WORKSPACE_ROOT}/install/setup.bash"
 set -u
 
-export LD_LIBRARY_PATH="${ORB_ROOT}/lib:${DEPS_ROOT}/lib:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="${ORB_ROOT}/lib:$(dirname -- "${PANGOLIN_CORE_LIBRARY}"):${DEPS_ROOT}/lib:${LD_LIBRARY_PATH:-}"
 RMW_IMPLEMENTATION_EFFECTIVE="${RMW_IMPLEMENTATION:-}"
 
 log "Starting decoupled odometry and navigation stacks"

@@ -115,14 +115,15 @@ MissionLayout MissionLayout::from_file(const std::string & path)
   return layout;
 }
 
-StagedMission::StagedMission(MissionLayout layout)
-: layout_(std::move(layout))
+StagedMission::StagedMission(MissionLayout layout, bool unified)
+: layout_(std::move(layout)), unified_(unified)
 {
   reset();
 }
 
 void StagedMission::reset()
 {
+  partial_ = false;
   requested_tasks_ = layout_.task_ids;
   completed_tasks_.clear();
   completed_tunnels_.clear();
@@ -137,7 +138,7 @@ void StagedMission::reset()
 void StagedMission::start(const std::vector<std::string> & task_ids)
 {
   reset();
-  const auto & selected = task_ids.empty() ? layout_.task_ids : task_ids;
+  const auto & selected = (unified_ || task_ids.empty()) ? layout_.task_ids : task_ids;
   requested_tasks_.clear();
   for (const auto & task : selected) {
     if (contains(layout_.task_ids, task) && !contains(requested_tasks_, task)) {
@@ -193,6 +194,9 @@ std::string StagedMission::current_stage() const
   if (!started_ || finished_) {
     return {};
   }
+  if (unified_) {
+    return "mission";
+  }
   if (!remaining_tasks().empty()) {
     return "layer1";
   }
@@ -211,6 +215,11 @@ PlanSpec StagedMission::plan_spec() const
   spec.mode = current_stage();
   spec.allow_partial = true;
   spec.completed_lane_ids.assign(confirmed_lanes_.begin(), confirmed_lanes_.end());
+  if (spec.mode == "mission") {
+    spec.target_ids = remaining_tasks();
+    spec.return_home = true;
+    return spec;
+  }
   if (spec.mode == "layer1") {
     spec.target_ids = remaining_tasks();
     spec.return_home = false;
@@ -248,7 +257,19 @@ std::size_t StagedMission::commit(
   }
   const std::size_t before = progress_count();
   confirmed_lanes_.insert(covered_lane_ids.begin(), covered_lane_ids.end());
-  if (spec.mode == "layer1") {
+  if (spec.mode == "mission") {
+    for (const auto & task : confirmed_task_ids) {
+      if (contains(requested_tasks_, task)) completed_tasks_.insert(task);
+    }
+    for (const auto & lane : covered_lane_ids) {
+      if (contains(layout_.tunnel_lane_ids, lane)) completed_tunnels_.insert(lane);
+    }
+    // Both SUCCESS and PARTIAL_SUCCESS routes terminate at home. Never retry
+    // deferred targets indefinitely after a successfully executed return route.
+    partial_ = !plan_complete || !remaining_tasks().empty() || !remaining_tunnels().empty();
+    finished_ = true;
+    running_ = false;
+  } else if (spec.mode == "layer1") {
     for (const auto & task : confirmed_task_ids) {
       if (contains(spec.target_ids, task)) {
         completed_tasks_.insert(task);
@@ -269,6 +290,11 @@ std::size_t StagedMission::commit(
 
 void StagedMission::commit_empty(const PlanSpec & spec, bool plan_complete)
 {
+  if (spec.mode == "mission" && plan_complete) {
+    finished_ = true;
+    running_ = false;
+    return;
+  }
   if (spec.mode != "layer3" || !spec.required_lane_ids.empty() || !plan_complete ||
     !remaining_roads().empty())
   {
@@ -296,6 +322,11 @@ std::string StagedMission::summary() const
 {
   const std::string skipped = skipped_roads_.empty() ? std::string{} :
     " | 跳过阻塞普通道路 " + std::to_string(skipped_roads_.size());
+  if (unified_) {
+    return std::string(finished_ ? (partial_ ? "PARTIAL_SUCCESS 统一巡航已返航" : "SUCCESS 统一巡航已返航") : "统一巡航") +
+      " | 未确认 RFID " + std::to_string(remaining_tasks().size()) +
+      " 隧道 " + std::to_string(remaining_tunnels().size()) + skipped;
+  }
   if (finished_) {
     return "三阶段任务完成" + skipped;
   }

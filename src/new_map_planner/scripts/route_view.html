@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>路径规划仿真 · RFID 优先降级巡航</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#eef2f6;color:#172033;font:14px/1.5 system-ui,"Noto Sans CJK SC",sans-serif}
+header{padding:22px 30px;background:#0f172a;color:white}h1{margin:0 0 5px;font-size:24px}header p{margin:0;color:#cbd5e1}
+main{max-width:1440px;margin:auto;padding:20px;display:grid;grid-template-columns:minmax(420px,1.25fr) minmax(340px,1fr);gap:20px}
+.card{background:white;border:1px solid #dbe2ea;border-radius:16px;padding:18px;margin-bottom:16px}h2{font-size:16px;margin:0 0 12px}
+.map-card{padding:10px;position:sticky;top:12px}.map-card svg{display:block;width:100%;max-height:calc(100vh - 170px)}
+.muted{opacity:.08!important}.pass{transition:opacity .15s}.pass.active .trace{stroke-width:7;filter:drop-shadow(0 0 3px white)}
+[data-focus],tr[data-step],.pass{cursor:pointer}.pass:hover .trace{stroke-width:6}svg text{font-family:inherit}
+.legend{display:flex;flex-wrap:wrap;gap:8px 16px;font-size:12px;padding:10px}.swatch{display:inline-block;width:20px;height:4px;vertical-align:middle;margin-right:5px}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.stats b{display:block;font-size:24px}.stats span{color:#64748b;font-size:12px}
+.status{font-weight:700;margin-bottom:12px}.ok{color:#15803d}.bad{color:#b91c1c}.note{color:#64748b;font-size:12px;margin:10px 0 0}
+button{font:inherit;cursor:pointer;border:1px solid #cbd5e1;border-radius:9px;background:#f8fafc;padding:7px 13px;color:inherit}
+button.primary{background:#2563eb;color:white;border-color:#2563eb}button:disabled{opacity:.4;cursor:default}
+.controls{display:flex;align-items:center;flex-wrap:wrap;gap:8px}select{padding:7px;border:1px solid #cbd5e1;border-radius:8px;background:white}input[type=range]{width:100%;accent-color:#2563eb;margin:14px 0}
+#current{min-height:65px;background:#f1f5f9;padding:12px;border-radius:10px}#current b{display:block}#current small{display:block;color:#475569}
+.repeat{margin:0 7px 8px 0;border-color:#fbbf24;background:#fffbeb}.repeat b{color:#b45309;font-size:18px}.repeat.selected{background:#f59e0b;color:#422006;border-color:#d97706}
+#setup{border:2px solid #2563eb}#setup.locked{border-color:#16a34a}#selected-blocks{display:flex;gap:7px;flex-wrap:wrap;margin:10px 0}.block-chip{background:#fff1f2;color:#b91c1c;padding:4px 9px;border-radius:999px;font-weight:700}.blocked-mark{pointer-events:none}.road-choice{cursor:pointer}.road-choice:hover{stroke:#2563eb!important;opacity:.9}
+.road-selected{stroke:#ef4444!important;opacity:.95}.selection-locked .road-choice{pointer-events:none;cursor:default}
+.protected-road{opacity:.5;cursor:not-allowed}
+.route-scroll{max-height:430px;overflow:auto}table{border-collapse:collapse;width:100%;font-size:13px}th{text-align:left;color:#64748b;background:#f8fafc;position:sticky;top:0}td,th{padding:9px 6px;border-bottom:1px solid #e2e8f0}td:last-child{white-space:nowrap;font-weight:700}td small{display:block;font-size:11px;color:#64748b}tr.active{background:#dbeafe}tr:hover{background:#f1f5f9}
+#issues p{padding:9px 12px;background:#fff1f2;border-left:3px solid #ef4444;font-size:13px;margin:8px 0}a{color:#2563eb}.downloads{display:flex;gap:15px;margin-top:12px}
+@media(max-width:850px){main{display:flex;flex-direction:column;padding:10px}.map-card{position:static}.map-card svg{max-height:none}header{padding:18px}.stats b{font-size:20px}}
+</style>
+<header><h1>路径规划仿真</h1><p>RFID 优先 · 隧道次之 · 返回起点　|　全程只前进，无法兼顾时保留合法返航</p></header>
+<main>
+<section><div class="card map-card">__MAP__
+<div class="legend"><span><i class="swatch" style="background:#2563eb"></i>第1次</span><span><i class="swatch" style="background:#ea580c"></i>第2次</span><span><i class="swatch" style="background:#9333ea"></i>第3次</span><span><i class="swatch" style="background:#0891b2"></i>第4次</span><span>金色底带 / ×N：重复道路</span><span>黑色箭头：车头朝向</span><span>路线箭头：实际移动方向</span><span>红色 ×：封边，端点保留</span></div>
+<p class="note" style="padding:0 10px">各次通行用平行线和运动方向箭头展开，黑色箭头随播放显示小车车头朝向。#数字为全局步骤；灰色小方点为中心前7cm转弯入口示意。播放展示拓扑路线，车体扫掠和固定动作轨迹仍需单独验证。</p>
+</div></section>
+<section>
+<div class="card" id="setup"><h2 id="setup-title">赛前设置障碍物</h2><p id="setup-help" class="note">点击地图上允许放障的道路，选满三条不同道路后开始导航。导航开始后，三个障碍位置锁定。</p><p class="note">顶部三条道路和四条隧道不允许放障；障碍只封住道路，端点和其他相连道路仍可通行。</p><div id="selected-blocks"></div><div class="controls"><b id="selection-count">已选 0 / 3</b><button id="start-navigation" class="primary" disabled>开始导航并锁定</button><span id="setup-message" class="note"></span></div></div>
+<div class="card"><div id="status" class="status"></div><div class="stats"><div><b id="rfid"></b><span>RFID 完成</span></div><div><b id="tunnels"></b><span>隧道通过</span></div><div><b id="home"></b><span>返回起点</span></div></div><p id="summary" class="note"></p><div id="issues"></div></div>
+<div class="card"><h2>路线播放</h2><div class="controls"><button id="play" class="primary">播放</button><button id="next">下一步</button><button id="reset">重置</button><label>速度 <select id="speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label></div><input id="scrub" type="range" min="0" value="0" aria-label="路线步骤"><div id="current"></div><p class="note">每条边按2秒展示，RFID 到达后停1秒；这是播放节奏。点击步骤表可跳转。</p></div>
+<div class="card"><h2>重复道路 <button id="clear" style="float:right;padding:2px 9px;font-size:12px">显示全部</button></h2><p class="note" style="margin-bottom:12px">点击次数标签，单独查看这条道路的所有通行。</p>__REPEATS__</div>
+<div class="card"><h2>逐步路线与定位计数</h2><div class="route-scroll"><table><thead><tr><th>步骤</th><th>路径 / 动作 / 到达事件</th><th>本路通行</th></tr></thead><tbody>__ROWS__</tbody></table></div><div class="downloads"><a href="__SVG_NAME__" download>下载 SVG 路线图</a><a href="__JSON_NAME__" download>下载完整路线数据</a></div></div>
+</section>
+</main>
+<script id="route-data" type="application/json">__JSON__</script>
+<script>const pageMode="__MODE__";</script>
+<script>
+const data=JSON.parse(document.getElementById('route-data').textContent);
+const $=id=>document.getElementById(id), steps=data.steps;
+const failures={NO_FEASIBLE_ROUTE:'没有可返航的有效巡航路线',TIMEOUT:'规划超时，未找到可返航路线',STATE_LIMIT:'达到搜索状态上限，未找到可返航路线'};
+$('status').textContent=data.status==='SUCCESS'?'✓ 找到完整可行路线':data.status==='PARTIAL_SUCCESS'?'⚠ 找到可返航的部分巡航路线':failures[data.status]||data.status;
+$('status').classList.add(data.status==='SUCCESS'?'ok':data.status==='PARTIAL_SUCCESS'?'note':'bad');
+$('rfid').textContent=`${data.rfid_completed}/${data.rfid_required}`;
+$('tunnels').textContent=`${data.tunnels_completed}/${data.tunnels_required}`;
+$('home').textContent=data.returned_home?'已返航':'未完成';
+$('summary').textContent=`规划 ${data.planning_time_s.toFixed(3)} 秒 · ${steps.length} 步 · ${data.distance_m.toFixed(2)} m（拓扑边长） · RFID 停车共 ${data.rfid_stop_s} 秒 · 不同物理边 ${data.unique_lanes??0} 条 · 重复通行 ${data.repeated_passes??0} 次。`;
+if(pageMode==='started')$('summary').textContent+=` 首个返航解 ${data.initial_unique_lanes} 条边/${data.initial_repeated_passes} 次重复；当前 ${data.unique_lanes} 条/${data.repeated_passes} 次。${data.optimization_complete?'搜索已穷尽':'搜索受'+(data.optimization_stop_reason==='state_limit'?'状态上限':'时限')+'限制，展示当前找到的最好返航路线。'}`;
+if(pageMode==='setup'){
+  document.querySelectorAll('main section:nth-child(2) .card:not(#setup)').forEach(e=>e.hidden=true);
+  const map=$('route-map');
+  const selected=new Set(data.blocked_lane_ids||[]), lanes=Object.fromEntries(data.lanes.map(l=>[l.id,l])), protectedLanes=new Set(['LAUNCH','ROAD_TOP_LEFT','ROAD_TOP_RIGHT',...data.lanes.filter(l=>l.tunnel).map(l=>l.id)]);
+  const nodeName=node=>data.green_numbers[node]?`绿${data.green_numbers[node]}`:({launch:'起点',launch_junction:'出发路口',x1_y4:'顶部左',x2_y4:'顶部右'}[node]||node);
+  let planning=false;
+  function refresh(){ $('selection-count').textContent=`已选 ${selected.size} / 3`; $('start-navigation').disabled=planning||selected.size!==3; $('selected-blocks').replaceChildren(...[...selected].map(id=>{const e=document.createElement('span');e.className='block-chip';e.textContent=`封 ${nodeName(lanes[id].from)}—${nodeName(lanes[id].to)}`;return e;}));document.querySelectorAll('#route-map line[data-focus]').forEach(e=>e.classList.toggle('road-selected',selected.has(e.dataset.focus)));map.querySelectorAll('.blocked-mark').forEach(e=>e.remove());for(const id of selected){const l=lanes[id],a=data.nodes[l.from],b=data.nodes[l.to],x=60+(a[0]+b[0])*95,y=60+(4.4-(a[1]+b[1])/2)*190,g=document.createElementNS('http://www.w3.org/2000/svg','g');g.classList.add('blocked-mark');const c=document.createElementNS(g.namespaceURI,'circle');c.setAttribute('cx',x);c.setAttribute('cy',y);c.setAttribute('r',17);c.setAttribute('fill','#fff1f2');c.setAttribute('stroke','#dc2626');c.setAttribute('stroke-width','3');const cross=document.createElementNS(g.namespaceURI,'path');cross.setAttribute('d',`M${x-7} ${y-7}L${x+7} ${y+7}M${x-7} ${y+7}L${x+7} ${y-7}`);cross.setAttribute('stroke','#dc2626');cross.setAttribute('stroke-width','4');g.append(c,cross);map.append(g);} }
+  document.querySelectorAll('#route-map line[data-focus]').forEach(edge=>{const id=edge.dataset.focus;if(!lanes[id])return;if(protectedLanes.has(id))edge.classList.add('protected-road');else edge.classList.add('road-choice');edge.addEventListener('click',()=>{if(planning)return;if(protectedLanes.has(id)){$('setup-message').textContent='顶部道路和隧道不能放置障碍。';return;}if(selected.has(id))selected.delete(id);else if(selected.size<3)selected.add(id);else{$('setup-message').textContent='最多选择三条不同道路。';return;} $('setup-message').textContent='';refresh();});});
+  $('start-navigation').onclick=async()=>{if(selected.size!==3||planning)return;planning=true;$('setup').classList.add('selection-locked');$('start-navigation').disabled=true;$('setup-message').textContent='正在规划……成功后会锁定这三条边。';try{const r=await fetch('/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({blocked_lane_ids:[...selected]})});if(!r.ok){const error=await r.json();throw Error(error.message||error.status||'规划失败');}location.assign('/result');}catch(e){planning=false;$('setup').classList.remove('selection-locked');$('setup-message').textContent=e.message;refresh();}}; refresh();
+}else{ $('setup').classList.add('locked'); $('setup-title').textContent='障碍位置已锁定'; $('setup-help').textContent='导航已经开始，障碍配置已锁定；暂停、重放和拖动进度不会解锁。'; $('start-navigation').textContent='已锁定'; $('start-navigation').disabled=true; const lanes=Object.fromEntries(data.lanes.map(l=>[l.id,l])),nodeName=node=>data.green_numbers[node]?`绿${data.green_numbers[node]}`:node; $('selected-blocks').replaceChildren(...data.blocked_lane_ids.map(id=>{const e=document.createElement('span');e.className='block-chip';e.textContent=`封 ${nodeName(lanes[id].from)}—${nodeName(lanes[id].to)}`;return e;})); $('selection-count').textContent='配置已锁定'; };
+for(const issue of data.issues){const p=document.createElement('p');p.textContent=issue.message+(issue.blocked_incident?.length?`；相关封边：${issue.blocked_incident.join('、')}`:'');$('issues').append(p);}
+if(data.status==='PARTIAL_SUCCESS'&&!data.issues.length){const p=document.createElement('p');p.textContent='已按 RFID 优先策略降级，路线仍可执行并返回起点。';$('issues').append(p);}else if(data.status==='NO_FEASIBLE_ROUTE'&&!data.issues.length){const p=document.createElement('p');p.textContent='没有找到包含有效任务进展且能返回起点的路线。';$('issues').append(p);}
+let current=0,fraction=0,running=false,previousTime=0,focus=null,frameId=0;
+$('scrub').max=steps.length;
+const name=node=>data.green_numbers[node]?`绿${data.green_numbers[node]}`:({launch:'起点',launch_junction:'出发路口',x1_y4:'顶部左',x2_y4:'顶部右'}[node]||node);
+const point=node=>{const [x,y]=data.nodes[node];return [60+x*190,60+(4.4-y)*190]};
+function focusLane(lid){focus=focus===lid?null:lid;document.querySelectorAll('.pass,tr[data-lane]').forEach(e=>e.classList.toggle('muted',!!focus&&e.dataset.lane!==focus));document.querySelectorAll('.repeat').forEach(e=>e.classList.toggle('selected',e.dataset.focus===focus));}
+function showHeading(position,heading){const arrow=$('heading-arrow'),rotation=(1-heading)*90;arrow.setAttribute('transform',`translate(${position[0]} ${position[1]}) rotate(${rotation})`);}
+function display(){
+ document.querySelectorAll('[data-step].active').forEach(e=>e.classList.remove('active'));
+ const step=steps[current];
+ $('scrub').value=current;
+ if(!step){$('current').textContent=steps.length?'路线展示完成，已返回起点。':'没有可播放的路线；请查看上方原因。';const p=point(data.home);$('progress-dot').setAttribute('cx',p[0]);$('progress-dot').setAttribute('cy',p[1]);showHeading(p,steps.length?steps[steps.length-1].heading_index:data.start_heading);return;}
+ document.querySelectorAll(`[data-step="${step.step}"]`).forEach(e=>e.classList.add('active'));
+ const a=point(step.from),b=point(step.to),t=Math.min(1,fraction/2);
+ const position=[a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t];$('progress-dot').setAttribute('cx',position[0]);$('progress-dot').setAttribute('cy',position[1]);showHeading(position,step.heading_index);
+ const state=fraction>=2&&step.rfid?'RFID 停车定位中':step.action;
+ $('current').replaceChildren();const title=document.createElement('b');title.textContent=`#${step.step} / ${steps.length}　${name(step.from)} → ${name(step.to)}　这条路第${step.pass_number}次`;
+ const detail=document.createElement('small');detail.textContent=`${state} · 朝${step.heading} · ${step.rfid?`RFID ${step.rfid} 停1秒${step.announce?'并首次播报':''}`:`连续普通节点 ${step.ordinary_after}/2`}${step.rfid_corridor?' · RFID端点共线直行例外':''}${step.turn_entry?' · 转弯前7cm入口停车':''}${step.tunnel?' · '+step.tunnel:''}`;
+ $('current').append(title,detail);
+}
+function stop(){running=false;cancelAnimationFrame(frameId);frameId=0;$('play').textContent='播放';}
+function jump(index){stop();current=index;fraction=0;display();}
+$('play').onclick=()=>{if(!steps.length)return;if(running){stop();return;}if(current>=steps.length){current=0;fraction=0;}running=true;$('play').textContent='暂停';previousTime=0;display();frameId=requestAnimationFrame(frame);};
+$('next').onclick=()=>jump(Math.min(steps.length,current+1));
+$('reset').onclick=()=>jump(0);
+$('scrub').oninput=event=>jump(Number(event.target.value));
+$('clear').onclick=()=>{focus=null;document.querySelectorAll('.muted,.repeat.selected').forEach(e=>e.classList.remove('muted','selected'));};
+document.addEventListener('click',event=>{const row=event.target.closest('tr[data-step],g.pass');if(row){jump(Number(row.dataset.step)-1);return;}const button=event.target.closest('[data-focus]');if(button)focusLane(button.dataset.focus);});
+function frame(now){frameId=0;if(!running)return;if(previousTime){fraction+=(now-previousTime)/1000*Number($('speed').value);const step=steps[current];if(fraction>=2+step.rfid_stop_s){fraction=0;current++;if(current>=steps.length)stop();}display();}previousTime=now;if(running)frameId=requestAnimationFrame(frame);}
+for(const id of ['play','next','reset','scrub'])$(id).disabled=!steps.length;
+display();
+if(pageMode==='started'&&steps.length)$('play').click();
+</script>
+</html>

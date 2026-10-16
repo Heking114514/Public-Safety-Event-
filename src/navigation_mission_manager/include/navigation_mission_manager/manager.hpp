@@ -286,6 +286,7 @@ private:
   std::vector<Polygon2d> dynamic_obstacles_;
   std::optional<double> dynamic_obstacles_updated_at_;
   std::set<std::string> blocked_lane_ids_;
+  std::set<std::string> manual_blocked_lane_ids_;
   uint64_t obstacle_revision_{0};
 
   bool report_goal_pending_{false};

@@ -287,7 +287,7 @@ void MissionManager::validate_pending_rfid(double now_seconds)
   rfid_correction_stable_since_.reset();
   rfid_stationary_since_.reset();
   rfid_correction_deadline_ = now_seconds + rfid_correction_timeout_s_;
-  rfid_speech_required_ = mission_->current_stage() == "layer1" &&
+  rfid_speech_required_ = (mission_->current_stage() == "layer1" || mission_->current_stage() == "mission") &&
     std::find(mission_->requested_tasks().begin(), mission_->requested_tasks().end(), task->second) !=
     mission_->requested_tasks().end() && !rfid_announcement_template_.empty();
   rfid_speech_attempts_ = 0;
@@ -707,7 +707,7 @@ void MissionManager::authorize_route_checkpoint(std::size_t waypoint_index)
 void MissionManager::finish_rfid_workflow()
 {
   const std::string supernode = rfid_active_supernode_.empty() ? "none" : rfid_active_supernode_;
-  if (rfid_active_.has_value() && mission_->current_stage() == "layer1" &&
+  if (rfid_active_.has_value() && (mission_->current_stage() == "layer1" || mission_->current_stage() == "mission") &&
     std::find(mission_->requested_tasks().begin(), mission_->requested_tasks().end(),
       std::to_string(*rfid_active_)) != mission_->requested_tasks().end())
   {

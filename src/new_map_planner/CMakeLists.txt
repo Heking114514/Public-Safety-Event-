@@ -70,6 +70,8 @@ install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME}
   PATTERN "__pycache__" EXCLUDE)
 install(FILES README.md CHANGELOG.md DESTINATION share/${PROJECT_NAME})
+install(DIRECTORY scripts/ DESTINATION share/${PROJECT_NAME}/scripts
+  PATTERN "__pycache__" EXCLUDE)
 install(PROGRAMS scripts/new_map_planner_ui
   DESTINATION lib/${PROJECT_NAME})
 

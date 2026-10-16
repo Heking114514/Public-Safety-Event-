@@ -36,6 +36,7 @@ class Controller(Protocol):
     current_pose_arena: tuple[float, float, float] | None
     plan: Any
     dynamic_obstacles: list[list[tuple[float, float]]]
+    blocked_lane_ids: set[str]
 
     def preview(self) -> None:
         ...
@@ -58,6 +59,9 @@ class Controller(Protocol):
     def target_selection_changed(self) -> None:
         ...
 
+    def lane_clicked(self, x: float, y: float) -> None:
+        ...
+
 
 class PlannerView:
     def __init__(self, root: tk.Tk, controller: Controller) -> None:
@@ -66,7 +70,7 @@ class PlannerView:
         self._build()
 
     def _build(self) -> None:
-        self.root.title("New Map Planner - 实车导航")
+        self.root.title("New Map Planner - 统一巡航 / 实车导航")
         self.root.geometry("1220x820")
         self.root.minsize(980, 680)
         self.root.configure(bg=BACKGROUND)
@@ -123,13 +127,20 @@ class PlannerView:
         )
         self.canvas.pack(fill=tk.BOTH, expand=True)
         self.canvas.bind("<Configure>", lambda _event: self.draw())
+        # Operators configure the three known blocked edges by clicking the
+        # corresponding road.  Selection is locked automatically once a
+        # route is activated by the controller.
+        self.canvas.bind(
+            "<Button-1>",
+            lambda event: self.controller.lane_clicked(*self._arena_point(event.x, event.y)),
+        )
 
         ttk.Label(side, text="任务阶段", font=("Sans", 11, "bold")).pack(anchor=tk.W)
         self.mode_box = ttk.Combobox(
             side,
             state="readonly",
             textvariable=self.controller.mode_var,
-            values=("第一阶段", "第二阶段", "第三阶段"),
+            values=("统一巡航", "第一阶段", "第二阶段", "第三阶段"),
         )
         self.mode_box.pack(fill=tk.X, pady=(5, 10))
         self.mode_box.bind(
@@ -272,6 +283,15 @@ class PlannerView:
         scale, offset_x, offset_y = self._transform()
         return offset_x + x * scale, self.canvas.winfo_height() - offset_y - y * scale
 
+    def _arena_point(self, canvas_x: float, canvas_y: float) -> tuple[float, float]:
+        scale, offset_x, offset_y = self._transform()
+        if scale <= 0.0:
+            return 0.0, 0.0
+        return (
+            (canvas_x - offset_x) / scale,
+            (self.canvas.winfo_height() - canvas_y - offset_y) / scale,
+        )
+
     def draw(self) -> None:
         self.canvas.delete("all")
         config = self.controller.config
@@ -294,14 +314,25 @@ class PlannerView:
             x1, y1 = self._point(float(begin[0]), float(begin[1]))
             x2, y2 = self._point(float(end[0]), float(end[1]))
             color = TUNNEL if bool(lane["tunnel"]) else ROAD
+            selected = str(lane["id"]) in self.controller.blocked_lane_ids
+            if selected:
+                color = "#d7263d"
             self.canvas.create_line(
                 x1,
                 y1,
                 x2,
                 y2,
                 fill=color,
-                width=max(2.0, float(lane["width_m"]) * scale),
+                width=max(3.0, float(lane["width_m"]) * scale)
+                if selected
+                else max(2.0, float(lane["width_m"]) * scale),
             )
+        for row in range(4):
+            for col in range(4):
+                position = nodes.get(f"x{col}_y{3-row}")
+                if position is not None:
+                    x, y = self._point(float(position[0]), float(position[1]))
+                    self.canvas.create_text(x + 13, y - 13, text=str(4 * row + col + 1), fill="#6ee7a0", font=("Sans", 10, "bold"))
         for position in nodes.values():
             x, y = self._point(float(position[0]), float(position[1]))
             self.canvas.create_oval(x - 2, y - 2, x + 2, y + 2, fill=NODE, outline="")
@@ -338,6 +369,10 @@ class PlannerView:
             for maneuver in plan.maneuvers:
                 if int(maneuver.type) not in (1, 2):
                     continue
+                entry = maneuver.start_pose.position
+                ex, ey, _ = map_to_arena(float(entry.x), float(entry.y), 0.0, config)
+                px, py = self._point(ex, ey)
+                self.canvas.create_rectangle(px - 3, py - 3, px + 3, py + 3, fill=TURN, outline="white")
                 # Turn nodes are drawn using their configured arena coordinate.
                 if maneuver.node_id in nodes:
                     position = nodes[maneuver.node_id]

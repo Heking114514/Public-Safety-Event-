@@ -311,8 +311,8 @@ void MissionManager::expire_dynamic_obstacles(double now)
   {
     dynamic_obstacles_.clear();
     dynamic_obstacles_updated_at_.reset();
-    if (!blocked_lane_ids_.empty()) {
-      blocked_lane_ids_.clear();
+    if (blocked_lane_ids_ != manual_blocked_lane_ids_) {
+      blocked_lane_ids_ = manual_blocked_lane_ids_;
       ++obstacle_revision_;
     }
     publish_text("dynamic_obstacles_expired");

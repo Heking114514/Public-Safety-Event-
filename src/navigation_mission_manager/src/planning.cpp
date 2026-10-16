@@ -26,6 +26,7 @@ void MissionManager::start_mission(const std::vector<std::string> & targets)
   dynamic_obstacles_.clear();
   dynamic_obstacles_updated_at_.reset();
   blocked_lane_ids_.clear();
+  manual_blocked_lane_ids_.clear();
   ++obstacle_revision_;
   pending_obstacle_.reset();
   latest_range_.reset();
@@ -76,6 +77,7 @@ void MissionManager::reset_mission()
   dynamic_obstacles_.clear();
   dynamic_obstacles_updated_at_.reset();
   blocked_lane_ids_.clear();
+  manual_blocked_lane_ids_.clear();
   ++obstacle_revision_;
   pending_obstacle_.reset();
   ++plan_generation_;
@@ -253,7 +255,7 @@ void MissionManager::on_plan_response(
       fault("转弯恢复规划没有可执行倒车路线");
       return;
     }
-    if (plan.complete && spec.mode == "layer3") {
+    if (plan.complete && (spec.mode == "layer3" || spec.mode == "mission")) {
       try {
         mission_->commit_empty(spec, true);
       } catch (const std::exception & error) {
@@ -367,6 +369,11 @@ void MissionManager::handle_goal_reached()
     fault(error.what());
     return;
   }
+  if (route.spec.mode == "mission") {
+    publish_text("mission_result:" + route.plan.status);
+    for (const auto & id : route.plan.deferred_target_ids) publish_text("deferred_target:" + id);
+    for (const auto & id : route.plan.deferred_lane_ids) publish_text("deferred_lane:" + id);
+  }
   ordinary_nodes_since_task_ = route.plan.ordinary_nodes_since_task;
   clear_active_route();
   completed_route_retreat_available_ = true;
@@ -399,7 +406,7 @@ void MissionManager::finish_mission()
   } else {
     set_state(
       mission_control_interfaces::msg::MissionState::COMPLETE,
-      "三阶段自主任务完成");
+      mission_->summary());
   }
   publish_text("mission_complete:stages=" + std::to_string(completed_stages_));
 }

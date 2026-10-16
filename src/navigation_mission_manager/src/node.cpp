@@ -220,7 +220,7 @@ void MissionManager::declare_parameters()
 void MissionManager::load_configuration()
 {
   mission_ = std::make_unique<StagedMission>(
-    MissionLayout::from_file(get_parameter("map_file").as_string()));
+    MissionLayout::from_file(get_parameter("map_file").as_string()), true);
   task_confirmation_mode_ = trim(get_parameter("task_confirmation_mode").as_string());
   if (task_confirmation_mode_ != "rfid" && task_confirmation_mode_ != "route") {
     throw std::invalid_argument("task_confirmation_mode must be 'rfid' or 'route'");
