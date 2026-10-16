@@ -73,7 +73,7 @@ final_navigation:
     waypoint_recovery_heading_tolerance: 0.12
     waypoint_recovery_max_angular_speed: 0.4
     turn_maneuver_enabled: true
-    turn_maneuver_entry_target_x: -0.07
+    turn_maneuver_entry_target_x: -0.08
     turn_maneuver_entry_target_y: 0.0
 
     turn_maneuver_entry_speed: 0.035
