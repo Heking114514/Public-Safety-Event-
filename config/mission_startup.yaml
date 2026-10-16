@@ -1,0 +1,7 @@
+# 一键启动：导航独占相机，识别通过 ROS 图像话题共享画面。
+mission_startup:
+  image_topic: /camera/camera/color/image_raw
+  insight_port: 7860
+  activation_delay_s: 5.0
+  startup_timeout_s: 300.0
+  window_interval_s: 1.0

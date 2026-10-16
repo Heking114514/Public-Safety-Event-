@@ -2,6 +2,8 @@
 
 ## 未发布
 
+- 新增 `scripts/start_mission.sh` 一键启动识别、导航和规划三个窗口；识别订阅导航相机话题并关闭障碍模块，规划界面节点出现 5 秒后等待系统就绪，通过总控服务启动完整巡视。新增配置、运行文件预检及中文使用说明。
+
 - 导航启动脚本按运行账号选择录包目录：`hjh` 保留 `/media/hjh/E`、`/media/hjh/Data` 外接盘顺序，其他主机账号使用自己的 `$HOME/rosbag_recording`。
 - 新增 `scripts/export_camera_video.py`，直接读解压后的 sqlite 导出相机视频，不依赖已于 `b0b90c2` 删除的 `vision_correction`；兼容 Ctrl-C 中断录制导致的 zstd 尾部截断，默认按录制帧率实时播放。
 
