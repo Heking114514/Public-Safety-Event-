@@ -1,163 +1,68 @@
 # vehicle_loopback_sim
 
-`vehicle_loopback_sim` is a lightweight truth-odometry loopback for testing the
-arena planner and waypoint controller without the real chassis, wheel odometry,
-ORB-SLAM, or the fusion gate.
+本包提供导航闭环真值仿真，供地图规划器和 `final_navigation` 在不连接实车底盘、轮速计、
+ORB-SLAM 或融合定位门控时使用。车辆运动、传感器和障碍仿真为 C++17 节点；任务辅助、
+启动文件和浏览器界面使用 Python。
 
-Truth integration, sensor publication, obstacle simulation and the optional
-debug route controller are C++17 executables. The browser GUI, launch files and
-legacy comparison mission helper remain Python because they are operator/test
-tooling rather than the realtime simulation path.
+仿真节点订阅速度命令，并发布 `map -> base_link` 真值里程计、控制角速度、融合健康
+状态、理想轮速反馈和前向障碍检测。车辆尺寸、轮距和轴心偏移从 `vehicle_config` 读取，
+仿真限速与加速度参数位于 `config/vehicle_loopback.yaml`。
 
-It subscribes to `/cmd_vel_nav` and publishes:
+## 启动闭环
 
-- `/odometry/fused` as `map -> base_link` truth odometry
-- `/imu/control` with truth yaw rate
-- `/odometry/fusion_status` as `FULL`
-- `/cup_car_serial/actuator_healthy` as `true`
-- `/cup_car_serial/control_telemetry` with ideal wheel feedback
-- `/obstacle/front_range` and `/obstacle/front_blocked` as simulated front
-  obstacle recognition
-
-When enabled, simulated obstacle recognition uses only temporary GUI/manual
-obstacles. Static obstacles from `arena.yaml` remain known map geometry and are
-never published as sensor detections. Each temporary obstacle uses a fixed
-`0.25 m` trigger distance and is reported only inside the vehicle's forward
-camera corridor. The detector is disabled by default. Enable it with:
-
-```bash
-ros2 launch vehicle_loopback_sim planner_control_loopback.launch.py \
-  simulate_obstacle_recognition:=true
-```
-
-The GUI can also place temporary simulated obstacles without editing the map:
-open the loopback page, enable `Obstacle`, then click the arena. `Clear` removes
-only these temporary GUI obstacles. GUI obstacles snap to the nearest road
-centerline and are placed crosswise to that lane at the configured `0.20 m`
-road width, with `0.10 m` depth, so clicking in a passage blocks that passage.
-The loopback node publishes GUI obstacles on `/obstacle/front_range`,
-`/obstacle/front_blocked` and `/perception/dynamic_obstacle`. The GUI draws a dashed
-forward detection fan from the camera position.
-
-The launch files also start a small browser GUI by default. It renders
-`new_map_planner/config/arena.yaml` road regions and transforms planner `arena` paths into the
-same `map` frame used by truth odometry. Open:
-
-```text
-http://127.0.0.1:8765/
-```
-
-The GUI shows the planner map, planned path, controller route, truth vehicle
-footprint, driven trail, command velocity and navigation state.
-
-Run only the vehicle loopback:
+只运行仿真器：
 
 ```bash
 ros2 launch vehicle_loopback_sim vehicle_loopback.launch.py
 ```
 
-Run planner, the formal waypoint controller and loopback together:
+运行规划器、final_navigation、任务总控和仿真器：
 
 ```bash
 ros2 launch vehicle_loopback_sim planner_control_loopback.launch.py
 ```
 
-重复运行时可使用工作区包装脚本。它会先停止残留的仿真、规划器、导航器和任务管理器进程，避免混用旧 ROS 图或占用旧 GUI 端口：
+也可以运行工作空间包装脚本；脚本会先清理之前启动的仿真、规划器、导航器和任务管理器：
 
 ```bash
-scripts/start_loopback_sim.sh \\
-  simulate_obstacle_recognition:=true
+scripts/start_loopback_sim.sh simulate_obstacle_recognition:=true
 ```
 
-正式规划器、导航器和真值车辆的闭环验收必须保持默认时间倍率：
-
-```bash
-ros2 launch vehicle_loopback_sim planner_control_loopback.launch.py \
-  playback_speed:=1.0
-```
-
-`simulation_mode` 默认为 `closed_loop`。该模式强制
-`playback_speed=1.0`，用于可以验收的正式闭环结果。`playback_speed` 大于或小于
-`1.0` 会被拒绝，避免把时间尺度不一致的结果误报为通过。
-
-需要加速做运动学或接口冒烟测试时，必须显式选择 `offline`，并将结果标记为非验收：
+闭环验收固定使用 `simulation_mode:=closed_loop` 和 `playback_speed:=1.0`。加速只用于明确
+标记为非验收的离线冒烟检查：
 
 ```bash
 ros2 launch vehicle_loopback_sim vehicle_loopback.launch.py \
   simulation_mode:=offline playback_speed:=3.0 gui:=false
 ```
 
-离线加速只适合检查仿真器自身的积分、话题和障碍注入。它不能证明正式控制器在真实时间下的闭环行为；启动日志会明确打印 `NON-ACCEPTANCE`。
+`planner_control_loopback.launch.py` 固定启动正式 `final_navigation`；可用
+`plan_on_start:=false` 只检查空闲话题，也可传入逗号分隔的 `target_ids`。车辆碰撞保护
+默认开启；需要单独验证质点控制器时，使用 `ideal_controler` 包提供的专用入口。
 
-This full launch starts `new_map_planner`, the formal
-`visual_navigation/waypoint_navigator`, the production
-`navigation_mission_manager`, and the truth vehicle. By default the mission
-manager auto-starts the production staged mission against truth odometry. Static
-map obstacle simulation is opt-in. This launch sets
-`task_confirmation_mode=route`, so a task is confirmed only after its route is
-acknowledged, executed, and reports `GOAL_REACHED`; no simulated RFID reader is
-required. Disable mission startup when you only want
-idle topics:
+浏览器界面默认位于 `http://127.0.0.1:8765/`，显示地图、规划路线、导航路线、车辆外形、
+实际轨迹、速度命令和导航状态。可用 `gui:=false` 关闭界面，或用 `gui_port:=8766` 更改
+端口。发布 `/initialpose` 可在运行中重置仿真位姿。
 
-```bash
-ros2 launch vehicle_loopback_sim planner_control_loopback.launch.py plan_on_start:=false
-```
+## 单车验证入口
 
-Enable simulated map/manual obstacle reports explicitly:
+`final_navigation_comparison.launch.py` 保留历史文件名，目前只启动一个
+`final_navigation` 节点、对应的真值仿真器、地图规划器和路线任务辅助节点；启动参数不
+再选择控制器。规划器与控制器读取各自功能包的 YAML，车辆物理参数由 `vehicle_config`
+注入。默认关闭障碍检测，可用 `obstacle_detection:=true` 打开 GUI 临时障碍的模拟检测。
 
 ```bash
-ros2 launch vehicle_loopback_sim planner_control_loopback.launch.py \
-  simulate_obstacle_recognition:=true
+ros2 launch vehicle_loopback_sim final_navigation_comparison.launch.py gui:=false
 ```
 
-Run the debug-only simplified loopback route controller explicitly when you need
-to isolate the simulator from the production navigator:
+真值检查点只在路线确认、接近目标且连续停车一秒后授权路线继续，不模拟实物 RFID、定位
+修正或语音播报。需要由正式任务总控处理障碍重规划时，使用专用入口：
 
 ```bash
-ros2 launch vehicle_loopback_sim planner_control_loopback.launch.py \
-  use_waypoint_navigator:=false use_debug_controller:=true
+ros2 launch vehicle_loopback_sim final_navigation_obstacle_validation.launch.py \
+  target_ids:=1,2,3,4,5,6,7,8,9,10,11,12 gui:=true
 ```
 
-Pass a shorter comma-separated target sequence when needed:
-
-```bash
-ros2 launch vehicle_loopback_sim planner_control_loopback.launch.py \
-  target_ids:=1,2,3,4,5,6,7,8,9,10,11,12
-```
-
-The old `loopback_mission_node` executable remains available as a compatibility
-test tool, but `planner_control_loopback.launch.py` no longer starts it by
-default.
-
-Disable or move the GUI when needed:
-
-```bash
-ros2 launch vehicle_loopback_sim planner_control_loopback.launch.py gui:=false
-ros2 launch vehicle_loopback_sim planner_control_loopback.launch.py gui_port:=8766
-```
-
-Publish `/initialpose` to reset the simulated pose during a run. Speed and
-acceleration limits are configured in `config/vehicle_loopback.yaml`; setting an
-acceleration limit to `0` disables that limiter.
-
-## New/legacy controller comparison
-
-The comparison launch runs two isolated truth vehicles against the same route.
-The new controller uses `waypoint_navigator`; the legacy controller is the
-unchanged pre-shunt code imported from commit `71ddfde` and built as
-`waypoint_navigator_legacy`.
-
-```bash
-ros2 launch vehicle_loopback_sim controller_comparison.launch.py
-```
-
-Open both live views:
-
-- new shunt controller: `http://127.0.0.1:8765/`
-- legacy in-place-turn controller: `http://127.0.0.1:8766/`
-
-The two controllers share only the `new_map_planner` route. Commands, truth odometry,
-IMU, telemetry, status and trails are under `/comparison/new/*` and
-`/comparison/old/*`. The mission waits for both controllers to report
-`GOAL_REACHED` before it requests another stage. The default comparison uses
-the same complete 12-target closed route.
+GUI 中临时放置的障碍不会改写静态地图，只发布模拟前向检测和动态障碍消息。静态地图碰撞
+保护保持开启；该功能用于仿真接口验证，不能替代实车视觉感知和制动验收。详细验证记录见
+`final_navigation` 包的报告文件。

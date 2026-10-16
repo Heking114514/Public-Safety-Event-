@@ -1,6 +1,6 @@
 #include "visual_navigation/waypoint_navigator.hpp"
 
-WaypointNavigator::WaypointNavigator() : Node("waypoint_navigator") {
+WaypointNavigator::WaypointNavigator() : Node("final_navigation") {
   routeFile_ = declare_parameter<std::string>("route_file", "");
   routeFrame_ = declare_parameter<std::string>("route_frame", "map");
   odomChildFrame_ =

@@ -22,7 +22,7 @@ VEHICLE_CONFIG_CONSUMERS = {
     "pure_line_following",
     "rectangle_odometry_test",
     "vision_correction",
-    "visual_navigation",
+    "final_navigation",
     "wheel_odometry",
 }
 CENTRAL_PARAMETER_KEYS = {

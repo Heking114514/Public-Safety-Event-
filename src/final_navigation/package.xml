@@ -1,0 +1,42 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>final_navigation</name>
+  <version>0.1.0</version>
+  <description>最终导航控制器，使用 dm2325 专用 Contrast 航点导航核心。</description>
+  <maintainer email="maintainer@example.com">maintainer</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>builtin_interfaces</depend>
+  <depend>nav_msgs</depend>
+  <depend>navigation_safety</depend>
+  <depend>geometry_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>mission_control_interfaces</depend>
+  <depend>contrast_navigation_core</depend>
+
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>new_map_planner</exec_depend>
+  <exec_depend>navigation_mission_manager</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>cup_car_serial</exec_depend>
+  <exec_depend>vehicle_config</exec_depend>
+
+  <exec_depend>rclpy</exec_depend>
+  <test_depend>ament_index_cpp</test_depend>
+  <test_depend>yaml_cpp_vendor</test_depend>
+  <test_depend>ament_cmake_gtest</test_depend>
+  <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>new_map_planner</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

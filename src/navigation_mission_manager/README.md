@@ -17,7 +17,7 @@ navigation_mission_manager
 new_map_planner             event_reporter
         |
         v
-waypoint_navigator -> /cmd_vel_nav
+final_navigation -> /cmd_vel_nav
 ```
 
 ## 自主导航
@@ -32,7 +32,7 @@ waypoint_navigator -> /cmd_vel_nav
 `GOAL_REACHED`，任务节点才提交该段进度。控制器报告
 `OBSTACLE_REPLAN_REQUIRED` 时，任务节点使用已经确认的障碍多边形和最新融合位姿自动
 重规划当前阶段。若规划器明确确认当前恢复姿态无路，任务节点通过
-`/waypoint_navigator/continue_obstacle_retreat` 请求控制器沿已执行轨迹再倒退
+`/final_navigation/continue_obstacle_retreat` 请求控制器沿已执行轨迹再倒退
 `retreat_step_m`；控制器反向执行实际限速命令并在新锚点校验姿态，任务节点等其再次
 报告 `OBSTACLE_REPLAN_REQUIRED` 后才规划。默认最多扩展
 `max_retreat_extensions` 次；轨迹耗尽、控制器拒绝或达到次数上限才进入 `FAULT` 并驻停。
@@ -40,12 +40,12 @@ waypoint_navigator -> /cmd_vel_nav
 
 路口独立动作报告 `TURN_NEED_REPLAN` 时，表示当前入口和已确认的路口动作集合没有安全
 解，并不表示检测到障碍。任务节点校验控制器为当前路线发布的有效安全锚点后，清除旧路线，
-调用 `/waypoint_navigator/continue_route_retreat`，由控制器按照实际执行过的安全轨迹闭环反向
+调用 `/final_navigation/continue_route_retreat`，由控制器按照实际执行过的安全轨迹闭环反向
 回放；收到 `ROUTE_TRANSITION_REPLAN_REQUIRED` 后才恢复当前阶段的普通规划。该分支不把转弯
 中途姿态送入规划器，不伪装成障碍恢复，也不进入 `RECOVERING_OBSTACLE`。
 
 完成一段路线后若下一段仅因几何衔接无路，总控改用
-`/waypoint_navigator/continue_route_retreat`，并保持 `REPLANNING`；控制器发布
+`/final_navigation/continue_route_retreat`，并保持 `REPLANNING`；控制器发布
 `ROUTE_TRANSITION_*` 状态。该流程复用同一条已执行轨迹和安全监督，但不属于障碍恢复，
 不会产生 `OBSTACLE_BRAKING`。只有已经确认动态障碍的重规划才使用上述障碍接口和状态。
 
@@ -82,7 +82,7 @@ waypoint_navigator -> /cmd_vel_nav
 复位任务后恢复；不会释放驻停让旧路线继续执行。校验通过后向
 `/fused_odometry/correct_map_position` 请求校正，并等待融合位姿进入目标点 `0.025 m` 范围且
 稳定 `0.20 s`。非播报点驻停 `1 s`，播报点沿用播报和原有驻停时间。最后总控通过导航器
-`/waypoint_navigator/confirm_rfid_checkpoint` 服务放行指定路线号、航点序号和超节点 ID。
+`/final_navigation/confirm_rfid_checkpoint` 服务放行指定路线号、航点序号和超节点 ID。
 物理超节点用于定位和路线确认，卡号不绑定地图点：播报模板 `{number}` 使用本次实际读取
 的卡号，例如同一物理点换卡后读到 12 播报“十二”，读到 11 播报“十一”。
 完成 RFID 放行后，在已完成点的 `rfid_detection_radius_m` 范围内（默认 `0.30 m`），
@@ -121,7 +121,7 @@ loopback 显式使用 `task_confirmation_mode: route`，在路线已 ACK、实�
 其他节点需要控制车辆驻停或请求障碍倒退时，应调用总控入口：
 `/navigation_mission/set_motion_hold` 和
 `/navigation_mission/continue_obstacle_retreat`。总控会校验外部来源并转发给导航器，
-外部节点不应直接调用 `/waypoint_navigator` 下的底层服务。
+外部节点不应直接调用 `/final_navigation` 下的底层服务。
 
 ## 操作接口
 

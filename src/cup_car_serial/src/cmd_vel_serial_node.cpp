@@ -977,7 +977,7 @@ private:
     double az = 0.0;
     if (received_command_ && (now() - last_command_time_).seconds() <= command_timeout_s_) {
       vx = vx_mps_;
-      az = az_radps_;
+      az = -az_radps_;
     }
 
     if (!std::isfinite(vx) || !std::isfinite(az)) {

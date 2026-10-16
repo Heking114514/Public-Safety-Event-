@@ -34,12 +34,12 @@ source {str(HELPER)!r}
             WORKSPACE / "scripts" / "start_new_map_planner.sh",
             WORKSPACE / "src" / "new_map_planner" / "scripts" / "new_map_planner_ui",
             WORKSPACE / "route_editor.py",
-            WORKSPACE / "src" / "visual_navigation" / "scripts" / "route_editor.py",
+            WORKSPACE / "src" / "final_navigation" / "scripts" / "route_editor.py",
             WORKSPACE
             / "install"
-            / "visual_navigation"
+            / "final_navigation"
             / "lib"
-            / "visual_navigation"
+            / "final_navigation"
             / "route_editor.py",
         ]
         for path in gui_paths:
@@ -49,8 +49,8 @@ source {str(HELPER)!r}
 
     def test_route_editor_ros_parents_are_preserved(self):
         for arguments in (
-            ("ros2", "launch", "visual_navigation", "route_editor.launch.py"),
-            ("ros2", "run", "visual_navigation", "route_editor.py"),
+            ("ros2", "launch", "final_navigation", "route_editor.launch.py"),
+            ("ros2", "run", "final_navigation", "route_editor.py"),
             ("ros2", "launch", "new_map_planner", "new_map_planner.launch.py"),
             (
                 "ros2",

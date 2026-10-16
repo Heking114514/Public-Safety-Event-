@@ -3,7 +3,7 @@
 <package format="3">
   <name>contrast_navigation_core</name>
   <version>0.1.0</version>
-  <description>独立的 Contrast 航点导航控制核心，避免复用 visual_navigation 的实现。</description>
+  <description>供 final_navigation 使用的独立航点导航核心静态库。</description>
   <maintainer email="maintainer@example.com">maintainer</maintainer>
   <license>MIT</license>
 

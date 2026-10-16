@@ -22,6 +22,7 @@ ros2 launch ideal_controler ideal_controler.launch.py
 ros2 launch ideal_controler ideal_obstacle_test.launch.py
 ```
 
-该入口关闭正式 `waypoint_navigator` 和调试控制器，只让理想控制器向 loopback 底盘的
-`/cmd_vel_nav` 发布命令，并关闭 loopback 的真实车体静态碰撞保护，以保持质点验证假设。
-GUI 中放置的障碍仍通过现有仿真感知链发布。
+该入口只启动规划器、任务总控、loopback 底盘和理想控制器，不启动正式
+`final_navigation`。理想控制器向 loopback 底盘的 `/cmd_vel_nav` 发布命令，并关闭
+loopback 的真实车体静态碰撞保护，以保持质点验证假设。GUI 中放置的障碍仍通过现有仿真
+感知链发布。

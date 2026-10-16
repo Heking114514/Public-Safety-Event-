@@ -5,17 +5,14 @@ import xml.etree.ElementTree as ET
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_loopback_launch_defaults_to_formal_waypoint_navigator():
+def test_loopback_launch_defaults_to_formal_final_navigation():
     launch_text = (
         PACKAGE_ROOT / "launch" / "planner_control_loopback.launch.py"
     ).read_text()
 
-    assert (
-        '"use_waypoint_navigator",\n                default_value="true"' in launch_text
-    )
-    assert (
-        '"use_debug_controller",\n                default_value="false"' in launch_text
-    )
+    assert 'use_final_navigation' not in launch_text
+    assert 'use_debug_controller' not in launch_text
+    assert 'final_navigation_bringup.launch.py' in launch_text
     assert 'default_value="layer1,layer2,layer3"' in launch_text
     assert 'default_value="1,2,3,4,5,6,7,8,9,10,11,12"' in launch_text
     assert 'DeclareLaunchArgument("return_home", default_value="true")' in launch_text
@@ -32,6 +29,19 @@ def test_loopback_launch_defaults_to_formal_waypoint_navigator():
     assert '"task_confirmation_mode": "route"' in launch_text
     assert 'executable="loopback_mission_node"' not in launch_text
     assert 'name="vehicle_loopback_mission"' not in launch_text
+    assert 'loopback_route_controller' not in launch_text
+
+
+def test_retired_loopback_controller_has_no_installed_implementation():
+    cmake = (PACKAGE_ROOT / "CMakeLists.txt").read_text()
+    config = (PACKAGE_ROOT / "config" / "vehicle_loopback.yaml").read_text()
+
+    assert "loopback_route_controller" not in cmake
+    assert "loopback_route_controller" not in config
+    assert not (PACKAGE_ROOT / "src" / "controller.cpp").exists()
+    assert not (
+        PACKAGE_ROOT / "include" / "vehicle_loopback_sim" / "route_control.hpp"
+    ).exists()
 
 
 def test_loopback_time_contract_requires_explicit_offline_mode_for_acceleration():
@@ -51,13 +61,13 @@ def test_loopback_time_contract_requires_explicit_offline_mode_for_acceleration(
     assert "simulation_mode: closed_loop" in config_text
 
 
-def test_loopback_package_declares_formal_navigation_dependency():
+def test_loopback_package_declares_final_navigation_runtime_dependency():
     package_xml = ET.parse(PACKAGE_ROOT / "package.xml")
     dependencies = {
         element.text for element in package_xml.getroot().findall("exec_depend")
     }
 
-    assert "visual_navigation" in dependencies
+    assert "final_navigation" in dependencies
     assert "new_map_planner" in dependencies
     assert "navigation_mission_manager" in dependencies
     assert "arena_path_planner" not in dependencies
@@ -87,16 +97,11 @@ def test_gui_labels_reference_route_separately_from_actual_trail():
     assert '"stamp_ns"' in gui
 
 
-def test_comparison_launch_runs_isolated_new_and_legacy_controllers():
+def test_comparison_launch_uses_only_final_navigation():
     launch_text = (
         PACKAGE_ROOT / "launch" / "controller_comparison.launch.py"
     ).read_text()
 
-    assert 'executable="waypoint_navigator"' in launch_text
-    assert 'executable="waypoint_navigator_legacy"' in launch_text
-    assert 'namespace="comparison/new"' in launch_text
-    assert 'namespace="comparison/old"' in launch_text
-    assert 'DeclareLaunchArgument("new_gui_port", default_value="8765")' in launch_text
-    assert 'DeclareLaunchArgument("old_gui_port", default_value="8766")' in launch_text
-    assert '"navigator_status_topics"' in launch_text
-    assert 'package="new_map_planner"' in launch_text
+    assert 'final_navigation_comparison.launch.py' in launch_text
+    assert 'visual_navigation' not in launch_text
+    assert 'waypoint_navigator_legacy' not in launch_text

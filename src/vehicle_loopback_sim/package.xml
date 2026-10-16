@@ -28,7 +28,7 @@
   <exec_depend>python3-yaml</exec_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>vehicle_config</exec_depend>
-  <exec_depend>visual_navigation</exec_depend>
+  <exec_depend>final_navigation</exec_depend>
 
   <test_depend>ament_cmake_gtest</test_depend>
   <test_depend>ament_cmake_pytest</test_depend>

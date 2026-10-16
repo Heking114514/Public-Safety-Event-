@@ -1,0 +1,1260 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+ORIGINAL_ARGV=("$@")
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+WORKSPACE_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+ROS_DISTRO_NAME="${ROS_DISTRO:-humble}"
+ROS_SETUP="${NAVIGATION_ROS_SETUP:-${ROS_SETUP:-/opt/ros/${ROS_DISTRO_NAME}/setup.bash}}"
+ORB_ROOT="${WORKSPACE_ROOT}/src/orb_slam3/ORB_SLAM3"
+DEPS_ROOT="${NAVIGATION_DEPS_ROOT:-${WORKSPACE_ROOT}/src/orb_slam3/deps}"
+RUN_MANIFEST_HELPER="${SCRIPT_DIR}/navigation_run_manifest.py"
+NAVIGATION_BAGS_HELPER="${SCRIPT_DIR}/navigation_bags.py"
+PROCESS_HELPER="${SCRIPT_DIR}/navigation_processes.sh"
+BUILD_LOCK_HELPER="${SCRIPT_DIR}/build_lock.sh"
+CONFIG_HELPER="${SCRIPT_DIR}/navigation_config.py"
+CONFIG_SHELL_HELPER="${SCRIPT_DIR}/navigation_config.sh"
+VEHICLE_PHYSICAL_HELPER="${SCRIPT_DIR}/vehicle_physical.py"
+STARTUP_CONFIG="${NAVIGATION_STARTUP_CONFIG:-${WORKSPACE_ROOT}/config/navigation_startup.yaml}"
+RECORDING_CONFIG="${NAVIGATION_RECORDING_CONFIG:-${WORKSPACE_ROOT}/config/navigation_recording.yaml}"
+DEFAULT_AUTOSTART_ROUTE="${SCRIPT_DIR}/waypoints.csv"
+BUILD_MANIFEST="${NAVIGATION_BUILD_MANIFEST:-${WORKSPACE_ROOT}/build/navigation_runtime_manifest.json}"
+log() {
+  printf '[visual-navigation] %s\n' "$*"
+}
+
+fail() {
+  printf '[visual-navigation] ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+# Mount an external recording volume. A reboot drops NTFS mounts, so the
+# recording root can be missing even though the drive is attached. Windows fast
+# startup also leaves the volume dirty, which makes a plain mount refuse; the
+# `force` option mounts a dirty volume without writing to it, so it is tried
+# before the repairing ntfsfix fallback. The mountpoint name matches the NTFS
+# volume label, so it doubles as the /dev/disk/by-label lookup key.
+mount_recording_volume() {
+  local label="$1" mountpoint="$2" device="/dev/disk/by-label/$1"
+  [[ -e "${device}" ]] || return 1
+  # udisks creates the mountpoint itself. Pre-creating it makes udisks fall back
+  # to a numbered path such as /media/hjh/Data1, which this script does not look
+  # at, so the directory is only made for the sudo path below.
+  if command -v udisksctl >/dev/null 2>&1; then
+    udisksctl mount -b "${device}" >/dev/null 2>&1 || true
+    if mountpoint -q -- "${mountpoint}"; then
+      return 0
+    fi
+  fi
+  if [[ ! -d "${mountpoint}" ]]; then
+    mkdir -p -- "${mountpoint}" 2>/dev/null \
+      || sudo mkdir -p -- "${mountpoint}" >/dev/null 2>&1 \
+      || return 1
+  fi
+  sudo mount -t ntfs3 -o force "${device}" "${mountpoint}" >/dev/null 2>&1 || true
+  if mountpoint -q -- "${mountpoint}"; then
+    return 0
+  fi
+  sudo ntfsfix "${device}" >/dev/null 2>&1 || true
+  sudo mount -t ntfs3 "${device}" "${mountpoint}" >/dev/null 2>&1 || true
+  if mountpoint -q -- "${mountpoint}"; then
+    return 0
+  fi
+  return 1
+}
+
+DEFAULT_RECORDING_ROOT=""
+for candidate in /media/hjh/E/rosbag_recording /media/hjh/Data/rosbag_recording; do
+  candidate_parent="$(dirname -- "${candidate}")"
+  if [[ -d "${candidate_parent}" ]]; then
+    mkdir -p -- "${candidate}" 2>/dev/null || true
+    if [[ -d "${candidate}" && -w "${candidate}" ]]; then
+      DEFAULT_RECORDING_ROOT="${candidate}"
+      break
+    fi
+  fi
+  # The volume is not usable, so mount it rather than aborting. Skipped when the
+  # caller pinned NAVIGATION_RUNS_ROOT, which makes the external volume
+  # unnecessary and keeps tests and one-off runs free of sudo prompts.
+  if [[ -z "${NAVIGATION_RUNS_ROOT:-}" ]] \
+    && mount_recording_volume "$(basename -- "${candidate_parent}")" "${candidate_parent}" \
+    && mountpoint -q -- "${candidate_parent}"; then
+    mkdir -p -- "${candidate}" 2>/dev/null || true
+    if [[ -d "${candidate}" && -w "${candidate}" ]]; then
+      log "mounted ${candidate_parent} for recording"
+      DEFAULT_RECORDING_ROOT="${candidate}"
+      break
+    fi
+  fi
+done
+if [[ -n "${DEFAULT_RECORDING_ROOT}" ]]; then
+  RUNS_ROOT="${NAVIGATION_RUNS_ROOT:-${DEFAULT_RECORDING_ROOT}/navigation_runs}"
+  LATEST_RUN="${NAVIGATION_LATEST_RUN:-${DEFAULT_RECORDING_ROOT}/latest_navigation_run}"
+  LATEST_BAG="${NAVIGATION_LATEST_BAG:-${DEFAULT_RECORDING_ROOT}/latest_navigation_bag}"
+else
+  RUNS_ROOT="${NAVIGATION_RUNS_ROOT:-${WORKSPACE_ROOT}/navigation_runs}"
+  LATEST_RUN="${NAVIGATION_LATEST_RUN:-${WORKSPACE_ROOT}/latest_navigation_run}"
+  LATEST_BAG="${NAVIGATION_LATEST_BAG:-${WORKSPACE_ROOT}/latest_navigation_bag}"
+fi
+ROS2_COMMAND="${NAVIGATION_ROS2_COMMAND:-ros2}"
+PGREP_COMMAND="${NAVIGATION_PGREP_COMMAND:-pgrep}"
+CMAKE_COMMAND="${NAVIGATION_CMAKE_COMMAND:-cmake}"
+COLCON_COMMAND="${NAVIGATION_COLCON_COMMAND:-colcon}"
+ROSBAG_COMPRESSION_MODE="${NAVIGATION_ROSBAG_COMPRESSION_MODE:-file}"
+ROSBAG_COMPRESSION_FORMAT="${NAVIGATION_ROSBAG_COMPRESSION_FORMAT:-zstd}"
+ROSBAG_COMPRESSION_QUEUE_SIZE="${NAVIGATION_ROSBAG_COMPRESSION_QUEUE_SIZE:-4}"
+ROSBAG_COMPRESSION_THREADS="${NAVIGATION_ROSBAG_COMPRESSION_THREADS:-2}"
+ROSBAG_MAX_BAG_SIZE="${NAVIGATION_ROSBAG_MAX_BAG_SIZE:-1073741824}"
+
+SERIAL_DEVICE="auto"
+SERIAL_BAUD_RATE="115200"
+USE_SERIAL="true"
+CAMERA_SERIAL=""
+USE_IMU="true"
+USE_SLAM_IMU="false"
+ODOM_TOPIC="/odometry/fused"
+NAVIGATION_PARAMETERS_FILE="${NAVIGATION_PARAMETERS_FILE:-}"
+DEFAULT_TRACKING_POINT_OFFSET_X="$(
+  python3 "${VEHICLE_PHYSICAL_HELPER}" tracking_point_x_m
+)" || fail "could not read tracking point x from vehicle_physical.yaml"
+DEFAULT_TRACKING_POINT_OFFSET_Y="$(
+  python3 "${VEHICLE_PHYSICAL_HELPER}" tracking_point_y_m
+)" || fail "could not read tracking point y from vehicle_physical.yaml"
+TRACKING_POINT_OFFSET_X="${NAVIGATION_TRACKING_POINT_OFFSET_X:-${DEFAULT_TRACKING_POINT_OFFSET_X}}"
+TRACKING_POINT_OFFSET_Y="${NAVIGATION_TRACKING_POINT_OFFSET_Y:-${DEFAULT_TRACKING_POINT_OFFSET_Y}}"
+DEFAULT_VISION_CORRECTION_MAP="${WORKSPACE_ROOT}/src/new_map_planner/config/arena.yaml"
+VISION_CORRECTION_MAP_FILE="${NAVIGATION_VISION_CORRECTION_MAP_FILE:-${DEFAULT_VISION_CORRECTION_MAP}}"
+VISION_CORRECTION_IMAGE_TOPIC="${NAVIGATION_VISION_CORRECTION_IMAGE_TOPIC:-/camera/camera/color/image_raw}"
+VISION_CORRECTION_FUSED_TOPIC="${NAVIGATION_VISION_CORRECTION_FUSED_TOPIC:-/odometry/fused}"
+VISION_CORRECTION_OUTPUT_TOPIC="${NAVIGATION_VISION_CORRECTION_OUTPUT_TOPIC:-/odometry/landmark_corrected}"
+CAMERA_INFRA_PROFILE="848x480x30"
+ORB_SETTINGS_FILE=""
+RMW_IMPLEMENTATION_CONFIG=""
+EQUALIZE="true"
+VISUALIZATION="false"
+AUTOSTART="false"
+ROUTE_MODE="planner"
+ROUTE_FILE=""
+ROUTE_SOURCE="planner:/waypoint_navigation/route_input"
+CONTROL_MODE="waypoint"
+CONTROLLER_MODE="${NAVIGATION_CONTROLLER:-final_navigation}"
+ENABLE_WAYPOINT_NAVIGATION="true"
+BUILD_IF_NEEDED="true"
+BUILD_ONLY="false"
+CHECK_CAMERA="true"
+FORCE_CAMERA_RESET="false"
+CAMERA_INITIAL_RESET="false"
+BUILD_JOBS="2"
+RETAIN_BAGS="3"
+ROSBAG_OUTPUT=""
+ROSBAG_TOPICS=()
+
+# shellcheck disable=SC1090
+[[ -f "${CONFIG_SHELL_HELPER}" ]] || fail "navigation config shell helper is missing: ${CONFIG_SHELL_HELPER}"
+source "${CONFIG_SHELL_HELPER}"
+load_navigation_config
+
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID_CONFIG}"
+log "ROS domain: ROS_DOMAIN_ID=${ROS_DOMAIN_ID}"
+
+# Force the current test machine onto the low-load RK3588 trial profile by
+# default. Command-line overrides below can still be used for A/B checks.
+CAMERA_INFRA_PROFILE="848x480x15"
+ORB_SETTINGS_FILE="${WORKSPACE_ROOT}/src/orb_slam3/orbslam3_ros2/config/stereo-inertial/RealSense_D455_rk3588.yaml"
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/start_final_navigation.sh [options]
+
+Options:
+  --camera-serial SERIAL    D455 serial number; auto-detected by default
+  --serial-device DEVICE    Controller serial device (default: auto)
+  --serial-baud RATE        Controller baud rate (default: 115200)
+  --no-serial               Run upper-computer algorithms without the controller
+  --no-imu                  Disable the D455 IMU and IMU filter
+  --slam-imu                Fuse raw D455 IMU measurements inside ORB-SLAM3
+  --odom-topic TOPIC        Navigation odometry topic (local_map, fused, or landmark_corrected)
+  --fused-odom              Bypass vision correction and navigate from /odometry/fused
+  --navigation-parameters-file FILE
+                            Waypoint navigator parameter override YAML
+  --tracking-point-offset-x METERS
+                            Forward offset from tracking point to odom base_link (default: 0.0)
+  --tracking-point-offset-y METERS
+                            Left offset from tracking point to odom base_link (default: 0.0)
+  --rk3588-profile          Use 848x480x15 and the lighter ORB-SLAM3 RK3588 YAML
+  --camera-infra-profile P  D455 infrared profile, e.g. 848x480x15
+  --orb-settings-file FILE  ORB-SLAM3 camera/extractor YAML override
+  --rmw-implementation RMW  ROS 2 RMW override: rmw_fastrtps_cpp or rmw_cyclonedds_cpp
+  --no-equalize             Disable CLAHE image enhancement before ORB-SLAM3
+  --visualization           Enable the Pangolin window
+  -a, --autostart           Load the configured CSV and start automatically
+  --primitive-rectangle-test
+                            Run the experimental A*/action-primitive 1.8 m rectangle controller instead of waypoint navigation
+  --contrast                Replace final_navigation with the Contrast controller
+  --no-build                Use only a build verified against current source
+  --build-only              Build or verify current source, then exit
+  --skip-camera-check       Launch without checking for a connected D455
+  --reset-camera            Force a D455 firmware reset before opening streams
+  --no-camera-reset         Skip camera reset (default)
+  --jobs COUNT              Parallel build jobs
+  -h, --help                Show this help
+
+With no options the stack waits for the planning GUI. In a second terminal run
+scripts/start_new_map_planner.sh and click its navigation button.
+EOF
+}
+
+while (($# > 0)); do
+  case "$1" in
+    --camera-serial)
+      (($# >= 2)) || fail "--camera-serial requires a serial number"
+      CAMERA_SERIAL="${2#_}"
+      shift 2
+      ;;
+    --serial-device)
+      (($# >= 2)) || fail "--serial-device requires a device"
+      SERIAL_DEVICE="$2"
+      shift 2
+      ;;
+    --serial-baud)
+      (($# >= 2)) || fail "--serial-baud requires a rate"
+      SERIAL_BAUD_RATE="$2"
+      shift 2
+      ;;
+    --no-serial)
+      USE_SERIAL="false"
+      shift
+      ;;
+    --no-imu)
+      USE_IMU="false"
+      USE_SLAM_IMU="false"
+      shift
+      ;;
+    --slam-imu)
+      USE_SLAM_IMU="true"
+      shift
+      ;;
+    --odom-topic)
+      (($# >= 2)) || fail "--odom-topic requires a topic"
+      ODOM_TOPIC="$2"
+      shift 2
+      ;;
+    --fused-odom)
+      ODOM_TOPIC="/odometry/fused"
+      shift
+      ;;
+    --navigation-parameters-file)
+      (($# >= 2)) || fail "--navigation-parameters-file requires a YAML file"
+      NAVIGATION_PARAMETERS_FILE="$2"
+      [[ "${NAVIGATION_PARAMETERS_FILE}" = /* ]] ||
+        NAVIGATION_PARAMETERS_FILE="${WORKSPACE_ROOT}/${NAVIGATION_PARAMETERS_FILE}"
+      shift 2
+      ;;
+    --tracking-point-offset-x)
+      (($# >= 2)) || fail "--tracking-point-offset-x requires a value in meters"
+      TRACKING_POINT_OFFSET_X="$2"
+      shift 2
+      ;;
+    --tracking-point-offset-y)
+      (($# >= 2)) || fail "--tracking-point-offset-y requires a value in meters"
+      TRACKING_POINT_OFFSET_Y="$2"
+      shift 2
+      ;;
+    --rk3588-profile)
+      CAMERA_INFRA_PROFILE="848x480x15"
+      ORB_SETTINGS_FILE="${WORKSPACE_ROOT}/src/orb_slam3/orbslam3_ros2/config/stereo-inertial/RealSense_D455_rk3588.yaml"
+      shift
+      ;;
+    --camera-infra-profile)
+      (($# >= 2)) || fail "--camera-infra-profile requires a profile"
+      CAMERA_INFRA_PROFILE="$2"
+      shift 2
+      ;;
+    --orb-settings-file)
+      (($# >= 2)) || fail "--orb-settings-file requires a file"
+      ORB_SETTINGS_FILE="$2"
+      [[ "${ORB_SETTINGS_FILE}" = /* ]] ||
+        ORB_SETTINGS_FILE="${WORKSPACE_ROOT}/${ORB_SETTINGS_FILE}"
+      shift 2
+      ;;
+    --rmw-implementation)
+      (($# >= 2)) || fail "--rmw-implementation requires a package name"
+      RMW_IMPLEMENTATION_CONFIG="$2"
+      shift 2
+      ;;
+    --no-equalize)
+      EQUALIZE="false"
+      shift
+      ;;
+    --visualization)
+      VISUALIZATION="true"
+      shift
+      ;;
+    -a|--autostart)
+      AUTOSTART="true"
+      ROUTE_MODE="csv"
+      ROUTE_FILE="${DEFAULT_AUTOSTART_ROUTE}"
+      shift
+      ;;
+    --primitive-rectangle-test)
+      CONTROL_MODE="primitive_rectangle"
+      ENABLE_WAYPOINT_NAVIGATION="false"
+      AUTOSTART="false"
+      ROUTE_MODE="primitive_rectangle"
+      ROUTE_SOURCE="primitive_controller:/cmd_vel_nav"
+      shift
+      ;;
+    --contrast)
+      CONTROLLER_MODE="final_navigation"
+      shift
+      ;;
+    --no-build)
+      BUILD_IF_NEEDED="false"
+      shift
+      ;;
+    --build-only)
+      BUILD_ONLY="true"
+      shift
+      ;;
+    --skip-camera-check)
+      CHECK_CAMERA="false"
+      shift
+      ;;
+    --reset-camera)
+      FORCE_CAMERA_RESET="true"
+      shift
+      ;;
+    --no-camera-reset)
+      FORCE_CAMERA_RESET="false"
+      shift
+      ;;
+    --jobs)
+      (($# >= 2)) || fail "--jobs requires a count"
+      BUILD_JOBS="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      fail "unknown option: $1 (use --help)"
+      ;;
+  esac
+done
+
+if [[ "${BUILD_ONLY}" != "true" && -z "${NAVIGATION_RUNS_ROOT:-}" &&
+      -z "${DEFAULT_RECORDING_ROOT}" ]]; then
+  fail "no writable external rosbag directory found; mount /media/hjh/E or /media/hjh/Data writable, or set NAVIGATION_RUNS_ROOT"
+fi
+
+[[ -f "${ROS_SETUP}" ]] || fail "ROS 2 setup not found: ${ROS_SETUP}"
+[[ -x "${RUN_MANIFEST_HELPER}" ]] ||
+  fail "run manifest helper is missing or not executable: ${RUN_MANIFEST_HELPER}"
+[[ -f "${NAVIGATION_BAGS_HELPER}" ]] ||
+  fail "navigation bag helper is missing: ${NAVIGATION_BAGS_HELPER}"
+[[ -f "${PROCESS_HELPER}" ]] ||
+  fail "process helper is missing: ${PROCESS_HELPER}"
+[[ -f "${BUILD_LOCK_HELPER}" ]] ||
+  fail "build lock helper is missing: ${BUILD_LOCK_HELPER}"
+[[ "${BUILD_JOBS}" =~ ^[1-9][0-9]*$ ]] || fail "--jobs must be a positive integer"
+[[ "${SERIAL_BAUD_RATE}" =~ ^[0-9]+$ ]] || fail "--serial-baud must be an integer"
+[[ "${CAMERA_INFRA_PROFILE}" =~ ^[1-9][0-9]*x[1-9][0-9]*x[1-9][0-9]*$ ]] ||
+  fail "--camera-infra-profile must look like WIDTHxHEIGHTxFPS"
+case "${ODOM_TOPIC}" in
+  /odometry/local_map|/odometry/fused|/odometry/landmark_corrected) ;;
+  *) fail "--odom-topic must be /odometry/local_map, /odometry/fused, or /odometry/landmark_corrected" ;;
+esac
+[[ "${TRACKING_POINT_OFFSET_X}" =~ ^-?[0-9]+([.][0-9]+)?$ ]] ||
+  fail "--tracking-point-offset-x must be a finite decimal number"
+[[ "${TRACKING_POINT_OFFSET_Y}" =~ ^-?[0-9]+([.][0-9]+)?$ ]] ||
+  fail "--tracking-point-offset-y must be a finite decimal number"
+if [[ -n "${NAVIGATION_PARAMETERS_FILE}" ]]; then
+  [[ -f "${NAVIGATION_PARAMETERS_FILE}" ]] ||
+    fail "navigation parameters file not found: ${NAVIGATION_PARAMETERS_FILE}"
+fi
+if [[ "${ODOM_TOPIC}" == "/odometry/landmark_corrected" ]]; then
+  [[ -f "${VISION_CORRECTION_MAP_FILE}" ]] ||
+    fail "vision correction map file not found: ${VISION_CORRECTION_MAP_FILE}"
+fi
+case "${ROSBAG_COMPRESSION_MODE}" in
+  none|file|message) ;;
+  *) fail "NAVIGATION_ROSBAG_COMPRESSION_MODE must be none, file, or message" ;;
+esac
+case "${ROSBAG_COMPRESSION_FORMAT}" in
+  zstd|fake_comp) ;;
+  *) fail "NAVIGATION_ROSBAG_COMPRESSION_FORMAT must be zstd or fake_comp" ;;
+esac
+[[ "${ROSBAG_COMPRESSION_QUEUE_SIZE}" =~ ^[1-9][0-9]*$ ]] ||
+  fail "NAVIGATION_ROSBAG_COMPRESSION_QUEUE_SIZE must be a positive integer"
+[[ "${ROSBAG_COMPRESSION_THREADS}" =~ ^[0-9]+$ ]] ||
+  fail "NAVIGATION_ROSBAG_COMPRESSION_THREADS must be a non-negative integer"
+[[ "${ROSBAG_MAX_BAG_SIZE}" =~ ^[0-9]+$ ]] ||
+  fail "NAVIGATION_ROSBAG_MAX_BAG_SIZE must be a non-negative integer"
+case "${RMW_IMPLEMENTATION_CONFIG}" in
+  ""|rmw_fastrtps_cpp|rmw_cyclonedds_cpp) ;;
+  *) fail "--rmw-implementation must be rmw_fastrtps_cpp or rmw_cyclonedds_cpp" ;;
+esac
+[[ -f "${ORB_ROOT}/CMakeLists.txt" ]] || fail "ORB_SLAM3 submodule is missing; run: git submodule update --init --recursive"
+[[ "${USE_SLAM_IMU}" == "false" || "${USE_IMU}" == "true" ]] ||
+  fail "--slam-imu requires D455 IMU; remove --no-imu"
+
+declare -a ROSBAG_RECORD_OPTIONS=()
+if ((ROSBAG_MAX_BAG_SIZE > 0)); then
+  ROSBAG_RECORD_OPTIONS+=(--max-bag-size "${ROSBAG_MAX_BAG_SIZE}")
+fi
+if [[ "${ROSBAG_COMPRESSION_MODE}" != "none" ]]; then
+  ROSBAG_RECORD_OPTIONS+=(
+    --compression-mode "${ROSBAG_COMPRESSION_MODE}"
+    --compression-format "${ROSBAG_COMPRESSION_FORMAT}"
+    --compression-queue-size "${ROSBAG_COMPRESSION_QUEUE_SIZE}"
+    --compression-threads "${ROSBAG_COMPRESSION_THREADS}"
+  )
+fi
+
+if [[ "${ROUTE_MODE}" == "csv" ]]; then
+  [[ -f "${ROUTE_FILE}" ]] || fail "autostart route is missing: ${ROUTE_FILE}"
+  ROUTE_FILE="$(readlink -f -- "${ROUTE_FILE}")" ||
+    fail "could not resolve autostart route: ${ROUTE_FILE}"
+  ROUTE_SOURCE="csv:${ROUTE_FILE}"
+fi
+
+# shellcheck disable=SC1090
+set +u
+source "${ROS_SETUP}"
+set -u
+if [[ -n "${RMW_IMPLEMENTATION_CONFIG}" ]]; then
+  export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION_CONFIG}"
+  log "ROS middleware: RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION}"
+elif [[ -n "${RMW_IMPLEMENTATION:-}" ]]; then
+  log "ROS middleware: RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION} (environment)"
+else
+  log "ROS middleware: system default"
+fi
+
+[[ -x "/opt/ros/${ROS_DISTRO_NAME}/lib/robot_localization/ekf_node" ]] ||
+  fail "robot_localization is missing; install ros-${ROS_DISTRO_NAME}-robot-localization"
+
+# shellcheck disable=SC1090
+source "${PROCESS_HELPER}"
+# shellcheck disable=SC1090
+source "${BUILD_LOCK_HELPER}"
+
+detect_camera_serial() {
+  command -v rs-enumerate-devices >/dev/null 2>&1 ||
+    fail "rs-enumerate-devices is unavailable; install ros-${ROS_DISTRO_NAME}-realsense2-camera"
+
+  local devices
+  local device_status
+  set +e
+  devices="$(rs-enumerate-devices 2>&1)"
+  device_status=$?
+  set -e
+  if grep -q "No device detected" <<<"${devices}"; then
+    fail "D455 not detected; reconnect it to a USB 3.x port"
+  fi
+  ((device_status == 0)) || fail "RealSense device query failed: ${devices}"
+
+  if [[ -z "${CAMERA_SERIAL}" ]]; then
+    CAMERA_SERIAL="$(awk -F: '/^[[:space:]]*Serial Number[[:space:]]*:/ {gsub(/[[:space:]]/, "", $2); print $2; exit}' <<<"${devices}")"
+  fi
+  [[ -n "${CAMERA_SERIAL}" ]] || fail "could not read the D455 serial number"
+  log "D455 detected: ${CAMERA_SERIAL}"
+}
+
+prepare_camera_imu() {
+  [[ "${USE_IMU}" == "true" ]] || return 0
+
+  if "${PGREP_COMMAND}" -f '/realsense2_camera_node([[:space:]]|$)' >/dev/null 2>&1; then
+    fail "a RealSense camera node is already running; stop it before starting another one"
+  fi
+
+  local accel_found="false"
+  local gyro_found="false"
+  local stale_buffer="false"
+  local device
+  local device_path
+  local sensor_name
+  local buffer_file
+  local buffer_state
+
+  for device in /sys/bus/iio/devices/iio:device*; do
+    [[ -r "${device}/name" ]] || continue
+    device_path="$(readlink -f "${device}")"
+    [[ "${device_path}" == *"8086:0B5C"* ]] || continue
+
+    sensor_name="$(<"${device}/name")"
+    case "${sensor_name}" in
+      accel_3d) accel_found="true" ;;
+      gyro_3d) gyro_found="true" ;;
+      *) continue ;;
+    esac
+
+    buffer_file="${device}/buffer/enable"
+    [[ -r "${buffer_file}" ]] || continue
+    buffer_state="$(<"${buffer_file}")"
+    if [[ "${buffer_state}" == "1" ]]; then
+      printf '0' >"${buffer_file}" ||
+        fail "could not clear stale IMU buffer: ${buffer_file}"
+      stale_buffer="true"
+    fi
+  done
+
+  if [[ "${FORCE_CAMERA_RESET}" == "true" ]]; then
+    CAMERA_INITIAL_RESET="true"
+    log "D455 one-time firmware reset enabled for reliable IMU startup"
+  elif [[ "${accel_found}" != "true" ||
+        "${gyro_found}" != "true" ||
+        "${stale_buffer}" == "true" ]]; then
+    CAMERA_INITIAL_RESET="true"
+    log "D455 IMU needs recovery; enabling one-time firmware reset"
+  else
+    log "D455 IMU preflight passed"
+  fi
+}
+
+prepare_cmake_build_dir() {
+  local source_dir="$1" build_dir="$2"
+  local cache_file="${build_dir}/CMakeCache.txt"
+  local expected_source expected_build cached_source cached_build
+
+  [[ -d "${source_dir}" ]] || fail "CMake source directory does not exist: ${source_dir}"
+  expected_source="${source_dir}"
+  mkdir -p -- "${build_dir}"
+  expected_build="${build_dir}"
+
+  [[ -f "${cache_file}" ]] || return 0
+  cached_source="$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' "${cache_file}" | head -n 1)"
+  cached_build="$(sed -n 's/^CMAKE_CACHEFILE_DIR:INTERNAL=//p' "${cache_file}" | head -n 1)"
+  if [[ ( -n "${cached_source}" && "${cached_source}" != "${expected_source}" ) ||
+        ( -n "${cached_build}" && "${cached_build}" != "${expected_build}" ) ]]; then
+    log "Discarding CMake cache from a different checkout: ${cache_file}"
+    rm -rf -- "${build_dir}"
+    mkdir -p -- "${build_dir}"
+  fi
+}
+
+build_orb_slam3() {
+  local dbow_build="${ORB_ROOT}/Thirdparty/DBoW2/build"
+  local g2o_build="${ORB_ROOT}/Thirdparty/g2o/build"
+  local orb_build="${ORB_ROOT}/build"
+
+  if [[ ! -f "${ORB_ROOT}/Vocabulary/ORBvoc.txt" ]]; then
+    log "Extracting ORB-SLAM3 vocabulary"
+    tar -xf "${ORB_ROOT}/Vocabulary/ORBvoc.txt.tar.gz" -C "${ORB_ROOT}/Vocabulary"
+  fi
+
+  log "Building DBoW2 incrementally"
+  prepare_cmake_build_dir "${ORB_ROOT}/Thirdparty/DBoW2" "${dbow_build}"
+  "${CMAKE_COMMAND}" -S "${ORB_ROOT}/Thirdparty/DBoW2" -B "${dbow_build}" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+  "${CMAKE_COMMAND}" --build "${dbow_build}" --parallel "${BUILD_JOBS}"
+
+  log "Building g2o incrementally"
+  prepare_cmake_build_dir "${ORB_ROOT}/Thirdparty/g2o" "${g2o_build}"
+  "${CMAKE_COMMAND}" -S "${ORB_ROOT}/Thirdparty/g2o" -B "${g2o_build}" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_CXX_STANDARD=14 \
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+  "${CMAKE_COMMAND}" --build "${g2o_build}" --parallel "${BUILD_JOBS}"
+
+  log "Building ORB-SLAM3"
+  prepare_cmake_build_dir "${ORB_ROOT}" "${orb_build}"
+  "${CMAKE_COMMAND}" -S "${ORB_ROOT}" -B "${orb_build}" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+    -DPangolin_DIR="${DEPS_ROOT}/lib/cmake/Pangolin"
+  "${CMAKE_COMMAND}" --build "${orb_build}" --parallel "${BUILD_JOBS}" --target ORB_SLAM3
+}
+
+build_ros_packages() {
+  log "Building ROS 2 nodes"
+  # fused_odometry declares new_map_planner as an exec dependency and colcon
+  # needs its installed package marker even for this lower-level bringup.
+  # The planner launch also starts the C++ mission manager, so build both here
+  # before the runtime install tree is sourced by a clean workspace.
+  local packages=(
+    vehicle_config
+    mission_control_interfaces
+    navigation_safety
+    imu_rpy_filter
+    wheel_odometry
+    final_navigation
+    new_map_planner
+    navigation_mission_manager
+    fused_odometry
+  )
+  if [[ -d "${WORKSPACE_ROOT}/src/rectangle_odometry_test" ]]; then
+    packages+=(rectangle_odometry_test)
+  fi
+  if [[ -d "${WORKSPACE_ROOT}/src/vision_correction" ]]; then
+    packages+=(vision_correction)
+  fi
+  if [[ "${USE_SERIAL}" == "true" ]]; then
+    packages+=(cup_car_serial)
+  fi
+
+  cd "${WORKSPACE_ROOT}"
+  CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS}" "${COLCON_COMMAND}" build --symlink-install \
+    --executor sequential \
+    --packages-ignore ORB_SLAM3 pangolin \
+    --packages-select orbslam3 \
+    --cmake-args \
+      -DSophus_DIR="${DEPS_ROOT}/share/sophus/cmake" \
+      -DPangolin_DIR="${DEPS_ROOT}/lib/cmake/Pangolin"
+  CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS}" "${COLCON_COMMAND}" build --symlink-install \
+    --executor sequential \
+    --packages-ignore ORB_SLAM3 pangolin \
+    --packages-select "${packages[@]}"
+}
+
+runtime_artifacts() {
+  RUNTIME_ARTIFACTS=(
+    "orb_slam3=${ORB_ROOT}/lib/libORB_SLAM3.so"
+    "orb_vocabulary=${WORKSPACE_ROOT}/install/orbslam3/share/orbslam3/vocabulary/ORBvoc.txt"
+    "dbow2=${ORB_ROOT}/Thirdparty/DBoW2/lib/libDBoW2.so"
+    "g2o=${ORB_ROOT}/Thirdparty/g2o/lib/libg2o.so"
+    "pangolin_core=${DEPS_ROOT}/lib/libpango_core.so"
+    "stereo_inertial=${WORKSPACE_ROOT}/install/orbslam3/lib/orbslam3/stereo-inertial"
+    "fusion_gate=${WORKSPACE_ROOT}/install/fused_odometry/lib/fused_odometry/fusion_gate_node"
+    "map_odom_correction=${WORKSPACE_ROOT}/install/fused_odometry/lib/fused_odometry/map_odom_correction_node"
+    "local_map_odometry=${WORKSPACE_ROOT}/install/fused_odometry/lib/fused_odometry/local_map_odometry_node"
+    "final_navigation=${WORKSPACE_ROOT}/install/final_navigation/lib/final_navigation/final_navigation"
+    "new_map_planner=${WORKSPACE_ROOT}/install/new_map_planner/lib/new_map_planner/new_map_planner_node"
+    "mission_manager=${WORKSPACE_ROOT}/install/navigation_mission_manager/lib/navigation_mission_manager/mission_manager_node"
+    "planner_launch=${WORKSPACE_ROOT}/install/navigation_mission_manager/share/navigation_mission_manager/launch/mission_navigation.launch.py"
+    "mission_typesupport=${WORKSPACE_ROOT}/install/mission_control_interfaces/lib/libmission_control_interfaces__rosidl_typesupport_cpp.so"
+    "robot_localization_ekf=/opt/ros/${ROS_DISTRO_NAME}/lib/robot_localization/ekf_node"
+    "odometry_launch=${WORKSPACE_ROOT}/install/fused_odometry/share/fused_odometry/launch/odometry_bringup.launch.py"
+    "fusion_launch=${WORKSPACE_ROOT}/install/fused_odometry/share/fused_odometry/launch/fused_odometry.launch.py"
+    "fusion_config=${WORKSPACE_ROOT}/install/fused_odometry/share/fused_odometry/config/fused_odometry.yaml"
+    "vehicle_physical=${WORKSPACE_ROOT}/install/vehicle_config/share/vehicle_config/config/vehicle_physical.yaml"
+    "orb_launch=${WORKSPACE_ROOT}/install/orbslam3/share/orbslam3/launch/realsense_d455_stereo_inertial.launch.py"
+    "orb_config=${WORKSPACE_ROOT}/install/orbslam3/share/orbslam3/config/stereo-inertial/RealSense_D455.yaml"
+    "navigation_base_launch=${WORKSPACE_ROOT}/install/final_navigation/share/final_navigation/launch/final_navigation_serial_bringup.launch.py"
+    "waypoint_launch=${WORKSPACE_ROOT}/install/final_navigation/share/final_navigation/launch/final_navigation_serial_bringup.launch.py"
+    "navigation_config=${WORKSPACE_ROOT}/install/final_navigation/share/final_navigation/config/final_navigation.yaml"
+  )
+  if [[ "${CONTROL_MODE}" == "primitive_rectangle" ]]; then
+    RUNTIME_ARTIFACTS+=(
+      "primitive_controller=${WORKSPACE_ROOT}/install/rectangle_odometry_test/lib/rectangle_odometry_test/primitive_controller_node"
+      "primitive_rectangle_launch=${WORKSPACE_ROOT}/install/rectangle_odometry_test/share/rectangle_odometry_test/launch/primitive_rectangle_test.launch.py"
+    )
+  fi
+  if [[ "${ODOM_TOPIC}" == "/odometry/landmark_corrected" ]]; then
+    RUNTIME_ARTIFACTS+=(
+      "vision_correction_node=${WORKSPACE_ROOT}/install/vision_correction/lib/vision_correction/vision_correction_node"
+      "vision_correction_launch=${WORKSPACE_ROOT}/install/vision_correction/share/vision_correction/launch/vision_correction.launch.py"
+      "vision_correction_config=${WORKSPACE_ROOT}/install/vision_correction/share/vision_correction/config/vision_correction.yaml"
+    )
+  fi
+  if [[ "${USE_IMU}" == "true" ]]; then
+    RUNTIME_ARTIFACTS+=(
+      "imu_rpy_filter=${WORKSPACE_ROOT}/install/imu_rpy_filter/lib/imu_rpy_filter/imu_rpy_filter_node"
+      "imu_config=${WORKSPACE_ROOT}/install/imu_rpy_filter/share/imu_rpy_filter/config/imu_rpy_filter.yaml"
+    )
+  fi
+  if [[ "${USE_SERIAL}" == "true" ]]; then
+    RUNTIME_ARTIFACTS+=(
+      "wheel_odometry=${WORKSPACE_ROOT}/install/wheel_odometry/lib/wheel_odometry/wheel_odometry_node"
+      "cmd_vel_serial=${WORKSPACE_ROOT}/install/cup_car_serial/lib/cup_car_serial/cmd_vel_serial_node"
+      "wheel_config=${WORKSPACE_ROOT}/install/wheel_odometry/share/wheel_odometry/config/wheel_odometry.yaml"
+      "navigation_serial_launch=${WORKSPACE_ROOT}/install/final_navigation/share/final_navigation/launch/final_navigation_serial_bringup.launch.py"
+    )
+  fi
+}
+
+stop_navigation_lock_owners() {
+  command -v fuser >/dev/null 2>&1 || return 0
+
+  local owner_output
+  owner_output="$(fuser "${RUNS_ROOT}/.navigation.lock" 2>/dev/null || true)"
+  [[ -n "${owner_output}" ]] || return 0
+
+  local -a owners=()
+  local -a targets=()
+  local -a remaining=()
+  local -A start_times=()
+  local pid
+  local attempt
+  local current_start
+  read -r -a owners <<<"${owner_output}"
+
+  for pid in "${owners[@]}"; do
+    [[ "${pid}" =~ ^[0-9]+$ ]] || continue
+    [[ "${pid}" != "$$" && "${pid}" != "${BASHPID:-$$}" ]] || continue
+    read_process_argv "${pid}" || continue
+    if argv_contains_path PROCESS_ARGV "${SCRIPT_DIR}/start_final_navigation.sh" ||
+        argv_has_sequence PROCESS_ARGV "scripts/start_final_navigation.sh" ||
+        argv_has_sequence PROCESS_ARGV "./scripts/start_final_navigation.sh"; then
+      current_start="$(process_start_time "${pid}" 2>/dev/null)" || continue
+      start_times["${pid}"]="${current_start}"
+      targets+=("${pid}")
+    fi
+  done
+  ((${#targets[@]} == 0)) && return 0
+
+  log "Stopping ${#targets[@]} stale navigation startup process(es) holding the run lock"
+  kill -TERM "${targets[@]}" 2>/dev/null || true
+  for attempt in {1..30}; do
+    remaining=()
+    for pid in "${targets[@]}"; do
+      current_start="$(process_start_time "${pid}" 2>/dev/null)" || continue
+      [[ "${current_start}" == "${start_times[${pid}]}" ]] || continue
+      remaining+=("${pid}")
+    done
+    ((${#remaining[@]} == 0)) && return 0
+    sleep 0.1
+  done
+
+  log "Forcing ${#remaining[@]} stale navigation startup process(es) to exit"
+  kill -KILL "${remaining[@]}" 2>/dev/null || true
+}
+
+acquire_navigation_run_lock() {
+  local retries="${NAVIGATION_RUN_LOCK_RETRIES:-50}"
+  local retry_interval="${NAVIGATION_RUN_LOCK_RETRY_INTERVAL:-0.2}"
+  local attempt
+
+  command -v flock >/dev/null 2>&1 || fail "flock is required for navigation run locking"
+  mkdir -p -- "${RUNS_ROOT}"
+  exec {RUN_LOCK_FD}>"${RUNS_ROOT}/.navigation.lock"
+
+  for ((attempt = 1; attempt <= retries; ++attempt)); do
+    if flock -n "${RUN_LOCK_FD}"; then
+      return 0
+    fi
+    if ((attempt == 1)); then
+      log "Waiting for previous navigation startup to release ${RUNS_ROOT}/.navigation.lock"
+    fi
+    if ((attempt == 15)); then
+      stop_navigation_lock_owners
+    fi
+    sleep "${retry_interval}"
+  done
+
+  fail "another navigation startup still owns ${RUNS_ROOT}/.navigation.lock after old-process cleanup"
+}
+
+runtime_artifacts
+log "Waiting for exclusive workspace build access"
+acquire_workspace_build_lock || fail "could not acquire the workspace build lock"
+SOURCE_FINGERPRINT_BEFORE="$(${RUN_MANIFEST_HELPER} fingerprint --workspace "${WORKSPACE_ROOT}")" ||
+  fail "could not compute the runtime source fingerprint"
+
+declare -a ARTIFACT_ARGUMENTS=()
+for artifact in "${RUNTIME_ARTIFACTS[@]}"; do
+  ARTIFACT_ARGUMENTS+=(--artifact "${artifact}")
+done
+
+if [[ "${BUILD_IF_NEEDED}" == "true" ]]; then
+  if BUILD_ID="$(${RUN_MANIFEST_HELPER} verify-build \
+      --workspace "${WORKSPACE_ROOT}" \
+      --manifest "${BUILD_MANIFEST}" \
+      "${ARTIFACT_ARGUMENTS[@]}" 2>/dev/null)"; then
+    log "Build artifacts match current source; skipping build"
+    SOURCE_FINGERPRINT="${SOURCE_FINGERPRINT_BEFORE}"
+  else
+    log "Source or build artifacts changed; running incremental build"
+    build_orb_slam3
+    build_ros_packages
+    SOURCE_FINGERPRINT_AFTER="$(${RUN_MANIFEST_HELPER} fingerprint --workspace "${WORKSPACE_ROOT}")" ||
+      fail "could not recompute the runtime source fingerprint after building"
+    [[ "${SOURCE_FINGERPRINT_AFTER}" == "${SOURCE_FINGERPRINT_BEFORE}" ]] ||
+      fail "runtime source changed during the build; rerun after edits stop"
+    BUILD_ID="$(${RUN_MANIFEST_HELPER} record-build \
+      --workspace "${WORKSPACE_ROOT}" \
+      --output "${BUILD_MANIFEST}" \
+      --expected-fingerprint "${SOURCE_FINGERPRINT_AFTER}" \
+      --setting "ros_distro=${ROS_DISTRO_NAME}" \
+      --setting "use_imu=${USE_IMU}" \
+      --setting "use_serial=${USE_SERIAL}" \
+      "${ARTIFACT_ARGUMENTS[@]}")" ||
+      fail "could not record the successful runtime build manifest"
+    SOURCE_FINGERPRINT="${SOURCE_FINGERPRINT_AFTER}"
+  fi
+else
+  BUILD_ID="$(${RUN_MANIFEST_HELPER} verify-build \
+    --workspace "${WORKSPACE_ROOT}" \
+    --manifest "${BUILD_MANIFEST}" \
+    "${ARTIFACT_ARGUMENTS[@]}")" ||
+    fail "--no-build verification failed; rerun without --no-build"
+  SOURCE_FINGERPRINT="${SOURCE_FINGERPRINT_BEFORE}"
+fi
+release_workspace_build_lock
+
+if [[ "${BUILD_ONLY}" == "true" ]]; then
+  log "Build verification complete"
+  exit 0
+fi
+
+stop_existing_ros_nodes
+acquire_navigation_run_lock
+
+if [[ "${CHECK_CAMERA}" == "true" ]]; then
+  detect_camera_serial
+elif [[ -z "${CAMERA_SERIAL}" ]]; then
+  CAMERA_SERIAL="038122250473"
+  log "Camera check skipped; using configured default serial ${CAMERA_SERIAL}"
+fi
+
+prepare_camera_imu
+
+[[ -f "${WORKSPACE_ROOT}/install/setup.bash" ]] || fail "workspace setup was not generated"
+[[ -z "${ORB_SETTINGS_FILE}" || -f "${ORB_SETTINGS_FILE}" ]] ||
+  fail "ORB-SLAM3 settings file not found: ${ORB_SETTINGS_FILE}"
+# shellcheck disable=SC1091
+set +u
+source "${WORKSPACE_ROOT}/install/setup.bash"
+set -u
+
+export LD_LIBRARY_PATH="${ORB_ROOT}/lib:${DEPS_ROOT}/lib:${LD_LIBRARY_PATH:-}"
+RMW_IMPLEMENTATION_EFFECTIVE="${RMW_IMPLEMENTATION:-}"
+
+log "Starting decoupled odometry and navigation stacks"
+if [[ "${CONTROL_MODE}" == "primitive_rectangle" ]]; then
+  log "Control mode: experimental A*/action primitives; waypoint navigator disabled"
+elif [[ "${ROUTE_MODE}" == "csv" ]]; then
+  log "Route mode: CSV autostart (${ROUTE_FILE})"
+else
+  log "Route mode: planner GUI; run scripts/start_new_map_planner.sh in terminal 2"
+fi
+log "IMU filter: ${USE_IMU}; SLAM IMU fusion: ${USE_SLAM_IMU}; odom_topic: ${ODOM_TOPIC}; CLAHE: ${EQUALIZE}; visualization: ${VISUALIZATION}; autostart: ${AUTOSTART}"
+log "Navigation tracking point offset: x=${TRACKING_POINT_OFFSET_X} m, y=${TRACKING_POINT_OFFSET_Y} m"
+log "Navigation parameters: ${NAVIGATION_PARAMETERS_FILE:-package default}"
+log "Camera infra profile: ${CAMERA_INFRA_PROFILE}; ORB settings: ${ORB_SETTINGS_FILE:-launch default}"
+VISION_CORRECTION_STATUS="bypassed"
+if [[ "${ODOM_TOPIC}" == "/odometry/landmark_corrected" ]]; then
+  VISION_CORRECTION_STATUS="enabled"
+fi
+log "Vision correction: ${VISION_CORRECTION_STATUS}; map: ${VISION_CORRECTION_MAP_FILE}"
+if [[ "${CONTROLLER_MODE}" == "final_navigation" ]]; then
+  [[ "${USE_SERIAL}" == "true" ]] || fail "final_navigation 实车模式需要串口输出"
+  log "Controller: final_navigation"
+  LAUNCH_PACKAGE="final_navigation"
+  LAUNCH_FILE="final_navigation_serial_bringup.launch.py"
+  REQUIRE_ACTUATOR_HEALTH="true"
+elif [[ "${USE_SERIAL}" == "true" ]]; then
+  log "Controller serial: ${SERIAL_DEVICE} at ${SERIAL_BAUD_RATE} baud"
+  LAUNCH_PACKAGE="final_navigation"
+  LAUNCH_FILE="final_navigation_serial_bringup.launch.py"
+  # The serial/competition path must not rely only on a launch-file default:
+  # make the actuator gate explicit in the recorded command line as well.
+  REQUIRE_ACTUATOR_HEALTH="true"
+else
+  log "Controller serial: disabled (upper-computer only)"
+  fail "final_navigation 只提供串口启动入口；请启用串口"
+fi
+log "Actuator health gate: require_actuator_health=${REQUIRE_ACTUATOR_HEALTH}"
+
+VISION_CORRECTION_LAUNCH_ARGS=(
+  "map_file:=${VISION_CORRECTION_MAP_FILE}"
+  "image_topic:=${VISION_CORRECTION_IMAGE_TOPIC}"
+  "fused_topic:=${VISION_CORRECTION_FUSED_TOPIC}"
+  "output_topic:=${VISION_CORRECTION_OUTPUT_TOPIC}"
+)
+
+ODOMETRY_LAUNCH_ARGS=(
+  "serial_no:=_${CAMERA_SERIAL}"
+  "initial_reset:=${CAMERA_INITIAL_RESET}"
+  "visualization:=${VISUALIZATION}"
+  "use_imu:=${USE_IMU}"
+  "use_slam_imu:=${USE_SLAM_IMU}"
+  "equalize:=${EQUALIZE}"
+  "use_wheel:=${USE_SERIAL}"
+  "infra_profile:=${CAMERA_INFRA_PROFILE}"
+)
+if [[ -n "${ORB_SETTINGS_FILE}" ]]; then
+  ODOMETRY_LAUNCH_ARGS+=("orb_settings_file:=${ORB_SETTINGS_FILE}")
+fi
+
+NAVIGATION_LAUNCH_ARGS=(
+  "route_frame:=map"
+  "odom_topic:=${ODOM_TOPIC}"
+  "fusion_status_topic:=/odometry/fusion_status"
+  "cmd_vel_topic:=/cmd_vel_nav"
+  "autostart:=${AUTOSTART}"
+)
+if [[ "${CONTROLLER_MODE}" == "final_navigation" ]]; then
+  NAVIGATION_LAUNCH_ARGS+=(
+    "route_input_topic:=/waypoint_navigation/route_input"
+    "use_sim_time:=false"
+    "serial_device:=${SERIAL_DEVICE}"
+    "serial_baud_rate:=${SERIAL_BAUD_RATE}"
+  )
+else
+  NAVIGATION_LAUNCH_ARGS+=(
+    "tracking_point_offset_x:=${TRACKING_POINT_OFFSET_X}"
+    "tracking_point_offset_y:=${TRACKING_POINT_OFFSET_Y}"
+    "require_actuator_health:=${REQUIRE_ACTUATOR_HEALTH}"
+    "enable_waypoint_navigation:=${ENABLE_WAYPOINT_NAVIGATION}"
+  )
+  if [[ "${USE_SERIAL}" == "true" ]]; then
+    NAVIGATION_LAUNCH_ARGS+=(
+      "serial_device:=${SERIAL_DEVICE}"
+      "serial_baud_rate:=${SERIAL_BAUD_RATE}"
+    )
+  fi
+fi
+if [[ -n "${NAVIGATION_PARAMETERS_FILE}" ]]; then
+  NAVIGATION_LAUNCH_ARGS+=("parameters_file:=${NAVIGATION_PARAMETERS_FILE}")
+fi
+if [[ -n "${ROUTE_FILE}" ]]; then
+  NAVIGATION_LAUNCH_ARGS+=("route_file:=${ROUTE_FILE}")
+fi
+
+declare -a RUN_INPUT_FILES=(
+  "startup_script=${SCRIPT_DIR}/start_final_navigation.sh"
+  "startup_config=${STARTUP_CONFIG}"
+  "recording_config=${RECORDING_CONFIG}"
+  "config_helper=${CONFIG_HELPER}"
+  "config_shell_helper=${CONFIG_SHELL_HELPER}"
+  "vehicle_config_helper=${VEHICLE_PHYSICAL_HELPER}"
+  "process_helper=${PROCESS_HELPER}"
+  "manifest_helper=${RUN_MANIFEST_HELPER}"
+  "bag_helper=${NAVIGATION_BAGS_HELPER}"
+  "build_lock_helper=${BUILD_LOCK_HELPER}"
+  "odometry_launch=${WORKSPACE_ROOT}/install/fused_odometry/share/fused_odometry/launch/odometry_bringup.launch.py"
+  "fusion_launch=${WORKSPACE_ROOT}/install/fused_odometry/share/fused_odometry/launch/fused_odometry.launch.py"
+  "fusion_config=${WORKSPACE_ROOT}/install/fused_odometry/share/fused_odometry/config/fused_odometry.yaml"
+  "vehicle_physical=${WORKSPACE_ROOT}/install/vehicle_config/share/vehicle_config/config/vehicle_physical.yaml"
+  "orb_launch=${WORKSPACE_ROOT}/install/orbslam3/share/orbslam3/launch/realsense_d455_stereo_inertial.launch.py"
+  "orb_config=${WORKSPACE_ROOT}/install/orbslam3/share/orbslam3/config/stereo-inertial/RealSense_D455.yaml"
+  "navigation_launch=${WORKSPACE_ROOT}/install/${LAUNCH_PACKAGE}/share/${LAUNCH_PACKAGE}/launch/${LAUNCH_FILE}"
+  "navigation_base_launch=${WORKSPACE_ROOT}/install/final_navigation/share/final_navigation/launch/final_navigation_serial_bringup.launch.py"
+  "waypoint_launch=${WORKSPACE_ROOT}/install/final_navigation/share/final_navigation/launch/final_navigation_serial_bringup.launch.py"
+  "navigation_config=${WORKSPACE_ROOT}/install/final_navigation/share/final_navigation/config/final_navigation.yaml"
+)
+if [[ "${CONTROL_MODE}" == "primitive_rectangle" ]]; then
+  RUN_INPUT_FILES+=(
+    "primitive_controller_source=${WORKSPACE_ROOT}/src/rectangle_odometry_test/rectangle_odometry_test/primitive_controller.py"
+    "primitive_node_source=${WORKSPACE_ROOT}/src/rectangle_odometry_test/rectangle_odometry_test/primitive_node.py"
+    "primitive_rectangle_launch=${WORKSPACE_ROOT}/src/rectangle_odometry_test/launch/primitive_rectangle_test.launch.py"
+  )
+fi
+if [[ -n "${NAVIGATION_PARAMETERS_FILE}" ]]; then
+  RUN_INPUT_FILES+=("navigation_parameters=${NAVIGATION_PARAMETERS_FILE}")
+fi
+if [[ "${ODOM_TOPIC}" == "/odometry/landmark_corrected" ]]; then
+  RUN_INPUT_FILES+=(
+    "vision_correction_node=${WORKSPACE_ROOT}/install/vision_correction/lib/vision_correction/vision_correction_node"
+    "vision_correction_launch=${WORKSPACE_ROOT}/install/vision_correction/share/vision_correction/launch/vision_correction.launch.py"
+    "vision_correction_config=${WORKSPACE_ROOT}/install/vision_correction/share/vision_correction/config/vision_correction.yaml"
+    "vision_correction_map=${VISION_CORRECTION_MAP_FILE}"
+  )
+fi
+if [[ -n "${ROUTE_FILE}" ]]; then
+  RUN_INPUT_FILES+=("route_file=${ROUTE_FILE}")
+fi
+if [[ -n "${ORB_SETTINGS_FILE}" ]]; then
+  RUN_INPUT_FILES+=("selected_orb_settings=${ORB_SETTINGS_FILE}")
+fi
+if [[ "${USE_IMU}" == "true" ]]; then
+  RUN_INPUT_FILES+=(
+    "imu_config=${WORKSPACE_ROOT}/install/imu_rpy_filter/share/imu_rpy_filter/config/imu_rpy_filter.yaml"
+  )
+fi
+if [[ "${USE_SERIAL}" == "true" ]]; then
+  RUN_INPUT_FILES+=(
+    "wheel_config=${WORKSPACE_ROOT}/install/wheel_odometry/share/wheel_odometry/config/wheel_odometry.yaml"
+    "navigation_serial_launch=${WORKSPACE_ROOT}/install/final_navigation/share/final_navigation/launch/final_navigation_serial_bringup.launch.py"
+  )
+fi
+
+declare -a CREATE_RUN_ARGUMENTS=(
+  create-run
+  --workspace "${WORKSPACE_ROOT}"
+  --runs-root "${RUNS_ROOT}"
+  --latest-bag "${LATEST_BAG}"
+  --latest-run "${LATEST_RUN}"
+  --source-fingerprint "${SOURCE_FINGERPRINT}"
+  --build-manifest "${BUILD_MANIFEST}"
+  --build-id "${BUILD_ID}"
+  --setting "ros_distro=${ROS_DISTRO_NAME}"
+  --setting "camera_serial=${CAMERA_SERIAL}"
+  --setting "camera_initial_reset=${CAMERA_INITIAL_RESET}"
+  --setting "check_camera=${CHECK_CAMERA}"
+  --setting "force_camera_reset=${FORCE_CAMERA_RESET}"
+  --setting "serial_device=${SERIAL_DEVICE}"
+  --setting "serial_baud_rate=${SERIAL_BAUD_RATE}"
+  --setting "use_serial=${USE_SERIAL}"
+  --setting "require_actuator_health=${REQUIRE_ACTUATOR_HEALTH}"
+  --setting "use_imu=${USE_IMU}"
+  --setting "use_slam_imu=${USE_SLAM_IMU}"
+  --setting "odom_topic=${ODOM_TOPIC}"
+  --setting "navigation_parameters_file=${NAVIGATION_PARAMETERS_FILE}"
+  --setting "tracking_point_offset_x=${TRACKING_POINT_OFFSET_X}"
+  --setting "tracking_point_offset_y=${TRACKING_POINT_OFFSET_Y}"
+  --setting "vision_correction_enabled=$([[ "${ODOM_TOPIC}" == "/odometry/landmark_corrected" ]] && printf true || printf false)"
+  --setting "vision_correction_map_file=${VISION_CORRECTION_MAP_FILE}"
+  --setting "vision_correction_image_topic=${VISION_CORRECTION_IMAGE_TOPIC}"
+  --setting "vision_correction_fused_topic=${VISION_CORRECTION_FUSED_TOPIC}"
+  --setting "vision_correction_output_topic=${VISION_CORRECTION_OUTPUT_TOPIC}"
+  --setting "camera_infra_profile=${CAMERA_INFRA_PROFILE}"
+  --setting "orb_settings_file=${ORB_SETTINGS_FILE}"
+  --setting "rmw_implementation=${RMW_IMPLEMENTATION_EFFECTIVE}"
+  --setting "equalize=${EQUALIZE}"
+  --setting "visualization=${VISUALIZATION}"
+  --setting "autostart=${AUTOSTART}"
+  --setting "route_mode=${ROUTE_MODE}"
+  --setting "route_file=${ROUTE_FILE}"
+  --setting "build_enabled=${BUILD_IF_NEEDED}"
+  --setting "build_jobs=${BUILD_JOBS}"
+  --setting "bag_retention=${RETAIN_BAGS}"
+  --setting "bag_runs_root=${RUNS_ROOT}"
+  --setting "bag_compression_mode=${ROSBAG_COMPRESSION_MODE}"
+  --setting "bag_compression_format=${ROSBAG_COMPRESSION_FORMAT}"
+  --setting "bag_compression_queue_size=${ROSBAG_COMPRESSION_QUEUE_SIZE}"
+  --setting "bag_compression_threads=${ROSBAG_COMPRESSION_THREADS}"
+  --setting "bag_max_bag_size=${ROSBAG_MAX_BAG_SIZE}"
+  --setting "launch_file=${LAUNCH_FILE}"
+  --setting "route_source=${ROUTE_SOURCE}"
+  --setting "control_mode=${CONTROL_MODE}"
+  --setting "enable_waypoint_navigation=${ENABLE_WAYPOINT_NAVIGATION}"
+)
+for argument in "${ORIGINAL_ARGV[@]}"; do
+  CREATE_RUN_ARGUMENTS+=("--argv=${argument}")
+done
+for topic in "${ROSBAG_TOPICS[@]}"; do
+  CREATE_RUN_ARGUMENTS+=(--topic "${topic}")
+done
+for input_file in "${RUN_INPUT_FILES[@]}"; do
+  CREATE_RUN_ARGUMENTS+=(--input-file "${input_file}")
+done
+
+RUN_DIR="$(${RUN_MANIFEST_HELPER} "${CREATE_RUN_ARGUMENTS[@]}")" ||
+  fail "could not create the navigation run manifest"
+[[ -n "${RUN_DIR}" && -d "${RUN_DIR}" ]] || fail "run directory was not created"
+PARAMETERS_DIR="${RUN_DIR}/parameters"
+ROSBAG_OUTPUT="${RUN_DIR}/bag"
+[[ ! -e "${ROSBAG_OUTPUT}" && ! -L "${ROSBAG_OUTPUT}" ]] ||
+  fail "rosbag output already exists: ${ROSBAG_OUTPUT}"
+
+declare -a STACK_PIDS=()
+STACK_STOPPED="false"
+RUN_FINALIZED="false"
+PARAMETER_SNAPSHOTS_COMPLETE="false"
+
+stop_stack() {
+  [[ "${STACK_STOPPED}" == "false" ]] || return 0
+  STACK_STOPPED="true"
+  if ((${#STACK_PIDS[@]} > 0)); then
+    local -a remaining=()
+    local attempt
+    local pid
+
+    timeout 1.0 "${ROS2_COMMAND}" service call \
+      /final_navigation/stop std_srvs/srv/Trigger '{}' >/dev/null 2>&1 || true
+    timeout 1.5 "${ROS2_COMMAND}" topic pub -r 20 -t 4 -w 0 \
+      /cmd_vel_nav geometry_msgs/msg/Twist '{}' >/dev/null 2>&1 || true
+
+    kill -INT "${STACK_PIDS[@]}" 2>/dev/null || true
+    # Give rosbag enough time to flush metadata and close its database.
+    for attempt in {1..80}; do
+      remaining=()
+      for pid in "${STACK_PIDS[@]}"; do
+        kill -0 "${pid}" 2>/dev/null && remaining+=("${pid}")
+      done
+      ((${#remaining[@]} == 0)) && break
+      sleep 0.1
+    done
+
+    if ((${#remaining[@]} > 0)); then
+      kill -TERM "${remaining[@]}" 2>/dev/null || true
+      for attempt in {1..10}; do
+        STACK_PIDS=()
+        for pid in "${remaining[@]}"; do
+          kill -0 "${pid}" 2>/dev/null && STACK_PIDS+=("${pid}")
+        done
+        ((${#STACK_PIDS[@]} == 0)) && break
+        sleep 0.1
+      done
+      ((${#STACK_PIDS[@]} == 0)) || kill -KILL "${STACK_PIDS[@]}" 2>/dev/null || true
+    fi
+
+    for pid in "${STACK_PIDS[@]}"; do
+      wait "${pid}" 2>/dev/null || true
+    done
+  fi
+}
+
+stack_process_exited() {
+  local pid
+  for pid in "${STACK_PIDS[@]}"; do
+    kill -0 "${pid}" 2>/dev/null || return 0
+  done
+  return 1
+}
+
+record_parameter_status() {
+  "${RUN_MANIFEST_HELPER}" record-parameter --run-dir "${RUN_DIR}" "$@" ||
+    fail "could not update the run manifest with a parameter snapshot"
+}
+
+snapshot_runtime_parameters() {
+  local -a active_nodes=(
+    /fused_odometry_gate
+    /fused_ekf
+    /map_odom_correction
+    /local_map_odometry
+    /orbslam3_stereo_inertial
+    /camera/camera
+  )
+  if [[ "${CONTROL_MODE}" == "primitive_rectangle" ]]; then
+    active_nodes+=(/rectangle_primitive_controller)
+  else
+    active_nodes+=(/final_navigation)
+  fi
+  local node
+  if [[ "${USE_IMU}" == "true" ]]; then
+    active_nodes+=(/imu_rpy_filter)
+  else
+    record_parameter_status --node /imu_rpy_filter --status skipped \
+      --error "disabled by --no-imu"
+  fi
+  if [[ "${USE_SERIAL}" == "true" ]]; then
+    active_nodes+=(/wheel_odometry_node /cmd_vel_serial_node)
+  else
+    record_parameter_status --node /wheel_odometry_node --status skipped \
+      --error "disabled because serial mode is off"
+    record_parameter_status --node /cmd_vel_serial_node --status skipped \
+      --error "disabled by --no-serial"
+  fi
+
+  local deadline=$((SECONDS + 30))
+  local node_list=""
+  local all_visible
+  while ((SECONDS < deadline)); do
+    node_list="$(timeout 2.0 "${ROS2_COMMAND}" node list 2>/dev/null || true)"
+    all_visible="true"
+    for node in "${active_nodes[@]}"; do
+      if ! grep -Fxq -- "${node}" <<<"${node_list}"; then
+        all_visible="false"
+        break
+      fi
+    done
+    [[ "${all_visible}" == "true" ]] && break
+    stack_process_exited && break
+    sleep 0.25
+  done
+
+  local snapshot_failed="false"
+  local safe_name
+  local snapshot
+  local temporary
+  local dump_status
+  for node in "${active_nodes[@]}"; do
+    if ! grep -Fxq -- "${node}" <<<"${node_list}"; then
+      record_parameter_status --node "${node}" --status failed \
+        --error "node did not become visible within the startup timeout"
+      snapshot_failed="true"
+      continue
+    fi
+
+    safe_name="${node#/}"
+    safe_name="${safe_name//\//_}"
+    snapshot="${PARAMETERS_DIR}/${safe_name}.yaml"
+    temporary="${snapshot}.tmp"
+    set +e
+    timeout 6.0 "${ROS2_COMMAND}" param dump --no-daemon --spin-time 0.5 "${node}" \
+      >"${temporary}" 2>"${temporary}.stderr"
+    dump_status=$?
+    set -e
+    if ((dump_status == 0)) && [[ -s "${temporary}" ]]; then
+      mv -f -- "${temporary}" "${snapshot}"
+      rm -f -- "${temporary}.stderr"
+      record_parameter_status --node "${node}" --status success --snapshot "${snapshot}"
+    else
+      local dump_error=""
+      if [[ -s "${temporary}.stderr" ]]; then
+        dump_error="$(<"${temporary}.stderr")"
+        dump_error="${dump_error//$'\n'/ }"
+        dump_error="${dump_error:0:512}"
+      fi
+      rm -f -- "${temporary}" "${temporary}.stderr"
+      record_parameter_status --node "${node}" --status failed \
+        --error "ros2 param dump exited with status ${dump_status}: ${dump_error}"
+      snapshot_failed="true"
+    fi
+  done
+
+  if [[ "${snapshot_failed}" == "false" ]]; then
+    PARAMETER_SNAPSHOTS_COMPLETE="true"
+  fi
+}
+
+cleanup() {
+  local original_status=$?
+  trap - EXIT INT TERM
+  set +e
+  local final_status="${original_status}"
+
+  stop_stack
+  if [[ "${RUN_FINALIZED}" == "false" ]]; then
+    RUN_FINALIZED="true"
+    "${RUN_MANIFEST_HELPER}" finalize-run \
+      --run-dir "${RUN_DIR}" \
+      --latest-bag "${LATEST_BAG}" \
+      --retain-bags "${RETAIN_BAGS}" \
+      --exit-code "${original_status}" \
+      --parameter-snapshots-complete "${PARAMETER_SNAPSHOTS_COMPLETE}"
+    local finalize_status=$?
+    if ((finalize_status != 0)); then
+      printf '[visual-navigation] ERROR: could not finalize run manifest %s\n' \
+        "${RUN_DIR}/run_manifest.json" >&2
+      ((final_status != 0)) || final_status=1
+    fi
+  fi
+  exit "${final_status}"
+}
+
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+if [[ "${ODOM_TOPIC}" == "/odometry/landmark_corrected" ]]; then
+  log "Starting vision correction before fused odometry"
+  "${ROS2_COMMAND}" launch vision_correction vision_correction.launch.py \
+    "${VISION_CORRECTION_LAUNCH_ARGS[@]}" {RUN_LOCK_FD}>&- &
+  STACK_PIDS+=("$!")
+  # Let the correction launch process enter its executor before publishers
+  # and navigation are started. This also keeps startup ordering deterministic.
+  sleep 0.2
+fi
+
+"${ROS2_COMMAND}" launch fused_odometry odometry_bringup.launch.py \
+  "${ODOMETRY_LAUNCH_ARGS[@]}" {RUN_LOCK_FD}>&- &
+STACK_PIDS+=("$!")
+
+"${ROS2_COMMAND}" launch "${LAUNCH_PACKAGE}" "${LAUNCH_FILE}" \
+  "${NAVIGATION_LAUNCH_ARGS[@]}" {RUN_LOCK_FD}>&- &
+STACK_PIDS+=("$!")
+
+if [[ "${CONTROL_MODE}" == "primitive_rectangle" ]]; then
+  "${ROS2_COMMAND}" launch rectangle_odometry_test primitive_rectangle_test.launch.py \
+    "enable:=true" \
+    "odom_topic:=${ODOM_TOPIC}" \
+    "cmd_vel_topic:=/cmd_vel_nav" \
+    "require_actuator_health:=${REQUIRE_ACTUATOR_HEALTH}" \
+    {RUN_LOCK_FD}>&- &
+  STACK_PIDS+=("$!")
+fi
+
+log "Recording latest navigation data: ${ROSBAG_OUTPUT}"
+"${ROS2_COMMAND}" bag record --output "${ROSBAG_OUTPUT}" \
+  "${ROSBAG_RECORD_OPTIONS[@]}" \
+  "${ROSBAG_TOPICS[@]}" {RUN_LOCK_FD}>&- &
+STACK_PIDS+=("$!")
+"${RUN_MANIFEST_HELPER}" mark-running --run-dir "${RUN_DIR}" ||
+  fail "could not mark the navigation run as started"
+
+snapshot_runtime_parameters
+
+set +e
+wait -n "${STACK_PIDS[@]}"
+STACK_STATUS=$?
+set -e
+log "A stack process exited with status ${STACK_STATUS}; stopping the remaining stack"
+exit "${STACK_STATUS}"

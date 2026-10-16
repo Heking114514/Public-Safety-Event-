@@ -71,6 +71,8 @@ install(TARGETS contrast_waypoint_navigator_core
 install(DIRECTORY include/
   DESTINATION include)
 
+install(FILES README.md CHANGELOG.md DESTINATION share/${PROJECT_NAME})
+
 ament_export_include_directories(include)
 ament_export_targets(contrast_waypoint_navigator_coreTargets HAS_LIBRARY_TARGET)
 ament_export_dependencies(

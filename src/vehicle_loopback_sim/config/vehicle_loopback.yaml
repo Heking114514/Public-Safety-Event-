@@ -90,28 +90,3 @@ vehicle_loopback_mission:
     status_topic: /vehicle_loopback_sim/mission_status
     navigator_status_topic: /waypoint_navigation/status
     odom_topic: /odometry/fused
-
-loopback_route_controller:
-  ros__parameters:
-    route_input_topic: /waypoint_navigation/route_input
-    odom_topic: /odometry/fused
-    cmd_vel_topic: /cmd_vel_nav
-    path_topic: /waypoint_path
-    status_topic: /waypoint_navigation/status
-    current_waypoint_topic: /waypoint_navigation/current_waypoint
-
-    control_rate_hz: 30.0
-    cruise_speed_mps: 0.12
-    minimum_drive_speed_mps: 0.035
-    slowdown_distance_m: 0.10
-    stop_tolerance_m: 0.018
-    pass_tolerance_m: 0.012
-    lateral_tolerance_m: 0.050
-    turn_heading_threshold_rad: 0.35
-    turn_yaw_tolerance_rad: 0.055
-    heading_gain: 1.70
-    cross_track_gain: 1.80
-    stanley_softening_speed_mps: 0.12
-    turn_gain: 1.80
-    min_turn_speed_rps: 0.24
-    max_turn_speed_rps: 0.70

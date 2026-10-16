@@ -9,7 +9,7 @@ def _planner_root() -> Path:
     return Path(os.environ.get("NEW_MAP_PLANNER_SOURCE_DIR", source_dir))
 
 
-def test_planner_has_no_visual_navigation_dependency():
+def test_planner_has_no_final_navigation_dependency():
     root = _planner_root()
     checked_files = (
         root / "CMakeLists.txt",
@@ -19,7 +19,7 @@ def test_planner_has_no_visual_navigation_dependency():
     )
     for path in checked_files:
         text = path.read_text(encoding="utf-8")
-        assert "visual_navigation" not in text, path
+        assert "final_navigation" not in text, path
 
 
 def test_planner_does_not_publish_motion_commands():

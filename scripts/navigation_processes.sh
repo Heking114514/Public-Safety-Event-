@@ -51,8 +51,8 @@ is_user_gui_pid() {
     "${WORKSPACE_ROOT}/src/new_map_planner/scripts/new_map_planner_ui"
     "${WORKSPACE_ROOT}/install/new_map_planner/lib/new_map_planner/new_map_planner_ui"
     "${WORKSPACE_ROOT}/route_editor.py"
-    "${WORKSPACE_ROOT}/src/visual_navigation/scripts/route_editor.py"
-    "${WORKSPACE_ROOT}/install/visual_navigation/lib/visual_navigation/route_editor.py"
+    "${WORKSPACE_ROOT}/src/final_navigation/scripts/route_editor.py"
+    "${WORKSPACE_ROOT}/install/final_navigation/lib/final_navigation/route_editor.py"
   )
   local path
 
@@ -61,8 +61,8 @@ is_user_gui_pid() {
       return 0
     fi
   done
-  argv_has_sequence PROCESS_ARGV launch visual_navigation route_editor.launch.py ||
-    argv_has_sequence PROCESS_ARGV run visual_navigation route_editor.py ||
+  argv_has_sequence PROCESS_ARGV launch final_navigation route_editor.launch.py ||
+    argv_has_sequence PROCESS_ARGV run final_navigation route_editor.py ||
     argv_has_sequence PROCESS_ARGV launch new_map_planner new_map_planner.launch.py ||
     argv_has_sequence PROCESS_ARGV launch navigation_mission_manager mission_navigation.launch.py ||
     argv_has_sequence PROCESS_ARGV run new_map_planner new_map_planner_ui
@@ -129,8 +129,7 @@ is_loopback_process_pid() {
   local -a loopback_paths=(
     "${WORKSPACE_ROOT}/install/vehicle_loopback_sim/lib/vehicle_loopback_sim/vehicle_loopback_sim_node"
     "${WORKSPACE_ROOT}/install/vehicle_loopback_sim/lib/vehicle_loopback_sim/vehicle_loopback_gui_node"
-    "${WORKSPACE_ROOT}/install/vehicle_loopback_sim/lib/vehicle_loopback_sim/loopback_route_controller"
-    "${WORKSPACE_ROOT}/install/visual_navigation/lib/visual_navigation/waypoint_navigator"
+    "${WORKSPACE_ROOT}/install/final_navigation/lib/final_navigation/final_navigation"
     "${WORKSPACE_ROOT}/install/new_map_planner/lib/new_map_planner/new_map_planner_node"
     "${WORKSPACE_ROOT}/install/navigation_mission_manager/lib/navigation_mission_manager/mission_manager_node"
   )

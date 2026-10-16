@@ -30,6 +30,7 @@ def generate_launch_description():
     simulate_obstacle_recognition = LaunchConfiguration(
         "simulate_obstacle_recognition"
     )
+    enforce_static_collision = LaunchConfiguration("enforce_static_collision")
     simulation_mode = LaunchConfiguration("simulation_mode")
     playback_speed = LaunchConfiguration("playback_speed")
     physical = parameters_for("pure_line_following")
@@ -54,6 +55,9 @@ def generate_launch_description():
                 "base_offset_y_m": physical["base_offset_y_m"],
                 "publish_obstacle_detection": ParameterValue(
                     simulate_obstacle_recognition, value_type=bool
+                ),
+                "enforce_static_collision": ParameterValue(
+                    enforce_static_collision, value_type=bool
                 ),
                 "simulation_mode": ParameterValue(
                     simulation_mode, value_type=str
@@ -95,6 +99,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument("cmd_vel_topic", default_value="/cmd_vel_nav"),
             DeclareLaunchArgument("odom_topic", default_value="/odometry/fused"),
+            DeclareLaunchArgument("enforce_static_collision", default_value="true"),
             DeclareLaunchArgument("initial_x", default_value="0.0"),
             DeclareLaunchArgument("initial_y", default_value="0.0"),
             DeclareLaunchArgument("initial_yaw", default_value="0.0"),

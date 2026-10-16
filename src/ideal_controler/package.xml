@@ -10,6 +10,11 @@
   <depend>nav_msgs</depend>
   <depend>rclpy</depend>
   <depend>std_msgs</depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>new_map_planner</exec_depend>
+  <exec_depend>navigation_mission_manager</exec_depend>
   <exec_depend>vehicle_loopback_sim</exec_depend>
   <export><build_type>ament_python</build_type></export>
 </package>
