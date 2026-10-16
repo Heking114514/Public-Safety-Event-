@@ -8,6 +8,7 @@
 #include "motion_fixture.hpp"
 #include "visual_navigation/corner_return.hpp"
 #include "visual_navigation/rate_limiter.hpp"
+#include "visual_navigation/turn_geometry.hpp"
 
 namespace {
 constexpr double pi=3.14159265358979323846;
@@ -319,4 +320,73 @@ TEST(CornerReturn, ExistingNormalTemplateFailureIsNotReportedAsReturnSuccess) {
   EXPECT_FALSE(controller.geometry_valid());
   visual_navigation::CornerReturnInput input;input.context=context;
   EXPECT_EQ(controller.update(input,0).result,Result::FAULT);
+}
+
+TEST(TurnEntry, RfidResumeUsesPlannedRoadAndLeavesEntryAtRecordedPosition) {
+  const auto c=config(true);
+  // 12:08 这次运行的 s1：从 (0.2,0) 到 (0.2,-0.5)，随后向东。
+  const std::vector<visual_navigation::PlanarPoint> route{
+    {.2,0}, {.2,-.5}, {1.2,-.5}};
+  // 第一组为 rosbag 中 RFID 放行前的定位，其余覆盖不同方向及零残差。
+  const std::vector<visual_navigation::PlanarPoint> resumes{
+    {.200308137,-.499962571}, {.1997,-.5}, {.2,-.4997},
+    {.2,-.5003}, {.2,-.5}};
+  for(const auto &resume:resumes) {
+    const double tracking_heading=std::atan2(-.5-resume.y,.2-resume.x);
+    const auto geometry=visual_navigation::BuildTurnEntryGeometry(
+      route,1,resume,tracking_heading);
+    ASSERT_NEAR(geometry.incoming_heading,-pi/2,1e-12);
+    ASSERT_FALSE(geometry.out_and_back);
+
+    visual_navigation::TurnManeuverController controller(c.turn);
+    visual_navigation::TurnManeuverInput input;
+    input.context.junction_x=.2;input.context.junction_y=-.5;
+    input.context.geometry_heading=geometry.incoming_heading;
+    input.context.arrival_heading=-90.18*pi/180;
+    input.context.target_heading=0;
+    input.context.pose={resume.x,resume.y,input.context.arrival_heading};
+    controller.begin(0);
+    ASSERT_EQ(controller.update(input,0).phase,
+              visual_navigation::TurnManeuverPhase::CAPTURE);
+    ASSERT_EQ(controller.update(input,c.control_dt).phase,
+              visual_navigation::TurnManeuverPhase::APPROACH_ENTRY);
+    const auto approaching=controller.update(input,2*c.control_dt);
+    ASSERT_EQ(approaching.phase,visual_navigation::TurnManeuverPhase::APPROACH_ENTRY);
+    EXPECT_LT(approaching.command.linear_x,0);
+    EXPECT_LT(std::abs(approaching.command.angular_z),.01);
+
+    // rosbag 中此处已达到正式 YAML 的纵向入口容差，必须结束倒车入位。
+    input.context.pose={.204019,-.429493,input.context.arrival_heading};
+    const auto entered=controller.update(input,3*c.control_dt);
+    EXPECT_EQ(entered.phase,visual_navigation::TurnManeuverPhase::TURN_60);
+    EXPECT_EQ(entered.result,Result::RUNNING);
+    EXPECT_DOUBLE_EQ(entered.command.linear_x,0);
+    EXPECT_DOUBLE_EQ(entered.command.angular_z,0);
+  }
+}
+
+TEST(TurnEntry, RepeatedJunctionMarkersKeepThePlannedIncomingRoad) {
+  const std::vector<visual_navigation::PlanarPoint> route{
+    {.2,0}, {.2,-.5}, {.2,-.5}, {1.2,-.5}};
+  const auto geometry=visual_navigation::BuildTurnEntryGeometry(
+    route,2,{.2003,-.49996},-3.02);
+  EXPECT_NEAR(geometry.incoming_heading,-pi/2,1e-12);
+  EXPECT_FALSE(geometry.out_and_back);
+}
+
+TEST(TurnEntry, RfidResumePreservesPlannedOutAndBack) {
+  const std::vector<visual_navigation::PlanarPoint> route{
+    {.2,0}, {.2,-.5}, {.2,0}};
+  const auto geometry=visual_navigation::BuildTurnEntryGeometry(
+    route,1,{.2003,-.49996},-3.02);
+  EXPECT_NEAR(geometry.incoming_heading,-pi/2,1e-12);
+  EXPECT_TRUE(geometry.out_and_back);
+}
+
+TEST(TurnEntry, RouteFirstPointKeepsExistingTrackingFallback) {
+  const std::vector<visual_navigation::PlanarPoint> route{{.2,-.5},{1.2,-.5}};
+  const auto geometry=visual_navigation::BuildTurnEntryGeometry(
+    route,0,{.2,-.4},-pi/2);
+  EXPECT_DOUBLE_EQ(geometry.incoming_heading,-pi/2);
+  EXPECT_FALSE(geometry.out_and_back);
 }

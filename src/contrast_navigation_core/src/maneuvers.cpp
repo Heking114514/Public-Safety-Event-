@@ -1,4 +1,5 @@
 #include "visual_navigation/waypoint_navigator.hpp"
+#include "visual_navigation/turn_geometry.hpp"
 
 WaypointNavigator::ControlStep WaypointNavigator::RunWait() {
   pathProgressSupervisor_.Reset();
@@ -51,16 +52,17 @@ WaypointNavigator::RunBrake(const ControlFrame &frame) {
       std::atan2(nextTarget.y - frame.target.y, nextTarget.x - frame.target.x);
   const bool routeStartTurn = routeStartTurnAuthorized_ &&
                               frame.target.turn_junction;
-  const bool plannedReverse = visual_navigation::IsOutAndBackWaypoint(
-      pathSegmentStartX_, pathSegmentStartY_, frame.target.x, frame.target.y,
-      nextTarget.x, nextTarget.y, 0.02, 0.05);
+  const auto entryGeometry = visual_navigation::BuildTurnEntryGeometry(
+      waypoints_, currentWaypointIndex_,
+      {pathSegmentStartX_, pathSegmentStartY_}, frame.path_heading);
+  const bool plannedReverse = entryGeometry.out_and_back;
   const bool reverseArrivalTurn =
       frame.target.reverse_arrival_turn && reverseSegmentActive_;
   const double geometryHeading =
       routeStartTurn
           ? currentYaw_
           : NormalizeAngle(
-                frame.path_heading +
+                entryGeometry.incoming_heading +
                 (reverseSegmentActive_ && !reverseArrivalTurn ? kPi : 0.0));
   const double plannedTurnError = NormalizeAngle(nextHeading - geometryHeading);
   stoppedTurnGeometryHeading_ = geometryHeading;
@@ -70,6 +72,13 @@ WaypointNavigator::RunBrake(const ControlFrame &frame) {
   stoppedAtPlannedTurn_ = frame.target.turn_junction && !plannedReverse &&
                           std::abs(plannedTurnError) >= 0.70;
   if (stoppedAtPlannedTurn_) {
+    RCLCPP_INFO(get_logger(),
+                "Fixed turn geometry: waypoint=%zu incoming=%.2fdeg "
+                "arrival=%.2fdeg target=%.2fdeg route_start=%s reverse_arrival=%s",
+                currentWaypointIndex_, geometryHeading * 180.0 / kPi,
+                currentYaw_ * 180.0 / kPi, nextHeading * 180.0 / kPi,
+                routeStartTurn ? "true" : "false",
+                reverseArrivalTurn ? "true" : "false");
     lastStoppedTurnIndex_ = currentWaypointIndex_;
     firstHalfTurnPending_ = std::abs(plannedTurnError) > 2.35;
     if (firstHalfTurnPending_)
