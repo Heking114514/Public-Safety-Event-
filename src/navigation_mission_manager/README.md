@@ -80,7 +80,7 @@ final_navigation -> /cmd_vel_nav
 
 串口桥只发布 `/cup_car_serial/rfid_number`。导航器到达超节点后沿来向以 `0.035 m/s` 低速
 扫描，最多越过地图节点 `0.20 m` 并停等读卡；里程计本身不能确认节点、推进路线或触发转弯。
-读到卡号后任务总控等待 `rfid_stop_delay_s`（生产 YAML 为 `0.25 s`），再申请 `navigation_mission_manager/rfid` 驻停；等待期间
+读到卡号后任务总控等待 `rfid_stop_delay_s`（生产 YAML 为 `0.1 s`），再申请 `navigation_mission_manager/rfid` 驻停；等待期间
 重复读卡不重新计时。任务是否运行、是否暂停或路线是否 ACK 不作为停车前置条件。
 等待驻停生效、车速降低且位置稳定后，再校验卡号、
 任务状态、路线号和预期点位。任务或路线未就绪时进入 `FAULT` 并保持驻停，需显式重新启动或
