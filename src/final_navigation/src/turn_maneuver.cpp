@@ -24,6 +24,7 @@ bool ConfigValid(const TurnManeuverConfig &config) {
                            config.turn_min_angular_speed,
                            config.creep_linear_speed,
                            config.turn_linear_speed,
+                           config.entry_position_tolerance,
                            config.entry_yaw_tolerance,
                            config.phase_timeout,
                            config.no_progress_timeout,
@@ -31,7 +32,6 @@ bool ConfigValid(const TurnManeuverConfig &config) {
                            config.min_yaw_progress,
                            config.creep_distance,
                            config.entry_heading_gain,
-                           config.entry_lateral_gain,
                            config.entry_max_angular_speed};
   for (double value : values) {
     if (!std::isfinite(value))
@@ -42,11 +42,11 @@ bool ConfigValid(const TurnManeuverConfig &config) {
          config.turn_linear_speed >= config.creep_linear_speed &&
          config.turn_min_angular_speed > 0.0 &&
          config.turn_angular_speed >= config.turn_min_angular_speed &&
+         config.entry_position_tolerance > 0.0 &&
          config.entry_yaw_tolerance > 0.0 && config.phase_timeout > 0.0 &&
          config.no_progress_timeout > 0.0 &&
          config.min_position_progress > 0.0 && config.min_yaw_progress > 0.0 &&
          config.creep_distance > 0.0 && config.entry_heading_gain > 0.0 &&
-         config.entry_lateral_gain >= 0.0 &&
          config.entry_max_angular_speed > 0.0;
 }
 
@@ -256,20 +256,18 @@ TurnManeuverController::update(const TurnManeuverInput &input, double now_s) {
   CornerShuntTwist command;
   if (phase_ == TurnManeuverPhase::APPROACH_ENTRY) {
     const double x_error = config_.entry_target_x - local.x;
-    const double y_error = direction * config_.entry_target_y - local.y;
     const double yaw_error = NormalizeShuntAngle(-local.yaw);
     // A fixed-direction capture avoids reversing every tick around the target.
     const double drive_direction =
         config_.entry_target_x >= local_pose(captured_.pose).x ? 1.0 : -1.0;
-    // 到达或跨过入口即完成入位，不再以横向、航向或位置容差拦截。
-    if (drive_direction * x_error <= 0.0)
+    // 仅按行驶方向的纵向距离验收入位，横向偏差不参与判定。
+    if (drive_direction * x_error <= config_.entry_position_tolerance)
       return enter_phase(TurnManeuverPhase::TURN_60);
     if (motion_failed())
       return terminal(phase_, TurnManeuverResult::NEED_REPLAN);
     command.linear_x = drive_direction * config_.turn_linear_speed;
     command.angular_z = Clamp(
-        config_.entry_heading_gain * yaw_error +
-            drive_direction * config_.entry_lateral_gain * y_error,
+        config_.entry_heading_gain * yaw_error,
         -config_.entry_max_angular_speed, config_.entry_max_angular_speed);
     return {phase_, command, TurnManeuverResult::RUNNING};
   }

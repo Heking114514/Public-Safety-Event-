@@ -177,7 +177,6 @@ bool WaypointNavigator::RunPoseRecovery() {
       const double along = dx * c + dy * s - recoveryTurnConfig_.entry_target_x;
       const double cross = -dx * s + dy * c - sign * recoveryTurnConfig_.entry_target_y;
       if (std::abs(along) > recoveryTurnConfig_.entry_position_tolerance ||
-          std::abs(cross) > recoveryTurnConfig_.entry_lateral_tolerance ||
           std::abs(NormalizeAngle(actual.yaw - step.geometry_heading)) >
             recoveryTurnConfig_.entry_yaw_tolerance) {
         FailPoseRecovery("FAULT_POSE_RECOVERY_FIXED_ENTRY"); return true;
@@ -220,15 +219,12 @@ bool WaypointNavigator::RunPoseRecovery() {
     const double dx = step.target.position.x - actual.position.x;
     const double dy = step.target.position.y - actual.position.y;
     const double along = dx * c + dy * s;
-    const double lateral = -(actual.position.x - step.road_origin.x) * s +
-                            (actual.position.y - step.road_origin.y) * c;
     const double yaw_error = NormalizeAngle(step.target.yaw - actual.yaw);
-    const double error = std::hypot(along, lateral) + 0.03 * std::abs(yaw_error);
+    const double error = std::abs(along);
     if (recoveryBestError_ - error > recoveryTurnConfig_.min_position_progress) {
       recoveryBestError_ = error; recoveryLastProgress_ = t;
     }
     if (std::abs(along) <= recoveryTurnConfig_.entry_position_tolerance &&
-        std::abs(lateral) <= recoveryTurnConfig_.entry_lateral_tolerance &&
         std::abs(yaw_error) <= recoveryTurnConfig_.entry_yaw_tolerance) {
       next(); return true;
     }
@@ -239,9 +235,7 @@ bool WaypointNavigator::RunPoseRecovery() {
       FailPoseRecovery("FAULT_POSE_RECOVERY_STRAIGHT_OVERSHOOT"); return true;
     }
     command.linear.x = step.linear;
-    const double direction = std::copysign(1.0, step.linear);
-    command.angular.z = std::clamp(recoveryTurnConfig_.entry_heading_gain * yaw_error -
-      direction * recoveryTurnConfig_.entry_lateral_gain * lateral,
+    command.angular.z = std::clamp(recoveryTurnConfig_.entry_heading_gain * yaw_error,
       -recoveryTurnConfig_.entry_max_angular_speed, recoveryTurnConfig_.entry_max_angular_speed);
     SetState("POSE_RECOVERY_" + step.phase);
   }

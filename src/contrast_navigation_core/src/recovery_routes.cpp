@@ -209,15 +209,11 @@ bool PoseRecovery::append_straight(Pose &pose, Pose target, double direction,
     const double dx=target.position.x-pose.position.x;
     const double dy=target.position.y-pose.position.y;
     const double along=dx*c+dy*s;
-    const double lateral=-(pose.position.x-target.position.x)*s+
-                          (pose.position.y-target.position.y)*c;
     const double yaw_error=wrap(target.yaw-pose.yaw);
     if (std::abs(along)<=config_.turn.entry_position_tolerance &&
-        std::abs(lateral)<=config_.turn.entry_lateral_tolerance &&
         std::abs(yaw_error)<=config_.turn.entry_yaw_tolerance) { complete=true; break; }
     if (along*direction < -config_.turn.entry_position_tolerance) return false;
-    const double target_w=std::clamp(config_.turn.entry_heading_gain*yaw_error-
-      direction*config_.turn.entry_lateral_gain*lateral,
+    const double target_w=std::clamp(config_.turn.entry_heading_gain*yaw_error,
       -config_.turn.entry_max_angular_speed,config_.turn.entry_max_angular_speed);
     v=LimitRate(direction*config_.speed,v,config_.linear_acceleration,
                 config_.linear_deceleration,config_.control_dt);

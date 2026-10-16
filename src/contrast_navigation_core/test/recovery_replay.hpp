@@ -104,17 +104,13 @@ private:
     const double started=now_,c=std::cos(step.geometry_heading),s=std::sin(step.geometry_heading);
     while(now_-started<=step.duration+config_.turn.phase_timeout) {
       const double along=(step.target.position.x-actual_.x)*c+(step.target.position.y-actual_.y)*s;
-      const double lateral=-(actual_.x-step.road_origin.x)*s+(actual_.y-step.road_origin.y)*c;
       const double yaw=test_motion::normalize_angle(step.target.yaw-actual_.yaw);
       if(std::abs(along)<=config_.turn.entry_position_tolerance &&
-         std::abs(lateral)<=config_.turn.entry_lateral_tolerance &&
          std::abs(yaw)<=config_.turn.entry_yaw_tolerance) return true;
       if(along*step.linear < -config_.turn.entry_position_tolerance*std::abs(step.linear)) {
         failure_="直行实测位置越过动作目标";return false;
       }
-      const double direction=std::copysign(1.,step.linear);
-      const double angular=std::clamp(config_.turn.entry_heading_gain*yaw-
-        direction*config_.turn.entry_lateral_gain*lateral,
+      const double angular=std::clamp(config_.turn.entry_heading_gain*yaw,
         -config_.turn.entry_max_angular_speed,config_.turn.entry_max_angular_speed);
       if(!command({step.linear,angular})) return false;
     }

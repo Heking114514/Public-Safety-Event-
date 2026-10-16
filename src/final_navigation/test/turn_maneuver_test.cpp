@@ -288,7 +288,7 @@ TEST(ContrastTurn, TranslationCannotMaskMissingYawProgress) {
   EXPECT_EQ(decision.result, Result::NEED_REPLAN);
 }
 
-TEST(ContrastTurn, EntryCrossingAdvancesDespiteLateralAndHeadingError) {
+TEST(ContrastTurn, EntryUsesLongitudinalToleranceDespiteLateralAndHeadingError) {
   const auto config = TestConfig();
   for (double drive_direction : {-1.0, 1.0}) {
     visual_navigation::TurnManeuverController controller(config);
@@ -304,12 +304,64 @@ TEST(ContrastTurn, EntryCrossingAdvancesDespiteLateralAndHeadingError) {
     ASSERT_EQ(approaching.result, Result::RUNNING);
     EXPECT_GT(drive_direction * approaching.command.linear_x, 0.0);
     input.context.pose.x =
+        config.entry_target_x - drive_direction * 1.5 * config.entry_position_tolerance;
+    EXPECT_EQ(controller.update(input, 3 * kStep).phase, Phase::APPROACH_ENTRY);
+    input.context.pose.x =
+        config.entry_target_x - drive_direction * 0.5 * config.entry_position_tolerance;
+    const auto within_tolerance = controller.update(input, 4 * kStep);
+    EXPECT_EQ(within_tolerance.phase, Phase::TURN_60);
+    EXPECT_DOUBLE_EQ(within_tolerance.command.linear_x, 0.0);
+  }
+}
+
+TEST(ContrastTurn, EntryCrossingAdvancesDespiteLateralAndHeadingError) {
+  const auto config = TestConfig();
+  for (double drive_direction : {-1.0, 1.0}) {
+    visual_navigation::TurnManeuverController controller(config);
+    auto input = Input(config.entry_target_x - drive_direction * 0.03,
+                       config.entry_target_y + 0.04, 2 * config.entry_yaw_tolerance);
+    controller.begin(0.0);
+    controller.update(input, 0.0);
+    controller.update(input, kStep);
+    ASSERT_EQ(controller.update(input, 2 * kStep).phase, Phase::APPROACH_ENTRY);
+    input.context.pose.x =
         config.entry_target_x + drive_direction * 2 * config.entry_position_tolerance;
     const auto entered = controller.update(input, 3 * kStep);
     EXPECT_EQ(entered.phase, Phase::TURN_60);
     EXPECT_EQ(entered.result, Result::RUNNING);
     EXPECT_DOUBLE_EQ(entered.command.linear_x, 0.0);
     EXPECT_DOUBLE_EQ(entered.command.angular_z, 0.0);
+  }
+}
+
+TEST(ContrastTurn, EntryFeedbackUsesHeadingWithoutLateralCorrection) {
+  const auto config = TestConfig();
+  for (double heading : {0.0, kPi / 2.0, -kPi / 2.0}) {
+    for (double drive_direction : {-1.0, 1.0}) {
+      for (double lateral : {-0.04, 0.0, 0.04}) {
+        visual_navigation::TurnManeuverController controller(config);
+        const double x = config.entry_target_x - drive_direction * 0.03;
+        const double yaw_error = 0.5 * config.entry_yaw_tolerance;
+        auto input = Input(x * std::cos(heading) - lateral * std::sin(heading),
+                           x * std::sin(heading) + lateral * std::cos(heading),
+                           heading - yaw_error);
+        input.context.geometry_heading = heading;
+        input.context.target_heading = heading + kPi / 2.0;
+        controller.begin(0.0);
+        controller.update(input, 0.0);
+        controller.update(input, kStep);
+        const auto decision = controller.update(input, 2 * kStep);
+        ASSERT_EQ(decision.phase, Phase::APPROACH_ENTRY);
+        EXPECT_GT(drive_direction * decision.command.linear_x, 0.0);
+        EXPECT_NEAR(decision.command.angular_z,
+                    config.entry_heading_gain * yaw_error, 1e-12);
+        const double near_x = config.entry_target_x -
+            drive_direction * 0.5 * config.entry_position_tolerance;
+        input.context.pose.x = near_x * std::cos(heading) - lateral * std::sin(heading);
+        input.context.pose.y = near_x * std::sin(heading) + lateral * std::cos(heading);
+        EXPECT_EQ(controller.update(input, 3 * kStep).phase, Phase::TURN_60);
+      }
+    }
   }
 }
 

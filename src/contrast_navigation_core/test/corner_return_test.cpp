@@ -247,6 +247,62 @@ TEST(CornerReturn, AllowedYawCannotHideReturnEntryPositionOvershoot) {
   FAIL() << "未执行到原入口返回阶段";
 }
 
+TEST(CornerReturn, ArrivalAndProgressUseLongitudinalPositionWithHeadingFeedback) {
+  const auto c=config();
+  for(double sign:{-1.0,1.0}) {
+    for(double lateral:{-.04,0.0,.04}) {
+      // 使用正式 YAML；横向 4 cm 仅扰动位置，不改变纵向到点或航向反馈。
+      const auto make_pose=[&](visual_navigation::CornerShuntPose target,
+                               double along, double yaw) {
+        return visual_navigation::CornerShuntPose{
+          target.x+along*std::cos(target.yaw)-lateral*std::sin(target.yaw),
+          target.y+along*std::sin(target.yaw)+lateral*std::cos(target.yaw),
+          target.yaw+yaw};
+      };
+      visual_navigation::CornerShuntContext context;
+      context.target_heading=sign*pi/2;
+      Controller controller(c);
+      controller.begin(context,0);
+      ASSERT_TRUE(controller.geometry_valid());
+      const auto exit=controller.exit_pose();
+      visual_navigation::CornerReturnInput input;input.context=context;
+      input.context.pose=make_pose(exit,0,0);
+      controller.begin(input.context,0);
+      ASSERT_EQ(controller.update(input,0).phase,Phase::APPROACH_ENTRY);
+      EXPECT_EQ(controller.update(input,c.control_dt).phase,Phase::TURN_30);
+
+      input.context.pose=make_pose(exit,2*c.turn.entry_position_tolerance,0);
+      controller.begin(input.context,0);
+      controller.update(input,0);
+      const auto approaching=controller.update(input,c.control_dt);
+      EXPECT_EQ(approaching.phase,Phase::APPROACH_ENTRY);
+      EXPECT_EQ(approaching.result,Result::RUNNING);
+      EXPECT_LT(approaching.command.linear_x,0);
+      EXPECT_NEAR(approaching.command.angular_z,0,1e-12);
+
+      const double yaw=2*c.turn.entry_yaw_tolerance;
+      input.context.pose=make_pose(exit,2*c.turn.entry_position_tolerance,yaw);
+      controller.begin(input.context,0);
+      controller.update(input,0);
+      const auto correcting=controller.update(input,c.control_dt);
+      EXPECT_EQ(correcting.phase,Phase::APPROACH_ENTRY);
+      EXPECT_NEAR(correcting.command.angular_z,
+        std::clamp(-c.turn.entry_heading_gain*yaw,
+          -c.turn.entry_max_angular_speed,c.turn.entry_max_angular_speed),1e-12);
+
+      // 横向位置回到中心也不能掩盖纵向完全不动。
+      input.context.pose=make_pose(exit,2*c.turn.entry_position_tolerance,0);
+      controller.begin(input.context,0);
+      controller.update(input,0);
+      controller.update(input,c.control_dt);
+      input.context.pose.x=exit.x+2*c.turn.entry_position_tolerance*std::cos(exit.yaw);
+      input.context.pose.y=exit.y+2*c.turn.entry_position_tolerance*std::sin(exit.yaw);
+      EXPECT_EQ(controller.update(input,c.turn.no_progress_timeout+2*c.control_dt).result,
+                Result::NEED_REPLAN);
+    }
+  }
+}
+
 TEST(CornerReturn, MissingPhysicalParametersFailExplicitly) {
   Controller controller;
   visual_navigation::CornerShuntContext context;context.target_heading=pi/2;

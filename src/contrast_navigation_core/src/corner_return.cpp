@@ -7,8 +7,9 @@
 namespace visual_navigation {
 namespace {
 constexpr double pi = 3.14159265358979323846;
-double distance(CornerShuntPose a, CornerShuntPose b) {
-  return std::hypot(a.x-b.x,a.y-b.y);
+double longitudinal_distance(CornerShuntPose pose, CornerShuntPose target) {
+  return std::abs((target.x-pose.x)*std::cos(target.yaw)+
+                  (target.y-pose.y)*std::sin(target.yaw));
 }
 double clamp(double value, double low, double high) {
   return std::max(low, std::min(high, value));
@@ -152,7 +153,7 @@ CornerReturnDecision CornerReturnController::update(const CornerReturnInput &inp
     const bool turning=phase_==Phase::TURN_30 || phase_==Phase::TURN_60;
     const double progress=turning ?
       std::abs(NormalizeShuntAngle(target.yaw-progress_pose_.yaw))-std::abs(yaw_error) :
-      distance(progress_pose_,target)-distance(p,target);
+      longitudinal_distance(progress_pose_,target)-longitudinal_distance(p,target);
     if(progress<(turning ? cfg.min_yaw_progress:cfg.min_position_progress))
       return terminal(Phase::FAULT,TurnManeuverResult::NEED_REPLAN);
     progress_pose_=p;progress_started_at_=t;
@@ -161,9 +162,7 @@ CornerReturnDecision CornerReturnController::update(const CornerReturnInput &inp
   if(phase_==Phase::APPROACH_ENTRY || phase_==Phase::RETURN_ENTRY) {
     const double c=std::cos(target.yaw),s=std::sin(target.yaw);
     const double along=(target.x-p.x)*c+(target.y-p.y)*s;
-    const double lateral=-(p.x-target.x)*s+(p.y-target.y)*c;
     if(std::abs(along)<=cfg.entry_position_tolerance &&
-       std::abs(lateral)<=cfg.entry_lateral_tolerance &&
        std::abs(yaw_error)<=cfg.entry_yaw_tolerance) {
       if(phase_==Phase::RETURN_ENTRY)
         return terminal(Phase::COMPLETE,TurnManeuverResult::COMPLETED);
@@ -172,8 +171,7 @@ CornerReturnDecision CornerReturnController::update(const CornerReturnInput &inp
     if(along>cfg.entry_position_tolerance)
       return terminal(Phase::FAULT,TurnManeuverResult::NEED_REPLAN);
     command.linear_x=-cfg.turn_linear_speed;
-    command.angular_z=clamp(cfg.entry_heading_gain*yaw_error+
-      cfg.entry_lateral_gain*lateral,-cfg.entry_max_angular_speed,cfg.entry_max_angular_speed);
+    command.angular_z=clamp(cfg.entry_heading_gain*yaw_error,-cfg.entry_max_angular_speed,cfg.entry_max_angular_speed);
   } else if(phase_==Phase::DIAGONAL_CREEP) {
     const double c=std::cos(target.yaw),s=std::sin(target.yaw);
     const double along=(p.x-target.x)*c+(p.y-target.y)*s;

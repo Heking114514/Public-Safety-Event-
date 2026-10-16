@@ -200,7 +200,8 @@ bool WaypointNavigator::RunTurnObstacleRecovery() {
     recoveryStepStarted_ = t;
     const auto target = cornerReturnController_.exit_pose();
     const auto actual = context().pose;
-    recoveryBestError_ = std::hypot(target.x-actual.x,target.y-actual.y);
+    recoveryBestError_ = std::abs((target.x-actual.x)*std::cos(target.yaw)+
+                                  (target.y-actual.y)*std::sin(target.yaw));
     RCLCPP_INFO(get_logger(), "L return fixed outgoing point: target=(%.4f,%.4f,%.4f)",
       target.x, target.y, target.yaw);
     PublishPoseRecovery("post_turn_point");
@@ -210,10 +211,8 @@ bool WaypointNavigator::RunTurnObstacleRecovery() {
     const auto actual = context().pose;
     const double c = std::cos(target.yaw), s = std::sin(target.yaw);
     const double along = (target.x-actual.x)*c + (target.y-actual.y)*s;
-    const double cross = -(actual.x-target.x)*s + (actual.y-target.y)*c;
     const double yaw = NormalizeAngle(target.yaw-actual.yaw);
     if (std::abs(along) <= turnManeuverConfig_.entry_position_tolerance &&
-        std::abs(cross) <= turnManeuverConfig_.entry_lateral_tolerance &&
         std::abs(yaw) <= turnManeuverConfig_.entry_yaw_tolerance) {
       PublishStop(); poseRecoveryPhase_ = "post_turn_stop"; BeginRecoveryStop(t);
       SetState("POSE_RECOVERY_POST_TURN_POINT_STOP"); PublishPoseRecovery("post_turn_stop");
@@ -226,8 +225,7 @@ bool WaypointNavigator::RunTurnObstacleRecovery() {
     const double direction = along >= 0 ? 1.0 : -1.0;
     visual_navigation::CornerShuntTwist command;
     command.linear_x = direction*poseRecovery_.config().speed;
-    command.angular_z = std::clamp(turnManeuverConfig_.entry_heading_gain*yaw -
-      direction*turnManeuverConfig_.entry_lateral_gain*cross,
+    command.angular_z = std::clamp(turnManeuverConfig_.entry_heading_gain*yaw,
       -turnManeuverConfig_.entry_max_angular_speed, turnManeuverConfig_.entry_max_angular_speed);
     publish(command, "POSE_RECOVERY_POST_TURN_POINT"); return true;
   }
@@ -238,9 +236,9 @@ bool WaypointNavigator::RunTurnObstacleRecovery() {
     }
     const auto actual = context().pose;
     const auto target = cornerReturnController_.exit_pose();
-    if (std::hypot(actual.x-target.x,actual.y-target.y) >
-        std::hypot(turnManeuverConfig_.entry_position_tolerance,
-                   turnManeuverConfig_.entry_lateral_tolerance)) {
+    const double along = (actual.x-target.x)*std::cos(target.yaw)+
+                         (actual.y-target.y)*std::sin(target.yaw);
+    if (std::abs(along) > turnManeuverConfig_.entry_position_tolerance) {
       FailPoseRecovery("FAULT_POSE_RECOVERY_POST_TURN_STOP_POSE"); return true;
     }
     RCLCPP_INFO(get_logger(), "L outgoing point stopped: actual=(%.4f,%.4f,%.4f)",
@@ -269,7 +267,6 @@ bool WaypointNavigator::RunTurnObstacleRecovery() {
     const double c = std::cos(target.yaw), s = std::sin(target.yaw);
     if (!poseRecovery_.safe({RecoveryPose()}) ||
         std::abs(dx*c+dy*s) > turnManeuverConfig_.entry_position_tolerance ||
-        std::abs(-dx*s+dy*c) > turnManeuverConfig_.entry_lateral_tolerance ||
         std::abs(NormalizeAngle(actual.yaw-target.yaw)) > turnManeuverConfig_.entry_yaw_tolerance) {
       FailPoseRecovery("FAULT_POSE_RECOVERY_ORIGINAL_LANE_STOP_POSE"); return true;
     }
